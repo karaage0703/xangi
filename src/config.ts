@@ -9,6 +9,10 @@ export interface AgentConfig {
   skipPermissions?: boolean;
   /** 常駐プロセスモード（高速化） */
   persistent?: boolean;
+  /** 同時実行プロセス数の上限（RunnerManager用） */
+  maxProcesses?: number;
+  /** アイドルタイムアウト（ミリ秒、RunnerManager用） */
+  idleTimeoutMs?: number;
 }
 
 export interface Config {
@@ -33,6 +37,10 @@ export interface Config {
   agent: {
     backend: AgentBackend;
     config: AgentConfig;
+  };
+  scheduler: {
+    enabled: boolean;
+    startupEnabled: boolean;
   };
   // 後方互換性のため残す
   claudeCode: AgentConfig;
@@ -64,6 +72,10 @@ export function loadConfig(): Config {
     workdir: process.env.WORKSPACE_PATH || undefined,
     skipPermissions: process.env.SKIP_PERMISSIONS === 'true',
     persistent: process.env.PERSISTENT_MODE !== 'false', // デフォルトで有効
+    maxProcesses: process.env.MAX_PROCESSES ? parseInt(process.env.MAX_PROCESSES, 10) : 10,
+    idleTimeoutMs: process.env.IDLE_TIMEOUT_MS
+      ? parseInt(process.env.IDLE_TIMEOUT_MS, 10)
+      : 30 * 60 * 1000, // 30分
   };
 
   return {
@@ -94,6 +106,10 @@ export function loadConfig(): Config {
     agent: {
       backend,
       config: agentConfig,
+    },
+    scheduler: {
+      enabled: process.env.SCHEDULER_ENABLED !== 'false', // デフォルトで有効
+      startupEnabled: process.env.STARTUP_ENABLED !== 'false', // デフォルトで有効
     },
     // 後方互換性のため残す
     claudeCode: agentConfig,

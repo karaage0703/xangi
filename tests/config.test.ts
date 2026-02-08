@@ -60,4 +60,28 @@ describe('config', () => {
     const { loadConfig } = await import('../src/config.js');
     expect(() => loadConfig()).toThrow('Invalid AGENT_BACKEND');
   });
+
+  it('should enable scheduler and startup by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.SCHEDULER_ENABLED;
+    delete process.env.STARTUP_ENABLED;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.scheduler.enabled).toBe(true);
+    expect(config.scheduler.startupEnabled).toBe(true);
+  });
+
+  it('should disable scheduler when SCHEDULER_ENABLED=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SCHEDULER_ENABLED = 'false';
+    process.env.STARTUP_ENABLED = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.scheduler.enabled).toBe(false);
+    expect(config.scheduler.startupEnabled).toBe(false);
+  });
 });

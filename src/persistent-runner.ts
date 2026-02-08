@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { EventEmitter } from 'events';
 import type { RunOptions, RunResult, StreamCallbacks, AgentRunner } from './agent-runner.js';
+import { mergeTexts } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 /**
@@ -30,6 +31,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private sessionId = '';
   private fullText = '';
   private shuttingDown = false;
+  private cancelling = false;
 
   // サーキットブレーカー: 連続クラッシュ対策
   private crashCount = 0;
@@ -159,8 +161,16 @@ MEDIA:/path/to/file
       this.processAlive = false;
       this.buffer = ''; // バッファをクリア
 
-      // シャットダウン中なら正常終了
+      // シャットダウン中またはキャンセル中なら正常終了
       if (wasShuttingDown) {
+        return;
+      }
+      if (this.cancelling) {
+        this.cancelling = false;
+        // キューに次のリクエストがあれば処理
+        if (this.queue.length > 0) {
+          this.processNext();
+        }
         return;
       }
 
@@ -260,9 +270,10 @@ MEDIA:/path/to/file
         this.currentItem?.callbacks?.onError?.(error);
         this.currentItem?.reject(error);
       } else {
-        // result に最終テキストがある場合はそれを使う
+        // ストリーミング中の累積テキストと最終 result をマージ
+        // （ツール呼び出し前のテキストが result から消えるのを防ぐ）
         if (json.result) {
-          this.fullText = json.result;
+          this.fullText = mergeTexts(this.fullText, json.result);
         }
 
         const result: RunResult = {
@@ -368,6 +379,38 @@ MEDIA:/path/to/file
       this.queue.push({ prompt, options, callbacks, resolve, reject });
       this.processNext();
     });
+  }
+
+  /**
+   * 現在処理中のリクエストをキャンセル
+   * プロセス自体はkillして再起動（古い出力が混ざるのを防ぐ）
+   */
+  cancel(): boolean {
+    if (!this.currentItem) {
+      return false;
+    }
+
+    console.log('[persistent-runner] Cancelling current request');
+    const error = new Error('Request cancelled by user');
+    this.currentItem.callbacks?.onError?.(error);
+    this.currentItem.reject(error);
+    this.currentItem = null;
+    this.fullText = '';
+
+    // プロセスをkillして状態をクリーンにする（タイムアウト時と同じ戦略）
+    // cancellingフラグでcloseイベントがクラッシュ扱いしないようにする
+    if (this.process) {
+      this.cancelling = true;
+      this.process.kill();
+      this.process = null;
+      this.processAlive = false;
+      this.buffer = '';
+    } else {
+      // プロセスがない場合はキューの次を直接処理
+      this.processNext();
+    }
+
+    return true;
   }
 
   /**

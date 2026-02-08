@@ -199,7 +199,8 @@ src/
 ├── config.ts         # 設定読み込み
 ├── settings.ts       # ランタイム設定
 ├── file-utils.ts     # ファイル操作ユーティリティ
-└── process-manager.ts # プロセス管理
+├── process-manager.ts # プロセス管理
+└── runner-manager.ts  # 複数チャンネル同時処理（RunnerManager）
 ```
 
 ## Docker対応
@@ -262,6 +263,8 @@ src/
 | `SKIP_PERMISSIONS` | デフォルトで許可スキップ | `false` |
 | `TIMEOUT_MS` | タイムアウト（ミリ秒） | `300000` |
 | `PERSISTENT_MODE` | 常駐プロセスモード（高速応答） | `true` |
+| `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
+| `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間（ミリ秒） | `1800000`（30分） |
 | `DATA_DIR` | データ保存ディレクトリ | `/workspace/.xangi` |
 
 ### GitHub CLI

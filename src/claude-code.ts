@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { processManager } from './process-manager.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import { mergeTexts } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 // チャットプラットフォーム連携用のシステムプロンプト
@@ -305,9 +306,10 @@ export class ClaudeCodeRunner {
                 reject(error);
                 return;
               }
-              // result.result に最終テキストがある場合はそれを使う
+              // ストリーミング中の累積テキストと最終 result をマージ
+              // （ツール呼び出し前のテキストが result から消えるのを防ぐ）
               if (json.result) {
-                fullText = json.result;
+                fullText = mergeTexts(fullText, json.result);
               }
             }
           } catch {
@@ -342,9 +344,9 @@ export class ClaudeCodeRunner {
               }
             } else if (json.type === 'result') {
               sessionId = json.session_id;
-              // result.result に最終テキストがある場合はそれを使う
+              // ストリーミング中の累積テキストと最終 result をマージ
               if (json.result) {
-                fullText = json.result;
+                fullText = mergeTexts(fullText, json.result);
               }
             }
           } catch {

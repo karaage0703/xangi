@@ -13,6 +13,10 @@
 import { Scheduler, parseScheduleInput, formatScheduleList, type Platform } from './scheduler.js';
 
 const DATA_DIR = process.env.XANGI_DATA_DIR || process.env.DATA_DIR || undefined;
+const schedulerConfig = {
+  enabled: process.env.SCHEDULER_ENABLED !== 'false',
+  startupEnabled: process.env.STARTUP_ENABLED !== 'false',
+};
 
 function usage(): void {
   console.log(`スケジューラCLI
@@ -173,7 +177,7 @@ function main(): void {
       if (args['json'] === 'true') {
         console.log(JSON.stringify({ ok: true, schedules }, null, 2));
       } else {
-        console.log(formatScheduleList(schedules));
+        console.log(formatScheduleList(schedules, schedulerConfig));
       }
       break;
     }
@@ -228,7 +232,7 @@ function main(): void {
       // 削除成功後、残りのスケジュール一覧を表示
       const remaining = scheduler.list(channel, platform);
       console.log(`✅ ${deletedIds.length}件削除しました\n`);
-      console.log(formatScheduleList(remaining));
+      console.log(formatScheduleList(remaining, schedulerConfig));
       break;
     }
 
@@ -273,7 +277,7 @@ function main(): void {
       const channel = args['channel'];
       const platform = args['platform'] as Platform | undefined;
       const all = scheduler.list(channel, platform);
-      console.log(formatScheduleList(all));
+      console.log(formatScheduleList(all, schedulerConfig));
       break;
     }
 

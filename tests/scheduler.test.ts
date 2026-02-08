@@ -302,6 +302,84 @@ describe('Scheduler', () => {
     expect(executed).toContain('ch1:startup task');
     expect(executed).not.toContain('ch2:cron task');
   });
+
+  it('should skip all jobs when schedulerEnabled is false', async () => {
+    const executed: string[] = [];
+    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
+      executed.push(`${channelId}:${prompt}`);
+      return 'ok';
+    });
+
+    scheduler.add({
+      type: 'startup',
+      message: 'startup task',
+      channelId: 'ch1',
+      platform: 'discord',
+    });
+    scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'cron task',
+      channelId: 'ch2',
+      platform: 'discord',
+    });
+
+    scheduler.startAll({ enabled: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(executed).toHaveLength(0);
+  });
+
+  it('should skip startup tasks when startupEnabled is false', async () => {
+    const executed: string[] = [];
+    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
+      executed.push(`${channelId}:${prompt}`);
+      return 'ok';
+    });
+
+    scheduler.add({
+      type: 'startup',
+      message: 'startup task',
+      channelId: 'ch1',
+      platform: 'discord',
+    });
+    scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'cron task',
+      channelId: 'ch2',
+      platform: 'discord',
+    });
+
+    scheduler.startAll({ startupEnabled: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Cron job should be registered but startup should not execute
+    expect(executed).not.toContain('ch1:startup task');
+  });
+
+  it('should run everything when both flags are true', async () => {
+    const executed: string[] = [];
+    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
+      executed.push(`${channelId}:${prompt}`);
+      return 'ok';
+    });
+
+    scheduler.add({
+      type: 'startup',
+      message: 'startup task',
+      channelId: 'ch1',
+      platform: 'discord',
+    });
+
+    scheduler.startAll({ enabled: true, startupEnabled: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(executed).toContain('ch1:startup task');
+  });
 });
 
 describe('formatScheduleList', () => {

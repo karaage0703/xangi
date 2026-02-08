@@ -1,7 +1,7 @@
 import type { AgentBackend, AgentConfig } from './config.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
-import { PersistentRunner } from './persistent-runner.js';
+import { RunnerManager } from './runner-manager.js';
 
 export interface RunOptions {
   skipPermissions?: boolean;
@@ -26,6 +26,8 @@ export interface StreamCallbacks {
 export interface AgentRunner {
   run(prompt: string, options?: RunOptions): Promise<RunResult>;
   runStream(prompt: string, callbacks: StreamCallbacks, options?: RunOptions): Promise<RunResult>;
+  /** 現在処理中のリクエストをキャンセル */
+  cancel?(channelId?: string): boolean;
 }
 
 /**
@@ -34,10 +36,13 @@ export interface AgentRunner {
 export function createAgentRunner(backend: AgentBackend, config: AgentConfig): AgentRunner {
   switch (backend) {
     case 'claude-code':
-      // persistent モードなら PersistentRunner を使用
+      // persistent モードなら RunnerManager を使用（複数チャンネル同時処理）
       if (config.persistent) {
-        console.log('[agent-runner] Using PersistentRunner (high-speed mode)');
-        return new PersistentRunner(config);
+        console.log('[agent-runner] Using RunnerManager (multi-channel high-speed mode)');
+        return new RunnerManager(config, {
+          maxProcesses: config.maxProcesses,
+          idleTimeoutMs: config.idleTimeoutMs,
+        });
       }
       return new ClaudeCodeRunner(config);
     case 'codex':
@@ -45,6 +50,27 @@ export function createAgentRunner(backend: AgentBackend, config: AgentConfig): A
     default:
       throw new Error(`Unknown agent backend: ${backend}`);
   }
+}
+
+/**
+ * ストリーミング中に累積したテキストと、最終 result テキストをマージする。
+ *
+ * Claude Code CLI はツール呼び出しの合間にテキストを出力するが、
+ * 最終的な result フィールドには最後のテキストブロックしか含まれない。
+ * この関数は累積テキスト（streamed）を基本とし、result にしかないテキストがあれば追加する。
+ */
+export function mergeTexts(streamed: string, result: string): string {
+  if (!result) return streamed;
+  if (!streamed) return result;
+
+  // result が streamed の末尾に含まれていれば重複 → streamed をそのまま返す
+  if (streamed.endsWith(result)) return streamed;
+
+  // streamed が result に完全に含まれているなら result を優先
+  if (result.endsWith(streamed)) return result;
+
+  // どちらにも含まれない → 区切って結合
+  return `${streamed}\n${result}`;
 }
 
 /**

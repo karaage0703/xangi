@@ -283,7 +283,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped = processManager.stop(channelId);
+      const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),
@@ -392,7 +392,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped = processManager.stop(channelId);
+      const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),

@@ -51,6 +51,7 @@ export class Scheduler {
   private lastSaveTime = 0;
   private lastReloadTime = 0;
   private quiet: boolean;
+  private disabled = false;
   constructor(dataDir?: string, options?: { quiet?: boolean }) {
     this.quiet = options?.quiet ?? false;
     const dir = dataDir || join(process.cwd(), '.xangi');
@@ -115,7 +116,9 @@ export class Scheduler {
     };
     this.schedules.push(newSchedule);
     this.save();
-    this.startJob(newSchedule);
+    if (!this.disabled) {
+      this.startJob(newSchedule);
+    }
     return newSchedule;
   }
   /**
@@ -156,10 +159,12 @@ export class Scheduler {
     if (!schedule) return undefined;
     schedule.enabled = !schedule.enabled;
     this.save();
-    if (schedule.enabled) {
-      this.startJob(schedule);
-    } else {
-      this.stopJob(id);
+    if (!this.disabled) {
+      if (schedule.enabled) {
+        this.startJob(schedule);
+      } else {
+        this.stopJob(id);
+      }
     }
     return schedule;
   }
@@ -167,7 +172,17 @@ export class Scheduler {
   /**
    * 全スケジュールのジョブを開始（起動時に呼ぶ）
    */
-  startAll(): void {
+  startAll(options?: { enabled?: boolean; startupEnabled?: boolean }): void {
+    const schedulerEnabled = options?.enabled ?? true;
+    const startupEnabled = options?.startupEnabled ?? true;
+
+    if (!schedulerEnabled) {
+      this.disabled = true;
+      this.log('[scheduler] Scheduler is disabled (SCHEDULER_ENABLED=false), skipping all jobs');
+      this.startWatching();
+      return;
+    }
+
     const startupTasks: Schedule[] = [];
     for (const schedule of this.schedules) {
       if (schedule.enabled) {
@@ -181,6 +196,11 @@ export class Scheduler {
     this.startWatching();
     const regularJobs = this.schedules.filter((s) => s.enabled && s.type !== 'startup').length;
     this.log(`[scheduler] Started ${regularJobs} jobs, ${startupTasks.length} startup tasks`);
+
+    if (!startupEnabled) {
+      this.log('[scheduler] Startup tasks disabled (STARTUP_ENABLED=false), skipping');
+      return;
+    }
 
     // Execute startup tasks
     for (const task of startupTasks) {
@@ -238,10 +258,12 @@ export class Scheduler {
     }
     // 再読み込み
     this.load();
-    // 有効なジョブを再開
-    for (const schedule of this.schedules) {
-      if (schedule.enabled) {
-        this.startJob(schedule);
+    // 有効なジョブを再開（スケジューラ無効時はスキップ）
+    if (!this.disabled) {
+      for (const schedule of this.schedules) {
+        if (schedule.enabled) {
+          this.startJob(schedule);
+        }
       }
     }
     this.log(`[scheduler] Reloaded: ${this.schedules.filter((s) => s.enabled).length} active jobs`);
@@ -362,9 +384,24 @@ export class Scheduler {
 /**
  * スケジュール一覧をフォーマット
  */
-export function formatScheduleList(schedules: Schedule[]): string {
+export function formatScheduleList(
+  schedules: Schedule[],
+  options?: { enabled?: boolean; startupEnabled?: boolean }
+): string {
+  const schedulerEnabled = options?.enabled ?? true;
+  const startupEnabled = options?.startupEnabled ?? true;
+
+  const statusHeader: string[] = [];
+  if (!schedulerEnabled) {
+    statusHeader.push('⚠️ **スケジューラは無効です** (`SCHEDULER_ENABLED=false`)');
+  }
+  if (!startupEnabled) {
+    statusHeader.push('⚠️ **スタートアップは無効です** (`STARTUP_ENABLED=false`)');
+  }
+
   if (schedules.length === 0) {
-    return '📋 スケジュールはありません';
+    const header = statusHeader.length > 0 ? statusHeader.join('\n') + '\n\n' : '';
+    return header + '📋 スケジュールはありません';
   }
 
   // Split into regular schedules and startup tasks
@@ -419,7 +456,8 @@ export function formatScheduleList(schedules: Schedule[]): string {
     );
   }
 
-  return sections.join('\n\n') + '\n';
+  const header = statusHeader.length > 0 ? statusHeader.join('\n') + '\n\n' : '';
+  return header + sections.join('\n\n') + '\n';
 }
 function formatTime(iso: string): string {
   const d = new Date(iso);
