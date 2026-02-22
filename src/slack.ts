@@ -564,8 +564,6 @@ async function processMessage(
   // スキップ設定
   if (prompt.startsWith('!skip')) {
     prompt = prompt.replace(/^!skip\s*/, '').trim();
-  } else if (prompt.startsWith('!noskip')) {
-    prompt = prompt.replace(/^!noskip\s*/, '').trim();
   }
 
   try {

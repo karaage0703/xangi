@@ -43,8 +43,6 @@ services:
     <<: *common
     build: .
     container_name: xangi
-    ports:
-      - "8080:8080"
 
   # フル版（uv + Python）
   xangi-max:

@@ -43,6 +43,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private workdir?: string;
   private skipPermissions: boolean;
   private systemPrompt: string;
+  private resumeSessionId?: string; // プロセス再起動時に --resume で復元するセッションID
 
   constructor(options?: {
     model?: string;
@@ -94,6 +95,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    // セッション復元: 保存済みセッションIDがあれば --resume で継続
+    const resumeId = this.resumeSessionId || this.sessionId;
+    if (resumeId) {
+      args.push('--resume', resumeId);
+      console.log(`[persistent-runner] Resuming session: ${resumeId.slice(0, 8)}...`);
     }
 
     args.push('--append-system-prompt', this.systemPrompt);
@@ -401,6 +409,16 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
    */
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * セッションIDを設定（プロセス再起動時の --resume 用）
+   */
+  setSessionId(sessionId: string): void {
+    this.resumeSessionId = sessionId;
+    if (!this.sessionId) {
+      this.sessionId = sessionId;
+    }
   }
 
   /**

@@ -135,6 +135,10 @@ export class RunnerManager implements AgentRunner {
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
     const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
     const runner = this.getOrCreateRunner(channelId);
+    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
+    if (options?.sessionId) {
+      runner.setSessionId(options.sessionId);
+    }
     return runner.run(prompt, options);
   }
 
@@ -148,6 +152,10 @@ export class RunnerManager implements AgentRunner {
   ): Promise<RunResult> {
     const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
     const runner = this.getOrCreateRunner(channelId);
+    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
+    if (options?.sessionId) {
+      runner.setSessionId(options.sessionId);
+    }
     return runner.runStream(prompt, callbacks, options);
   }
 
@@ -169,6 +177,22 @@ export class RunnerManager implements AgentRunner {
       if (entry.runner.cancel()) {
         return true;
       }
+    }
+    return false;
+  }
+
+  /**
+   * 指定チャンネルのランナーを完全に破棄（/new用）
+   */
+  destroy(channelId: string): boolean {
+    const entry = this.pool.get(channelId);
+    if (entry) {
+      entry.runner.shutdown();
+      this.pool.delete(channelId);
+      console.log(
+        `[runner-manager] Destroyed runner for channel ${channelId} (pool: ${this.pool.size}/${this.maxProcesses})`
+      );
+      return true;
     }
     return false;
   }

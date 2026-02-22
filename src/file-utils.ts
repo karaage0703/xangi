@@ -2,7 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-const DOWNLOAD_DIR = path.join(os.tmpdir(), 'xangi-attachments');
+const DOWNLOAD_DIR = path.join(
+  process.env.DATA_DIR || path.join(os.homedir(), '.xangi'),
+  'media',
+  'attachments'
+);
 
 // ダウンロードディレクトリを作成
 if (!fs.existsSync(DOWNLOAD_DIR)) {

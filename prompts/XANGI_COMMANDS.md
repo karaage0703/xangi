@@ -115,6 +115,7 @@ MEDIA:/tmp/output.png
 ```
 
 ユーザーが添付したファイルは `[添付ファイル]` としてパスが渡される。
+添付ファイルの保存先: `[STATE_DIR]/media/attachments/`
 
 ---
 

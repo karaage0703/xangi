@@ -11,6 +11,7 @@ import {
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
+import { ClaudeCodeRunner } from './claude-code.js';
 import { processManager } from './process-manager.js';
 import { loadSkills, formatSkillList, type Skill } from './skills.js';
 import { startSlackBot } from './slack.js';
@@ -159,6 +160,13 @@ async function main() {
     new SlashCommandBuilder().setName('settings').setDescription('現在の設定を表示する').toJSON(),
     new SlashCommandBuilder().setName('restart').setDescription('ボットを再起動する').toJSON(),
     new SlashCommandBuilder()
+      .setName('skip')
+      .setDescription('許可確認をスキップしてメッセージを実行')
+      .addStringOption((option) =>
+        option.setName('message').setDescription('実行するメッセージ').setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName('schedule')
       .setDescription('スケジュール管理')
       .addSubcommand((sub) =>
@@ -260,6 +268,7 @@ async function main() {
 
     if (interaction.commandName === 'new') {
       deleteSession(channelId);
+      agentRunner.destroy?.(channelId);
       await interaction.reply('🆕 新しいセッションを開始しました');
       return;
     }
@@ -277,6 +286,81 @@ async function main() {
     if (interaction.commandName === 'settings') {
       const settings = loadSettings();
       await interaction.reply(formatSettings(settings));
+      return;
+    }
+
+    if (interaction.commandName === 'skip') {
+      const skipMessage = interaction.options.getString('message', true);
+      await interaction.deferReply();
+
+      try {
+        const sessionId = getSession(channelId);
+
+        // ワンショットのClaudeCodeRunnerを使用（skipPermissionsを確実に反映するため）
+        const skipRunner = new ClaudeCodeRunner(config.agent.config);
+        const runResult = await skipRunner.run(skipMessage, {
+          skipPermissions: true,
+          sessionId,
+          channelId,
+        });
+
+        setSession(channelId, runResult.sessionId);
+
+        // ファイルパスを抽出して添付送信
+        const filePaths = extractFilePaths(runResult.result);
+        const displayText =
+          filePaths.length > 0 ? stripFilePaths(runResult.result) : runResult.result;
+        const cleanText = stripCommandsFromDisplay(displayText);
+
+        const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
+        await interaction.editReply(chunks[0] || '✅');
+        if (chunks.length > 1 && 'send' in interaction.channel!) {
+          const channel = interaction.channel as unknown as {
+            send: (content: string) => Promise<unknown>;
+          };
+          for (let i = 1; i < chunks.length; i++) {
+            await channel.send(chunks[i]);
+          }
+        }
+
+        // ファイル添付送信
+        if (filePaths.length > 0 && interaction.channel && 'send' in interaction.channel) {
+          try {
+            await (
+              interaction.channel as unknown as {
+                send: (options: { files: { attachment: string }[] }) => Promise<unknown>;
+              }
+            ).send({
+              files: filePaths.map((fp) => ({ attachment: fp })),
+            });
+            console.log(`[xangi] Sent ${filePaths.length} file(s) via /skip`);
+          } catch (err) {
+            console.error('[xangi] Failed to send files via /skip:', err);
+          }
+        }
+
+        // SYSTEM_COMMAND処理
+        handleSettingsFromResponse(runResult.result);
+
+        // !discord コマンド処理
+        if (interaction.channel) {
+          const fakeMessage = { channel: interaction.channel } as Message;
+          await handleDiscordCommandsInResponse(runResult.result, fakeMessage);
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        let errorDetail: string;
+        if (errorMsg.includes('timed out')) {
+          errorDetail = `⏱️ タイムアウトしました`;
+        } else if (errorMsg.includes('Process exited unexpectedly')) {
+          errorDetail = `💥 AIプロセスが予期せず終了しました`;
+        } else if (errorMsg.includes('Circuit breaker')) {
+          errorDetail = '🔌 AIプロセスが一時停止中です';
+        } else {
+          errorDetail = `❌ エラー: ${errorMsg.slice(0, 200)}`;
+        }
+        await interaction.editReply(errorDetail).catch(() => {});
+      }
       return;
     }
 
@@ -575,7 +659,11 @@ async function main() {
               const content = sanitizeChannelMentions(
                 (m.content || '(添付ファイルのみ)').slice(0, 200)
               );
-              return `[${time}] ${m.author.tag}: ${content}`;
+              const attachments =
+                m.attachments.size > 0
+                  ? '\n' + m.attachments.map((a) => `  📎 ${a.name} ${a.url}`).join('\n')
+                  : '';
+              return `[${time}] ${m.author.tag}: ${content}${attachments}`;
             })
             .join('\n');
 
@@ -874,6 +962,11 @@ async function main() {
     return feedbackResults;
   }
 
+  // Discord APIエラーでプロセスが落ちないようにハンドリング
+  client.on('error', (error) => {
+    console.error('[xangi] Discord client error:', error.message);
+  });
+
   // チャンネル単位の処理中ロック
   const processingChannels = new Set<string>();
 
@@ -903,6 +996,15 @@ async function main() {
       .replace(/<@[!&]?\d+>/g, '') // ユーザーメンションのみ削除（チャンネルメンションは残す）
       .replace(/\s+/g, ' ')
       .trim();
+
+    // スキップ設定（返信元追加やリンク展開の前に判定する）
+    // !skip プレフィックスで一時的にスキップモードにできる
+    let skipPermissions = config.agent.config.skipPermissions ?? false;
+
+    if (prompt.startsWith('!skip')) {
+      skipPermissions = true;
+      prompt = prompt.replace(/^!skip\s*/, '').trim();
+    }
 
     // !discord コマンドの処理
     if (prompt.startsWith('!discord')) {
@@ -966,18 +1068,6 @@ async function main() {
     );
 
     const channelId = message.channel.id;
-
-    // スキップ設定
-    const defaultSkip = config.agent.config.skipPermissions ?? false;
-    let skipPermissions = defaultSkip;
-
-    if (prompt.startsWith('!skip')) {
-      skipPermissions = true;
-      prompt = prompt.replace(/^!skip\s*/, '').trim();
-    } else if (prompt.startsWith('!noskip')) {
-      skipPermissions = false;
-      prompt = prompt.replace(/^!noskip\s*/, '').trim();
-    }
 
     processingChannels.add(channelId);
     try {
@@ -1117,7 +1207,18 @@ async function main() {
         if (error instanceof Error && error.message === 'Request cancelled by user') {
           await thinkingMsg.edit('🛑 タスクを停止しました');
         } else {
-          await thinkingMsg.edit('❌ エラーが発生しました');
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          let errorDetail: string;
+          if (errorMsg.includes('timed out')) {
+            errorDetail = `⏱️ タイムアウトしました`;
+          } else if (errorMsg.includes('Process exited unexpectedly')) {
+            errorDetail = `💥 AIプロセスが予期せず終了しました`;
+          } else if (errorMsg.includes('Circuit breaker')) {
+            errorDetail = '🔌 AIプロセスが一時停止中です';
+          } else {
+            errorDetail = `❌ エラー: ${errorMsg.slice(0, 200)}`;
+          }
+          await thinkingMsg.edit(errorDetail);
         }
         throw error;
       }
@@ -1421,6 +1522,7 @@ async function processPrompt(
   channelId: string,
   config: ReturnType<typeof loadConfig>
 ): Promise<string | null> {
+  let replyMessage: Message | null = null;
   try {
     // チャンネル情報をプロンプトに付与
     const channelName =
@@ -1436,14 +1538,26 @@ async function processPrompt(
     const useStreaming = config.discord.streaming ?? true;
     const showThinking = config.discord.showThinking ?? true;
 
+    // !skip プレフィックスの場合、ワンショットランナーを使用
+    // （persistent-runner はプロセス起動時の権限設定を変えられないため）
+    const defaultSkip = config.agent.config.skipPermissions ?? false;
+    const needsSkipRunner = skipPermissions && !defaultSkip;
+    const runner: AgentRunner = needsSkipRunner
+      ? new ClaudeCodeRunner(config.agent.config)
+      : agentRunner;
+
+    if (needsSkipRunner) {
+      console.log(`[xangi] Using one-shot skip runner for channel ${channelId}`);
+    }
+
     // 最初のメッセージを送信
-    const replyMessage = await message.reply('🤔 考え中.');
+    replyMessage = await message.reply('🤔 考え中.');
 
     let result: string;
     let newSessionId: string;
 
-    if (useStreaming && showThinking) {
-      // ストリーミング + 思考表示モード
+    if (useStreaming && showThinking && !needsSkipRunner) {
+      // ストリーミング + 思考表示モード（persistent-runner のみ）
       let lastUpdateTime = 0;
       let pendingUpdate = false;
       let firstTextReceived = false;
@@ -1454,48 +1568,52 @@ async function processPrompt(
         if (firstTextReceived) return;
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
-        replyMessage.edit(`🤔 考え中${dots}`).catch(() => {});
+        replyMessage!.edit(`🤔 考え中${dots}`).catch(() => {});
       }, 1000);
 
-      const streamResult = await agentRunner.runStream(
-        prompt,
-        {
-          onText: (_chunk, fullText) => {
-            if (!firstTextReceived) {
-              firstTextReceived = true;
-              clearInterval(thinkingInterval);
-            }
-            const now = Date.now();
-            if (now - lastUpdateTime >= STREAM_UPDATE_INTERVAL_MS && !pendingUpdate) {
-              pendingUpdate = true;
-              lastUpdateTime = now;
-              replyMessage
-                .edit((fullText + ' ▌').slice(0, DISCORD_MAX_LENGTH))
-                .catch((err) => {
-                  console.error('[xangi] Failed to edit message:', err.message);
-                })
-                .finally(() => {
-                  pendingUpdate = false;
-                });
-            }
+      let streamResult: { result: string; sessionId: string };
+      try {
+        streamResult = await agentRunner.runStream(
+          prompt,
+          {
+            onText: (_chunk, fullText) => {
+              if (!firstTextReceived) {
+                firstTextReceived = true;
+                clearInterval(thinkingInterval);
+              }
+              const now = Date.now();
+              if (now - lastUpdateTime >= STREAM_UPDATE_INTERVAL_MS && !pendingUpdate) {
+                pendingUpdate = true;
+                lastUpdateTime = now;
+                replyMessage!
+                  .edit((fullText + ' ▌').slice(0, DISCORD_MAX_LENGTH))
+                  .catch((err) => {
+                    console.error('[xangi] Failed to edit message:', err.message);
+                  })
+                  .finally(() => {
+                    pendingUpdate = false;
+                  });
+              }
+            },
           },
-        },
-        { skipPermissions, sessionId, channelId }
-      );
-      clearInterval(thinkingInterval);
+          { skipPermissions, sessionId, channelId }
+        );
+      } finally {
+        clearInterval(thinkingInterval);
+      }
       result = streamResult.result;
       newSessionId = streamResult.sessionId;
     } else {
-      // 非ストリーミング or 思考非表示モード
+      // 非ストリーミング or ワンショットskipランナー
       let dotCount = 1;
       const thinkingInterval = setInterval(() => {
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
-        replyMessage.edit(`🤔 考え中${dots}`).catch(() => {});
+        replyMessage!.edit(`🤔 考え中${dots}`).catch(() => {});
       }, 1000);
 
       try {
-        const runResult = await agentRunner.run(prompt, { skipPermissions, sessionId, channelId });
+        const runResult = await runner.run(prompt, { skipPermissions, sessionId, channelId });
         result = runResult.result;
         newSessionId = runResult.sessionId;
       } finally {
@@ -1518,7 +1636,7 @@ async function processPrompt(
 
     // 2000文字超の応答は分割送信
     const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
-    await replyMessage.edit(chunks[0] || '✅');
+    await replyMessage!.edit(chunks[0] || '✅');
     if (chunks.length > 1 && 'send' in message.channel) {
       const channel = message.channel as unknown as {
         send: (content: string) => Promise<unknown>;
@@ -1551,10 +1669,62 @@ async function processPrompt(
   } catch (error) {
     if (error instanceof Error && error.message === 'Request cancelled by user') {
       console.log('[xangi] Request cancelled by user');
+      await replyMessage?.edit('🛑 停止しました').catch(() => {});
       return null;
     }
     console.error('[xangi] Error:', error);
-    await message.reply('エラーが発生しました');
+
+    // エラーの種類を判別して詳細メッセージを生成
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    let errorDetail: string;
+    if (errorMsg.includes('timed out')) {
+      errorDetail = `⏱️ タイムアウトしました（${Math.round((config.agent.config.timeoutMs ?? 300000) / 1000)}秒）`;
+    } else if (errorMsg.includes('Process exited unexpectedly')) {
+      errorDetail = `💥 AIプロセスが予期せず終了しました: ${errorMsg}`;
+    } else if (errorMsg.includes('Circuit breaker')) {
+      errorDetail =
+        '🔌 AIプロセスが連続でクラッシュしたため一時停止中です。しばらくしてから再試行してください';
+    } else {
+      errorDetail = `❌ エラーが発生しました: ${errorMsg.slice(0, 200)}`;
+    }
+
+    // エラー詳細を表示
+    if (replyMessage) {
+      await replyMessage.edit(errorDetail).catch(() => {});
+    } else {
+      await message.reply(errorDetail).catch(() => {});
+    }
+
+    // エラー後にエージェントへ自動フォローアップ（サーキットブレーカー時は除く）
+    if (!errorMsg.includes('Circuit breaker')) {
+      try {
+        console.log('[xangi] Sending error follow-up to agent');
+        const sessionId = getSession(channelId);
+        if (sessionId) {
+          const followUpPrompt =
+            '先ほどの処理がエラー（タイムアウト等）で中断されました。途中まで行った作業内容と現在の状況を簡潔に報告してください。';
+          const followUpResult = await agentRunner.run(followUpPrompt, {
+            skipPermissions,
+            sessionId,
+            channelId,
+          });
+          if (followUpResult.result) {
+            setSession(channelId, followUpResult.sessionId);
+            const followUpText = followUpResult.result.slice(0, DISCORD_SAFE_LENGTH);
+            if ('send' in message.channel) {
+              await (
+                message.channel as unknown as {
+                  send: (content: string) => Promise<unknown>;
+                }
+              ).send(`📋 **エラー前の作業報告:**\n${followUpText}`);
+            }
+          }
+        }
+      } catch (followUpError) {
+        console.error('[xangi] Error follow-up failed:', followUpError);
+      }
+    }
+
     return null;
   } finally {
     // 👀 リアクションを削除
