@@ -1,6 +1,13 @@
 import { PersistentRunner } from './persistent-runner.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import type { AgentConfig } from './config.js';
+import {
+  getChannelModelConfig,
+  setChannelModelConfig,
+  deleteChannelModelConfig,
+  isOpusModel,
+  type ChannelModelConfig,
+} from './channel-models.js';
 
 /**
  * プール内のランナー情報
@@ -8,6 +15,8 @@ import type { AgentConfig } from './config.js';
 interface PoolEntry {
   runner: PersistentRunner;
   lastUsed: number;
+  model?: string;
+  effort?: string;
 }
 
 /**
@@ -48,13 +57,37 @@ export class RunnerManager implements AgentRunner {
   }
 
   /**
+   * Resolve the effective model and effort for a channel
+   */
+  private resolveChannelConfig(channelId: string): { model?: string; effort?: string } {
+    const channelConfig = getChannelModelConfig(channelId);
+    const model = channelConfig?.model ?? this.agentConfig.model;
+    // effort is only applied if the effective model is Opus
+    const rawEffort = channelConfig?.effort ?? this.agentConfig.effort;
+    const effort = isOpusModel(model) ? rawEffort : undefined;
+    return { model, effort };
+  }
+
+  /**
    * チャンネルに対応する PersistentRunner を取得（なければ作成）
    */
   private getOrCreateRunner(channelId: string): PersistentRunner {
+    const { model, effort } = this.resolveChannelConfig(channelId);
     const entry = this.pool.get(channelId);
+
     if (entry) {
-      entry.lastUsed = Date.now();
-      return entry.runner;
+      // Check if model/effort changed — if so, shutdown and recreate
+      if (entry.model !== model || entry.effort !== effort) {
+        console.log(
+          `[runner-manager] Config changed for channel ${channelId}: ` +
+            `${entry.model}/${entry.effort} -> ${model}/${effort}. Recreating runner.`
+        );
+        entry.runner.shutdown();
+        this.pool.delete(channelId);
+      } else {
+        entry.lastUsed = Date.now();
+        return entry.runner;
+      }
     }
 
     // 上限チェック → LRU eviction
@@ -62,18 +95,58 @@ export class RunnerManager implements AgentRunner {
       this.evictLRU();
     }
 
-    // 新しい PersistentRunner を作成
-    const runner = new PersistentRunner(this.agentConfig);
+    // 新しい PersistentRunner を作成（チャンネル固有設定をマージ）
+    const runner = new PersistentRunner({
+      ...this.agentConfig,
+      model,
+      effort,
+    });
     this.pool.set(channelId, {
       runner,
       lastUsed: Date.now(),
+      model,
+      effort,
     });
 
     console.log(
-      `[runner-manager] Created runner for channel ${channelId} (pool: ${this.pool.size}/${this.maxProcesses})`
+      `[runner-manager] Created runner for channel ${channelId} ` +
+        `(model: ${model || 'default'}, effort: ${effort || 'none'}, pool: ${this.pool.size}/${this.maxProcesses})`
     );
 
     return runner;
+  }
+
+  /**
+   * Update channel model config and shutdown existing runner
+   * The runner will be recreated with the new config on next request.
+   */
+  updateChannelConfig(channelId: string, config: ChannelModelConfig): void {
+    setChannelModelConfig(channelId, config);
+
+    // Shutdown existing runner so it gets recreated with new config
+    const entry = this.pool.get(channelId);
+    if (entry) {
+      console.log(`[runner-manager] Shutting down runner for channel ${channelId} (config update)`);
+      entry.runner.shutdown();
+      this.pool.delete(channelId);
+    }
+  }
+
+  /**
+   * Reset channel model config to default
+   */
+  resetChannelConfig(channelId: string): boolean {
+    const deleted = deleteChannelModelConfig(channelId);
+
+    // Shutdown existing runner so it gets recreated with default config
+    const entry = this.pool.get(channelId);
+    if (entry) {
+      console.log(`[runner-manager] Shutting down runner for channel ${channelId} (config reset)`);
+      entry.runner.shutdown();
+      this.pool.delete(channelId);
+    }
+
+    return deleted;
   }
 
   /**

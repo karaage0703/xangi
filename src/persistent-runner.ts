@@ -39,6 +39,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private static readonly CRASH_WINDOW_MS = 60000; // 1分以内に3回クラッシュで停止
 
   private model?: string;
+  private effort?: string;
   private timeoutMs: number;
   private workdir?: string;
   private skipPermissions: boolean;
@@ -47,6 +48,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
   constructor(options?: {
     model?: string;
+    effort?: string;
     timeoutMs?: number;
     workdir?: string;
     skipPermissions?: boolean;
@@ -54,6 +56,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   }) {
     super();
     this.model = options?.model;
+    this.effort = options?.effort;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
@@ -97,6 +100,10 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    if (this.effort) {
+      args.push('--effort', this.effort);
     }
 
     if (this.chrome) {

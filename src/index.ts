@@ -31,6 +31,13 @@ import {
   type ScheduleType,
 } from './scheduler.js';
 import { initSessions, getSession, setSession, deleteSession } from './sessions.js';
+import {
+  initChannelModels,
+  getChannelModelConfig,
+  getAllChannelModelConfigs,
+  isOpusModel,
+} from './channel-models.js';
+import { RunnerManager } from './runner-manager.js';
 import { join } from 'path';
 
 /** メッセージを指定文字数で分割（カスタムセパレータ対応、デフォルトは行単位） */
@@ -140,6 +147,9 @@ async function main() {
   // セッション永続化を初期化
   initSessions(dataDir);
 
+  // チャンネルモデル設定を初期化
+  initChannelModels(dataDir);
+
   // スラッシュコマンド定義
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
@@ -188,6 +198,38 @@ async function main() {
           .addStringOption((opt) =>
             opt.setName('id').setDescription('スケジュールID').setRequired(true)
           )
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('model')
+      .setDescription('チャンネルごとのモデル設定')
+      .addSubcommand((sub) =>
+        sub
+          .setName('set')
+          .setDescription('このチャンネルのモデルを設定')
+          .addStringOption((opt) =>
+            opt
+              .setName('model')
+              .setDescription('モデル名 (sonnet, opus, haiku)')
+              .setRequired(true)
+              .setAutocomplete(true)
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName('effort')
+              .setDescription('Thinking effort (Opus only: low, medium, high)')
+              .setRequired(false)
+              .setAutocomplete(true)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub.setName('show').setDescription('このチャンネルの現在のモデル設定を表示')
+      )
+      .addSubcommand((sub) =>
+        sub.setName('reset').setDescription('このチャンネルのモデル設定をデフォルトに戻す')
+      )
+      .addSubcommand((sub) =>
+        sub.setName('list').setDescription('全チャンネルのモデル設定一覧を表示')
       )
       .toJSON(),
   ];
@@ -244,6 +286,10 @@ async function main() {
   client.on(Events.InteractionCreate, async (interaction) => {
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
+      if (interaction.commandName === 'model') {
+        await handleModelAutocomplete(interaction);
+        return;
+      }
       await handleAutocomplete(interaction, skills);
       return;
     }
@@ -293,6 +339,11 @@ async function main() {
 
     if (interaction.commandName === 'schedule') {
       await handleScheduleCommand(interaction, scheduler, config.scheduler);
+      return;
+    }
+
+    if (interaction.commandName === 'model') {
+      await handleModelCommand(interaction, agentRunner, config);
       return;
     }
 
@@ -1658,6 +1709,137 @@ function handleSettingsFromResponse(text: string): void {
         saveSettings({ autoRestart: enabled });
         console.log(`[xangi] autoRestart ${enabled ? 'enabled' : 'disabled'} by agent`);
       }
+    }
+  }
+}
+
+// ─── Model Command Handlers ─────────────────────────────────────────
+
+const MODEL_CHOICES = ['sonnet', 'opus', 'haiku'];
+const EFFORT_CHOICES = ['low', 'medium', 'high'];
+
+async function handleModelAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const focused = interaction.options.getFocused(true);
+  const value = focused.value.toLowerCase();
+
+  if (focused.name === 'model') {
+    const filtered = MODEL_CHOICES.filter((m) => m.includes(value)).map((m) => ({
+      name: m,
+      value: m,
+    }));
+    await interaction.respond(filtered);
+  } else if (focused.name === 'effort') {
+    const filtered = EFFORT_CHOICES.filter((e) => e.includes(value)).map((e) => ({
+      name: e,
+      value: e,
+    }));
+    await interaction.respond(filtered);
+  }
+}
+
+async function handleModelCommand(
+  interaction: ChatInputCommandInteraction,
+  agentRunner: AgentRunner,
+  config: ReturnType<typeof loadConfig>
+): Promise<void> {
+  const subcommand = interaction.options.getSubcommand();
+  const channelId = interaction.channelId;
+
+  switch (subcommand) {
+    case 'set': {
+      const model = interaction.options.getString('model', true);
+      const effort = interaction.options.getString('effort') || undefined;
+
+      // Validate effort: only allowed for Opus models
+      if (effort && !isOpusModel(model)) {
+        await interaction.reply({
+          content: `effort オプションは Opus 系モデルでのみ使用できます（指定: ${model}）`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Validate effort value
+      if (effort && !EFFORT_CHOICES.includes(effort)) {
+        await interaction.reply({
+          content: `無効な effort 値です: ${effort}（有効: ${EFFORT_CHOICES.join(', ')}）`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (!(agentRunner instanceof RunnerManager)) {
+        await interaction.reply({
+          content: 'モデル切り替えは persistent モードでのみ利用可能です',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const channelConfig = effort ? { model, effort } : { model };
+      agentRunner.updateChannelConfig(channelId, channelConfig);
+
+      const effortLabel = effort ? ` (effort: ${effort})` : '';
+      await interaction.reply(`モデルを ${model}${effortLabel} に変更しました`);
+      return;
+    }
+
+    case 'show': {
+      const channelConfig = getChannelModelConfig(channelId);
+      const defaultModel = config.agent.config.model || '(未設定)';
+      const defaultEffort = config.agent.config.effort;
+
+      if (channelConfig) {
+        const model = channelConfig.model || defaultModel;
+        const effort = channelConfig.effort;
+        const effortLabel = effort ? ` / effort: ${effort}` : '';
+        await interaction.reply(
+          `このチャンネルのモデル設定: ${model}${effortLabel}\nデフォルト: ${defaultModel}${defaultEffort ? ` / effort: ${defaultEffort}` : ''}`
+        );
+      } else {
+        await interaction.reply(
+          `このチャンネルにはカスタム設定がありません\nデフォルト: ${defaultModel}${defaultEffort ? ` / effort: ${defaultEffort}` : ''}`
+        );
+      }
+      return;
+    }
+
+    case 'reset': {
+      if (!(agentRunner instanceof RunnerManager)) {
+        await interaction.reply({
+          content: 'モデル切り替えは persistent モードでのみ利用可能です',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const deleted = agentRunner.resetChannelConfig(channelId);
+      if (deleted) {
+        await interaction.reply('このチャンネルのモデル設定をデフォルトに戻しました');
+      } else {
+        await interaction.reply({
+          content: 'このチャンネルにはカスタム設定がありません',
+          ephemeral: true,
+        });
+      }
+      return;
+    }
+
+    case 'list': {
+      const allConfigs = getAllChannelModelConfigs();
+      if (allConfigs.size === 0) {
+        await interaction.reply('チャンネル固有のモデル設定はありません');
+        return;
+      }
+
+      const lines: string[] = [];
+      for (const [chId, cfg] of allConfigs) {
+        const model = cfg.model || '(default)';
+        const effort = cfg.effort ? ` / effort: ${cfg.effort}` : '';
+        lines.push(`- <#${chId}>: ${model}${effort}`);
+      }
+      await interaction.reply(`チャンネルモデル設定一覧:\n${lines.join('\n')}`);
+      return;
     }
   }
 }

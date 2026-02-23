@@ -4,6 +4,8 @@ export type AgentBackend = 'claude-code' | 'codex' | 'gemini';
 
 export interface AgentConfig {
   model?: string;
+  /** Thinking effort level (Opus only): "low" | "medium" | "high" */
+  effort?: string;
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
@@ -72,6 +74,7 @@ export function loadConfig(): Config {
 
   const agentConfig: AgentConfig = {
     model: process.env.AGENT_MODEL || undefined,
+    effort: process.env.AGENT_EFFORT || undefined,
     timeoutMs: process.env.TIMEOUT_MS ? parseInt(process.env.TIMEOUT_MS, 10) : DEFAULT_TIMEOUT_MS,
     workdir: process.env.WORKSPACE_PATH || undefined,
     skipPermissions: process.env.SKIP_PERMISSIONS === 'true',

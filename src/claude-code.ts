@@ -7,6 +7,7 @@ import { buildSystemPrompt } from './base-runner.js';
 
 export interface ClaudeCodeOptions {
   model?: string;
+  effort?: string;
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
@@ -28,6 +29,7 @@ interface ClaudeCodeResponse {
  */
 export class ClaudeCodeRunner {
   private model?: string;
+  private effort?: string;
   private timeoutMs: number;
   private workdir?: string;
   private skipPermissions: boolean;
@@ -36,6 +38,7 @@ export class ClaudeCodeRunner {
 
   constructor(options?: ClaudeCodeOptions) {
     this.model = options?.model;
+    this.effort = options?.effort;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS; // デフォルト5分
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
@@ -58,6 +61,10 @@ export class ClaudeCodeRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    if (this.effort) {
+      args.push('--effort', this.effort);
     }
 
     if (this.chrome) {
@@ -167,6 +174,10 @@ export class ClaudeCodeRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    if (this.effort) {
+      args.push('--effort', this.effort);
     }
 
     if (this.chrome) {

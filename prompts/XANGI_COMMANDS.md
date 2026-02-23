@@ -166,6 +166,34 @@ MEDIA:/tmp/output.png
 !schedule add <#1469606785672417383> 毎日 9:00 おはよう
 ```
 
+## チャンネルモデル設定（スラッシュコマンド）
+
+`/model` コマンドで、チャンネルごとに異なる AI モデルと thinking effort を設定できる。
+
+### コマンド
+
+- `/model set <model> [effort]` — このチャンネルのモデル（+ effort）を設定
+- `/model show` — このチャンネルの現在の設定を表示
+- `/model reset` — このチャンネルの設定をデフォルトに戻す
+- `/model list` — 全チャンネルの設定一覧を表示
+
+### モデル名
+
+- `sonnet` — Claude Sonnet
+- `opus` — Claude Opus
+- `haiku` — Claude Haiku
+
+### effort（Opus のみ）
+
+- `low` / `medium` / `high`
+- effort は Opus 系モデルでのみ有効。Sonnet / Haiku では使用不可。
+
+### 設定ファイル
+
+`.xangi/channel-models.json` に永続化される。サービス再起動後も設定は維持される。
+
+---
+
 ## 自動展開機能（読み取り専用）
 
 これらは xangi が自動で処理するので、コマンド不要：
