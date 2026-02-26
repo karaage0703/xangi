@@ -8,6 +8,8 @@ import {
   ChatInputCommandInteraction,
   Message,
   AutocompleteInteraction,
+  ChannelType,
+  ForumChannel,
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
@@ -574,6 +576,101 @@ async function main() {
       }
     }
 
+    // !discord forum-send <#threadId> message (send to an existing forum thread)
+    const forumSendMatch = text.match(/^!discord\s+forum-send\s+<#(\d+)>\s+(.+)$/s);
+    if (forumSendMatch) {
+      const [, threadId, content] = forumSendMatch;
+      try {
+        const thread = await client.channels.fetch(threadId);
+        if (thread && thread.isThread() && 'send' in thread) {
+          const chunks = chunkDiscordMessage(content);
+          for (const chunk of chunks) {
+            await thread.send({
+              content: chunk,
+              allowedMentions: { parse: [] },
+            });
+          }
+          const threadName = thread.name || 'unknown';
+          console.log(
+            `[xangi] Sent message to forum thread "${threadName}" (${chunks.length} chunk(s))`
+          );
+          if (sourceMessage && 'send' in sourceMessage.channel) {
+            await (
+              sourceMessage.channel as {
+                send: (content: string) => Promise<unknown>;
+              }
+            ).send(`フォーラムスレッド「${threadName}」に送信しました`);
+          }
+          return { handled: true };
+        } else {
+          const errMsg = '❌ 指定されたIDはスレッドではありません';
+          if (sourceMessage && 'send' in sourceMessage.channel) {
+            await (sourceMessage.channel as { send: (content: string) => Promise<unknown> }).send(
+              errMsg
+            );
+          }
+          return { handled: true };
+        }
+      } catch (err) {
+        console.error(`[xangi] Failed to send message to forum thread: ${threadId}`, err);
+        if (sourceMessage && 'send' in sourceMessage.channel) {
+          await (
+            sourceMessage.channel as {
+              send: (content: string) => Promise<unknown>;
+            }
+          ).send('フォーラムスレッドへの送信に失敗しました');
+        }
+        return { handled: true };
+      }
+    }
+
+    // !discord forum-create <#forumChannelId> title\nbody (create a new forum thread)
+    const forumCreateMatch = text.match(/^!discord\s+forum-create\s+<#(\d+)>\s+(.+)$/s);
+    if (forumCreateMatch) {
+      const [, forumChannelId, rest] = forumCreateMatch;
+      // First line = title, remaining lines = body
+      const lines = rest.split('\n');
+      const title = lines[0].trim();
+      const body = lines.slice(1).join('\n').trim() || title;
+      try {
+        const channel = await client.channels.fetch(forumChannelId);
+        if (channel && channel.type === ChannelType.GuildForum) {
+          const forumChannel = channel as ForumChannel;
+          await forumChannel.threads.create({
+            name: title,
+            message: { content: body },
+          });
+          console.log(`[xangi] Created forum thread "${title}" in ${forumChannel.name}`);
+          if (sourceMessage && 'send' in sourceMessage.channel) {
+            await (
+              sourceMessage.channel as {
+                send: (content: string) => Promise<unknown>;
+              }
+            ).send(`フォーラムスレッド「${title}」を作成しました`);
+          }
+          return { handled: true };
+        } else {
+          const errMsg = '❌ 指定されたIDはフォーラムチャンネルではありません';
+          if (sourceMessage && 'send' in sourceMessage.channel) {
+            await (sourceMessage.channel as { send: (content: string) => Promise<unknown> }).send(
+              errMsg
+            );
+          }
+          return { handled: true };
+        }
+      } catch (err) {
+        console.error(`[xangi] Failed to create forum thread in channel: ${forumChannelId}`, err);
+        if (sourceMessage && 'send' in sourceMessage.channel) {
+          await (
+            sourceMessage.channel as {
+              send: (content: string) => Promise<unknown>;
+            }
+          ).send('フォーラムスレッドの作成に失敗しました');
+        }
+        return { handled: true };
+      }
+    }
+
     // !discord channels
     if (text.match(/^!discord\s+channels$/)) {
       if (!sourceMessage) {
@@ -585,11 +682,18 @@ async function main() {
       try {
         const guild = sourceMessage.guild;
         if (guild) {
-          const channels = guild.channels.cache
-            .filter((c) => c.type === 0) // テキストチャンネルのみ
+          const textChannels = guild.channels.cache
+            .filter((c) => c.type === ChannelType.GuildText)
             .map((c) => `- #${c.name} (<#${c.id}>)`)
             .join('\n');
-          return { handled: true, response: `📺 チャンネル一覧:\n${channels}` };
+          const forumChannels = guild.channels.cache
+            .filter((c) => c.type === ChannelType.GuildForum)
+            .map((c) => `- 📋 #${c.name} (<#${c.id}>) [フォーラム]`)
+            .join('\n');
+          const channelList = forumChannels
+            ? `📺 テキストチャンネル:\n${textChannels}\n\n📋 フォーラムチャンネル:\n${forumChannels}`
+            : `📺 チャンネル一覧:\n${textChannels}`;
+          return { handled: true, response: channelList };
         }
       } catch (err) {
         console.error(`[xangi] Failed to list channels`, err);
@@ -815,12 +919,15 @@ async function main() {
 
       const trimmed = line.trim();
 
-      // !discord send の複数行対応
-      const sendMatch = trimmed.match(/^!discord\s+send\s+<#(\d+)>\s*(.*)/);
+      // !discord send / forum-send / forum-create の複数行対応
+      const sendMatch = trimmed.match(
+        /^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/
+      );
       if (sendMatch) {
-        const firstLineContent = sendMatch[2] ?? '';
+        const [, cmdType, channelId, firstLineContent] = sendMatch;
+        const restContent = firstLineContent ?? '';
 
-        if (firstLineContent.trim() === '') {
+        if (restContent.trim() === '') {
           // 本文が空 → 次の !discord / !schedule コマンド行まで吸収（暗黙マルチライン）
           const bodyLines: string[] = [];
           let inBodyCodeBlock = false;
@@ -842,7 +949,7 @@ async function main() {
           }
           const fullMessage = bodyLines.join('\n').trim();
           if (fullMessage) {
-            const commandText = `!discord send <#${sendMatch[1]}> ${fullMessage}`;
+            const commandText = `!discord ${cmdType} <#${channelId}> ${fullMessage}`;
             console.log(
               `[xangi] Processing discord command from response: ${commandText.slice(0, 50)}...`
             );
@@ -870,7 +977,7 @@ async function main() {
           continue; // i は既に次のコマンド行を指している
         } else {
           // 1行目にテキストあり → 続く行も吸収（次のコマンド行まで）
-          const bodyLines: string[] = [firstLineContent];
+          const bodyLines: string[] = [restContent];
           let inBodyCodeBlock2 = false;
           i++;
           while (i < lines.length) {
@@ -888,7 +995,7 @@ async function main() {
             i++;
           }
           const fullMessage = bodyLines.join('\n').trimEnd();
-          const commandText = `!discord send <#${sendMatch[1]}> ${fullMessage}`;
+          const commandText = `!discord ${cmdType} <#${channelId}> ${fullMessage}`;
           console.log(
             `[xangi] Processing discord command from response: ${commandText.slice(0, 50)}...`
           );
@@ -1366,9 +1473,10 @@ function extractDiscordSendFromPrompt(text: string): {
     }
 
     const trimmed = line.trim();
-    const sendMatch = trimmed.match(/^!discord\s+send\s+<#(\d+)>\s*(.*)/);
+    const sendMatch = trimmed.match(/^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/);
     if (sendMatch) {
-      const firstLineContent = sendMatch[2] ?? '';
+      const [, cmdType, chId] = sendMatch;
+      const firstLineContent = sendMatch[3] ?? '';
       if (firstLineContent.trim() === '') {
         // 暗黙マルチライン: 次のコマンド行まで吸収
         const bodyLines: string[] = [];
@@ -1390,7 +1498,7 @@ function extractDiscordSendFromPrompt(text: string): {
         }
         const fullMessage = bodyLines.join('\n').trim();
         if (fullMessage) {
-          commands.push(`!discord send <#${sendMatch[1]}> ${fullMessage}`);
+          commands.push(`!discord ${cmdType} <#${chId}> ${fullMessage}`);
         }
         continue;
       } else {
@@ -1413,7 +1521,7 @@ function extractDiscordSendFromPrompt(text: string): {
           i++;
         }
         const fullMessage2 = bodyLines2.join('\n').trimEnd();
-        commands.push(`!discord send <#${sendMatch[1]}> ${fullMessage2}`);
+        commands.push(`!discord ${cmdType} <#${chId}> ${fullMessage2}`);
         continue;
       }
     }
@@ -1460,8 +1568,8 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    // !discord send の複数行対応: コマンド行と続く行を除去
-    const sendMatch = trimmed.match(/^!discord\s+send\s+<#\d+>\s*(.*)/);
+    // !discord send/forum-send/forum-create の複数行対応: コマンド行と続く行を除去
+    const sendMatch = trimmed.match(/^!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
     if (sendMatch) {
       // 続く行も除去（次のコマンド行まで）
       i++;
