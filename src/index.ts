@@ -90,6 +90,9 @@ function getTypeLabel(
   }
 }
 
+// チャンネルごとの最後に送信したボットメッセージID
+const lastSentMessageIds = new Map<string, string>();
+
 async function main() {
   const config = loadConfig();
 
@@ -663,7 +666,7 @@ async function main() {
                 m.attachments.size > 0
                   ? '\n' + m.attachments.map((a) => `  📎 ${a.name} ${a.url}`).join('\n')
                   : '';
-              return `[${time}] ${m.author.tag}: ${content}${attachments}`;
+              return `[${time}] (ID:${m.id}) ${m.author.tag}: ${content}${attachments}`;
             })
             .join('\n');
 
@@ -799,6 +802,97 @@ async function main() {
       }
     }
 
+    // !discord edit <messageId or link> <newContent>
+    const editMatch = text.match(/^!discord\s+edit\s+(\S+)\s+([\s\S]+)$/);
+    if (editMatch) {
+      const arg = editMatch[1].trim();
+      const newContent = editMatch[2].trim();
+
+      if (!newContent) {
+        return {
+          handled: true,
+          feedback: true,
+          response: '❌ 編集後のメッセージ内容を指定してください',
+        };
+      }
+
+      try {
+        let messageId: string;
+        let targetChannelId: string | undefined;
+
+        if (arg === 'last') {
+          // 直前の自分のメッセージを編集
+          const currentChannelId = sourceMessage?.channel.id || fallbackChannelId;
+          if (!currentChannelId) {
+            return {
+              handled: true,
+              feedback: true,
+              response: '❌ チャンネルが特定できません',
+            };
+          }
+          const lastId = lastSentMessageIds.get(currentChannelId);
+          if (!lastId) {
+            return {
+              handled: true,
+              feedback: true,
+              response:
+                '❌ 直前のメッセージが見つかりません（このセッションでまだ送信していない可能性があります）',
+            };
+          }
+          messageId = lastId;
+        } else {
+          // メッセージリンクからチャンネルIDとメッセージIDを抽出
+          const linkMatch = arg.match(/discord\.com\/channels\/\d+\/(\d+)\/(\d+)/);
+          if (linkMatch) {
+            targetChannelId = linkMatch[1];
+            messageId = linkMatch[2];
+          } else if (/^\d+$/.test(arg)) {
+            messageId = arg;
+          } else {
+            return {
+              handled: true,
+              feedback: true,
+              response: '❌ 無効な形式です。メッセージID、リンク、または last を指定してください',
+            };
+          }
+        }
+
+        // リンクからチャンネルIDが取れた場合はそのチャンネルを使う、なければ現在のチャンネル
+        let channel;
+        if (targetChannelId) {
+          channel = await client.channels.fetch(targetChannelId);
+        } else if (sourceMessage) {
+          channel = sourceMessage.channel;
+        } else if (fallbackChannelId) {
+          channel = await client.channels.fetch(fallbackChannelId);
+        }
+
+        if (channel && 'messages' in channel) {
+          const msg = await channel.messages.fetch(messageId);
+          // 自分のメッセージのみ編集可能
+          if (msg.author.id !== client.user?.id) {
+            return {
+              handled: true,
+              feedback: true,
+              response: '❌ 自分のメッセージのみ編集できます',
+            };
+          }
+          await msg.edit(newContent);
+          const editedChannelId = targetChannelId || sourceMessage?.channel.id || fallbackChannelId;
+          console.log(`[xangi] Edited message ${messageId} in channel ${editedChannelId}`);
+          return { handled: true, feedback: true, response: '✏️ メッセージを編集しました' };
+        }
+        return {
+          handled: true,
+          feedback: true,
+          response: '❌ このチャンネルではメッセージを編集できません',
+        };
+      } catch (err) {
+        console.error(`[xangi] Failed to edit message:`, err);
+        return { handled: true, feedback: true, response: '❌ メッセージの編集に失敗しました' };
+      }
+    }
+
     return { handled: false };
   }
 
@@ -930,7 +1024,52 @@ async function main() {
         }
       }
 
-      // その他の !discord コマンド（channels, search, history）
+      // !discord edit の複数行対応
+      const editMatch = trimmed.match(/^!discord\s+edit\s+(\S+)\s*([\s\S]*)/);
+      if (editMatch) {
+        const editTarget = editMatch[1];
+        const firstLineContent = editMatch[2] ?? '';
+        const bodyLines: string[] = firstLineContent ? [firstLineContent] : [];
+        let inEditCodeBlock = false;
+        i++;
+        while (i < lines.length) {
+          const bodyLine = lines[i];
+          if (bodyLine.trim().startsWith('```')) {
+            inEditCodeBlock = !inEditCodeBlock;
+          }
+          if (
+            !inEditCodeBlock &&
+            (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
+          ) {
+            break;
+          }
+          bodyLines.push(bodyLine);
+          i++;
+        }
+        const fullContent = bodyLines.join('\n').trim();
+        if (fullContent) {
+          const commandText = `!discord edit ${editTarget} ${fullContent}`;
+          console.log(
+            `[xangi] Processing discord edit from response: ${commandText.slice(0, 50)}...`
+          );
+          const result = await handleDiscordCommand(commandText, sourceMessage, fallbackChannelId);
+          if (result.handled && result.response) {
+            if (result.feedback) {
+              feedbackResults.push(result.response);
+            } else if (sourceMessage) {
+              const channel = sourceMessage.channel;
+              if ('send' in channel && typeof (channel as { send?: unknown }).send === 'function') {
+                await (channel as { send: (content: string) => Promise<unknown> }).send(
+                  result.response
+                );
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+      // その他の !discord コマンド（channels, search, history, delete）
       if (trimmed.startsWith('!discord ')) {
         console.log(`[xangi] Processing discord command from response: ${trimmed.slice(0, 50)}...`);
         const result = await handleDiscordCommand(trimmed, sourceMessage, fallbackChannelId);
@@ -1187,6 +1326,10 @@ async function main() {
         // 2000文字超の応答は分割送信
         const textChunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
         await thinkingMsg.edit(textChunks[0] || '✅');
+        // 最後に送信したメッセージIDを記録（スケジューラー経由）
+        if ('id' in thinkingMsg) {
+          lastSentMessageIds.set(channelId, (thinkingMsg as { id: string }).id);
+        }
         if (textChunks.length > 1) {
           const ch = channel as { send: (content: string) => Promise<unknown> };
           for (let i = 1; i < textChunks.length; i++) {
@@ -1637,6 +1780,10 @@ async function processPrompt(
     // 2000文字超の応答は分割送信
     const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
     await replyMessage!.edit(chunks[0] || '✅');
+    // 最後に送信したメッセージIDを記録
+    if (replyMessage) {
+      lastSentMessageIds.set(message.channel.id, replyMessage.id);
+    }
     if (chunks.length > 1 && 'send' in message.channel) {
       const channel = message.channel as unknown as {
         send: (content: string) => Promise<unknown>;

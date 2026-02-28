@@ -123,6 +123,7 @@ AIがDiscord操作を実行するためのコマンドです。
 | `!discord search キーワード`           | 現在のチャンネルでメッセージ検索                              |
 | `!discord delete <メッセージID>`       | 指定メッセージを削除                                          |
 | `!discord delete <メッセージリンク>`   | リンク先のメッセージを削除（別チャンネルも可）                |
+| `!discord edit <ID/リンク/last> 内容`  | 自分のメッセージを編集（`last` で直前のメッセージ）           |
 
 ### 使用例
 
@@ -147,6 +148,12 @@ AIがDiscord操作を実行するためのコマンドです。
 
 # メッセージリンクで削除（別チャンネルのメッセージもOK）
 !discord delete https://discord.com/channels/111/222/333
+
+# 直前の自分のメッセージを編集
+!discord edit last 修正後の内容
+
+# メッセージIDを指定して編集
+!discord edit 123456789012345678 新しい内容
 ```
 
 ## 許可確認のスキップ

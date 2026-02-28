@@ -132,6 +132,18 @@ pm2 logs xangi     # ログ確認
 
 全ての環境変数は [設計ドキュメント](docs/design.md) を参照してください。
 
+## ワークスペース
+
+推奨ワークスペース: [ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace)
+
+スキル（メモ管理・日記・音声文字起こし・Notion連携など）がプリセットされたスターターキットです。xangi と組み合わせることで、チャットからスキルを呼び出して日常タスクを自動化できます。
+
+## 書籍
+
+📖 [生活に溶け込むAI — AIエージェントで作る、自分だけのアシスタント](https://karaage0703.booth.pm/items/8027277)
+
+xangi を使ったAIアシスタント構築のノウハウをまとめた書籍です。
+
 ## ドキュメント
 
 - [使い方ガイド](docs/usage.md) - 詳細な使い方
