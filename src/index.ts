@@ -1057,14 +1057,16 @@ async function main() {
 
     const isMentioned = message.mentions.has(client.user!);
     const isDM = !message.guild;
-    // Check both the channel ID and parent ID (for forum/thread channels)
-    const parentId = message.channel.isThread() ? message.channel.parentId : null;
     const isAutoReplyChannel =
-      (config.discord.autoReplyChannels?.includes(message.channel.id) ||
-        (parentId && config.discord.autoReplyChannels?.includes(parentId))) ??
-      false;
+      config.discord.autoReplyChannels?.includes(message.channel.id) ?? false;
+    // If the message is in a forum thread, check if the parent forum channel is in autoReplyChannels
+    const isAutoReplyForumThread =
+      !isAutoReplyChannel &&
+      message.channel.isThread() &&
+      message.channel.parentId != null &&
+      (config.discord.autoReplyChannels?.includes(message.channel.parentId) ?? false);
 
-    if (!isMentioned && !isDM && !isAutoReplyChannel) return;
+    if (!isMentioned && !isDM && !isAutoReplyChannel && !isAutoReplyForumThread) return;
 
     // 同じチャンネルで処理中なら無視（メンション時は除く）
     if (!isMentioned && processingChannels.has(message.channel.id)) {
