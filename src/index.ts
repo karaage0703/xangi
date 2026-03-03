@@ -885,6 +885,52 @@ async function main() {
       }
     }
 
+    // !discord topic <#channelOrThreadId> new title text
+    const topicMatch = text.match(/^!discord\s+topic\s+<#(\d+)>\s+(.+)$/s);
+    if (topicMatch) {
+      const [, targetId, newName] = topicMatch;
+      const trimmedName = newName.trim().split('\n')[0].trim(); // Use first line only
+
+      try {
+        const channel = await client.channels.fetch(targetId);
+
+        if (!channel) {
+          return { handled: true, feedback: true, response: '❌ チャンネルが見つかりません' };
+        }
+
+        if (channel.isThread()) {
+          await channel.edit({ name: trimmedName });
+          console.log(`[xangi] Updated thread name to "${trimmedName}" (${targetId})`);
+          return {
+            handled: true,
+            feedback: true,
+            response: `✅ スレッドタイトルを「${trimmedName}」に更新しました`,
+          };
+        }
+
+        if ('edit' in channel && 'name' in channel) {
+          await (channel as { edit: (opts: { name: string }) => Promise<unknown> }).edit({
+            name: trimmedName,
+          });
+          console.log(`[xangi] Updated channel name to "${trimmedName}" (${targetId})`);
+          return {
+            handled: true,
+            feedback: true,
+            response: `✅ チャンネル名を「${trimmedName}」に更新しました`,
+          };
+        }
+
+        return {
+          handled: true,
+          feedback: true,
+          response: '❌ このチャンネルの名前は変更できません',
+        };
+      } catch (err) {
+        console.error(`[xangi] Failed to update topic:`, err);
+        return { handled: true, feedback: true, response: '❌ タイトル更新に失敗しました' };
+      }
+    }
+
     return { handled: false };
   }
 
@@ -922,9 +968,9 @@ async function main() {
 
       const trimmed = line.trim();
 
-      // !discord send / forum-send / forum-create の複数行対応
+      // !discord send / forum-send / forum-create の複数行対応（行中でも検出）
       const sendMatch = trimmed.match(
-        /^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/
+        /!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/
       );
       if (sendMatch) {
         const [, cmdType, channelId, firstLineContent] = sendMatch;
@@ -1019,10 +1065,14 @@ async function main() {
         }
       }
 
-      // その他の !discord コマンド（channels, search, history）
-      if (trimmed.startsWith('!discord ')) {
-        console.log(`[xangi] Processing discord command from response: ${trimmed.slice(0, 50)}...`);
-        const result = await handleDiscordCommand(trimmed, sourceMessage, fallbackChannelId);
+      // その他の !discord コマンド（channels, search, history）（行中でも検出）
+      const otherDiscordIdx = trimmed.indexOf('!discord ');
+      if (otherDiscordIdx >= 0) {
+        const discordCmd = trimmed.slice(otherDiscordIdx);
+        console.log(
+          `[xangi] Processing discord command from response: ${discordCmd.slice(0, 50)}...`
+        );
+        const result = await handleDiscordCommand(discordCmd, sourceMessage, fallbackChannelId);
         if (result.handled && result.response) {
           if (result.feedback) {
             feedbackResults.push(result.response);
@@ -1037,12 +1087,22 @@ async function main() {
         }
       }
 
-      // !schedule コマンド（引数なしでもlist表示、sourceMessage必須）
-      if (sourceMessage && (trimmed === '!schedule' || trimmed.startsWith('!schedule '))) {
-        console.log(
-          `[xangi] Processing schedule command from response: ${trimmed.slice(0, 50)}...`
-        );
-        await executeScheduleFromResponse(trimmed, sourceMessage, scheduler, config.scheduler);
+      // !schedule コマンド（引数なしでもlist表示、sourceMessage必須）（行中でも検出）
+      const scheduleIdx = trimmed.indexOf('!schedule');
+      if (sourceMessage && scheduleIdx >= 0) {
+        const afterSchedule = trimmed.slice(scheduleIdx + '!schedule'.length);
+        if (afterSchedule === '' || afterSchedule.startsWith(' ')) {
+          const scheduleCmd = trimmed.slice(scheduleIdx);
+          console.log(
+            `[xangi] Processing schedule command from response: ${scheduleCmd.slice(0, 50)}...`
+          );
+          await executeScheduleFromResponse(
+            scheduleCmd,
+            sourceMessage,
+            scheduler,
+            config.scheduler
+          );
+        }
       }
 
       i++;
@@ -1456,7 +1516,7 @@ async function handleSkillCommand(
 /**
  * テキストから !discord send コマンドを抽出し、残りのテキストを返す
  * スケジューラプロンプトからコマンドを分離するために使用
- * コードブロック内のコマンドは無視する
+ * コードブロック内のコマンドは無視する（行中でも検出）
  */
 function extractDiscordSendFromPrompt(text: string): {
   commands: string[];
@@ -1485,8 +1545,14 @@ function extractDiscordSendFromPrompt(text: string): {
     }
 
     const trimmed = line.trim();
-    const sendMatch = trimmed.match(/^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/);
+    const sendMatch = trimmed.match(/!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/);
     if (sendMatch) {
+      // コマンド前のテキストがあれば remaining に保持
+      const cmdIdx = trimmed.indexOf('!discord');
+      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
+      if (beforeCmd) {
+        remainingLines.push(beforeCmd);
+      }
       const [, cmdType, chId] = sendMatch;
       const firstLineContent = sendMatch[3] ?? '';
       if (firstLineContent.trim() === '') {
@@ -1547,7 +1613,7 @@ function extractDiscordSendFromPrompt(text: string): {
 
 /**
  * 表示用テキストからコマンド行を除去する（コードブロック内は残す）
- * SYSTEM_COMMAND:, !discord, !schedule で始まる行を除去
+ * SYSTEM_COMMAND:, !discord, !schedule を含む部分を除去（行中でも検出）
  * !discord send の複数行メッセージ（続く行）も除去
  */
 function stripCommandsFromDisplay(text: string): string {
@@ -1580,9 +1646,15 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    // !discord send/forum-send/forum-create の複数行対応: コマンド行と続く行を除去
-    const sendMatch = trimmed.match(/^!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
+    // !discord send/forum-send/forum-create の複数行対応: コマンド部分と続く行を除去（行中でも検出）
+    const sendMatch = trimmed.match(/!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
     if (sendMatch) {
+      // コマンド前のテキストがあれば保持
+      const cmdIdx = trimmed.indexOf('!discord');
+      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
+      if (beforeCmd) {
+        result.push(beforeCmd);
+      }
       // 続く行も除去（次のコマンド行まで）
       i++;
       let inBodyCodeBlock = false;
@@ -1593,7 +1665,9 @@ function stripCommandsFromDisplay(text: string): string {
         }
         if (
           !inBodyCodeBlock &&
-          (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
+          (bodyLine.trim().startsWith('!discord ') ||
+            bodyLine.trim().includes('!discord ') ||
+            bodyLine.trim().startsWith('!schedule'))
         ) {
           break;
         }
@@ -1602,16 +1676,29 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    // その他の !discord コマンド行を除去
-    if (trimmed.startsWith('!discord ')) {
+    // その他の !discord コマンド部分を除去（行中でも検出）
+    const otherDiscordIdx = trimmed.indexOf('!discord ');
+    if (otherDiscordIdx >= 0) {
+      const beforeCmd = trimmed.slice(0, otherDiscordIdx).trimEnd();
+      if (beforeCmd) {
+        result.push(beforeCmd);
+      }
       i++;
       continue;
     }
 
-    // !schedule コマンド行を除去
-    if (trimmed === '!schedule' || trimmed.startsWith('!schedule ')) {
-      i++;
-      continue;
+    // !schedule コマンド部分を除去（行中でも検出）
+    const scheduleIdx = trimmed.indexOf('!schedule');
+    if (scheduleIdx >= 0) {
+      const afterSchedule = trimmed.slice(scheduleIdx + '!schedule'.length);
+      if (afterSchedule === '' || afterSchedule.startsWith(' ')) {
+        const beforeCmd = trimmed.slice(0, scheduleIdx).trimEnd();
+        if (beforeCmd) {
+          result.push(beforeCmd);
+        }
+        i++;
+        continue;
+      }
     }
 
     result.push(line);
