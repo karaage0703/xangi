@@ -1716,6 +1716,7 @@ async function processPrompt(
   channelId: string,
   config: ReturnType<typeof loadConfig>
 ): Promise<string | null> {
+  const processingReaction = process.env.PROCESSING_REACTION ?? '👀';
   try {
     // チャンネル情報をプロンプトに付与
     const channelName =
@@ -1725,7 +1726,7 @@ async function processPrompt(
     }
 
     console.log(`[xangi] Processing message in channel ${channelId}`);
-    await message.react('👀').catch(() => {});
+    await message.react(processingReaction).catch(() => {});
 
     const sessionId = getSession(channelId);
     const useStreaming = config.discord.streaming ?? true;
@@ -1876,12 +1877,12 @@ async function processPrompt(
     await message.reply('エラーが発生しました');
     return null;
   } finally {
-    // 👀 リアクションを削除
+    // Remove processing reaction
     await message.reactions.cache
-      .find((r) => r.emoji.name === '👀')
+      .find((r) => r.emoji.id === processingReaction || r.emoji.name === processingReaction)
       ?.users.remove(message.client.user?.id)
       .catch((err) => {
-        console.error('[xangi] Failed to remove 👀 reaction:', err.message || err);
+        console.error('[xangi] Failed to remove processing reaction:', err.message || err);
       });
   }
 }
