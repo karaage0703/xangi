@@ -9,7 +9,7 @@ function annotateChannelMentions(text: string): string {
 }
 
 /**
- * 表示用テキストからコマンド部分を除去する（コードブロック内は残す、行中でも検出）
+ * 表示用テキストからコマンド部分を除去する（コードブロック内は残す、行頭のみ検出）
  */
 function stripCommandsFromDisplay(text: string): string {
   const lines = text.split('\n');
@@ -40,14 +40,8 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    const sendMatch = trimmed.match(/!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
+    const sendMatch = trimmed.match(/^!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
     if (sendMatch) {
-      // Keep text before the command
-      const cmdIdx = trimmed.indexOf('!discord');
-      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
-      if (beforeCmd) {
-        result.push(beforeCmd);
-      }
       i++;
       let inBodyCodeBlock = false;
       while (i < lines.length) {
@@ -57,7 +51,7 @@ function stripCommandsFromDisplay(text: string): string {
         }
         if (
           !inBodyCodeBlock &&
-          (bodyLine.trim().includes('!discord ') ||
+          (bodyLine.trim().startsWith('!discord ') ||
             bodyLine.trim().startsWith('!schedule'))
         ) {
           break;
@@ -67,24 +61,14 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    const otherDiscordIdx = trimmed.indexOf('!discord ');
-    if (otherDiscordIdx >= 0) {
-      const beforeCmd = trimmed.slice(0, otherDiscordIdx).trimEnd();
-      if (beforeCmd) {
-        result.push(beforeCmd);
-      }
+    if (trimmed.startsWith('!discord ')) {
       i++;
       continue;
     }
 
-    const scheduleIdx = trimmed.indexOf('!schedule');
-    if (scheduleIdx >= 0) {
-      const afterSchedule = trimmed.slice(scheduleIdx + '!schedule'.length);
+    if (trimmed.startsWith('!schedule')) {
+      const afterSchedule = trimmed.slice('!schedule'.length);
       if (afterSchedule === '' || afterSchedule.startsWith(' ')) {
-        const beforeCmd = trimmed.slice(0, scheduleIdx).trimEnd();
-        if (beforeCmd) {
-          result.push(beforeCmd);
-        }
         i++;
         continue;
       }
@@ -134,7 +118,7 @@ function extractDiscordCommands(text: string): string[] {
     }
 
     const trimmed = line.trim();
-    const sendMatch = trimmed.match(/!discord\s+send\s+<#(\d+)>\s*(.*)/);
+    const sendMatch = trimmed.match(/^!discord\s+send\s+<#(\d+)>\s*(.*)/);
     if (sendMatch) {
       const firstLineContent = sendMatch[2] ?? '';
       if (firstLineContent.trim() === '') {
@@ -188,9 +172,8 @@ function extractDiscordCommands(text: string): string[] {
       }
     }
 
-    const otherDiscordIdx = trimmed.indexOf('!discord ');
-    if (otherDiscordIdx >= 0) {
-      commands.push(trimmed.slice(otherDiscordIdx));
+    if (trimmed.startsWith('!discord ')) {
+      commands.push(trimmed);
     }
     i++;
   }
@@ -261,14 +244,8 @@ function extractDiscordSendFromPrompt(text: string): {
     }
 
     const trimmed = line.trim();
-    const sendMatch = trimmed.match(/!discord\s+send\s+<#(\d+)>\s*(.*)/);
+    const sendMatch = trimmed.match(/^!discord\s+send\s+<#(\d+)>\s*(.*)/);
     if (sendMatch) {
-      // Keep text before the command in remaining
-      const cmdIdx = trimmed.indexOf('!discord');
-      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
-      if (beforeCmd) {
-        remainingLines.push(beforeCmd);
-      }
       const firstLineContent = sendMatch[2] ?? '';
       if (firstLineContent.trim() === '') {
         const bodyLines: string[] = [];
@@ -409,33 +386,16 @@ describe('Discord Commands', () => {
       expect(commands).toEqual([]);
     });
 
-    it('should handle inline code (not block) - mid-line detection picks it up', () => {
-      const text = '`!discord send` はコマンドです\n!discord channels';
-      const commands = extractDiscordCommands(text);
-      // Inline code is not distinguished from regular text; mid-line detection picks it up
-      // but without <#channelId> it won't match sendMatch, only otherDiscord
-      expect(commands).toEqual([
-        '!discord send` はコマンドです',
-        '!discord channels',
-      ]);
-    });
-
-    it('should detect send command mid-line', () => {
+    it('should not detect commands mid-line (line-start only)', () => {
       const text = '送信します !discord send <#123> hello';
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual(['!discord send <#123> hello']);
+      expect(commands).toEqual([]);
     });
 
-    it('should detect other commands mid-line', () => {
+    it('should not detect other commands mid-line', () => {
       const text = '確認します !discord channels';
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual(['!discord channels']);
-    });
-
-    it('should detect history command mid-line', () => {
-      const text = '履歴を取得します !discord history 20';
-      const commands = extractDiscordCommands(text);
-      expect(commands).toEqual(['!discord history 20']);
+      expect(commands).toEqual([]);
     });
 
     it('should collect multiline message when send has no inline content', () => {
@@ -622,29 +582,22 @@ https://example.com/2`;
       expect(result).toBe('');
     });
 
-    it('should strip mid-line !discord send and keep text before it', () => {
+    it('should not strip mid-line !discord send (line-start only)', () => {
       const text = `テキスト前\n送信します !discord send <#123> メッセージ\nテキスト後`;
       const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('テキスト前\n送信します');
+      expect(result).toBe('テキスト前\n送信します !discord send <#123> メッセージ\nテキスト後');
     });
 
-    it('should strip mid-line !discord history and keep text before it', () => {
+    it('should not strip mid-line !discord history (line-start only)', () => {
       const text = `テキスト前\n確認します !discord history 20\nテキスト後`;
       const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('テキスト前\n確認します\nテキスト後');
+      expect(result).toBe('テキスト前\n確認します !discord history 20\nテキスト後');
     });
 
-    it('should strip mid-line !schedule and keep text before it', () => {
+    it('should not strip mid-line !schedule (line-start only)', () => {
       const text = `テキスト前\n設定します !schedule 5分後 テスト\nテキスト後`;
       const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('テキスト前\n設定します\nテキスト後');
-    });
-
-    it('should strip mid-line !discord send with multiline body', () => {
-      const text = `前文\n送信開始 !discord send <#123>\n1行目\n2行目\n後文`;
-      const result = stripCommandsFromDisplay(text);
-      // 'send' の後の行はボディとして吸収、後文もボディの一部
-      expect(result).toBe('前文\n送信開始');
+      expect(result).toBe('テキスト前\n設定します !schedule 5分後 テスト\nテキスト後');
     });
   });
 
@@ -714,11 +667,11 @@ https://example.com/2`;
       expect(result.remaining).toBe('');
     });
 
-    it('should extract mid-line send command and keep text before in remaining', () => {
+    it('should not extract mid-line send command (line-start only)', () => {
       const text = '送信指示 !discord send <#123> メッセージ';
       const result = extractDiscordSendFromPrompt(text);
-      expect(result.commands).toEqual(['!discord send <#123> メッセージ']);
-      expect(result.remaining.trim()).toBe('送信指示');
+      expect(result.commands).toEqual([]);
+      expect(result.remaining.trim()).toBe('送信指示 !discord send <#123> メッセージ');
     });
   });
 

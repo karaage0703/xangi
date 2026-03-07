@@ -968,9 +968,9 @@ async function main() {
 
       const trimmed = line.trim();
 
-      // !discord send / forum-send / forum-create の複数行対応（行中でも検出）
+      // !discord send / forum-send / forum-create の複数行対応（行頭のみ検出）
       const sendMatch = trimmed.match(
-        /!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/
+        /^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/
       );
       if (sendMatch) {
         const [, cmdType, channelId, firstLineContent] = sendMatch;
@@ -1065,10 +1065,9 @@ async function main() {
         }
       }
 
-      // その他の !discord コマンド（channels, search, history）（行中でも検出）
-      const otherDiscordIdx = trimmed.indexOf('!discord ');
-      if (otherDiscordIdx >= 0) {
-        const discordCmd = trimmed.slice(otherDiscordIdx);
+      // その他の !discord コマンド（channels, search, history）（行頭のみ検出）
+      if (trimmed.startsWith('!discord ')) {
+        const discordCmd = trimmed;
         console.log(
           `[xangi] Processing discord command from response: ${discordCmd.slice(0, 50)}...`
         );
@@ -1087,12 +1086,11 @@ async function main() {
         }
       }
 
-      // !schedule コマンド（引数なしでもlist表示、sourceMessage必須）（行中でも検出）
-      const scheduleIdx = trimmed.indexOf('!schedule');
-      if (sourceMessage && scheduleIdx >= 0) {
-        const afterSchedule = trimmed.slice(scheduleIdx + '!schedule'.length);
+      // !schedule コマンド（引数なしでもlist表示、sourceMessage必須）（行頭のみ検出）
+      if (sourceMessage && trimmed.startsWith('!schedule')) {
+        const afterSchedule = trimmed.slice('!schedule'.length);
         if (afterSchedule === '' || afterSchedule.startsWith(' ')) {
-          const scheduleCmd = trimmed.slice(scheduleIdx);
+          const scheduleCmd = trimmed;
           console.log(
             `[xangi] Processing schedule command from response: ${scheduleCmd.slice(0, 50)}...`
           );
@@ -1516,7 +1514,7 @@ async function handleSkillCommand(
 /**
  * テキストから !discord send コマンドを抽出し、残りのテキストを返す
  * スケジューラプロンプトからコマンドを分離するために使用
- * コードブロック内のコマンドは無視する（行中でも検出）
+ * コードブロック内のコマンドは無視する（行頭のみ検出）
  */
 function extractDiscordSendFromPrompt(text: string): {
   commands: string[];
@@ -1545,14 +1543,8 @@ function extractDiscordSendFromPrompt(text: string): {
     }
 
     const trimmed = line.trim();
-    const sendMatch = trimmed.match(/!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/);
+    const sendMatch = trimmed.match(/^!discord\s+(send|forum-send|forum-create)\s+<#(\d+)>\s*(.*)/);
     if (sendMatch) {
-      // コマンド前のテキストがあれば remaining に保持
-      const cmdIdx = trimmed.indexOf('!discord');
-      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
-      if (beforeCmd) {
-        remainingLines.push(beforeCmd);
-      }
       const [, cmdType, chId] = sendMatch;
       const firstLineContent = sendMatch[3] ?? '';
       if (firstLineContent.trim() === '') {
@@ -1613,7 +1605,7 @@ function extractDiscordSendFromPrompt(text: string): {
 
 /**
  * 表示用テキストからコマンド行を除去する（コードブロック内は残す）
- * SYSTEM_COMMAND:, !discord, !schedule を含む部分を除去（行中でも検出）
+ * SYSTEM_COMMAND:, !discord, !schedule を含む行を除去（行頭のみ検出）
  * !discord send の複数行メッセージ（続く行）も除去
  */
 function stripCommandsFromDisplay(text: string): string {
@@ -1646,15 +1638,9 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    // !discord send/forum-send/forum-create の複数行対応: コマンド部分と続く行を除去（行中でも検出）
-    const sendMatch = trimmed.match(/!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
+    // !discord send/forum-send/forum-create の複数行対応: コマンド行と続く行を除去（行頭のみ検出）
+    const sendMatch = trimmed.match(/^!discord\s+(?:send|forum-send|forum-create)\s+<#\d+>\s*(.*)/);
     if (sendMatch) {
-      // コマンド前のテキストがあれば保持
-      const cmdIdx = trimmed.indexOf('!discord');
-      const beforeCmd = trimmed.slice(0, cmdIdx).trimEnd();
-      if (beforeCmd) {
-        result.push(beforeCmd);
-      }
       // 続く行も除去（次のコマンド行まで）
       i++;
       let inBodyCodeBlock = false;
@@ -1665,9 +1651,7 @@ function stripCommandsFromDisplay(text: string): string {
         }
         if (
           !inBodyCodeBlock &&
-          (bodyLine.trim().startsWith('!discord ') ||
-            bodyLine.trim().includes('!discord ') ||
-            bodyLine.trim().startsWith('!schedule'))
+          (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
         ) {
           break;
         }
@@ -1676,26 +1660,16 @@ function stripCommandsFromDisplay(text: string): string {
       continue;
     }
 
-    // その他の !discord コマンド部分を除去（行中でも検出）
-    const otherDiscordIdx = trimmed.indexOf('!discord ');
-    if (otherDiscordIdx >= 0) {
-      const beforeCmd = trimmed.slice(0, otherDiscordIdx).trimEnd();
-      if (beforeCmd) {
-        result.push(beforeCmd);
-      }
+    // その他の !discord コマンド行を除去（行頭のみ検出）
+    if (trimmed.startsWith('!discord ')) {
       i++;
       continue;
     }
 
-    // !schedule コマンド部分を除去（行中でも検出）
-    const scheduleIdx = trimmed.indexOf('!schedule');
-    if (scheduleIdx >= 0) {
-      const afterSchedule = trimmed.slice(scheduleIdx + '!schedule'.length);
+    // !schedule コマンド行を除去（行頭のみ検出）
+    if (trimmed.startsWith('!schedule')) {
+      const afterSchedule = trimmed.slice('!schedule'.length);
       if (afterSchedule === '' || afterSchedule.startsWith(' ')) {
-        const beforeCmd = trimmed.slice(0, scheduleIdx).trimEnd();
-        if (beforeCmd) {
-          result.push(beforeCmd);
-        }
         i++;
         continue;
       }
