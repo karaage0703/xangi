@@ -60,7 +60,9 @@ export class RunnerManager implements AgentRunner {
    * Resolve the effective model and effort for a channel
    */
   private resolveChannelConfig(channelId: string): { model?: string; effort?: string } {
-    const channelConfig = getChannelModelConfig(channelId);
+    // Extract base channelId from composite key (channelId:threadTs)
+    const baseChannelId = channelId.split(':')[0];
+    const channelConfig = getChannelModelConfig(baseChannelId);
     const model = channelConfig?.model ?? this.agentConfig.model;
     // effort is only applied if the effective model is Opus
     const rawEffort = channelConfig?.effort ?? this.agentConfig.effort;
