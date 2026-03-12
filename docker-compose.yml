@@ -1,63 +1,49 @@
-# 共通設定
+# xangi-logomix: Slack-only instance
 x-common: &common
   restart: unless-stopped
   volumes:
-    # Claude Code CLI 認証情報（コンテナ専用ボリューム）
+    # Claude Code CLI credentials (instance-specific volume)
     - claude-data:/home/node/.claude
-    # Codex CLI 認証情報（コンテナ専用ボリューム）
+    # Codex CLI credentials (instance-specific volume)
     - codex-data:/home/node/.codex
-    # ワークスペース（エージェントの作業ディレクトリ）
-    - ${WORKSPACE_PATH:-./workspace}:/workspace
-    # Git設定
+    # Workspace (agent working directory)
+    - ${WORKSPACE_PATH:-/home/oodake/ghq/github.com/LogomixBio/bd-bot}:/workspace
+    # Git config
     - ~/.gitconfig:/home/node/.gitconfig:ro
   environment: &common-env
-    # GitHub CLI (GH_TOKEN環境変数で認証)
+    # GitHub CLI (authenticated via GH_TOKEN env var)
     - GH_TOKEN=${GH_TOKEN:-}
     - NODE_ENV=production
-    # Discord
-    - DISCORD_TOKEN=${DISCORD_TOKEN:-}
-    - AUTO_REPLY_CHANNELS=${AUTO_REPLY_CHANNELS:-}
-    - DISCORD_STREAMING=${DISCORD_STREAMING:-true}
-    - DISCORD_SHOW_THINKING=${DISCORD_SHOW_THINKING:-true}
     # Slack
     - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
     - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+    - SLACK_ALLOWED_USER=${SLACK_ALLOWED_USER:-}
     - SLACK_AUTO_REPLY_CHANNELS=${SLACK_AUTO_REPLY_CHANNELS:-}
     - SLACK_REPLY_IN_THREAD=${SLACK_REPLY_IN_THREAD:-true}
     - SLACK_STREAMING=${SLACK_STREAMING:-true}
     - SLACK_SHOW_THINKING=${SLACK_SHOW_THINKING:-true}
     # Common
-    - DISCORD_ALLOWED_USER=${DISCORD_ALLOWED_USER:-}
-    - SLACK_ALLOWED_USER=${SLACK_ALLOWED_USER:-}
     - WORKSPACE_PATH=/workspace
-    - SKIP_PERMISSIONS=${SKIP_PERMISSIONS:-false}
+    - SKIP_PERMISSIONS=${SKIP_PERMISSIONS:-true}
     # Agent
     - AGENT_BACKEND=${AGENT_BACKEND:-claude-code}
     - AGENT_MODEL=${AGENT_MODEL:-}
-    # Scheduler data directory (for schedules.json)
+    # Scheduler data directory
     - DATA_DIR=/workspace/.xangi
+    # Disable scheduler to avoid duplicate execution with other instances
+    - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-false}
+    - STARTUP_ENABLED=${STARTUP_ENABLED:-false}
 
 services:
-  # ミニマム版（デフォルト）
-  xangi:
+  xangi-logomix:
     <<: *common
     build: .
-    container_name: xangi
+    container_name: xangi-logomix
     ports:
-      - "8080:8080"
-
-  # フル版（uv + Python）
-  xangi-max:
-    <<: *common
-    build:
-      context: .
-      dockerfile: Dockerfile.max
-    container_name: xangi-max
-    ports:
-      - "8080:8080"
+      - "8081:8080"
 
 volumes:
   claude-data:
-    name: xangi_claude-data
+    name: xangi-logomix_claude-data
   codex-data:
-    name: xangi_codex-data
+    name: xangi-logomix_codex-data
