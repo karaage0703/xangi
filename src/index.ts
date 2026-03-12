@@ -110,8 +110,7 @@ async function main() {
     process.exit(1);
   }
   if (config.slack.enabled && slackAllowed.length === 0) {
-    console.error('[xangi] Error: SLACK_ALLOWED_USER or ALLOWED_USER must be set for Slack');
-    process.exit(1);
+    console.warn('[xangi] Warning: SLACK_ALLOWED_USER is not set — all users are allowed');
   }
   if (discordAllowed.length > 1 || slackAllowed.length > 1) {
     console.error('[xangi] Error: Only one user per platform is allowed');
@@ -1303,9 +1302,7 @@ async function main() {
           ) => Promise<{ edit: (options: MsgOptions) => Promise<unknown> }>;
         }
       ).send({
-        content:
-          process.env.THINKING_MESSAGE ??
-          '解。マスターからの指示を確認。間もなく応答を開始します...',
+        content: process.env.THINKING_MESSAGE ?? 'メッセージを受け付けました。処理中です...',
       });
 
       try {
@@ -1708,7 +1705,7 @@ async function processPrompt(
 
     // 最初のメッセージを送信（通常テキスト）
     const replyMessage = await message.reply({
-      content: '解。マスターからの指示を確認。間もなく応答を開始します...',
+      content: 'メッセージを受け付けました。処理中です...',
     });
 
     let result: string;
@@ -1728,7 +1725,7 @@ async function processPrompt(
         const dots = '.'.repeat(dotCount);
         replyMessage
           .edit({
-            content: `解。マスターからの指示を確認。間もなく応答を開始します${dots}`,
+            content: `メッセージを受け付けました。処理中です${dots}`,
           })
           .catch(() => {});
       }, 1000);
@@ -1771,7 +1768,7 @@ async function processPrompt(
         const dots = '.'.repeat(dotCount);
         replyMessage
           .edit({
-            content: `解。マスターからの指示を確認。間もなく応答を開始します${dots}`,
+            content: `メッセージを受け付けました。処理中です${dots}`,
           })
           .catch(() => {});
       }, 1000);

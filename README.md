@@ -95,17 +95,39 @@ npm start
 npm run dev
 ```
 
-### 自動再起動
+### systemd サービス（推奨）
 
-xangi は `/restart` コマンドで再起動できます。自動復帰にはプロセスマネージャが必要です。
+`scripts/setup-service.sh` でsystemdユーザーサービスとして登録できます。
+OS 再起動後も自動起動し、クラッシュ時も自動復帰します。
 
 ```bash
-# pm2 を使う場合
-npm install -g pm2
-pm2 start "npm start" --name xangi
-pm2 restart xangi  # 手動再起動
-pm2 logs xangi     # ログ確認
+# 1. 環境変数設定
+cp .env.example .env
+# .env を編集
+
+# 2. サービスをインストール・起動
+./scripts/setup-service.sh
+
+# 3. アンインストール
+./scripts/setup-service.sh --uninstall
 ```
+
+サービス名は環境変数 `SERVICE_NAME` で変更可能です（デフォルト: `xangi-logomix`）。
+
+```bash
+SERVICE_NAME=my-custom-bot ./scripts/setup-service.sh
+```
+
+管理コマンド:
+
+```bash
+systemctl --user status  xangi-logomix   # ステータス確認
+systemctl --user restart xangi-logomix   # 再起動
+systemctl --user stop    xangi-logomix   # 停止
+journalctl --user -u xangi-logomix -f    # ログ確認
+```
+
+> node/claude/gh のパスが変わった場合（mise でバージョン更新時など）は `./scripts/setup-service.sh` を再実行してください。
 
 ## 環境変数
 
