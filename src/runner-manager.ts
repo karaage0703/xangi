@@ -1,6 +1,7 @@
 import { PersistentRunner } from './persistent-runner.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import type { AgentConfig } from './config.js';
+import { deleteSession } from './sessions.js';
 
 /**
  * プール内のランナー情報
@@ -64,6 +65,17 @@ export class RunnerManager implements AgentRunner {
 
     // 新しい PersistentRunner を作成
     const runner = new PersistentRunner({ ...this.agentConfig, channelId });
+
+    // セッション無効化イベント: sessions.json からも削除して永続的にリセット
+    runner.on('session-invalidated', (ch: string, oldSessionId: string) => {
+      if (ch) {
+        deleteSession(ch);
+        console.log(
+          `[runner-manager] Session invalidated for channel ${ch} (was: ${oldSessionId?.slice(0, 8) ?? 'none'}). Deleted from sessions.json.`
+        );
+      }
+    });
+
     this.pool.set(channelId, {
       runner,
       lastUsed: Date.now(),

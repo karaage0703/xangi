@@ -21,6 +21,10 @@
     "src/**/*.ts": [
       "eslint --fix",
       "prettier --write"
+    ],
+    "{src,tests}/**/*.ts": [
+      "bash -c 'npx vitest run'",
+      "bash -c 'npx tsc --noEmit'"
     ]
   },
   "keywords": [

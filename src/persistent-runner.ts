@@ -79,8 +79,10 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
           `Circuit breaker open: ${this.crashCount} crashes in ${elapsed}ms. Waiting for cooldown.`
         );
       }
-      // クールダウン経過後はリセット
-      console.log('[persistent-runner] Circuit breaker reset after cooldown');
+      // クールダウン経過後はリセット（セッションは既にクリア済みなので新規セッションで起動）
+      console.log(
+        '[persistent-runner] Circuit breaker reset after cooldown. Starting fresh session.'
+      );
       this.crashCount = 0;
     }
 
@@ -161,10 +163,22 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
         console.log('[persistent-runner] Restarting process for queued requests...');
         this.processNext();
       } else if (this.crashCount >= PersistentRunner.MAX_CRASHES) {
-        // サーキットブレーカーオープン: キューを全部エラーにする
-        console.error('[persistent-runner] Circuit breaker OPEN. Rejecting all queued requests.');
+        // サーキットブレーカーオープン: セッションを破棄して次回は新規セッションで起動
+        console.error(
+          '[persistent-runner] Circuit breaker OPEN. Clearing session to recover on next request.'
+        );
+        const oldSessionId = this.sessionId || this.resumeSessionId;
+        this.sessionId = '';
+        this.resumeSessionId = undefined;
+        this.emit('session-invalidated', this.channelId, oldSessionId);
+
+        // キューを全部エラーにする
         for (const item of this.queue) {
-          item.reject(new Error('Circuit breaker open: too many process crashes'));
+          item.reject(
+            new Error(
+              'Circuit breaker open: too many process crashes. Session cleared for recovery.'
+            )
+          );
         }
         this.queue = [];
       }
@@ -244,6 +258,43 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
       }
 
       if (json.is_error) {
+        // --resume で起動して失敗した場合、セッションが古い可能性が高い
+        // セッションをクリアしてリトライする（1回だけ）
+        const resumeId = this.resumeSessionId;
+        if (resumeId) {
+          console.warn(
+            `[persistent-runner] Resume failed with session ${resumeId.slice(0, 8)}... Clearing stale session and retrying.`
+          );
+          const oldSessionId = resumeId;
+          this.resumeSessionId = undefined;
+          this.sessionId = '';
+          this.emit('session-invalidated', this.channelId, oldSessionId);
+
+          // プロセスをkillして新規セッションでリトライ
+          if (this.process) {
+            this.cancelling = true;
+            this.process.kill();
+            this.process = null;
+            this.processAlive = false;
+            this.buffer = '';
+          }
+
+          // 現在のリクエストをキューの先頭に戻してリトライ
+          if (this.currentItem) {
+            this.queue.unshift(this.currentItem);
+            this.currentItem = null;
+          }
+          this.fullText = '';
+
+          // cancelling フラグのクリアは close イベントで行われるが、
+          // プロセスがまだ死んでいない場合に備えて直接 processNext を呼ぶ
+          setTimeout(() => {
+            this.cancelling = false;
+            this.processNext();
+          }, 100);
+          return;
+        }
+
         const error = new Error(json.result || 'Unknown error');
         this.currentItem?.callbacks?.onError?.(error);
         this.currentItem?.reject(error);
