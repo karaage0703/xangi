@@ -40,6 +40,12 @@ vi.mock('../src/persistent-runner.js', () => {
     getQueueLength() {
       return 0;
     }
+
+    isBusy() {
+      return false;
+    }
+
+    setSessionId(_sessionId: string) {}
   }
 
   return { PersistentRunner: MockPersistentRunner };

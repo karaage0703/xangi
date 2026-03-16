@@ -1,9 +1,10 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import type { RunOptions, RunResult, StreamCallbacks, AgentRunner } from './agent-runner.js';
-import { mergeTexts } from './agent-runner.js';
+import { mergeTexts, sanitizeSurrogates } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildPersistentSystemPrompt } from './base-runner.js';
+import { logPrompt, logResponse, logError } from './transcript-logger.js';
 
 /**
  * リクエストキューのアイテム
@@ -45,6 +46,8 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private skipPermissions: boolean;
   private chrome: boolean;
   private systemPrompt: string;
+  private resumeSessionId?: string; // プロセス再起動時に --resume で復元するセッションID
+  private channelId?: string; // トランスクリプトログ用
 
   constructor(options?: {
     model?: string;
@@ -53,6 +56,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     workdir?: string;
     skipPermissions?: boolean;
     chrome?: boolean;
+    channelId?: string;
   }) {
     super();
     this.model = options?.model;
@@ -62,6 +66,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     this.skipPermissions = options?.skipPermissions ?? false;
     this.chrome = options?.chrome ?? false;
     this.systemPrompt = buildPersistentSystemPrompt();
+    this.channelId = options?.channelId;
   }
 
   /**
@@ -108,6 +113,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     if (this.chrome) {
       args.push('--chrome');
+    }
+
+    // セッション復元: 保存済みセッションIDがあれば --resume で継続
+    const resumeId = this.resumeSessionId || this.sessionId;
+    if (resumeId) {
+      args.push('--resume', resumeId);
+      console.log(`[persistent-runner] Resuming session: ${resumeId.slice(0, 8)}...`);
     }
 
     args.push('--append-system-prompt', this.systemPrompt);
@@ -236,6 +248,15 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
         this.sessionId = json.session_id;
       }
 
+      // トランスクリプトログ: 最終結果を記録
+      if (this.channelId && this.workdir) {
+        if (json.is_error) {
+          logError(this.workdir, this.channelId, json.result || 'Unknown error', this.sessionId);
+        } else {
+          logResponse(this.workdir, this.channelId, json as Record<string, unknown>);
+        }
+      }
+
       if (json.is_error) {
         const error = new Error(json.result || 'Unknown error');
         this.currentItem?.callbacks?.onError?.(error);
@@ -282,11 +303,17 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
       type: 'user',
       message: {
         role: 'user',
-        content: this.currentItem.prompt,
+        content: sanitizeSurrogates(this.currentItem.prompt),
       },
     };
 
     console.log(`[persistent-runner] Sending request (queue: ${this.queue.length} remaining)`);
+
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (this.channelId && this.workdir) {
+      logPrompt(this.workdir, this.channelId, this.currentItem.prompt, this.sessionId || undefined);
+    }
+
     proc.stdin?.write(JSON.stringify(message) + '\n');
 
     // タイムアウト設定: タイムアウト時はプロセスをkillして状態をクリーンに
@@ -415,6 +442,16 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
    */
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * セッションIDを設定（プロセス再起動時の --resume 用）
+   */
+  setSessionId(sessionId: string): void {
+    this.resumeSessionId = sessionId;
+    if (!this.sessionId) {
+      this.sessionId = sessionId;
+    }
   }
 
   /**

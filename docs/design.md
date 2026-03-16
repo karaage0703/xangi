@@ -200,6 +200,31 @@ AIが出力する特殊コマンドを検出して自動実行：
 | スケジュール | `${DATA_DIR}/schedules.json` | JSON |
 | ランタイム設定 | `${WORKSPACE}/settings.json` | JSON |
 | セッション | `${DATA_DIR}/sessions.json` | JSON（チャンネルID→セッションID） |
+| トランスクリプト | `logs/transcripts/YYYY-MM-DD/{channelId}.jsonl` | JSONL（送信プロンプト・応答・エラー） |
+
+### トランスクリプトログ
+
+チャンネルごとのAI会話ログをJSONL形式で自動保存する機能。デバッグ・障害分析に使用。
+
+**ディレクトリ構成：**
+```
+logs/transcripts/
+  2026-03-08/
+    1469606785672417383.jsonl   # チャンネルごとのログ
+    1477591157423734785.jsonl
+  2026-03-09/
+    ...
+```
+
+**記録される内容：**
+- `prompt`: ユーザーから送信されたプロンプト（タイムスタンプ・チャンネルトピック注入後）
+- `response`: Claude Code の最終応答（result メッセージ）
+- `error`: タイムアウト、API エラーなど
+
+**注意事項：**
+- ログは `.gitignore` で除外されている
+- 自動ローテーション（日付ごとにディレクトリ分割）
+- ログ書き込み失敗は無視（本体の動作に影響させない）
 
 ## ファイル構成
 
@@ -221,7 +246,8 @@ src/
 ├── sessions.ts         # セッション管理
 ├── file-utils.ts       # ファイル操作ユーティリティ
 ├── process-manager.ts  # プロセス管理
-└── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）
+├── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）
+└── transcript-logger.ts # トランスクリプトログ
 
 prompts/
 └── XANGI_COMMANDS.md   # xangi専用コマンド仕様（AI CLIに注入）
@@ -264,6 +290,8 @@ prompts/
 | `AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） | - |
 | `DISCORD_STREAMING` | ストリーミング出力（デフォルト: `true`） | - |
 | `DISCORD_SHOW_THINKING` | 思考過程を表示（デフォルト: `true`） | - |
+| `INJECT_CHANNEL_TOPIC` | チャンネルトピックをプロンプトに注入（デフォルト: `true`） | - |
+| `INJECT_TIMESTAMP` | 現在時刻をプロンプトに注入（デフォルト: `true`） | - |
 
 ### Slack（非推奨）
 

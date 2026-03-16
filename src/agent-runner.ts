@@ -31,6 +31,8 @@ export interface AgentRunner {
   cancel?(channelId?: string): boolean;
   /** 全ランナーをシャットダウン（子プロセス終了） */
   shutdown?(): void;
+  /** 指定チャンネルのランナーを完全に破棄（/new用） */
+  destroy?(channelId: string): boolean;
 }
 
 /**
@@ -76,6 +78,14 @@ export function mergeTexts(streamed: string, result: string): string {
 
   // どちらにも含まれない → 区切って結合
   return `${streamed}\n${result}`;
+}
+
+/** 不正なサロゲートペア（片方だけの孤立サロゲート）を除去する */
+export function sanitizeSurrogates(text: string): string {
+  return text.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    ''
+  );
 }
 
 /**
