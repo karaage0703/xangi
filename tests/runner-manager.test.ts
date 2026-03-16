@@ -3,11 +3,15 @@ import { RunnerManager } from '../src/runner-manager.js';
 
 // PersistentRunner をモック
 vi.mock('../src/persistent-runner.js', () => {
-  class MockPersistentRunner {
+  const { EventEmitter } = require('events');
+
+  class MockPersistentRunner extends EventEmitter {
     private alive = true;
     private currentPrompt: string | null = null;
 
-    constructor() {}
+    constructor() {
+      super();
+    }
 
     async run(prompt: string) {
       this.currentPrompt = prompt;
