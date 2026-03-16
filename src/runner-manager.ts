@@ -60,9 +60,7 @@ export class RunnerManager implements AgentRunner {
    * Resolve the effective model and effort for a channel
    */
   private resolveChannelConfig(channelId: string): { model?: string; effort?: string } {
-    // Extract base channelId from composite key (channelId:threadTs)
-    const baseChannelId = channelId.split(':')[0];
-    const channelConfig = getChannelModelConfig(baseChannelId);
+    const channelConfig = getChannelModelConfig(channelId);
     const model = channelConfig?.model ?? this.agentConfig.model;
     // effort is only applied if the effective model is Opus
     const rawEffort = channelConfig?.effort ?? this.agentConfig.effort;
@@ -102,6 +100,7 @@ export class RunnerManager implements AgentRunner {
       ...this.agentConfig,
       model,
       effort,
+      channelId,
     });
     this.pool.set(channelId, {
       runner,
@@ -214,6 +213,10 @@ export class RunnerManager implements AgentRunner {
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
     const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
     const runner = this.getOrCreateRunner(channelId);
+    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
+    if (options?.sessionId) {
+      runner.setSessionId(options.sessionId);
+    }
     return runner.run(prompt, options);
   }
 
@@ -227,6 +230,10 @@ export class RunnerManager implements AgentRunner {
   ): Promise<RunResult> {
     const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
     const runner = this.getOrCreateRunner(channelId);
+    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
+    if (options?.sessionId) {
+      runner.setSessionId(options.sessionId);
+    }
     return runner.runStream(prompt, callbacks, options);
   }
 
@@ -248,6 +255,22 @@ export class RunnerManager implements AgentRunner {
       if (entry.runner.cancel()) {
         return true;
       }
+    }
+    return false;
+  }
+
+  /**
+   * 指定チャンネルのランナーを完全に破棄（/new用）
+   */
+  destroy(channelId: string): boolean {
+    const entry = this.pool.get(channelId);
+    if (entry) {
+      entry.runner.shutdown();
+      this.pool.delete(channelId);
+      console.log(
+        `[runner-manager] Destroyed runner for channel ${channelId} (pool: ${this.pool.size}/${this.maxProcesses})`
+      );
+      return true;
     }
     return false;
   }

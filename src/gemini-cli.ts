@@ -3,6 +3,7 @@ import { processManager } from './process-manager.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { BaseRunnerOptions } from './base-runner.js';
+import { logPrompt, logResponse } from './transcript-logger.js';
 
 /**
  * Gemini CLI の JSON 出力形式
@@ -92,9 +93,22 @@ export class GeminiRunner implements AgentRunner {
       : ' (new)';
     console.log(`[gemini] Executing in ${this.workdir || 'default dir'}${sessionInfo}`);
 
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (options?.channelId && this.workdir) {
+      logPrompt(this.workdir, options.channelId, fullPrompt, options?.sessionId);
+    }
+
     try {
       const { stdout, sessionId } = await this.execute(args, options?.channelId);
       const response = this.parseJsonResponse(stdout);
+
+      // トランスクリプトログ: 応答を記録
+      if (options?.channelId && this.workdir) {
+        logResponse(this.workdir, options.channelId, {
+          result: response.response,
+          sessionId: sessionId || response.session_id,
+        });
+      }
 
       return {
         result: response.response,
@@ -113,6 +127,15 @@ export class GeminiRunner implements AgentRunner {
         ];
         const { stdout, sessionId } = await this.execute(retryArgs, options?.channelId);
         const response = this.parseJsonResponse(stdout);
+
+        // トランスクリプトログ: リトライ応答を記録
+        if (options?.channelId && this.workdir) {
+          logResponse(this.workdir, options.channelId, {
+            result: response.response,
+            sessionId: sessionId || response.session_id,
+          });
+        }
+
         return {
           result: response.response,
           sessionId: sessionId || response.session_id,
@@ -215,6 +238,11 @@ export class GeminiRunner implements AgentRunner {
       ? ` (session: ${options.sessionId.slice(0, 8)}...)`
       : ' (new)';
     console.log(`[gemini] Streaming in ${this.workdir || 'default dir'}${sessionInfo}`);
+
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (options?.channelId && this.workdir) {
+      logPrompt(this.workdir, options.channelId, fullPrompt, options?.sessionId);
+    }
 
     try {
       return await this.executeStream(args, callbacks, options?.channelId);
@@ -342,6 +370,12 @@ export class GeminiRunner implements AgentRunner {
         }
 
         const result: RunResult = { result: fullText, sessionId };
+
+        // トランスクリプトログ: 応答を記録
+        if (channelId && this.workdir) {
+          logResponse(this.workdir, channelId, { result: fullText, sessionId });
+        }
+
         callbacks.onComplete?.(result);
         resolve(result);
       });

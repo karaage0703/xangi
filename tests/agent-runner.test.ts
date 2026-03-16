@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { createAgentRunner, getBackendDisplayName, mergeTexts } from '../src/agent-runner.js';
+import {
+  createAgentRunner,
+  getBackendDisplayName,
+  mergeTexts,
+  sanitizeSurrogates,
+} from '../src/agent-runner.js';
 
 describe('agent-runner', () => {
   describe('createAgentRunner', () => {
@@ -63,6 +68,54 @@ describe('agent-runner', () => {
     it('should handle identical texts', () => {
       const text = 'same text';
       expect(mergeTexts(text, text)).toBe(text);
+    });
+  });
+
+  describe('sanitizeSurrogates', () => {
+    it('should pass through normal text unchanged', () => {
+      expect(sanitizeSurrogates('Hello, world!')).toBe('Hello, world!');
+    });
+
+    it('should pass through normal emoji unchanged', () => {
+      // 正常なサロゲートペア（絵文字）はそのまま
+      expect(sanitizeSurrogates('👍🎉🤔')).toBe('👍🎉🤔');
+    });
+
+    it('should pass through Japanese text unchanged', () => {
+      expect(sanitizeSurrogates('こんにちは、世界！')).toBe('こんにちは、世界！');
+    });
+
+    it('should remove lone high surrogate', () => {
+      // 孤立した高サロゲート（\uD800）を除去
+      const input = 'before\uD800after';
+      expect(sanitizeSurrogates(input)).toBe('beforeafter');
+    });
+
+    it('should remove lone low surrogate', () => {
+      // 孤立した低サロゲート（\uDC00）を除去
+      const input = 'before\uDC00after';
+      expect(sanitizeSurrogates(input)).toBe('beforeafter');
+    });
+
+    it('should keep valid surrogate pairs', () => {
+      // 正常なサロゲートペア（U+1F600 = 😀）は保持
+      const emoji = '\uD83D\uDE00';
+      expect(sanitizeSurrogates(emoji)).toBe(emoji);
+    });
+
+    it('should remove multiple lone surrogates', () => {
+      const input = 'a\uD800b\uDC00c\uDBFFd';
+      expect(sanitizeSurrogates(input)).toBe('abcd');
+    });
+
+    it('should handle empty string', () => {
+      expect(sanitizeSurrogates('')).toBe('');
+    });
+
+    it('should handle mixed valid emoji and lone surrogates', () => {
+      // 正常な絵文字 + 孤立サロゲート
+      const input = '👍\uD800テスト\uDC00🎉';
+      expect(sanitizeSurrogates(input)).toBe('👍テスト🎉');
     });
   });
 

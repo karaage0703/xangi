@@ -3,6 +3,7 @@ import { processManager } from './process-manager.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildSystemPrompt } from './base-runner.js';
+import { logPrompt, logResponse } from './transcript-logger.js';
 
 export interface CodexOptions {
   model?: string;
@@ -132,8 +133,18 @@ export class CodexRunner implements AgentRunner {
       : ' (new)';
     console.log(`[codex] Executing in ${this.workdir || 'default dir'}${sessionInfo}`);
 
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (options?.channelId && this.workdir) {
+      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    }
+
     const { stdout, sessionId } = await this.execute(args, options?.channelId);
     const result = this.extractResult(stdout);
+
+    // トランスクリプトログ: 応答を記録
+    if (options?.channelId && this.workdir) {
+      logResponse(this.workdir, options.channelId, { result, sessionId });
+    }
 
     return { result, sessionId };
   }
@@ -242,6 +253,11 @@ export class CodexRunner implements AgentRunner {
       : ' (new)';
     console.log(`[codex] Streaming in ${this.workdir || 'default dir'}${sessionInfo}`);
 
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (options?.channelId && this.workdir) {
+      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    }
+
     return this.executeStream(args, callbacks, options?.channelId);
   }
 
@@ -337,6 +353,12 @@ export class CodexRunner implements AgentRunner {
         }
 
         const result: RunResult = { result: fullText, sessionId };
+
+        // トランスクリプトログ: 応答を記録
+        if (channelId && this.workdir) {
+          logResponse(this.workdir, channelId, { result: fullText, sessionId });
+        }
+
         callbacks.onComplete?.(result);
         resolve(result);
       });

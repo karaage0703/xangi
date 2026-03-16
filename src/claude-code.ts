@@ -1,9 +1,10 @@
 import { spawn } from 'child_process';
 import { processManager } from './process-manager.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
-import { mergeTexts } from './agent-runner.js';
+import { mergeTexts, sanitizeSurrogates } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildSystemPrompt } from './base-runner.js';
+import { logPrompt, logResponse } from './transcript-logger.js';
 
 export interface ClaudeCodeOptions {
   model?: string;
@@ -46,7 +47,8 @@ export class ClaudeCodeRunner {
     this.systemPrompt = buildSystemPrompt();
   }
 
-  async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+  async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
+    const prompt = sanitizeSurrogates(rawPrompt);
     const args: string[] = ['-p', '--output-format', 'json'];
 
     const skip = options?.skipPermissions ?? this.skipPermissions;
@@ -81,8 +83,21 @@ export class ClaudeCodeRunner {
       : ' (new)';
     console.log(`[claude-code] Executing in ${this.workdir || 'default dir'}${sessionInfo}`);
 
+    // トランスクリプトログ: 送信プロンプトを記録
+    if (options?.channelId && this.workdir) {
+      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    }
+
     const result = await this.execute(args, options?.channelId);
     const response = this.parseResponse(result);
+
+    // トランスクリプトログ: 応答を記録
+    if (options?.channelId && this.workdir) {
+      logResponse(this.workdir, options.channelId, {
+        result: response.result,
+        sessionId: response.session_id,
+      });
+    }
 
     return {
       result: response.result,
@@ -157,10 +172,11 @@ export class ClaudeCodeRunner {
    * ストリーミング実行
    */
   async runStream(
-    prompt: string,
+    rawPrompt: string,
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const prompt = sanitizeSurrogates(rawPrompt);
     const args: string[] = ['-p', '--output-format', 'stream-json', '--verbose'];
 
     const skip = options?.skipPermissions ?? this.skipPermissions;

@@ -20,7 +20,7 @@ Claude Code / Codex / Gemini CLI をバックエンドに、Discord から利用
 
 ![Architecture](docs/images/architecture.png)
 
-## Quick Start（Docker）
+## Quick Start
 
 ### 1. 環境変数設定
 
@@ -41,23 +41,36 @@ DISCORD_ALLOWED_USER=123456789012345678
 
 > 💡 Discord Bot の作成方法・IDの調べ方は [Discord セットアップ](docs/discord-setup.md) を参照
 
-### 2. 起動
+### 2. ビルド・起動
 
 ```bash
-docker compose up xangi -d --build
+# Node.js 22+ と使用するAI CLIが必要
+# Claude Code: curl -fsSL https://claude.ai/install.sh | bash
+# Codex CLI:   npm install -g @openai/codex
+# Gemini CLI:  npm install -g @google/gemini-cli
+
+npm install
+npm run build
+npm start
+
+# 開発時
+npm run dev
 ```
 
-### 3. Claude Code 認証
-
-```bash
-docker exec -it xangi claude
-```
-
-表示されたURLをブラウザで開いて認証してください。
-
-### 4. 動作確認
+### 3. 動作確認
 
 Discord で bot にメンションして話しかけてください。
+
+### 自動再起動（pm2）
+
+xangi は `/restart` コマンドで再起動できます。自動復帰にはプロセスマネージャが必要です。
+
+```bash
+npm install -g pm2
+pm2 start "npm start" --name xangi
+pm2 restart xangi  # 手動再起動
+pm2 logs xangi     # ログ確認
+```
 
 ## 使い方
 
@@ -77,22 +90,17 @@ Discord で bot にメンションして話しかけてください。
 
 詳細は [使い方ガイド](docs/usage.md) を参照してください。
 
-## ローカル実行
+## Docker で実行する場合
 
-Docker を使わずにホストで直接実行する方法。
+コンテナ隔離環境で実行したい場合は Docker も利用できます。
 
 ```bash
-# Node.js 22+ と使用するAI CLIが必要
-# Claude Code: curl -fsSL https://claude.ai/install.sh | bash
-# Codex CLI:   npm install -g @openai/codex
-# Gemini CLI:  npm install -g @google/gemini-cli
+docker compose up xangi -d --build
+```
 
-npm install
-npm run build
-npm start
-
-# 開発時
-npm run dev
+Claude Code 認証:
+```bash
+docker exec -it xangi claude
 ```
 
 ### systemd サービス（推奨）
@@ -151,8 +159,22 @@ journalctl --user -u xangi-logomix -f    # ログ確認
 | `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
 | `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間（ミリ秒） | `14400000`（4時間） |
 | `GH_TOKEN` | GitHub CLI用トークン | - |
+| `INJECT_CHANNEL_TOPIC` | チャンネルトピックをプロンプトに注入 | `true` |
+| `INJECT_TIMESTAMP` | 現在時刻をプロンプトに注入 | `true` |
 
 全ての環境変数は [設計ドキュメント](docs/design.md) を参照してください。
+
+## ワークスペース
+
+推奨ワークスペース: [ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace)
+
+スキル（メモ管理・日記・音声文字起こし・Notion連携など）がプリセットされたスターターキットです。xangi と組み合わせることで、チャットからスキルを呼び出して日常タスクを自動化できます。
+
+## 書籍
+
+📖 [生活に溶け込むAI — AIエージェントで作る、自分だけのアシスタント](https://karaage0703.booth.pm/items/8027277)
+
+xangi を使ったAIアシスタント構築のノウハウをまとめた書籍です。
 
 ## ドキュメント
 
