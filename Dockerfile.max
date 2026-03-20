@@ -39,6 +39,9 @@ RUN npm ci --omit=dev --ignore-scripts
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy prompts (XANGI_COMMANDS.md etc.)
+COPY prompts/ ./prompts/
+
 # Install Codex CLI globally (as root)
 RUN npm install -g @openai/codex
 

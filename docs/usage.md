@@ -13,7 +13,8 @@ xangiの詳細な使い方ガイドです。
 - [コマンドプレフィックス](#コマンドプレフィックス)
 - [ランタイム設定](#ランタイム設定)
 - [AIによる自律操作](#aiによる自律操作)
-- [Local LLM（Ollama等）](#local-llmollama等)
+- [Docker実行](#docker実行)
+- [Local LLM（Ollama）](#local-llmollama)
 - [トラブルシューティング](#トラブルシューティング)
 
 ## 基本操作
@@ -278,60 +279,180 @@ pm2 restart xangi
 > `--update-env` はシェルの全環境変数をpm2に保存します。複数のxangiインスタンスを動かしている場合、別インスタンスの `DISCORD_TOKEN` 等が混入し、同じbotトークンで二重ログインする原因になります。
 > `node --env-file=.env` は既存の環境変数を上書きしないため、pm2が先にセットした値が優先されてしまいます。
 
-## Local LLM（Ollama等）
+## Docker実行
 
-### ローカル実行
+コンテナ隔離環境で実行できます。3つのコンテナが用意されています：
+
+| コンテナ | Dockerfile | 用途 |
+|---|---|---|
+| `xangi` | `Dockerfile` | 軽量版（Claude Code / Codex / Gemini CLI） |
+| `xangi-max` | `Dockerfile.max` | フル版（uv + Python対応、Local LLM向け） |
+| `xangi-gpu` | `Dockerfile.gpu` | GPU版（CUDA + PyTorch、画像生成・音声処理向け） |
+
+### Claude Code バックエンド
+
+```bash
+docker compose up xangi -d --build
+
+# Claude Code 認証
+docker exec -it xangi claude
+```
+
+### Local LLM バックエンド（Ollama）
+
+Ollamaコンテナが同梱されているため、ホストにOllamaをインストールする必要はありません。
 
 ```bash
 # .env を設定
 AGENT_BACKEND=local-llm
 LOCAL_LLM_MODEL=nemotron-3-nano
+
+# 起動（ollama + xangi-max）
+docker compose up xangi-max -d --build
+```
+
+### GPU版（CUDA + Python + PyTorch）
+
+PyTorch（CUDA対応）が利用可能で、DGX Spark（ARM64）でも動作します。
+
+```bash
+# 起動（xangi-gpu + ollama）
+docker compose up xangi-gpu -d --build
+
+# Claude Code 認証
+docker exec -it xangi-gpu claude
+
+# GPU確認
+docker exec -it xangi-gpu python3 -c "import torch; print(torch.cuda.is_available())"
+```
+
+> **💡 ヒント**: `xangi-gpu` は `xangi-max` の上位互換です。GPU/PyTorchが必要なスキル（音声文字起こし、画像生成等）を使う場合はこちらを選択してください。
+
+### Docker操作
+
+```bash
+# 停止
+docker compose down
+
+# 再起動（.env変更後など）
+docker compose up xangi-max -d --force-recreate
+
+# ログ確認
+docker logs -f xangi-max
+```
+
+### ワークスペースのマウント
+
+| 環境 | 変数 | 説明 |
+|---|---|---|
+| ローカル | `WORKSPACE_PATH` | エージェントが直接使うパス |
+| Docker | `DOCKER_WORKSPACE_PATH` | ホスト側のパス（コンテナ内は `/workspace` に固定） |
+
+Docker実行時は `.env` に `DOCKER_WORKSPACE_PATH` を設定します：
+
+```bash
+DOCKER_WORKSPACE_PATH=/home/user/my-workspace
+```
+
+> **⚠️ `WORKSPACE_PATH` は使わないこと。** ホストのシェル環境変数と衝突する可能性があります。
+
+### セキュリティ
+
+- コンテナはホストネットワークに**直接アクセスできません**
+- Ollamaコンテナは同じdocker network内で隔離
+- AIエージェントへの環境変数はホワイトリスト方式で制限（`DISCORD_TOKEN` 等はアクセス不可）
+
+## Local LLM（Ollama）
+
+xangiのLocal LLMバックエンドはOpenAI互換API（`/v1/chat/completions`）を使用します。
+
+### ローカル実行（Ollama）
+
+```bash
+# .env を設定
+AGENT_BACKEND=local-llm
+LOCAL_LLM_MODEL=gpt-oss:20b
 # LOCAL_LLM_BASE_URL=http://localhost:11434  # デフォルト
 ```
 
 Ollamaが起動していればそのまま動作します。
 
-### Docker実行
-
-Docker実行時は Ollama コンテナが同じ docker network 内で起動し、`ollama:11434` で接続します。
-
-```bash
-# .env を設定（LOCAL_LLM_BASE_URL は省略可、デフォルトで ollama:11434）
-AGENT_BACKEND=local-llm
-LOCAL_LLM_MODEL=nemotron-3-nano
-```
-
-```bash
-# 起動（ollama + xangi-max）
-docker compose up -d
-
-# xangi-maxのみ再起動（.env変更後など）
-docker compose up xangi-max -d --force-recreate
-```
-
-#### 注意事項
-
-- **ホスト環境変数に注意**: `docker compose` は `.env` よりホストのシェル環境変数を優先する。別のxangiインスタンスの `DISCORD_TOKEN` 等が設定されていると上書きされる。`unset DISCORD_TOKEN` してから起動すること
-- **xangiコンテナ単体の起動**: `docker compose up xangi-max -d` でxangi-maxだけ起動すると、ollamaが起動しない場合がある。初回は `docker compose up -d` で全サービス起動を推奨
-
-#### セキュリティ
-
-- xangiコンテナはホストネットワークに**直接アクセスできません**
-- Ollamaコンテナは同じdocker network内で隔離
-- AIエージェントがホストの他サービス（SSH、Web等）にアクセスすることを防止
-- AIエージェントへの環境変数はホワイトリスト方式で制限（`DISCORD_TOKEN` 等はアクセス不可）
-
-> **⚠️ `localhost:11434` はコンテナ自身を指すため使えません。Docker実行時はデフォルトのまま（`ollama:11434`）で動作します。**
+Docker実行については [Docker実行](#docker実行) セクションを参照してください。
 
 ### 対応モデル例
 
-| モデル | サイズ | 特徴 |
-|--------|--------|------|
-| `nemotron-3-nano` | 24GB | 軽量・高速 |
-| `nemotron-3-super` | 86GB | 高精度・エージェント向け |
-| `qwen3.5:9b` | 9GB | Thinking対応 |
+| モデル | サイズ | 特徴 | 備考 |
+|--------|--------|------|------|
+| `gpt-oss:20b` | 13GB | MoE、高品質・ツールコール対応 | 推奨 |
+| `gpt-oss:120b` | 65GB | MoE（アクティブ12B）、最高品質 | 大容量メモリ必要 |
+| `nemotron-3-nano` | 24GB | Mambaハイブリッド、高速 | |
+| `nemotron-3-super` | 86GB | Mambaハイブリッド、高精度 | 大容量メモリ必要 |
+| `qwen3.5:9b` | 6.6GB | 軽量・Thinking対応 | |
 
 その他Ollamaで利用可能なモデルに対応しています。
+
+## セキュリティ
+
+### 環境変数のホワイトリスト
+
+AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `src/safe-env.ts` で管理。ホワイトリストに記載された変数のみ渡され、`DISCORD_TOKEN` 等のシークレットはAIからアクセス不可。
+
+**許可される変数:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`
+
+**渡されない変数（例）:** `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `LOCAL_LLM_API_KEY`, `GH_TOKEN`
+
+ホワイトリストを変更する場合は `src/safe-env.ts` の `ALLOWED_ENV_KEYS` を編集。
+
+## 環境変数一覧
+
+### Discord
+
+| 変数 | 説明 | デフォルト |
+|------|------|-----------|
+| `DISCORD_TOKEN` | Discord Bot Token | **必須** |
+| `DISCORD_ALLOWED_USER` | 許可ユーザーID（カンマ区切りで複数可、`*`で全員許可） | **必須** |
+| `AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） | - |
+| `DISCORD_STREAMING` | ストリーミング出力 | `true` |
+| `DISCORD_SHOW_THINKING` | 思考過程を表示 | `true` |
+| `INJECT_CHANNEL_TOPIC` | チャンネルトピックをプロンプトに注入 | `true` |
+| `INJECT_TIMESTAMP` | 現在時刻をプロンプトに注入 | `true` |
+
+### AIエージェント
+
+| 変数 | 説明 | デフォルト |
+|------|------|-----------|
+| `AGENT_BACKEND` | バックエンド（`claude-code` / `codex` / `gemini` / `local-llm`） | `claude-code` |
+| `AGENT_MODEL` | 使用するモデル | - |
+| `WORKSPACE_PATH` | 作業ディレクトリ（ローカル実行時） | `./workspace` |
+| `DOCKER_WORKSPACE_PATH` | ワークスペースのホスト側パス（Docker実行時） | `./workspace` |
+| `SKIP_PERMISSIONS` | デフォルトで許可スキップ | `false` |
+| `TIMEOUT_MS` | タイムアウト（ミリ秒） | `300000` |
+| `PERSISTENT_MODE` | 常駐プロセスモード | `true` |
+| `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
+| `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間 | `1800000` |
+| `DATA_DIR` | データ保存ディレクトリ | `.xangi` |
+| `GH_TOKEN` | GitHub CLIトークン | - |
+
+### Local LLM（`AGENT_BACKEND=local-llm` 時）
+
+| 変数 | 説明 | デフォルト |
+|------|------|-----------|
+| `LOCAL_LLM_BASE_URL` | LLMサーバーURL | `http://localhost:11434` |
+| `LOCAL_LLM_MODEL` | 使用するモデル名 | - |
+| `LOCAL_LLM_API_KEY` | APIキー（vLLM等で必要な場合） | - |
+| `LOCAL_LLM_THINKING` | Thinkingモデルの推論を有効にするか | `true` |
+| `LOCAL_LLM_MAX_TOKENS` | 最大トークン数 | `8192` |
+| `LOCAL_LLM_NUM_CTX` | コンテキストウィンドウサイズ（Ollama用） | モデルのデフォルト |
+
+### Slack（非推奨）
+
+| 変数 | 説明 |
+|------|------|
+| `SLACK_BOT_TOKEN` | Slack Bot Token（xoxb-...） |
+| `SLACK_APP_TOKEN` | Slack App Token（xapp-...） |
+| `SLACK_ALLOWED_USER` | 許可ユーザーID |
+| `SLACK_AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID |
+| `SLACK_REPLY_IN_THREAD` | スレッド返信するか（デフォルト: `true`） |
 
 ## トラブルシューティング
 

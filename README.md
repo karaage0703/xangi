@@ -96,47 +96,18 @@ pm2 logs xangi     # ログ確認
 
 コンテナ隔離環境で実行したい場合は Docker も利用できます。
 
-### Claude Code バックエンド
-
 ```bash
+# Claude Code バックエンド
 docker compose up xangi -d --build
+
+# Local LLM バックエンド（Ollama）
+docker compose up xangi-max -d --build
+
+# GPU版（CUDA + Python + PyTorch）
+docker compose up xangi-gpu -d --build
 ```
 
-Claude Code 認証:
-```bash
-docker exec -it xangi claude
-```
-
-### Local LLM バックエンド（Ollama）
-
-Ollamaコンテナが同梱されているため、ホストにOllamaをインストールする必要はありません。
-
-```bash
-# .env を設定
-AGENT_BACKEND=local-llm
-LOCAL_LLM_MODEL=nemotron-3-nano
-
-# 起動（ollama + xangi-max）
-docker compose up -d --build
-```
-
-> **⚠️ 注意**: ホストのシェルに `DISCORD_TOKEN` 等の環境変数が設定されていると `.env` を上書きします。`env -i` で環境変数をクリアして起動するか、`unset DISCORD_TOKEN` 等で対処してください。
-
-### Docker操作
-
-```bash
-# 停止
-docker compose down
-
-# 再起動（.env変更後など）
-docker compose up xangi-max -d --force-recreate
-
-# xangi-maxのみ再起動（ollamaはそのまま）
-docker compose up xangi-max -d
-
-# ログ確認
-docker logs -f xangi-max
-```
+詳細は [使い方ガイド: Docker実行](docs/usage.md#docker実行) を参照してください。
 
 ## 環境変数
 
@@ -147,27 +118,7 @@ docker logs -f xangi-max
 | `DISCORD_TOKEN` | Discord Bot Token |
 | `DISCORD_ALLOWED_USER` | 許可ユーザーID（カンマ区切りで複数可、`*`で全員許可） |
 
-### オプション
-
-| 変数 | 説明 | デフォルト |
-|------|------|-----------|
-| `AGENT_BACKEND` | エージェントバックエンド（`claude-code` / `codex` / `gemini` / `local-llm`） | `claude-code` |
-| `LOCAL_LLM_BASE_URL` | LLMサーバーURL（`local-llm`時） | `http://localhost:11434` |
-| `LOCAL_LLM_MODEL` | 使用モデル名（`local-llm`時） | - |
-| `LOCAL_LLM_THINKING` | Thinkingモデルの推論有効化（`local-llm`時） | `true` |
-| `LOCAL_LLM_MAX_TOKENS` | 最大トークン数（`local-llm`時） | `8192` |
-| `WORKSPACE_PATH` | 作業ディレクトリ（ホストのパス） | `./workspace` |
-| `AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） | - |
-| `AGENT_MODEL` | 使用するモデル | - |
-| `SKIP_PERMISSIONS` | デフォルトで許可スキップ | `false` |
-| `TIMEOUT_MS` | タイムアウト（ミリ秒） | `300000` |
-| `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
-| `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間（ミリ秒） | `1800000`（30分） |
-| `GH_TOKEN` | GitHub CLI用トークン | - |
-| `INJECT_CHANNEL_TOPIC` | チャンネルトピックをプロンプトに注入 | `true` |
-| `INJECT_TIMESTAMP` | 現在時刻をプロンプトに注入 | `true` |
-
-全ての環境変数は [設計ドキュメント](docs/design.md) を参照してください。
+全ての環境変数（オプション含む）は [使い方ガイド](docs/usage.md#環境変数一覧) を参照してください。
 
 ## ワークスペース
 
@@ -183,10 +134,10 @@ xangi を使ったAIアシスタント構築のノウハウをまとめた書籍
 
 ## ドキュメント
 
-- [使い方ガイド](docs/usage.md) - 詳細な使い方
+- [使い方ガイド](docs/usage.md) - Docker実行・環境変数・Local LLM・トラブルシューティング
 - [Discord セットアップ](docs/discord-setup.md) - Bot作成・ID確認方法
 - [Slack セットアップ](docs/slack-setup.md) - Slack連携（非推奨）
-- [設計ドキュメント](docs/design.md) - アーキテクチャ・全環境変数・マウント設定
+- [設計ドキュメント](docs/design.md) - アーキテクチャ・設計思想・データフロー
 
 ## Acknowledgments
 

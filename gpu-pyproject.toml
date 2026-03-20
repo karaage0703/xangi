@@ -1,0 +1,22 @@
+[project]
+name = "xangi-gpu-env"
+version = "0.1.0"
+description = "xangi GPU environment (CUDA + PyTorch)"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "pillow",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }

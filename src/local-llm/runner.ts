@@ -11,10 +11,28 @@ import { LLMClient } from './llm-client.js';
 import { loadWorkspaceContext } from './context.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
-import { CHAT_SYSTEM_PROMPT_PERSISTENT, loadXangiCommands } from '../base-runner.js';
+import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
 
 const MAX_TOOL_ROUNDS = 10;
 const MAX_SESSION_MESSAGES = 50;
+const MAX_TOOL_OUTPUT_CHARS = 8000;
+
+// コンテキスト刈り込み設定（karaagebot準拠）
+const CONTEXT_MAX_CHARS = 120000; // 約48000トークン相当（1トークン≈2.5文字）
+const CONTEXT_KEEP_LAST = 10; // 直近10件は保護
+const TOOL_RESULT_MAX_CHARS_IN_CONTEXT = 4000; // コンテキスト内のツール結果上限
+
+/** ツール結果を切り詰める（head/tail方式、karaagebot準拠） */
+function trimToolResult(content: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): string {
+  if (content.length <= maxChars) return content;
+  const headChars = Math.floor(maxChars * 0.4);
+  const tailChars = Math.floor(maxChars * 0.4);
+  return (
+    content.slice(0, headChars) +
+    `\n\n... [${content.length - headChars - tailChars} chars truncated] ...\n\n` +
+    content.slice(-tailChars)
+  );
+}
 
 /** セッション（会話履歴） */
 interface Session {
@@ -93,9 +111,10 @@ export class LocalLlmRunner implements AgentRunner {
           `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
         );
         const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
-        const toolResultContent = result.success
+        const rawOutput = result.success
           ? result.output
           : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
+        const toolResultContent = trimToolResult(rawOutput);
 
         console.log(
           `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
@@ -166,9 +185,10 @@ export class LocalLlmRunner implements AgentRunner {
             `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
           );
           const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
-          const toolResultContent = result.success
+          const rawToolOutput = result.success
             ? result.output
             : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
+          const toolResultContent = trimToolResult(rawToolOutput);
           console.log(
             `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
           );
@@ -237,22 +257,20 @@ export class LocalLlmRunner implements AgentRunner {
     const parts: string[] = [];
 
     // チャットプラットフォーム説明 + xangiコマンド（base-runner共通）
-    parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + loadXangiCommands());
+    parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + XANGI_COMMANDS);
 
     // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）
     const context = loadWorkspaceContext(this.workdir);
     if (context) parts.push(context);
 
-    // スキル一覧と使い方
+    // スキル一覧と使い方（karaagebot準拠: パスを明示）
     const skills = loadSkills(this.workdir);
     if (skills.length > 0) {
-      const skillList = skills.map((s) => `- ${s.name}: ${s.description}`).join('\n');
+      const skillLines = skills
+        .map((s) => `  - **${s.name}**: ${s.description}\n    SKILL.md: ${s.path}`)
+        .join('\n');
       parts.push(
-        `## Available Skills\n${skillList}\n\n` +
-          `### How to use skills\n` +
-          `1. Use the \`read\` tool to read the skill's SKILL.md file (e.g. \`skills/<skill-name>/SKILL.md\`)\n` +
-          `2. Follow the instructions in SKILL.md to execute the skill using the \`exec\` tool\n` +
-          `3. When a user's request matches a skill's description, always use that skill instead of answering from memory`
+        `## Available Skills\n\nUse the read tool to load SKILL.md before using a skill. NEVER guess commands — always read SKILL.md first.\n${skillLines}`
       );
     }
 
@@ -268,9 +286,36 @@ export class LocalLlmRunner implements AgentRunner {
     return session;
   }
 
+  /**
+   * コンテキスト刈り込み（karaagebot準拠）
+   * 1. ツール結果をTOOL_RESULT_MAX_CHARS_IN_CONTEXTに切り詰め
+   * 2. 直近CONTEXT_KEEP_LAST件を保護
+   * 3. 合計文字数がCONTEXT_MAX_CHARSを超えたら古いメッセージから削除
+   * 4. メッセージ数がMAX_SESSION_MESSAGESを超えたら古いものを削除
+   */
   private trimSession(session: Session): void {
+    // ツール結果を切り詰め（コンテキスト内）
+    for (const msg of session.messages) {
+      if (msg.role === 'tool' && msg.content.length > TOOL_RESULT_MAX_CHARS_IN_CONTEXT) {
+        const head = Math.floor(TOOL_RESULT_MAX_CHARS_IN_CONTEXT * 0.4);
+        const tail = Math.floor(TOOL_RESULT_MAX_CHARS_IN_CONTEXT * 0.4);
+        msg.content =
+          msg.content.slice(0, head) +
+          `\n\n... [${msg.content.length - head - tail} chars trimmed for context] ...\n\n` +
+          msg.content.slice(-tail);
+      }
+    }
+
+    // メッセージ数制限
     if (session.messages.length > MAX_SESSION_MESSAGES) {
       session.messages = session.messages.slice(-MAX_SESSION_MESSAGES);
+    }
+
+    // 合計文字数制限（直近CONTEXT_KEEP_LAST件を保護）
+    let totalChars = session.messages.reduce((sum, m) => sum + m.content.length, 0);
+    while (totalChars > CONTEXT_MAX_CHARS && session.messages.length > CONTEXT_KEEP_LAST) {
+      const removed = session.messages.shift();
+      if (removed) totalChars -= removed.content.length;
     }
   }
 

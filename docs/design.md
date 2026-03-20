@@ -264,136 +264,43 @@ prompts/
 └── XANGI_COMMANDS.md   # xangi専用コマンド仕様（AI CLIに注入）
 ```
 
-## Docker対応
+## Docker構成
 
 ### コンテナ構成
 
 ```
 ┌─────────────────────────────────────────┐
-│ xangi-max container                     │
+│ xangi-max / xangi-gpu container         │
 ├─────────────────────────────────────────┤
-│ - Node.js 22                            │
-│ - Claude Code CLI / Codex CLI / Gemini  │
-│ - GitHub CLI (gh)                       │
-│ - uv + Python                           │
+│ - Node.js 22 + AI CLI + uv + Python    │
+│ - xangi-gpu はさらに CUDA + PyTorch    │
 └───────────────┬─────────────────────────┘
-                │
-                ├── /workspace (bind mount)
-                ├── /home/node/.claude (volume)
-                ├── /home/node/.codex (volume)
-                └── /home/node/.config/gh (volume)
-
-┌─────────────────────────────────────────┐
+                │ docker network
+┌───────────────▼─────────────────────────┐
 │ ollama container                        │
 ├─────────────────────────────────────────┤
 │ - Ollama公式イメージ                     │
 │ - GPU パススルー                         │
-│ - ~/.ollama/models をvolumeマウント      │
-│ - xangi-maxから ollama:11434 で接続     │
+│ - ollama:11434 で接続                   │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│ llama-server container（オプション）     │
+├─────────────────────────────────────────┤
+│ - llama.cpp 公式イメージ                 │
+│ - GPU パススルー                         │
+│ - llama-server:18080 で接続             │
 └─────────────────────────────────────────┘
 ```
 
-**Docker環境でのLocal LLM利用:**
-- xangi-maxとollamaは同じdocker networkに接続
-- `.env` の `LOCAL_LLM_BASE_URL` はデフォルト（`http://ollama:11434`）でOK
-- Ollamaのモデルデータはvolumeで永続化
-- ホストのOllamaを使う場合は `ollama-proxy`（socat）経由も可能
+### セキュリティ方針
 
-### セキュリティ
-
-- 非rootユーザー（node）で実行
+- 非rootユーザー（UID 1000）で実行
 - ワークスペースのみマウント
-- 認証情報はvolumeで永続化
 - AIエージェントへの環境変数はホワイトリスト方式で制限（`src/safe-env.ts`）
 - ホストネットワークへの直接アクセスなし（ollamaコンテナ経由のみ）
-- `extra_hosts` なし → ホストの他サービスにアクセス不可
 
-### 環境変数のホワイトリスト
-
-AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `src/safe-env.ts` で管理。
-ホワイトリストに記載された変数のみ渡され、`DISCORD_TOKEN` 等のシークレットはAIからアクセス不可。
-
-**許可される変数:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`
-
-**渡されない変数（例）:** `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `LOCAL_LLM_API_KEY`, `GH_TOKEN`
-
-ホワイトリストを変更する場合は `src/safe-env.ts` の `ALLOWED_ENV_KEYS` を編集する。
-
-## 環境変数一覧
-
-### Discord
-
-| 変数 | 説明 | 必須 |
-|------|------|------|
-| `DISCORD_TOKEN` | Discord Bot Token | ✅ |
-| `DISCORD_ALLOWED_USER` | 許可ユーザーID（カンマ区切りで複数可、`*`で全員許可） | ✅ |
-| `AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） | - |
-| `DISCORD_STREAMING` | ストリーミング出力（デフォルト: `true`） | - |
-| `DISCORD_SHOW_THINKING` | 思考過程を表示（デフォルト: `true`） | - |
-| `INJECT_CHANNEL_TOPIC` | チャンネルトピックをプロンプトに注入（デフォルト: `true`） | - |
-| `INJECT_TIMESTAMP` | 現在時刻をプロンプトに注入（デフォルト: `true`） | - |
-
-### Slack（非推奨）
-
-| 変数 | 説明 |
-|------|------|
-| `SLACK_BOT_TOKEN` | Slack Bot Token（xoxb-...） |
-| `SLACK_APP_TOKEN` | Slack App Token（xapp-...）※Socket Mode用 |
-| `SLACK_AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） |
-| `SLACK_ALLOWED_USER` | Slack用の許可ユーザーID |
-| `SLACK_REPLY_IN_THREAD` | スレッド返信するか（デフォルト: `true`） |
-| `SLACK_STREAMING` | ストリーミング出力（デフォルト: `true`） |
-| `SLACK_SHOW_THINKING` | 思考過程を表示（デフォルト: `true`） |
-
-### AIエージェント
-
-| 変数 | 説明 | デフォルト |
-|------|------|-----------|
-| `AGENT_BACKEND` | AI CLI（`claude-code` / `codex` / `gemini` / `local-llm`） | `claude-code` |
-| `AGENT_MODEL` | 使用するモデル | - |
-| `WORKSPACE_PATH` | 作業ディレクトリ（ホストのパス） | - |
-| `SKIP_PERMISSIONS` | デフォルトで許可スキップ | `false` |
-| `TIMEOUT_MS` | タイムアウト（ミリ秒） | `300000` |
-| `PERSISTENT_MODE` | 常駐プロセスモード（高速応答） | `true` |
-| `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
-| `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間（ミリ秒） | `1800000`（30分） |
-| `DATA_DIR` | データ保存ディレクトリ | `/workspace/.xangi` |
-
-### Local LLM（`AGENT_BACKEND=local-llm` 時）
-
-| 変数 | 説明 | デフォルト |
-|------|------|-----------|
-| `LOCAL_LLM_BASE_URL` | LLMサーバーURL（Ollama等） | `http://localhost:11434` |
-| `LOCAL_LLM_MODEL` | 使用するモデル名 | - |
-| `LOCAL_LLM_API_KEY` | APIキー（vLLM等で必要な場合） | - |
-| `LOCAL_LLM_THINKING` | Thinkingモデルの推論を有効にするか | `true` |
-| `LOCAL_LLM_MAX_TOKENS` | 最大トークン数 | `8192` |
-
-**対応モデル例（Ollama）:**
-- `nemotron-3-nano` — NVIDIA Nemotron 3 Nano（24GB）軽量・高速
-- `nemotron-3-super` — NVIDIA Nemotron 3 Super（86GB）高精度・エージェント向け
-- `qwen3.5:9b` — Qwen 3.5 9B（9GB）Thinking対応
-- その他Ollamaで利用可能なモデル
-
-**API対応:**
-- Ollama native API（`/api/chat`）— `think:false` 対応、ストリーミング
-- OpenAI互換API（`/v1/chat/completions`）— vLLM等にも対応
-
-### GitHub CLI
-
-| 変数 | 説明 |
-|------|------|
-| `GH_TOKEN` | GitHub CLIトークン（`gh auth token`で取得） |
-
-## マウント設定（Docker）
-
-| ホスト | コンテナ | 説明 |
-|--------|----------|------|
-| `${WORKSPACE_PATH}` | `/workspace` | 作業ディレクトリ |
-| `~/.gitconfig` | `/home/node/.gitconfig` | Git設定 |
-| `xangi_claude-data` volume | `/home/node/.claude` | Claude認証 |
-| `xangi_codex-data` volume | `/home/node/.codex` | Codex認証 |
-| `xangi_gh-data` volume | `/home/node/.config/gh` | GitHub CLI認証 |
+詳細（環境変数一覧・Docker操作方法等）は [使い方ガイド](usage.md) を参照。
 
 ## 拡張ポイント
 

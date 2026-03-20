@@ -3,6 +3,8 @@ x-common: &common
   restart: unless-stopped
   env_file:
     - .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   volumes:
     # Claude Code CLI 認証情報（コンテナ専用ボリューム）
     - claude-data:/home/node/.claude
@@ -10,6 +12,8 @@ x-common: &common
     - codex-data:/home/node/.codex
     # ワークスペース（エージェントの作業ディレクトリ）
     - ${XANGI_WORKSPACE:-./workspace}:/workspace
+    # プロンプト（XANGI_COMMANDS.md等）
+    - ./prompts:/app/prompts:ro
     # Git設定
     - ~/.gitconfig:/home/node/.gitconfig:ro
   environment: &common-env
@@ -17,7 +21,8 @@ x-common: &common
     - NODE_ENV=production
     - WORKSPACE_PATH=/workspace
     - DATA_DIR=/workspace/.xangi
-    # ollamaコンテナへの接続（.envで未設定時のデフォルト）
+    # LLMサーバーへの接続（.envで未設定時のデフォルト）
+    # Ollama: http://ollama:11434
     - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434}
 
 services:
@@ -34,6 +39,23 @@ services:
       context: .
       dockerfile: Dockerfile.max
     container_name: xangi-max
+
+  # GPU版（CUDA + uv + Python + PyTorch）
+  xangi-gpu:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: xangi-gpu
+    depends_on:
+      - ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # Ollama（GPU付きコンテナ）
   ollama:
