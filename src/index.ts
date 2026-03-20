@@ -8,6 +8,7 @@ import {
   ChatInputCommandInteraction,
   Message,
   AutocompleteInteraction,
+  Partials,
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
@@ -124,8 +125,10 @@ async function main() {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.DirectMessages,
       GatewayIntentBits.MessageContent,
     ],
+    partials: [Partials.Channel],
   });
 
   // エージェントランナーを作成
