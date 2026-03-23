@@ -8,6 +8,7 @@ import {
   ChatInputCommandInteraction,
   Message,
   AutocompleteInteraction,
+  MessageFlags,
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
@@ -1313,9 +1314,18 @@ async function main() {
       // 処理中メッセージを送信
       const thinkingMsg = await (
         channel as {
-          send: (content: string) => Promise<{ edit: (content: string) => Promise<unknown> }>;
+          send: (options: {
+            content: string;
+            flags?: number;
+          }) => Promise<{
+            edit: (content: string) => Promise<unknown>;
+            delete: () => Promise<unknown>;
+          }>;
         }
-      ).send('🤔 考え中...');
+      ).send({
+        content: '🤔 考え中...',
+        flags: MessageFlags.SuppressNotifications as unknown as number,
+      });
 
       try {
         // タイムスタンプをプロンプトの先頭に注入
@@ -1363,15 +1373,14 @@ async function main() {
         const filePaths = extractFilePaths(result);
         const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
 
-        // 2000文字超の応答は分割送信
+        // 考え中メッセージを削除して、最終応答を新規メッセージとして送信（通知を正常に飛ばすため）
+        await thinkingMsg.delete().catch(() => {});
+
         const textChunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
-        await thinkingMsg.edit(textChunks[0] || '✅');
-        // 最後に送信したメッセージIDを記録（スケジューラー経由）
-        if ('id' in thinkingMsg) {
-          lastSentMessageIds.set(channelId, (thinkingMsg as { id: string }).id);
-        }
-        if (textChunks.length > 1) {
-          const ch = channel as { send: (content: string) => Promise<unknown> };
+        if (textChunks[0]) {
+          const ch = channel as { send: (content: string) => Promise<{ id: string }> };
+          const sentMsg = await ch.send(textChunks[0]);
+          lastSentMessageIds.set(channelId, sentMsg.id);
           for (let i = 1; i < textChunks.length; i++) {
             await ch.send(textChunks[i]);
           }
@@ -1737,7 +1746,10 @@ async function processPrompt(
     }
 
     // 最初のメッセージを送信
-    replyMessage = await message.reply('🤔 考え中.');
+    replyMessage = await message.reply({
+      content: '🤔 考え中.',
+      flags: MessageFlags.SuppressNotifications,
+    });
 
     let result: string;
     let newSessionId: string;
@@ -1820,17 +1832,16 @@ async function processPrompt(
     // コードブロック内のコマンドは残す（表示用テキストなので消さない）
     const cleanText = stripCommandsFromDisplay(displayText);
 
-    // 2000文字超の応答は分割送信
+    // 考え中メッセージを削除して、最終応答を新規メッセージとして送信（通知を正常に飛ばすため）
+    await replyMessage?.delete().catch(() => {});
+
     const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
-    await replyMessage!.edit(chunks[0] || '✅');
-    // 最後に送信したメッセージIDを記録
-    if (replyMessage) {
-      lastSentMessageIds.set(message.channel.id, replyMessage.id);
-    }
-    if (chunks.length > 1 && 'send' in message.channel) {
+    if (chunks[0] && 'send' in message.channel) {
       const channel = message.channel as unknown as {
-        send: (content: string) => Promise<unknown>;
+        send: (content: string) => Promise<Message>;
       };
+      const sentMsg = await channel.send(chunks[0]);
+      lastSentMessageIds.set(message.channel.id, sentMsg.id);
       for (let i = 1; i < chunks.length; i++) {
         await channel.send(chunks[i]);
       }
