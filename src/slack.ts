@@ -224,6 +224,356 @@ async function deleteMessage(
   }
 }
 
+// User name cache for history display
+const userNameCache = new Map<string, string>();
+
+async function resolveUserName(client: WebClient, userId: string): Promise<string> {
+  const cached = userNameCache.get(userId);
+  if (cached) return cached;
+  try {
+    const info = await client.users.info({ user: userId });
+    const name =
+      (info.user as { display_name?: string; real_name?: string; name?: string })?.display_name ||
+      (info.user as { real_name?: string })?.real_name ||
+      (info.user as { name?: string })?.name ||
+      userId;
+    userNameCache.set(userId, name);
+    return name;
+  } catch {
+    return userId;
+  }
+}
+
+/**
+ * Handle !slack commands from user input or AI response.
+ * Returns { handled, response?, feedback? } similar to Discord's handleDiscordCommand().
+ */
+async function handleSlackCommand(
+  text: string,
+  client: WebClient,
+  channelId: string,
+  sessionKey: string,
+  _threadTs?: string
+): Promise<{ handled: boolean; response?: string; feedback?: boolean }> {
+  // !slack send <#channelId> [thread:<ts>] message
+  const sendMatch = text.match(
+    /^!slack\s+send\s+<#([A-Z0-9]+)(?:\|[^>]*)?>(?:\s+thread:(\S+))?\s+(.+)$/s
+  );
+  if (sendMatch) {
+    const [, targetChannel, targetThreadTs, content] = sendMatch;
+    try {
+      const chunks = splitTextByBytes(content, SLACK_MAX_TEXT_BYTES);
+      for (const chunk of chunks) {
+        await client.chat.postMessage({
+          channel: targetChannel,
+          text: chunk,
+          ...(targetThreadTs && { thread_ts: targetThreadTs }),
+        });
+      }
+      console.log(
+        `[slack] Sent message to ${targetChannel} (${chunks.length} chunk(s))${targetThreadTs ? ` in thread ${targetThreadTs}` : ''}`
+      );
+      return { handled: true, response: `✅ <#${targetChannel}> に送信しました` };
+    } catch (err) {
+      console.error(`[slack] Failed to send message to channel: ${targetChannel}`, err);
+      return { handled: true, response: `❌ <#${targetChannel}> への送信に失敗しました` };
+    }
+  }
+
+  // !slack channels
+  if (/^!slack\s+channels$/.test(text)) {
+    try {
+      const allChannels: Array<{ id: string; name: string; is_private: boolean }> = [];
+      let cursor: string | undefined;
+      do {
+        const result = await client.conversations.list({
+          types: 'public_channel,private_channel',
+          exclude_archived: true,
+          limit: 200,
+          ...(cursor && { cursor }),
+        });
+        const channels = (result.channels || []) as Array<{
+          id?: string;
+          name?: string;
+          is_private?: boolean;
+        }>;
+        for (const ch of channels) {
+          if (ch.id && ch.name) {
+            allChannels.push({ id: ch.id, name: ch.name, is_private: ch.is_private || false });
+          }
+        }
+        cursor = (result.response_metadata as { next_cursor?: string })?.next_cursor || undefined;
+      } while (cursor);
+
+      const channelList = allChannels
+        .map((ch) => `- ${ch.is_private ? '🔒' : '#'}${ch.name} (<#${ch.id}>)`)
+        .join('\n');
+      return {
+        handled: true,
+        response: `📺 チャンネル一覧（${allChannels.length}件）:\n${channelList}`,
+        feedback: true,
+      };
+    } catch (err) {
+      console.error('[slack] Failed to list channels:', err);
+      return { handled: true, response: '❌ チャンネル一覧の取得に失敗しました', feedback: true };
+    }
+  }
+
+  // !slack history [N] [offset:N] [<#channelId>]
+  const historyMatch = text.match(
+    /^!slack\s+history(?:\s+(\d+))?(?:\s+offset:(\d+))?(?:\s+<#([A-Z0-9]+)(?:\|[^>]*)?>)?$/
+  );
+  if (historyMatch) {
+    const count = Math.min(parseInt(historyMatch[1] || '10', 10), 100);
+    const offset = parseInt(historyMatch[2] || '0', 10);
+    const targetChannelId = historyMatch[3] || channelId;
+    try {
+      let latest: string | undefined;
+
+      // offset: skip messages to go further back
+      if (offset > 0) {
+        const skipResult = await client.conversations.history({
+          channel: targetChannelId,
+          limit: offset,
+        });
+        const skipMessages = (skipResult.messages || []) as Array<{ ts?: string }>;
+        if (skipMessages.length > 0) {
+          latest = skipMessages[skipMessages.length - 1].ts;
+        }
+      }
+
+      const result = await client.conversations.history({
+        channel: targetChannelId,
+        limit: count,
+        ...(latest && { latest }),
+      });
+
+      const messages = (result.messages || []) as Array<{
+        ts?: string;
+        text?: string;
+        user?: string;
+        bot_id?: string;
+        username?: string;
+      }>;
+
+      const formattedMessages: string[] = [];
+      for (const msg of [...messages].reverse()) {
+        const ts = msg.ts ? parseFloat(msg.ts) : 0;
+        const time = new Date(ts * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+        let userName = msg.username || 'unknown';
+        if (msg.user) {
+          userName = await resolveUserName(client, msg.user);
+        } else if (msg.bot_id) {
+          userName = `bot:${msg.bot_id}`;
+        }
+        const content = (msg.text || '(添付ファイルのみ)').slice(0, 200);
+        formattedMessages.push(`[${time}] ${userName}: ${content}`);
+      }
+
+      const rangeStart = offset;
+      const rangeEnd = offset + messages.length;
+      const offsetLabel =
+        offset > 0 ? `${rangeStart}〜${rangeEnd}件目` : `最新${messages.length}件`;
+
+      return {
+        handled: true,
+        response: `📺 <#${targetChannelId}> のチャンネル履歴（${offsetLabel}）:\n${formattedMessages.join('\n')}`,
+        feedback: true,
+      };
+    } catch (err) {
+      console.error('[slack] Failed to fetch history:', err);
+      return { handled: true, response: '❌ 履歴の取得に失敗しました', feedback: true };
+    }
+  }
+
+  // !slack search keyword
+  const searchMatch = text.match(/^!slack\s+search\s+(.+)$/);
+  if (searchMatch) {
+    const keyword = searchMatch[1].trim();
+    try {
+      const result = await client.conversations.history({
+        channel: channelId,
+        limit: 100,
+      });
+
+      const messages = (result.messages || []) as Array<{
+        ts?: string;
+        text?: string;
+        user?: string;
+        bot_id?: string;
+        username?: string;
+      }>;
+
+      const matched = messages.filter(
+        (m) => m.text && m.text.toLowerCase().includes(keyword.toLowerCase())
+      );
+
+      if (matched.length > 0) {
+        const results: string[] = [];
+        for (const msg of matched.slice(0, 10)) {
+          const ts = msg.ts ? parseFloat(msg.ts) : 0;
+          const time = new Date(ts * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+          let userName = msg.username || 'unknown';
+          if (msg.user) {
+            userName = await resolveUserName(client, msg.user);
+          }
+          results.push(`[${time}] ${userName}: ${(msg.text || '').slice(0, 200)}`);
+        }
+        return {
+          handled: true,
+          response: `🔍 「${keyword}」の検索結果 (${matched.length}件):\n${results.join('\n')}`,
+          feedback: true,
+        };
+      }
+
+      return {
+        handled: true,
+        response: `🔍 「${keyword}」に一致するメッセージが見つかりませんでした`,
+        feedback: true,
+      };
+    } catch (err) {
+      console.error('[slack] Failed to search messages:', err);
+      return { handled: true, response: '❌ 検索に失敗しました', feedback: true };
+    }
+  }
+
+  // !slack delete [ts/link]
+  const deleteMatch = text.match(/^!slack\s+delete(?:\s+(.+))?$/);
+  if (deleteMatch) {
+    const arg = (deleteMatch[1] || '').trim();
+    const result = await deleteMessage(client, channelId, sessionKey, arg);
+    return { handled: true, response: result, feedback: true };
+  }
+
+  // !slack topic <#channelId> text
+  const topicMatch = text.match(/^!slack\s+topic\s+<#([A-Z0-9]+)(?:\|[^>]*)?>(?:\s+(.+))?$/s);
+  if (topicMatch) {
+    const [, targetChannel, topic] = topicMatch;
+    if (!topic || !topic.trim()) {
+      return { handled: true, response: '❌ トピックのテキストを指定してください', feedback: true };
+    }
+    try {
+      await client.conversations.setTopic({
+        channel: targetChannel,
+        topic: topic.trim(),
+      });
+      console.log(`[slack] Set topic of ${targetChannel} to "${topic.trim()}"`);
+      return {
+        handled: true,
+        response: `✅ <#${targetChannel}> のトピックを更新しました`,
+        feedback: true,
+      };
+    } catch (err) {
+      console.error('[slack] Failed to set topic:', err);
+      return { handled: true, response: '❌ トピックの設定に失敗しました', feedback: true };
+    }
+  }
+
+  return { handled: false };
+}
+
+/**
+ * Scan AI response text for !slack commands and execute them.
+ * Skips commands inside code blocks.
+ * !slack send supports multi-line messages (absorbs lines until next command).
+ * Returns feedback results array for re-injection.
+ */
+async function handleSlackCommandsInResponse(
+  text: string,
+  client: WebClient,
+  channelId: string,
+  sessionKey: string,
+  threadTs?: string
+): Promise<string[]> {
+  const lines = text.split('\n');
+  let inCodeBlock = false;
+  let i = 0;
+  const feedbackResults: string[] = [];
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Track code block open/close
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      i++;
+      continue;
+    }
+
+    // Skip inside code blocks
+    if (inCodeBlock) {
+      i++;
+      continue;
+    }
+
+    const trimmed = line.trim();
+
+    // !slack send multi-line support (absorb lines until next command)
+    const sendMatch = trimmed.match(
+      /^!slack\s+send\s+<#([A-Z0-9]+)(?:\|[^>]*)?>(?:\s+thread:(\S+))?\s*(.*)/
+    );
+    if (sendMatch) {
+      const [, targetChannel, targetThreadTs, firstLineContent] = sendMatch;
+      const restContent = firstLineContent ?? '';
+
+      // Absorb subsequent lines until next !slack or !schedule command
+      const bodyLines: string[] = restContent.trim() ? [restContent] : [];
+      let inBodyCodeBlock = false;
+      i++;
+      while (i < lines.length) {
+        const bodyLine = lines[i];
+        if (bodyLine.trim().startsWith('```')) {
+          inBodyCodeBlock = !inBodyCodeBlock;
+        }
+        if (
+          !inBodyCodeBlock &&
+          (bodyLine.trim().startsWith('!slack ') || bodyLine.trim().startsWith('!schedule'))
+        ) {
+          break;
+        }
+        bodyLines.push(bodyLine);
+        i++;
+      }
+      const fullMessage = bodyLines.join('\n').trim();
+      if (fullMessage) {
+        const threadPart = targetThreadTs ? ` thread:${targetThreadTs}` : '';
+        const commandText = `!slack send <#${targetChannel}>${threadPart} ${fullMessage}`;
+        console.log(
+          `[slack] Processing slack command from response: ${commandText.slice(0, 80)}...`
+        );
+        const result = await handleSlackCommand(
+          commandText,
+          client,
+          channelId,
+          sessionKey,
+          threadTs
+        );
+        if (result.handled && result.response) {
+          if (result.feedback) {
+            feedbackResults.push(result.response);
+          }
+        }
+      }
+      continue; // i already points to next command line
+    }
+
+    // Other !slack commands (channels, search, history, delete, topic)
+    if (trimmed.startsWith('!slack ')) {
+      console.log(`[slack] Processing slack command from response: ${trimmed.slice(0, 80)}...`);
+      const result = await handleSlackCommand(trimmed, client, channelId, sessionKey, threadTs);
+      if (result.handled && result.response) {
+        if (result.feedback) {
+          feedbackResults.push(result.response);
+        }
+      }
+    }
+
+    i++;
+  }
+
+  return feedbackResults;
+}
+
 import type { Scheduler } from './scheduler.js';
 
 export interface SlackChannelOptions {
@@ -320,6 +670,26 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
+    // !slack コマンドの処理（feedback: false → 直接返答、feedback: true → AI処理に流す）
+    if (text.startsWith('!slack ')) {
+      const result = await handleSlackCommand(text, client, channelId, sessionKey, threadTs);
+      if (result.handled) {
+        if (result.feedback && result.response) {
+          // feedback結果はエージェントのコンテキストに注入
+          text = `ユーザーが「${text}」を実行しました。以下がその結果です。この情報を踏まえてユーザーに返答してください。\n\n${result.response}`;
+          // processMessageに流す（下に続く）
+        } else {
+          if (result.response) {
+            await say({
+              text: result.response,
+              ...(threadTs && { thread_ts: threadTs }),
+            });
+          }
+          return;
+        }
+      }
+    }
+
     // 👀 リアクション追加
     await client.reactions
       .add({
@@ -331,7 +701,16 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         console.error('[slack] Failed to add reaction:', err.message || err);
       });
 
-    await processMessage(channelId, threadTs, sessionKey, text, event.ts, client, agentRunner, config);
+    await processMessage(
+      channelId,
+      threadTs,
+      sessionKey,
+      text,
+      event.ts,
+      client,
+      agentRunner,
+      config
+    );
   });
 
   // DMの処理 + autoReplyChannels
@@ -369,7 +748,10 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
 
     // 許可リストチェック（空の場合は全ユーザー許可）
-    if (config.slack.allowedUsers?.length && !config.slack.allowedUsers.includes(messageEvent.user)) {
+    if (
+      config.slack.allowedUsers?.length &&
+      !config.slack.allowedUsers.includes(messageEvent.user)
+    ) {
       console.log(`[slack] Unauthorized user: ${messageEvent.user}`);
       return;
     }
@@ -398,9 +780,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     const channelId = messageEvent.channel;
     const existingThreadTs = messageEvent.thread_ts;
-    const threadTs = config.slack.replyInThread
-      ? existingThreadTs || messageEvent.ts
-      : undefined;
+    const threadTs = config.slack.replyInThread ? existingThreadTs || messageEvent.ts : undefined;
     const sessionKey = computeSessionKey(channelId, existingThreadTs);
 
     // セッションクリアコマンド
@@ -434,6 +814,24 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
+    // !slack コマンドの処理（feedback: false → 直接返答、feedback: true → AI処理に流す）
+    if (text.startsWith('!slack ')) {
+      const result = await handleSlackCommand(text, client, channelId, sessionKey, threadTs);
+      if (result.handled) {
+        if (result.feedback && result.response) {
+          text = `ユーザーが「${text}」を実行しました。以下がその結果です。この情報を踏まえてユーザーに返答してください。\n\n${result.response}`;
+        } else {
+          if (result.response) {
+            await say({
+              text: result.response,
+              ...(threadTs && { thread_ts: threadTs }),
+            });
+          }
+          return;
+        }
+      }
+    }
+
     // 👀 リアクション追加
     await client.reactions
       .add({
@@ -445,7 +843,16 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         console.error('[slack] Failed to add reaction:', err.message || err);
       });
 
-    await processMessage(channelId, threadTs, sessionKey, text, messageEvent.ts, client, agentRunner, config);
+    await processMessage(
+      channelId,
+      threadTs,
+      sessionKey,
+      text,
+      messageEvent.ts,
+      client,
+      agentRunner,
+      config
+    );
   });
 
   // /new コマンド
@@ -490,7 +897,12 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
-    const result = await deleteMessage(client, command.channel_id, command.channel_id, command.text.trim());
+    const result = await deleteMessage(
+      client,
+      command.channel_id,
+      command.channel_id,
+      command.text.trim()
+    );
     await respond({ text: result, response_type: 'ephemeral' });
   });
 
@@ -682,7 +1094,11 @@ async function processMessage(
       }, 1000);
 
       try {
-        const runResult = await agentRunner.run(prompt, { skipPermissions, sessionId, channelId: sessionKey });
+        const runResult = await agentRunner.run(prompt, {
+          skipPermissions,
+          sessionId,
+          channelId: sessionKey,
+        });
         result = runResult.result;
         newSessionId = runResult.sessionId;
       } finally {
@@ -693,12 +1109,42 @@ async function processMessage(
     sessions.set(sessionKey, newSessionId);
     console.log(`[slack] Final result length: ${result.length}`);
 
+    // AI応答から !slack コマンドを検知して実行
+    const feedbackResults = await handleSlackCommandsInResponse(
+      result,
+      client,
+      channelId,
+      sessionKey,
+      threadTs
+    );
+
+    // フィードバック結果があればエージェントに再注入
+    if (feedbackResults.length > 0) {
+      const feedbackPrompt = `あなたが実行したコマンドの結果が返ってきました。この情報を踏まえて、元の会話の文脈に沿ってユーザーに返答してください。\n\n${feedbackResults.join('\n\n')}`;
+      console.log(`[slack] Re-injecting ${feedbackResults.length} feedback result(s) to agent`);
+
+      const feedbackSessionId = sessions.get(sessionKey);
+      const feedbackRunResult = await agentRunner.run(feedbackPrompt, {
+        skipPermissions,
+        sessionId: feedbackSessionId,
+        channelId: sessionKey,
+      });
+      result = feedbackRunResult.result;
+      sessions.set(sessionKey, feedbackRunResult.sessionId);
+
+      // 再注入後の応答にもコマンドがあれば処理（再帰は1回のみ）
+      await handleSlackCommandsInResponse(result, client, channelId, sessionKey, threadTs);
+    }
+
     // ファイルパスを抽出して添付送信
     const filePaths = extractFilePaths(result);
     let displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
 
-    // SYSTEM_COMMAND: 行を表示テキストから除去
-    displayText = displayText.replace(/^SYSTEM_COMMAND:.+$/gm, '').trim();
+    // SYSTEM_COMMAND: 行と !slack コマンド行を表示テキストから除去
+    displayText = displayText
+      .replace(/^SYSTEM_COMMAND:.+$/gm, '')
+      .replace(/^!slack\s+.+$/gm, '')
+      .trim();
 
     // SYSTEM_COMMAND: を検知して実行
     handleSystemCommands(result, agentRunner);
