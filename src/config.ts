@@ -1,6 +1,7 @@
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 export type AgentBackend = 'claude-code' | 'codex' | 'gemini';
+export type ChatPlatform = 'discord' | 'slack';
 
 export interface AgentConfig {
   model?: string;
@@ -17,6 +18,8 @@ export interface AgentConfig {
   idleTimeoutMs?: number;
   /** Chrome ブラウザツールを有効化 */
   chrome?: boolean;
+  /** Chat platform for platform-specific prompt loading */
+  platform?: ChatPlatform;
 }
 
 export interface Config {
@@ -72,6 +75,17 @@ export function loadConfig(): Config {
     );
   }
 
+  // Auto-detect chat platform based on enabled services
+  const discordEnabled = !!discordToken;
+  const slackEnabled = !!slackBotToken && !!slackAppToken;
+  let platform: ChatPlatform | undefined;
+  if (discordEnabled && !slackEnabled) {
+    platform = 'discord';
+  } else if (slackEnabled && !discordEnabled) {
+    platform = 'slack';
+  }
+  // Both enabled → undefined (load all platform commands)
+
   const agentConfig: AgentConfig = {
     model: process.env.AGENT_MODEL || undefined,
     effort: process.env.AGENT_EFFORT || undefined,
@@ -84,11 +98,12 @@ export function loadConfig(): Config {
       ? parseInt(process.env.IDLE_TIMEOUT_MS, 10)
       : 4 * 60 * 60 * 1000, // 4時間
     chrome: process.env.CHROME_ENABLED !== 'false', // デフォルトで有効
+    platform,
   };
 
   return {
     discord: {
-      enabled: !!discordToken,
+      enabled: discordEnabled,
       token: discordToken || '',
       allowedUsers: discordAllowedUsers,
       autoReplyChannels:
@@ -99,7 +114,7 @@ export function loadConfig(): Config {
       showThinking: process.env.DISCORD_SHOW_THINKING !== 'false',
     },
     slack: {
-      enabled: !!slackBotToken && !!slackAppToken,
+      enabled: slackEnabled,
       botToken: slackBotToken,
       appToken: slackAppToken,
       allowedUsers: slackAllowedUsers,

@@ -4,6 +4,7 @@ import type { RunOptions, RunResult, StreamCallbacks, AgentRunner } from './agen
 import { mergeTexts } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildPersistentSystemPrompt } from './base-runner.js';
+import type { ChatPlatform } from './config.js';
 
 /**
  * リクエストキューのアイテム
@@ -53,6 +54,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     workdir?: string;
     skipPermissions?: boolean;
     chrome?: boolean;
+    platform?: ChatPlatform;
   }) {
     super();
     this.model = options?.model;
@@ -61,7 +63,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
     this.chrome = options?.chrome ?? false;
-    this.systemPrompt = buildPersistentSystemPrompt();
+    this.systemPrompt = buildPersistentSystemPrompt(options?.platform);
   }
 
   /**

@@ -3,12 +3,14 @@ import { processManager } from './process-manager.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildSystemPrompt } from './base-runner.js';
+import type { ChatPlatform } from './config.js';
 
 export interface CodexOptions {
   model?: string;
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  platform?: ChatPlatform;
 }
 
 /**
@@ -49,7 +51,7 @@ export class CodexRunner implements AgentRunner {
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
-    this.systemPrompt = buildSystemPrompt();
+    this.systemPrompt = buildSystemPrompt(options?.platform);
   }
 
   /**
