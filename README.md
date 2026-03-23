@@ -126,6 +126,53 @@ docker compose up xangi-gpu -d --build
 
 スキル（メモ管理・日記・音声文字起こし・Notion連携など）がプリセットされたスターターキットです。xangi と組み合わせることで、チャットからスキルを呼び出して日常タスクを自動化できます。
 
+### Claude Code channels との違い
+
+Claude Code には Discord 連携プラグイン（channels）があり、CLI セッションに Discord からメッセージを送れます。xangi とは役割が異なります。
+
+| | xangi | Claude Code channels |
+|---|---|---|
+| 用途 | 共用 AI ボットサービス | 今の CLI セッションへのリモコン |
+| マルチユーザー | 対応 | ペアリング制 |
+| マルチバックエンド | Claude Code / Codex / Gemini CLI / Ollama | Claude Code のみ |
+| スケジューラー | あり | なし |
+| チャンネル × 作業場所の対応付け | 可能（下記参照） | 不可（設定が1つ固定） |
+
+### プロジェクトごとにチャンネルを分ける
+
+複数のプロジェクトを Discord チャンネルで分けて運用する方法は2つあります。
+
+**方法1: 複数インスタンス（確実な隔離）**
+
+プロジェクトごとに xangi ディレクトリを用意し、それぞれの `.env` でワークスペースとチャンネルを設定します。Discord Bot もプロジェクトごとに別途作成が必要です（1トークン = 1ボット）。
+
+```
+xangi-project-a/.env:
+  WORKSPACE_PATH=/path/to/project-a
+  AUTO_REPLY_CHANNELS=111111111
+  DISCORD_TOKEN=bot_token_A
+
+xangi-project-b/.env:
+  WORKSPACE_PATH=/path/to/project-b
+  AUTO_REPLY_CHANNELS=222222222
+  DISCORD_TOKEN=bot_token_B
+```
+
+**方法2: チャンネルトピック注入（手軽）**
+
+1つの xangi インスタンスで、チャンネルのトピックに作業指示を書くことでコンテキストを切り替えます。Bot は1つで済みますが、`WORKSPACE_PATH` 自体は共通のため AI への指示ベースになります。
+
+```
+#project-a のトピック → 作業ディレクトリは ~/project-a で作業すること
+#project-b のトピック → 作業ディレクトリは ~/project-b で作業すること
+```
+
+| | 方法1（複数インスタンス） | 方法2（トピック注入） |
+|---|---|---|
+| 隔離レベル | 完全 | ベストエフォート |
+| 管理コスト | Bot × N 個 | 1つ |
+| 確実性 | 高い | AI が従わない可能性あり |
+
 ## 書籍
 
 📖 [生活に溶け込むAI — AIエージェントで作る、自分だけのアシスタント](https://karaage0703.booth.pm/items/8027277)
