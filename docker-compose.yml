@@ -42,6 +42,16 @@ services:
     ports:
       - "8081:8080"
 
+  # フル版（uv + Python）
+  xangi-max:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile.max
+    container_name: xangi-max
+    ports:
+      - "8080:8080"
+
 volumes:
   claude-data:
     name: xangi-logomix_claude-data
