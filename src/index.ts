@@ -10,6 +10,9 @@ import {
   AutocompleteInteraction,
   ChannelType,
   ForumChannel,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
@@ -37,6 +40,7 @@ import { initSessions, getSession, setSession, deleteSession } from './sessions.
 import {
   initChannelModels,
   getChannelModelConfig,
+  setChannelModelConfig,
   getAllChannelModelConfigs,
   isOpusModel,
 } from './channel-models.js';
@@ -101,6 +105,50 @@ function getTypeLabel(
 
 // チャンネルごとの最後に送信したボットメッセージID
 const lastSentMessageIds = new Map<string, string>();
+
+/** Processing state button row: shows Stop button */
+function createProcessingButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('xangi_stop')
+      .setLabel('Stop')
+      .setEmoji('🛑')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+/** Completed state button rows: session controls + model selection */
+function createCompletedButtons(): ActionRowBuilder<ButtonBuilder>[] {
+  const sessionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('xangi_new')
+      .setLabel('New Session')
+      .setEmoji('🆕')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('xangi_restart')
+      .setLabel('Restart')
+      .setEmoji('🔄')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  const modelRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('xangi_model_opus_high')
+      .setLabel('Opus High')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('xangi_model_opus_medium')
+      .setLabel('Opus Medium')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('xangi_model_opus_low')
+      .setLabel('Opus Low')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [sessionRow, modelRow];
+}
 
 async function main() {
   const config = loadConfig();
@@ -296,6 +344,64 @@ async function main() {
 
   // スラッシュコマンド処理
   client.on(Events.InteractionCreate, async (interaction) => {
+    // ボタンインタラクション処理
+    if (interaction.isButton()) {
+      if (!config.discord.allowedUsers?.includes(interaction.user.id)) {
+        await interaction.reply({ content: '許可されていないユーザーです', ephemeral: true });
+        return;
+      }
+
+      const channelId = interaction.channelId;
+
+      if (interaction.customId === 'xangi_stop') {
+        const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+        if (stopped) {
+          await interaction.reply('🛑 タスクを停止しました');
+        } else {
+          await interaction.reply({ content: '実行中のタスクはありません', ephemeral: true });
+        }
+        return;
+      }
+
+      if (interaction.customId === 'xangi_new') {
+        deleteSession(channelId);
+        agentRunner.destroy?.(channelId);
+        await interaction.reply('🆕 新しいセッションを開始しました');
+        return;
+      }
+
+      if (interaction.customId === 'xangi_restart') {
+        const settings = loadSettings();
+        if (!settings.autoRestart) {
+          await interaction.reply({
+            content: '⚠️ 自動再起動が無効です。先に有効にしてください。',
+            ephemeral: true,
+          });
+          return;
+        }
+        await interaction.reply('🔄 再起動します...');
+        setTimeout(() => {
+          agentRunner.shutdown?.();
+          process.exit(0);
+        }, 1000);
+        return;
+      }
+
+      // Model selection buttons: xangi_model_opus_{high,medium,low}
+      const modelMatch = interaction.customId.match(/^xangi_model_opus_(high|medium|low)$/);
+      if (modelMatch) {
+        const effort = modelMatch[1];
+        setChannelModelConfig(channelId, { model: 'opus', effort });
+        await interaction.reply({
+          content: `🧠 モデルを **Opus (${effort})** に設定しました`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      return;
+    }
+
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'model') {
@@ -1983,9 +2089,10 @@ async function processPrompt(
       console.log(`[xangi] Using one-shot skip runner for channel ${channelId}`);
     }
 
-    // 最初のメッセージを送信（通常テキスト）
+    // 最初のメッセージを送信（Stopボタン付き）
     replyMessage = await message.reply({
       content: 'メッセージを受け付けました。処理中です...',
+      components: [createProcessingButtons()],
     });
 
     let result: string;
@@ -2006,6 +2113,7 @@ async function processPrompt(
         replyMessage!
           .edit({
             content: `メッセージを受け付けました。処理中です${dots}`,
+            components: [createProcessingButtons()],
           })
           .catch(() => {});
       }, 1000);
@@ -2027,6 +2135,7 @@ async function processPrompt(
                 replyMessage!
                   .edit({
                     content: (fullText + ' ▌').slice(0, DISCORD_MAX_LENGTH),
+                    components: [createProcessingButtons()],
                   })
                   .catch((err) => {
                     console.error('[xangi] Failed to edit message:', err.message);
@@ -2053,6 +2162,7 @@ async function processPrompt(
         replyMessage!
           .edit({
             content: `メッセージを受け付けました。処理中です${dots}`,
+            components: [createProcessingButtons()],
           })
           .catch(() => {});
       }, 1000);
@@ -2082,8 +2192,10 @@ async function processPrompt(
     // 2000 characters exceeded: split into multiple messages
     const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
     if (chunks.length > 0 && chunks[0]) {
+      // Remove processing buttons from the reply message
       await replyMessage!.edit({
         content: chunks[0],
+        components: [],
       });
       // 最後に送信したメッセージIDを記録
       if (replyMessage) {
@@ -2120,14 +2232,20 @@ async function processPrompt(
       }
     }
 
-    // 完了通知（メンション付き新規メッセージで通知を飛ばす）
+    // 完了通知（メンション付き新規メッセージで通知を飛ばす、New/Restartボタン付き）
     if ('send' in message.channel) {
       const userId = message.author.id;
       await (
         message.channel as unknown as {
-          send: (content: string) => Promise<unknown>;
+          send: (options: {
+            content: string;
+            components: ActionRowBuilder<ButtonBuilder>[];
+          }) => Promise<unknown>;
         }
-      ).send(`<@${userId}> ${process.env.COMPLETION_MESSAGE ?? '告。応答が完了しています。'}`);
+      ).send({
+        content: `<@${userId}> ${process.env.COMPLETION_MESSAGE ?? '告。応答が完了しています。'}`,
+        components: createCompletedButtons(),
+      });
     }
 
     // AIの応答を返す（!discord コマンド処理用）
@@ -2135,7 +2253,9 @@ async function processPrompt(
   } catch (error) {
     if (error instanceof Error && error.message === 'Request cancelled by user') {
       console.log('[xangi] Request cancelled by user');
-      await replyMessage?.edit('🛑 停止しました').catch(() => {});
+      await replyMessage
+        ?.edit({ content: '🛑 停止しました', components: createCompletedButtons() })
+        .catch(() => {});
       return null;
     }
     console.error('[xangi] Error:', error);
@@ -2154,11 +2274,15 @@ async function processPrompt(
       errorDetail = `❌ エラーが発生しました: ${errorMsg.slice(0, 200)}`;
     }
 
-    // エラー詳細を表示
+    // エラー詳細を表示（New/Restartボタン付き）
     if (replyMessage) {
-      await replyMessage.edit(errorDetail).catch(() => {});
+      await replyMessage
+        .edit({ content: errorDetail, components: createCompletedButtons() })
+        .catch(() => {});
     } else {
-      await message.reply(errorDetail).catch(() => {});
+      await message
+        .reply({ content: errorDetail, components: createCompletedButtons() })
+        .catch(() => {});
     }
 
     // エラー後にエージェントへ自動フォローアップ（タイムアウト・サーキットブレーカー時は除く）
