@@ -100,6 +100,11 @@ MEDIA:/tmp/output.png
 - \`SYSTEM_COMMAND:set autoRestart=true\` — 自動再起動を有効化
 - \`SYSTEM_COMMAND:set autoRestart=false\` — 自動再起動を無効化
 
+## メッセージ分割セパレータ
+
+応答テキストに \`\\n===\\n\`（前後に改行を含む \`===\`）を入れると、そこで分割して別メッセージとしてDiscordに送信される。
+1回の応答で複数の独立した投稿を送りたい場合に使う（content-digest等）。
+
 ## スケジュール・リマインダー
 
 \`!schedule\` コマンドでリマインダーや定期実行を設定できる。

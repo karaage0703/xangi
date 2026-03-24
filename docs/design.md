@@ -72,6 +72,34 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | gemini-cli.ts | Gemini CLI | Google製、セッション管理、ストリーミング対応 |
 | local-llm/runner.ts | Local LLM | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応 |
 
+#### Local LLMアダプターの詳細設計
+
+**セッションリトライのフロー:**
+
+```
+1. ユーザーメッセージをセッション履歴に追加
+   ↓
+2. LLM APIにリクエスト送信
+   ↓
+3a. 成功 → ツールループ or 最終応答を返却
+3b. エラー発生
+   ↓
+4. isSessionRelatedError() でエラーを判定
+   - context length exceeded / too many tokens / max_tokens / context window
+   - invalid message / malformed / 400 / 422
+   ↓
+5a. セッション起因のエラー → セッションをクリア（最後のユーザーメッセージのみ保持）→ リトライ
+5b. セッション起因でない → formatLlmError() でユーザー向けメッセージを生成して返却
+   ↓
+6. リトライも失敗 → formatLlmError() でエラーメッセージを返却
+```
+
+**エラーハンドリングの設計:**
+
+- `isSessionRelatedError()` — Error インスタンスのメッセージを小文字化して、セッション履歴に起因する既知のパターンにマッチするか判定。非Errorオブジェクトは常にfalseを返す
+- `formatLlmError()` — 接続エラー・タイムアウト・認証エラー・レートリミット・サーバーエラーをそれぞれ日本語の分かりやすいメッセージに変換。非Errorオブジェクトにはデフォルトメッセージを返す
+- コンテキスト刈り込み（`trimSession()`）— ツール結果の切り詰め、メッセージ数制限（MAX_SESSION_MESSAGES）、合計文字数制限（CONTEXT_MAX_CHARS）を直近メッセージ保護付きで実行
+
 ### スケジューラー（scheduler.ts）
 
 定期実行とリマインダーを管理：

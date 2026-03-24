@@ -12,6 +12,7 @@ import { loadWorkspaceContext } from './context.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
 import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
+import { logPrompt, logResponse, logError } from '../transcript-logger.js';
 
 const MAX_TOOL_ROUNDS = 10;
 const MAX_SESSION_MESSAGES = 50;
@@ -38,6 +39,44 @@ function trimToolResult(content: string, maxChars: number = MAX_TOOL_OUTPUT_CHAR
 interface Session {
   messages: LLMMessage[];
   updatedAt: number;
+}
+
+/** LLMエラーがセッション履歴に起因するかを判定 */
+export function isSessionRelatedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes('context length') ||
+    msg.includes('too many tokens') ||
+    msg.includes('max_tokens') ||
+    msg.includes('context window') ||
+    msg.includes('invalid message') ||
+    msg.includes('malformed') ||
+    msg.includes('400') ||
+    msg.includes('422')
+  );
+}
+
+/** ユーザー向けエラーメッセージを生成 */
+export function formatLlmError(err: unknown): string {
+  if (!(err instanceof Error)) return 'LLMとの通信中に予期しないエラーが発生しました。';
+  const msg = err.message;
+  if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+    return 'LLMサーバーに接続できませんでした。サーバーが起動しているか確認してください。';
+  }
+  if (msg.includes('timeout') || msg.includes('aborted')) {
+    return 'LLMからの応答がタイムアウトしました。しばらくしてから再試行してください。';
+  }
+  if (msg.includes('401') || msg.includes('403')) {
+    return 'LLMサーバーへの認証に失敗しました。APIキーを確認してください。';
+  }
+  if (msg.includes('429')) {
+    return 'LLMサーバーのレートリミットに達しました。しばらくしてから再試行してください。';
+  }
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503')) {
+    return 'LLMサーバーで内部エラーが発生しました。しばらくしてから再試行してください。';
+  }
+  return `LLMエラー: ${msg}`;
 }
 
 export class LocalLlmRunner implements AgentRunner {
@@ -78,14 +117,250 @@ export class LocalLlmRunner implements AgentRunner {
     const userMsg: LLMMessage = { role: 'user', content: prompt };
     session.messages.push(userMsg);
 
+    // トランスクリプトにプロンプトを記録
+    const channelId = options?.channelId || sessionId;
+    logPrompt(this.workdir, channelId, prompt, sessionId);
+
+    // AbortControllerをprocessManager相当として登録
+    const abortController = new AbortController();
+    this.activeAbortControllers.set(channelId, abortController);
+
+    try {
+      const result = await this.executeAgentLoop(
+        session,
+        systemPrompt,
+        llmTools,
+        channelId,
+        sessionId,
+        abortController,
+        options
+      );
+
+      this.trimSession(session);
+      session.updatedAt = Date.now();
+
+      // トランスクリプトにレスポンスを記録
+      logResponse(this.workdir, channelId, { result, sessionId });
+
+      return { result, sessionId };
+    } catch (err) {
+      // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
+      if (session.messages.length > 1 && isSessionRelatedError(err)) {
+        console.warn(
+          `[local-llm] Session-related error, retrying with fresh session: ${err instanceof Error ? err.message : String(err)}`
+        );
+        logError(
+          this.workdir,
+          channelId,
+          `Session resume failed, retrying: ${err instanceof Error ? err.message : String(err)}`,
+          sessionId
+        );
+
+        // セッションをクリアして最後のユーザーメッセージだけ残す
+        session.messages = [userMsg];
+
+        try {
+          const retryAbortController = new AbortController();
+          this.activeAbortControllers.set(channelId, retryAbortController);
+
+          const result = await this.executeAgentLoop(
+            session,
+            systemPrompt,
+            llmTools,
+            channelId,
+            sessionId,
+            retryAbortController,
+            options
+          );
+
+          this.trimSession(session);
+          session.updatedAt = Date.now();
+          logResponse(this.workdir, channelId, { result, sessionId });
+
+          return { result, sessionId };
+        } catch (retryErr) {
+          const errorMsg = formatLlmError(retryErr);
+          logError(
+            this.workdir,
+            channelId,
+            `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            sessionId
+          );
+          return { result: errorMsg, sessionId };
+        }
+      }
+
+      const errorMsg = formatLlmError(err);
+      logError(
+        this.workdir,
+        channelId,
+        `LLM chat error: ${err instanceof Error ? err.message : String(err)}`,
+        sessionId
+      );
+      return { result: errorMsg, sessionId };
+    } finally {
+      this.activeAbortControllers.delete(channelId);
+    }
+  }
+
+  async runStream(
+    prompt: string,
+    callbacks: StreamCallbacks,
+    options?: RunOptions
+  ): Promise<RunResult> {
+    const sessionId = options?.sessionId || crypto.randomUUID();
+    this.cleanupSessions();
+
+    const session = this.getOrCreateSession(sessionId);
+    const systemPrompt = this.buildSystemPrompt();
+    const tools = getBuiltinTools();
+    const llmTools = toLLMTools(tools);
+
+    const userMsg: LLMMessage = { role: 'user', content: prompt };
+    session.messages.push(userMsg);
+
+    const channelId = options?.channelId || sessionId;
+
+    // トランスクリプトにプロンプトを記録
+    logPrompt(this.workdir, channelId, prompt, sessionId);
+    const abortController = new AbortController();
+    this.activeAbortControllers.set(channelId, abortController);
+
+    try {
+      const fullText = await this.executeStreamLoop(
+        session,
+        systemPrompt,
+        llmTools,
+        channelId,
+        sessionId,
+        abortController,
+        callbacks,
+        options
+      );
+
+      session.messages.push({ role: 'assistant', content: fullText });
+      this.trimSession(session);
+      session.updatedAt = Date.now();
+
+      // トランスクリプトにレスポンスを記録
+      logResponse(this.workdir, channelId, { result: fullText, sessionId });
+
+      const result: RunResult = { result: fullText, sessionId };
+      callbacks.onComplete?.(result);
+      return result;
+    } catch (err) {
+      // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
+      if (session.messages.length > 1 && isSessionRelatedError(err)) {
+        console.warn(
+          `[local-llm] Session-related stream error, retrying with fresh session: ${err instanceof Error ? err.message : String(err)}`
+        );
+        logError(
+          this.workdir,
+          channelId,
+          `Session resume failed (stream), retrying: ${err instanceof Error ? err.message : String(err)}`,
+          sessionId
+        );
+
+        // セッションをクリアして最後のユーザーメッセージだけ残す
+        session.messages = [userMsg];
+
+        try {
+          const retryAbortController = new AbortController();
+          this.activeAbortControllers.set(channelId, retryAbortController);
+
+          const fullText = await this.executeStreamLoop(
+            session,
+            systemPrompt,
+            llmTools,
+            channelId,
+            sessionId,
+            retryAbortController,
+            callbacks,
+            options
+          );
+
+          session.messages.push({ role: 'assistant', content: fullText });
+          this.trimSession(session);
+          session.updatedAt = Date.now();
+          logResponse(this.workdir, channelId, { result: fullText, sessionId });
+
+          const result: RunResult = { result: fullText, sessionId };
+          callbacks.onComplete?.(result);
+          return result;
+        } catch (retryErr) {
+          const error = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
+          const errorMsg = formatLlmError(retryErr);
+          logError(this.workdir, channelId, `LLM stream retry failed: ${error.message}`, sessionId);
+          callbacks.onError?.(error);
+          return { result: errorMsg, sessionId };
+        }
+      }
+
+      const error = err instanceof Error ? err : new Error(String(err));
+      const errorMsg = formatLlmError(err);
+      logError(this.workdir, channelId, `LLM stream error: ${error.message}`, sessionId);
+      callbacks.onError?.(error);
+      return { result: errorMsg, sessionId };
+    } finally {
+      this.activeAbortControllers.delete(channelId);
+    }
+  }
+
+  cancel(channelId?: string): boolean {
+    if (channelId) {
+      const controller = this.activeAbortControllers.get(channelId);
+      if (controller) {
+        controller.abort();
+        this.activeAbortControllers.delete(channelId);
+        return true;
+      }
+    }
+    // channelId不明の場合は全部止める
+    if (this.activeAbortControllers.size > 0) {
+      for (const [id, controller] of this.activeAbortControllers) {
+        controller.abort();
+        this.activeAbortControllers.delete(id);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  destroy(channelId: string): boolean {
+    // channelId をセッションIDとして使ってるなら削除
+    this.sessions.delete(channelId);
+    return true;
+  }
+
+  /**
+   * エージェントループ（run用）: ツール呼び出しを含む非ストリーミング実行
+   */
+  private async executeAgentLoop(
+    session: Session,
+    systemPrompt: string,
+    llmTools: ReturnType<typeof toLLMTools>,
+    channelId: string,
+    sessionId: string,
+    abortController: AbortController,
+    options?: RunOptions
+  ): Promise<string> {
     let toolRounds = 0;
     let finalContent = '';
 
     while (toolRounds <= MAX_TOOL_ROUNDS) {
-      const response = await this.llm.chat(session.messages, {
-        systemPrompt,
-        tools: llmTools.length > 0 ? llmTools : undefined,
-      });
+      let response;
+      try {
+        response = await this.llm.chat(session.messages, {
+          systemPrompt,
+          tools: llmTools.length > 0 ? llmTools : undefined,
+          signal: abortController.signal,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
+        logError(this.workdir, channelId, `LLM chat call failed: ${errorMsg}`, sessionId);
+        throw err;
+      }
 
       if (
         response.finishReason === 'stop' ||
@@ -116,6 +391,15 @@ export class LocalLlmRunner implements AgentRunner {
           : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
         const toolResultContent = trimToolResult(rawOutput);
 
+        if (!result.success) {
+          logError(
+            this.workdir,
+            channelId,
+            `Tool ${toolCall.name} failed: ${rawOutput}`,
+            sessionId
+          );
+        }
+
         console.log(
           `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
         );
@@ -133,76 +417,88 @@ export class LocalLlmRunner implements AgentRunner {
       }
     }
 
-    this.trimSession(session);
-    session.updatedAt = Date.now();
-
-    return { result: finalContent, sessionId };
+    return finalContent;
   }
 
-  async runStream(
-    prompt: string,
+  /**
+   * ストリーミングループ: ツール呼び出し + 最終応答ストリーミング
+   */
+  private async executeStreamLoop(
+    session: Session,
+    systemPrompt: string,
+    llmTools: ReturnType<typeof toLLMTools>,
+    channelId: string,
+    sessionId: string,
+    abortController: AbortController,
     callbacks: StreamCallbacks,
     options?: RunOptions
-  ): Promise<RunResult> {
-    const sessionId = options?.sessionId || crypto.randomUUID();
-    this.cleanupSessions();
-
-    const session = this.getOrCreateSession(sessionId);
-    const systemPrompt = this.buildSystemPrompt();
-    const tools = getBuiltinTools();
-    const llmTools = toLLMTools(tools);
-
-    session.messages.push({ role: 'user', content: prompt });
-
-    const channelId = options?.channelId || sessionId;
-    const abortController = new AbortController();
-    this.activeAbortControllers.set(channelId, abortController);
-
-    try {
-      // ツールループ: non-streaming の chat() でツール呼び出しを処理
-      let toolRounds = 0;
-      while (toolRounds < MAX_TOOL_ROUNDS) {
-        const response = await this.llm.chat(session.messages, {
+  ): Promise<string> {
+    // ツールループ: non-streaming の chat() でツール呼び出しを処理
+    let toolRounds = 0;
+    while (toolRounds < MAX_TOOL_ROUNDS) {
+      let response;
+      try {
+        response = await this.llm.chat(session.messages, {
           systemPrompt,
           tools: llmTools.length > 0 ? llmTools : undefined,
           signal: abortController.signal,
         });
-
-        if (!response.toolCalls || response.toolCalls.length === 0) {
-          break;
-        }
-
-        // ツール呼び出し処理
-        session.messages.push({
-          role: 'assistant',
-          content: response.content ?? '',
-          toolCalls: response.toolCalls,
-        });
-
-        const toolContext = { workspace: this.workdir, channelId: options?.channelId };
-        for (const toolCall of response.toolCalls) {
-          console.log(
-            `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
-          );
-          const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
-          const rawToolOutput = result.success
-            ? result.output
-            : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
-          const toolResultContent = trimToolResult(rawToolOutput);
-          console.log(
-            `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
-          );
-          session.messages.push({
-            role: 'tool',
-            content: toolResultContent,
-            toolCallId: toolCall.id,
-          });
-        }
-        toolRounds++;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[local-llm] LLM chat call failed (stream tool loop): ${errorMsg}`);
+        logError(
+          this.workdir,
+          channelId,
+          `LLM chat call failed (stream tool loop): ${errorMsg}`,
+          sessionId
+        );
+        throw err;
       }
 
-      // 最終応答をストリーミングで取得
-      let fullText = '';
+      if (!response.toolCalls || response.toolCalls.length === 0) {
+        break;
+      }
+
+      // ツール呼び出し処理
+      session.messages.push({
+        role: 'assistant',
+        content: response.content ?? '',
+        toolCalls: response.toolCalls,
+      });
+
+      const toolContext = { workspace: this.workdir, channelId: options?.channelId };
+      for (const toolCall of response.toolCalls) {
+        console.log(
+          `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
+        );
+        const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
+        const rawToolOutput = result.success
+          ? result.output
+          : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
+        const toolResultContent = trimToolResult(rawToolOutput);
+        if (!result.success) {
+          logError(
+            this.workdir,
+            channelId,
+            `Tool ${toolCall.name} failed: ${rawToolOutput}`,
+            sessionId
+          );
+        }
+        console.log(
+          `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
+        );
+        session.messages.push({
+          role: 'tool',
+          content: toolResultContent,
+          toolCallId: toolCall.id,
+        });
+      }
+      toolRounds++;
+    }
+
+    // 最終応答をストリーミングで取得
+    let fullText = '';
+    try {
       for await (const chunk of this.llm.chatStream(session.messages, {
         systemPrompt,
         signal: abortController.signal,
@@ -210,47 +506,14 @@ export class LocalLlmRunner implements AgentRunner {
         fullText += chunk;
         callbacks.onText?.(chunk, fullText);
       }
-
-      session.messages.push({ role: 'assistant', content: fullText });
-      this.trimSession(session);
-      session.updatedAt = Date.now();
-
-      const result: RunResult = { result: fullText, sessionId };
-      callbacks.onComplete?.(result);
-      return result;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      callbacks.onError?.(error);
-      throw error;
-    } finally {
-      this.activeAbortControllers.delete(channelId);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[local-llm] LLM chatStream failed: ${errorMsg}`);
+      logError(this.workdir, channelId, `LLM chatStream failed: ${errorMsg}`, sessionId);
+      throw err;
     }
-  }
 
-  cancel(channelId?: string): boolean {
-    if (channelId) {
-      const controller = this.activeAbortControllers.get(channelId);
-      if (controller) {
-        controller.abort();
-        this.activeAbortControllers.delete(channelId);
-        return true;
-      }
-    }
-    // channelId不明の場合は全部止める
-    if (this.activeAbortControllers.size > 0) {
-      for (const [id, controller] of this.activeAbortControllers) {
-        controller.abort();
-        this.activeAbortControllers.delete(id);
-      }
-      return true;
-    }
-    return false;
-  }
-
-  destroy(channelId: string): boolean {
-    // channelId をセッションIDとして使ってるなら削除
-    this.sessions.delete(channelId);
-    return true;
+    return fullText;
   }
 
   private buildSystemPrompt(): string {
