@@ -26,3 +26,7 @@ logs/
 workspace/*
 !workspace/.gitkeep
 .xangi/
+
+# Instance-specific runtime files
+settings.json
+AGENTS.md
