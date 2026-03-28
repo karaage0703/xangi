@@ -1,27 +1,32 @@
+**日本語** | [English](README.en.md)
+
 # xangi
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code / Codex / Gemini CLI / Local LLM（Ollama等）をバックエンドに、Discord から利用できる AI アシスタント。
+Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord から利用できる AI アシスタント。
 
 ## Features
 
-- 🤖 マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
-- 💬 Discord 対応
-- 👤 マルチユーザー対応（複数ユーザー許可 / 全員許可）
-- 🐳 Docker対応（コンテナ隔離環境）
-- 🔒 環境変数ホワイトリスト（AIにシークレットを渡さない）
-- 📚 スキルシステム（スラッシュコマンド対応）
-- 🐙 GitHub CLI（gh）対応
-- ⏰ スケジューラー機能（cron / 単発 / 起動時タスク）
-- 🚀 常駐プロセスモードで高速応答
-- 💾 セッション永続化（再起動後も会話継続）
-- ✂️ `===` セパレータで1応答を複数メッセージに分割送信
-- 🔄 Local LLMのセッション管理・自動リトライ・エラーハンドリング
+- マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
+- Local LLM対応（Ollama/vLLM等）
+- Discord / Slack 対応
+- Docker対応
+- スキルシステム
+- スケジューラー（cron / 単発 / 起動時タスク）
+- セッション永続化
 
 ## アーキテクチャ
 
-![Architecture](docs/images/architecture.png)
+```mermaid
+graph LR
+    User --> |メッセージ| Chat[Chat Platform<br/>Discord / Slack]
+    Chat --> |プロンプト| xangi
+    xangi --> |実行| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
+    CLI --> |ファイル操作| WS[Workspace<br/>skills / AGENTS.md]
+    xangi --> |定期実行| Scheduler
+    Scheduler --> |プロンプト| CLI
+```
 
 ## Quick Start
 

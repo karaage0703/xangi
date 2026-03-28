@@ -33,6 +33,8 @@ import {
 } from './scheduler.js';
 import { initSessions, getSession, setSession, deleteSession } from './sessions.js';
 import { join } from 'path';
+import { config as dotenvConfig } from 'dotenv';
+dotenvConfig({ override: true });
 
 /** メッセージを指定文字数で分割（カスタムセパレータ対応、デフォルトは行単位） */
 function splitMessage(text: string, maxLength: number, separator: string = '\n'): string[] {

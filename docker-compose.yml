@@ -29,12 +29,14 @@ services:
   # ミニマム版（デフォルト）
   xangi:
     <<: *common
+    image: xangi:latest
     build: .
     container_name: xangi
 
   # フル版（uv + Python）
   xangi-max:
     <<: *common
+    image: xangi:max
     build:
       context: .
       dockerfile: Dockerfile.max
@@ -43,6 +45,7 @@ services:
   # GPU版（CUDA + uv + Python + PyTorch）
   xangi-gpu:
     <<: *common
+    image: xangi:gpu
     build:
       context: .
       dockerfile: Dockerfile.gpu

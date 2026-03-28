@@ -12,7 +12,15 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 
 ## アーキテクチャ
 
-![Architecture](images/architecture.png)
+```mermaid
+graph LR
+    User --> |メッセージ| Chat[Chat Platform<br/>Discord / Slack]
+    Chat --> |プロンプト| xangi
+    xangi --> |実行| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
+    CLI --> |ファイル操作| WS[Workspace<br/>skills / AGENTS.md]
+    xangi --> |定期実行| Scheduler
+    Scheduler --> |プロンプト| CLI
+```
 
 ### レイヤー構成
 

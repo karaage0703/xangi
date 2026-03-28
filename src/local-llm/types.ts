@@ -1,8 +1,17 @@
+export interface LLMImageContent {
+  /** base64-encoded image data (without data URI prefix) */
+  base64: string;
+  /** MIME type (e.g., "image/jpeg", "image/png") */
+  mimeType: string;
+}
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   toolCalls?: LLMToolCall[];
   toolCallId?: string;
+  /** Attached images for multimodal messages */
+  images?: LLMImageContent[];
 }
 
 export interface LLMToolCall {

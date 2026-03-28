@@ -38,6 +38,7 @@
   "dependencies": {
     "@slack/bolt": "^4.6.0",
     "discord.js": "^14.16.3",
+    "dotenv": "^17.3.1",
     "node-cron": "^4.2.1",
     "yaml": "^2.6.1"
   },

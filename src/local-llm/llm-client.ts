@@ -3,9 +3,13 @@
  */
 import type { LLMMessage, LLMToolCall, LLMChatOptions, LLMChatResponse } from './types.js';
 
+type OpenAIContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 interface OpenAIMessage {
   role: string;
-  content: string | null;
+  content: string | OpenAIContentPart[] | null;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -30,9 +34,25 @@ interface OpenAIChatResponse {
   }>;
 }
 
-function toOpenAIMessages(messages: LLMMessage[]): OpenAIMessage[] {
+function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMessage[] {
   return messages.map((msg) => {
     const m: OpenAIMessage = { role: msg.role, content: msg.content };
+
+    // マルチモーダル: 画像がある場合はcontent配列形式にする（OpenAI互換API向け）
+    if (msg.images && msg.images.length > 0 && !isOllama) {
+      const parts: OpenAIContentPart[] = [];
+      if (msg.content) {
+        parts.push({ type: 'text', text: msg.content });
+      }
+      for (const img of msg.images) {
+        parts.push({
+          type: 'image_url',
+          image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+        });
+      }
+      m.content = parts;
+    }
+
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       m.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id,
@@ -77,10 +97,17 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): Promise<LLMChatResponse> {
-    const ollamaMessages = messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+    const ollamaMessages = messages.map((msg) => {
+      const m: { role: string; content: string; images?: string[] } = {
+        role: msg.role,
+        content: msg.content,
+      };
+      // Ollama形式: images フィールドにbase64画像を配列で渡す
+      if (msg.images && msg.images.length > 0) {
+        m.images = msg.images.map((img) => img.base64);
+      }
+      return m;
+    });
 
     if (options?.systemPrompt) {
       ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -164,7 +191,7 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): Promise<LLMChatResponse> {
-    const requestMessages = toOpenAIMessages(messages);
+    const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
 
     if (options?.systemPrompt) {
       requestMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -258,7 +285,7 @@ export class LLMClient {
       return;
     }
 
-    const requestMessages = toOpenAIMessages(messages);
+    const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
 
     if (options?.systemPrompt) {
       requestMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -340,10 +367,16 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): AsyncGenerator<string> {
-    const ollamaMessages = messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+    const ollamaMessages = messages.map((msg) => {
+      const m: { role: string; content: string; images?: string[] } = {
+        role: msg.role,
+        content: msg.content,
+      };
+      if (msg.images && msg.images.length > 0) {
+        m.images = msg.images.map((img) => img.base64);
+      }
+      return m;
+    });
 
     if (options?.systemPrompt) {
       ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });

@@ -6,8 +6,9 @@
  */
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import type { AgentConfig } from '../config.js';
-import type { LLMMessage } from './types.js';
+import type { LLMMessage, LLMImageContent } from './types.js';
 import { LLMClient } from './llm-client.js';
+import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
 import { loadWorkspaceContext } from './context.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
@@ -113,8 +114,8 @@ export class LocalLlmRunner implements AgentRunner {
     const tools = getBuiltinTools();
     const llmTools = toLLMTools(tools);
 
-    // ユーザーメッセージ追加
-    const userMsg: LLMMessage = { role: 'user', content: prompt };
+    // ユーザーメッセージ追加（画像添付があればマルチモーダルメッセージにする）
+    const userMsg = this.buildUserMessage(prompt);
     session.messages.push(userMsg);
 
     // トランスクリプトにプロンプトを記録
@@ -216,7 +217,7 @@ export class LocalLlmRunner implements AgentRunner {
     const tools = getBuiltinTools();
     const llmTools = toLLMTools(tools);
 
-    const userMsg: LLMMessage = { role: 'user', content: prompt };
+    const userMsg = this.buildUserMessage(prompt);
     session.messages.push(userMsg);
 
     const channelId = options?.channelId || sessionId;
@@ -516,11 +517,47 @@ export class LocalLlmRunner implements AgentRunner {
     return fullText;
   }
 
+  /**
+   * プロンプトからユーザーメッセージを構築する。
+   * 添付ファイルに画像が含まれている場合はマルチモーダルメッセージにする。
+   */
+  private buildUserMessage(prompt: string): LLMMessage {
+    const { imagePaths, otherPaths, cleanPrompt } = extractAttachmentPaths(prompt);
+
+    // 画像をbase64エンコード
+    const images: LLMImageContent[] = [];
+    for (const imagePath of imagePaths) {
+      const base64 = encodeImageToBase64(imagePath);
+      if (base64) {
+        const mimeType = getMimeType(imagePath);
+        images.push({ base64, mimeType });
+        console.log(`[local-llm] Image attached: ${imagePath} (${mimeType})`);
+      }
+    }
+
+    // 非画像ファイルがある場合はテキストに添付情報を残す
+    let content = cleanPrompt;
+    if (otherPaths.length > 0) {
+      const fileList = otherPaths.map((p) => `  - ${p}`).join('\n');
+      content = `${cleanPrompt}\n\n[添付ファイル]\n${fileList}`;
+    }
+
+    const msg: LLMMessage = { role: 'user', content };
+    if (images.length > 0) {
+      msg.images = images;
+    }
+    return msg;
+  }
+
   private buildSystemPrompt(): string {
     const parts: string[] = [];
 
     // チャットプラットフォーム説明 + xangiコマンド（base-runner共通）
-    parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + XANGI_COMMANDS);
+    // LOCAL_LLM_INJECT_XANGI_COMMANDS=false で小型モデル向けに注入をスキップ
+    const injectXangiCommands = process.env.LOCAL_LLM_INJECT_XANGI_COMMANDS !== 'false';
+    if (injectXangiCommands) {
+      parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + XANGI_COMMANDS);
+    }
 
     // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）
     const context = loadWorkspaceContext(this.workdir);
