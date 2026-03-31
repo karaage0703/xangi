@@ -1125,6 +1125,10 @@ async function main() {
   // メッセージ処理
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
+    if (message.system) return;
+
+    // スレッド内のメッセージはメンション時のみ反応（autoReplyChannelの誤発火を防止）
+    if (message.channel.isThread() && !message.mentions.has(client.user!)) return;
 
     const isMentioned = message.mentions.has(client.user!);
     const isDM = !message.guild;
@@ -1891,7 +1895,13 @@ async function processPrompt(
 
     // エラー詳細を表示
     if (replyMessage) {
-      await replyMessage.edit(errorDetail).catch(() => {});
+      // editだと通知が飛ばないので、タイムアウト時は新規replyで通知付き送信
+      if (errorMsg.includes('timed out')) {
+        await replyMessage.delete().catch(() => {});
+        await message.reply(errorDetail).catch(() => {});
+      } else {
+        await replyMessage.edit(errorDetail).catch(() => {});
+      }
     } else {
       await message.reply(errorDetail).catch(() => {});
     }
