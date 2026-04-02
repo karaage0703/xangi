@@ -10,13 +10,13 @@ xangi is a TypeScript project. Source code changes require a build step before t
 
 ```bash
 npm run build       # Compile TypeScript to dist/
-systemctl --user restart xangi-logomix  # Restart the service
+systemctl --user restart xangi  # Restart the service
 ```
 
 After any code update (pull, merge, edit), always:
 
 1. `npm run build` — compile `src/` to `dist/`
-2. `systemctl --user restart xangi-logomix` — restart the running service
+2. `systemctl --user restart xangi` — restart the running service
 
 The service runs `dist/index.js` directly, so skipping the build will cause the service to run stale code.
 
