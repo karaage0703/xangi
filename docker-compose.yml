@@ -32,7 +32,9 @@ services:
   xangi:
     <<: *common
     image: xangi:latest
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: xangi
 
   # フル版（uv + Python）
@@ -41,7 +43,7 @@ services:
     image: xangi:max
     build:
       context: .
-      dockerfile: Dockerfile.max
+      dockerfile: docker/Dockerfile.max
     container_name: xangi-max
 
   # GPU版（CUDA + uv + Python + PyTorch）
@@ -50,7 +52,7 @@ services:
     image: xangi:gpu
     build:
       context: .
-      dockerfile: Dockerfile.gpu
+      dockerfile: docker/Dockerfile.gpu
     container_name: xangi-gpu
     depends_on:
       - ollama

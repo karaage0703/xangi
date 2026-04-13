@@ -49,6 +49,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private systemPrompt: string;
   private resumeSessionId?: string; // プロセス再起動時に --resume で復元するセッションID
   private channelId?: string; // トランスクリプトログ用
+  private appSessionId?: string; // xangi側のセッションID
 
   constructor(options?: {
     model?: string;
@@ -65,6 +66,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     this.skipPermissions = options?.skipPermissions ?? false;
     this.systemPrompt = buildPersistentSystemPrompt(options?.platform);
     this.channelId = options?.channelId;
+  }
+
+  /**
+   * appSessionIdを設定（外部から呼ぶ）
+   */
+  setAppSessionId(appSessionId: string): void {
+    this.appSessionId = appSessionId;
   }
 
   /**
@@ -263,12 +271,18 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
         this.sessionId = json.session_id;
       }
 
+      // providerSessionIdをemit（sessions.tsへの後付け保存用）
+      if (json.session_id) {
+        this.emit('provider-session-id', json.session_id);
+      }
+
       // トランスクリプトログ: 最終結果を記録
-      if (this.channelId && this.workdir) {
+      const resultAppSessionId = this.currentItem?.options?.appSessionId || this.appSessionId;
+      if (resultAppSessionId && this.workdir) {
         if (json.is_error) {
-          logError(this.workdir, this.channelId, json.result || 'Unknown error', this.sessionId);
+          logError(this.workdir, resultAppSessionId, json.result || 'Unknown error');
         } else {
-          logResponse(this.workdir, this.channelId, json as Record<string, unknown>);
+          logResponse(this.workdir, resultAppSessionId, json as Record<string, unknown>);
         }
       }
 
@@ -361,9 +375,12 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     console.log(`[persistent-runner] Sending request (queue: ${this.queue.length} remaining)`);
 
+    // appSessionIdはリクエストのoptionsから取得（/new時に変わるため）
+    const reqAppSessionId = this.currentItem.options?.appSessionId || this.appSessionId;
+
     // トランスクリプトログ: 送信プロンプトを記録
-    if (this.channelId && this.workdir) {
-      logPrompt(this.workdir, this.channelId, this.currentItem.prompt, this.sessionId || undefined);
+    if (reqAppSessionId && this.workdir) {
+      logPrompt(this.workdir, reqAppSessionId, this.currentItem.prompt);
     }
 
     proc.stdin?.write(JSON.stringify(message) + '\n');

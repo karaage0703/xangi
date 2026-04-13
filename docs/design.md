@@ -245,26 +245,43 @@ AIが出力する特殊コマンドを検出して自動実行：
 |--------|--------|------|
 | スケジュール | `${DATA_DIR}/schedules.json` | JSON |
 | ランタイム設定 | `${WORKSPACE}/settings.json` | JSON |
-| セッション | `${DATA_DIR}/sessions.json` | JSON（チャンネルID→セッションID） |
-| トランスクリプト | `logs/transcripts/YYYY-MM-DD/{channelId}.jsonl` | JSONL（送信プロンプト・応答・エラー） |
+| セッション | `${DATA_DIR}/sessions.json` | JSON（appSessionId方式、activeByContext + sessions） |
+| トランスクリプト | `logs/sessions/{appSessionId}.jsonl` | JSONL（セッション単位の会話ログ） |
+
+### セッション管理
+
+xangi独自の `appSessionId` でセッションを管理。backendの `providerSessionId`（Claude Code等）は後付けで保存。
+
+**sessions.json の構造：**
+```json
+{
+  "activeByContext": { "<contextKey>": "<appSessionId>" },
+  "sessions": {
+    "<appSessionId>": {
+      "id": "<appSessionId>",
+      "title": "...",
+      "platform": "discord|slack|web",
+      "contextKey": "<channelId>",
+      "agent": { "backend": "claude-code", "providerSessionId": "..." }
+    }
+  }
+}
+```
 
 ### トランスクリプトログ
 
-チャンネルごとのAI会話ログをJSONL形式で自動保存する機能。デバッグ・障害分析に使用。
+セッション単位のAI会話ログをJSONL形式で自動保存。デバッグ・障害分析・WebUI閲覧に使用。
 
 **ディレクトリ構成：**
 ```
-logs/transcripts/
-  2026-03-08/
-    1469606785672417383.jsonl   # チャンネルごとのログ
-    1477591157423734785.jsonl
-  2026-03-09/
-    ...
+logs/sessions/
+  m4abc123_def456.jsonl   # セッション単位のログ
+  m4xyz789_ghi012.jsonl
 ```
 
 **記録される内容：**
-- `prompt`: ユーザーから送信されたプロンプト（タイムスタンプ・チャンネルトピック注入後）
-- `response`: Claude Code の最終応答（result メッセージ）
+- `user`: ユーザーから送信されたプロンプト
+- `assistant`: AI の最終応答
 - `error`: タイムアウト、API エラーなど
 
 **注意事項：**
@@ -284,6 +301,7 @@ src/
 ├── persistent-runner.ts # Claude Codeアダプター（常駐プロセス）
 ├── codex-cli.ts        # Codex CLIアダプター
 ├── gemini-cli.ts       # Gemini CLIアダプター
+├── web-chat.ts         # WebチャットUI（HTTPサーバー）
 ├── local-llm/          # Local LLMアダプター
 │   ├── runner.ts       #   メインランナー（セッション管理・ツール実行ループ）
 │   ├── llm-client.ts   #   LLM APIクライアント（Ollama native + OpenAI互換）
@@ -299,7 +317,7 @@ src/
 ├── file-utils.ts       # ファイル操作ユーティリティ
 ├── process-manager.ts  # プロセス管理
 ├── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）
-└── transcript-logger.ts # トランスクリプトログ
+└── transcript-logger.ts # セッション単位トランスクリプトログ
 
 prompts/
 └── XANGI_COMMANDS.md   # xangi専用コマンド仕様（AI CLIに注入）

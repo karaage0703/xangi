@@ -56,9 +56,12 @@ export function loadConfig(): Config {
   const slackBotToken = process.env.SLACK_BOT_TOKEN;
   const slackAppToken = process.env.SLACK_APP_TOKEN;
 
-  // 少なくともどちらかが有効である必要がある
-  if (!discordToken && !slackBotToken) {
-    throw new Error('DISCORD_TOKEN or SLACK_BOT_TOKEN environment variable is required');
+  // 少なくともどちらかが有効である必要がある（WebChatのみでもOK）
+  const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
+  if (!discordToken && !slackBotToken && !webChatEnabled) {
+    throw new Error(
+      'DISCORD_TOKEN, SLACK_BOT_TOKEN, or WEB_CHAT_ENABLED=true environment variable is required'
+    );
   }
 
   const discordAllowedUser = process.env.DISCORD_ALLOWED_USER;

@@ -247,26 +247,43 @@ This allows the AI to operate the system autonomously.
 |------|-----------------|--------|
 | Schedules | `${DATA_DIR}/schedules.json` | JSON |
 | Runtime settings | `${WORKSPACE}/settings.json` | JSON |
-| Sessions | `${DATA_DIR}/sessions.json` | JSON (channel ID → session ID) |
-| Transcripts | `logs/transcripts/YYYY-MM-DD/{channelId}.jsonl` | JSONL (sent prompts, responses, errors) |
+| Sessions | `${DATA_DIR}/sessions.json` | JSON (appSessionId-based, activeByContext + sessions) |
+| Transcripts | `logs/sessions/{appSessionId}.jsonl` | JSONL (per-session conversation logs) |
+
+### Session Management
+
+Sessions are managed using xangi's own `appSessionId`. The backend's `providerSessionId` (e.g., Claude Code's session_id) is saved after the response.
+
+**sessions.json Structure:**
+```json
+{
+  "activeByContext": { "<contextKey>": "<appSessionId>" },
+  "sessions": {
+    "<appSessionId>": {
+      "id": "<appSessionId>",
+      "title": "...",
+      "platform": "discord|slack|web",
+      "contextKey": "<channelId>",
+      "agent": { "backend": "claude-code", "providerSessionId": "..." }
+    }
+  }
+}
+```
 
 ### Transcript Logs
 
-Automatically saves per-channel AI conversation logs in JSONL format. Used for debugging and incident analysis.
+Automatically saves per-session AI conversation logs in JSONL format. Used for debugging, incident analysis, and WebUI browsing.
 
 **Directory Structure:**
 ```
-logs/transcripts/
-  2026-03-08/
-    1469606785672417383.jsonl   # Per-channel logs
-    1477591157423734785.jsonl
-  2026-03-09/
-    ...
+logs/sessions/
+  m4abc123_def456.jsonl   # Per-session logs
+  m4xyz789_ghi012.jsonl
 ```
 
 **Recorded Content:**
-- `prompt`: Prompt sent by the user (after timestamp and channel topic injection)
-- `response`: Claude Code's final response (result message)
+- `user`: Prompt sent by the user
+- `assistant`: AI's final response
 - `error`: Timeouts, API errors, etc.
 
 **Notes:**
@@ -301,7 +318,8 @@ src/
 ├── file-utils.ts       # File operation utilities
 ├── process-manager.ts  # Process management
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)
-└── transcript-logger.ts # Transcript logging
+├── web-chat.ts         # Web Chat UI (HTTP server)
+└── transcript-logger.ts # Per-session transcript logging
 
 prompts/
 └── XANGI_COMMANDS.md   # xangi-specific command specs (injected into AI CLI)

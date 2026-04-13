@@ -74,16 +74,16 @@ export class ClaudeCodeRunner {
     console.log(`[claude-code] Executing in ${this.workdir || 'default dir'}${sessionInfo}`);
 
     // トランスクリプトログ: 送信プロンプトを記録
-    if (options?.channelId && this.workdir) {
-      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    if (options?.appSessionId && this.workdir) {
+      logPrompt(this.workdir, options.appSessionId, prompt);
     }
 
     const result = await this.execute(args, options?.channelId);
     const response = this.parseResponse(result);
 
     // トランスクリプトログ: 応答を記録
-    if (options?.channelId && this.workdir) {
-      logResponse(this.workdir, options.channelId, {
+    if (options?.appSessionId && this.workdir) {
+      logResponse(this.workdir, options.appSessionId, {
         result: response.result,
         sessionId: response.session_id,
       });

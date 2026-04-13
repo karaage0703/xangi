@@ -3,11 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 /**
  * 返信元メッセージのフォーマット関数（テスト用に再実装）
  */
-function formatReplyContent(
-  authorTag: string,
-  content: string,
-  attachmentNames: string[]
-): string {
+function formatReplyContent(authorTag: string, content: string, attachmentNames: string[]): string {
   const attachmentInfo =
     attachmentNames.length > 0 ? `\n[添付: ${attachmentNames.join(', ')}]` : '';
 
@@ -50,10 +46,7 @@ describe('Discord Reply Feature', () => {
     });
 
     it('should include attachment info when present', () => {
-      const result = formatReplyContent('user#1234', 'Check this', [
-        'image.png',
-        'doc.pdf',
-      ]);
+      const result = formatReplyContent('user#1234', 'Check this', ['image.png', 'doc.pdf']);
       expect(result).toBe(
         '\n---\n💬 返信元 (user#1234):\nCheck this\n[添付: image.png, doc.pdf]\n---\n'
       );
@@ -61,29 +54,19 @@ describe('Discord Reply Feature', () => {
 
     it('should handle empty content', () => {
       const result = formatReplyContent('user#1234', '', ['file.txt']);
-      expect(result).toBe(
-        '\n---\n💬 返信元 (user#1234):\n\n[添付: file.txt]\n---\n'
-      );
+      expect(result).toBe('\n---\n💬 返信元 (user#1234):\n\n[添付: file.txt]\n---\n');
     });
 
     it('should handle attachment-only message placeholder', () => {
-      const result = formatReplyContent('user#1234', '(添付ファイルのみ)', [
-        'image.png',
-      ]);
+      const result = formatReplyContent('user#1234', '(添付ファイルのみ)', ['image.png']);
       expect(result).toBe(
         '\n---\n💬 返信元 (user#1234):\n(添付ファイルのみ)\n[添付: image.png]\n---\n'
       );
     });
 
     it('should handle multiline content', () => {
-      const result = formatReplyContent(
-        'user#1234',
-        'Line 1\nLine 2\nLine 3',
-        []
-      );
-      expect(result).toBe(
-        '\n---\n💬 返信元 (user#1234):\nLine 1\nLine 2\nLine 3\n---\n'
-      );
+      const result = formatReplyContent('user#1234', 'Line 1\nLine 2\nLine 3', []);
+      expect(result).toBe('\n---\n💬 返信元 (user#1234):\nLine 1\nLine 2\nLine 3\n---\n');
     });
   });
 
@@ -96,9 +79,7 @@ describe('Discord Reply Feature', () => {
       expect(combined).toContain('💬 返信元 (user#1234)');
       expect(combined).toContain('Original message');
       expect(combined).toContain('My response');
-      expect(combined.indexOf('Original message')).toBeLessThan(
-        combined.indexOf('My response')
-      );
+      expect(combined.indexOf('Original message')).toBeLessThan(combined.indexOf('My response'));
     });
 
     it('should work with empty prompt', () => {

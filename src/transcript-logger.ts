@@ -1,67 +1,96 @@
-import { appendFileSync, mkdirSync, existsSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 /**
- * チャンネルごとのトランスクリプト（会話ログ）をJSONLファイルに保存する
+ * セッション単位のトランスクリプト（会話ログ）をJSONLファイルに保存する
  *
- * ログは日付ごとにローテーションされ、以下のディレクトリ構造で保存:
- *   logs/transcripts/YYYY-MM-DD/{channelId}.jsonl
+ * ログはセッションごとに1ファイル:
+ *   logs/sessions/<appSessionId>.jsonl
  */
 
 export interface TranscriptEntry {
-  type: 'prompt' | 'response' | 'error';
-  sessionId?: string;
+  id: string;
+  role: 'user' | 'assistant' | 'error';
   content: string | Record<string, unknown>;
-  timestamp?: string;
+  createdAt: string;
+  usage?: Record<string, unknown>;
 }
 
-function ensureDir(logDir: string): string {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  const dir = join(logDir, today);
+function getSessionLogPath(workdir: string, appSessionId: string): string {
+  const dir = join(workdir, 'logs', 'sessions');
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  return dir;
+  return join(dir, `${appSessionId}.jsonl`);
 }
 
-function writeLog(baseDir: string, channelId: string, entry: TranscriptEntry): void {
+function generateMessageId(): string {
+  return `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function writeEntry(workdir: string, appSessionId: string, entry: TranscriptEntry): void {
   try {
-    const logDir = join(baseDir, 'logs', 'transcripts');
-    const dir = ensureDir(logDir);
-    const filePath = join(dir, `${channelId}.jsonl`);
-    const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() });
+    const filePath = getSessionLogPath(workdir, appSessionId);
+    const line = JSON.stringify(entry);
     appendFileSync(filePath, line + '\n');
   } catch (err) {
-    // ログ書き込み失敗は無視（本体の動作に影響させない）
     console.warn('[transcript] Failed to write log:', err);
   }
 }
 
-/** 送信プロンプトを記録 */
-export function logPrompt(
-  baseDir: string,
-  channelId: string,
-  prompt: string,
-  sessionId?: string
-): void {
-  writeLog(baseDir, channelId, { type: 'prompt', sessionId, content: prompt });
+/**
+ * ユーザーのプロンプトを記録
+ */
+export function logPrompt(workdir: string, appSessionId: string, prompt: string): void {
+  writeEntry(workdir, appSessionId, {
+    id: generateMessageId(),
+    role: 'user',
+    content: prompt,
+    createdAt: new Date().toISOString(),
+  });
 }
 
-/** AI からの応答を記録 */
+/**
+ * AIの応答を記録
+ */
 export function logResponse(
-  baseDir: string,
-  channelId: string,
+  workdir: string,
+  appSessionId: string,
   json: Record<string, unknown>
 ): void {
-  writeLog(baseDir, channelId, { type: 'response', content: json });
+  writeEntry(workdir, appSessionId, {
+    id: generateMessageId(),
+    role: 'assistant',
+    content: json,
+    createdAt: new Date().toISOString(),
+  });
 }
 
-/** エラーを記録 */
-export function logError(
-  baseDir: string,
-  channelId: string,
-  error: string,
-  sessionId?: string
-): void {
-  writeLog(baseDir, channelId, { type: 'error', sessionId, content: error });
+/**
+ * エラーを記録
+ */
+export function logError(workdir: string, appSessionId: string, error: string): void {
+  writeEntry(workdir, appSessionId, {
+    id: generateMessageId(),
+    role: 'error',
+    content: error,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * セッションのメッセージ一覧を読み出す
+ */
+export function readSessionMessages(workdir: string, appSessionId: string): TranscriptEntry[] {
+  try {
+    const filePath = getSessionLogPath(workdir, appSessionId);
+    if (!existsSync(filePath)) return [];
+    const content = readFileSync(filePath, 'utf-8');
+    return content
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as TranscriptEntry);
+  } catch {
+    return [];
+  }
 }

@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>xangi</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100dvh;
+      display: flex;
+      overflow: hidden;
+    }
+    /* サイドバー */
+    #sidebar {
+      width: 260px;
+      background: #12122a;
+      border-right: 1px solid #0f3460;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: transform 0.2s;
+    }
+    #sidebar .top {
+      padding: 12px;
+      border-bottom: 1px solid #0f3460;
+    }
+    #sidebar .new-btn {
+      width: 100%;
+      background: #0f3460;
+      color: #53c0f0;
+      border: 1px solid #53c0f0;
+      padding: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    #sidebar .new-btn:hover { background: #1a4a7a; }
+    #sidebar input[type="text"] {
+      width: 100%;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #333;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      outline: none;
+    }
+    #session-list {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 8px 0;
+    }
+    .date-group { padding: 4px 12px; color: #666; font-size: 11px; text-transform: uppercase; margin-top: 8px; }
+    .session-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-radius: 4px;
+      margin: 0 4px;
+    }
+    .session-item:hover { background: #1a1a3e; }
+    .session-item.active { background: #0f3460; color: #53c0f0; }
+    /* メインエリア */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    header {
+      background: #16213e;
+      padding: 12px 16px;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #menu-btn {
+      display: none;
+      background: none;
+      border: none;
+      color: #53c0f0;
+      font-size: 22px;
+      cursor: pointer;
+      padding: 4px;
+    }
+    header h1 { font-size: 16px; color: #53c0f0; white-space: nowrap; }
+    header .session-title {
+      font-size: 14px; color: #888;
+      cursor: pointer; border-bottom: 1px dashed #555;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    header .session-title:hover { color: #53c0f0; }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg-wrapper { display: flex; flex-direction: column; gap: 2px; }
+    .msg-wrapper.user { align-items: flex-end; }
+    .msg-wrapper.assistant, .msg-wrapper.error, .msg-wrapper.thinking { align-items: flex-start; }
+    .msg {
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+    }
+    .msg.user { background: #0f3460; border-bottom-right-radius: 4px; }
+    .msg.assistant { background: #222244; border-bottom-left-radius: 4px; }
+    .msg.error { background: #442222; border-bottom-left-radius: 4px; }
+    .msg.thinking { background: #222244; color: #888; font-style: italic; }
+    .msg.assistant { font-size: 14px !important; }
+    .msg.assistant * { font-size: inherit !important; max-width: 100%; }
+    .msg.assistant a { color: #53c0f0; }
+    .msg.assistant code { background: #1a1a2e; padding: 1px 4px; border-radius: 3px; font-size: 13px !important; }
+    .msg.assistant pre { background: #1a1a2e; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 4px 0; }
+    .msg.assistant pre code { padding: 0; background: none; }
+    .msg.assistant ul, .msg.assistant ol { padding-left: 20px; margin: 4px 0; }
+    .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4, .msg.assistant h5, .msg.assistant h6 { font-size: 14px !important; font-weight: bold; margin: 6px 0 4px; }
+    .msg.assistant p { margin: 4px 0; }
+    .msg.assistant blockquote { border-left: 3px solid #53c0f0; padding-left: 8px; color: #aaa; margin: 4px 0; }
+    .msg-time { font-size: 10px; color: #555; padding: 0 4px; }
+    .msg-usage { font-size: 11px; color: #999; padding: 2px 4px; }
+    .msg-usage span { margin-right: 6px; }
+    /* 入力エリア */
+    #input-area {
+      background: #16213e;
+      padding: 10px 12px;
+      border-top: 1px solid #0f3460;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    #input {
+      flex: 1;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #333;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 16px;
+      outline: none;
+      resize: none;
+      max-height: 120px;
+      line-height: 1.4;
+    }
+    #input:focus { border-color: #53c0f0; }
+    #attach-btn {
+      background: none;
+      border: none;
+      color: #888;
+      font-size: 22px;
+      cursor: pointer;
+      padding: 4px 8px;
+      min-height: 44px;
+      touch-action: manipulation;
+    }
+    #attach-btn:hover { color: #53c0f0; }
+    #file-input { display: none; }
+    #attach-preview {
+      display: none;
+      padding: 4px 12px;
+      background: #12122a;
+      border-top: 1px solid #0f3460;
+      font-size: 12px;
+      color: #888;
+    }
+    #attach-preview .preview-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #1a1a2e;
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-right: 4px;
+    }
+    #attach-preview .preview-item img {
+      max-height: 40px;
+      border-radius: 3px;
+    }
+    #attach-preview .remove-btn {
+      color: #e74c3c;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .msg img { max-width: 100%; border-radius: 6px; margin: 4px 0; }
+    .action-btn {
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 16px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 44px;
+    }
+    #send { background: #53c0f0; color: #1a1a2e; }
+    #send:hover { background: #3aa8d8; }
+    #send:disabled { background: #444; color: #888; cursor: not-allowed; }
+    #stop { background: #e74c3c; color: #fff; display: none; }
+    #stop:hover { background: #c0392b; }
+    /* オーバーレイ（モバイルサイドバー用） */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 9;
+    }
+    /* モバイル */
+    @media (max-width: 768px) {
+      #sidebar {
+        position: fixed;
+        left: 0; top: 0; bottom: 0;
+        z-index: 10;
+        transform: translateX(-100%);
+      }
+      #sidebar.open { transform: translateX(0); }
+      #overlay.open { display: block; }
+      #menu-btn { display: block; }
+      .msg { max-width: 92%; font-size: 15px; }
+      #input { font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay" onclick="closeSidebar()"></div>
+  <div id="sidebar">
+    <div class="top">
+      <button class="new-btn" onclick="newSession()">+ New Chat</button>
+      <input type="text" placeholder="Search..." oninput="filterSessions(this.value)">
+    </div>
+    <div id="session-list"></div>
+  </div>
+  <div id="main">
+    <header>
+      <button id="menu-btn" onclick="toggleSidebar()">&#9776;</button>
+      <h1>xangi</h1>
+      <span class="session-title" id="session-title" onclick="editTitle()" title="Click to edit title"></span>
+    </header>
+    <div id="messages"></div>
+    <div id="attach-preview"></div>
+    <div id="input-area">
+      <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach file">&#128206;</button>
+      <input type="file" id="file-input" multiple accept="image/*,.pdf,.mp3,.mp4,.wav" onchange="handleFileSelect(event)">
+      <textarea id="input" rows="1" placeholder="Message..." onkeydown="handleKey(event)"></textarea>
+      <button id="send" class="action-btn" onclick="send()">Send</button>
+      <button id="stop" class="action-btn" onclick="stopChat()">Stop</button>
+    </div>
+  </div>
+  <script>
+    const messagesEl = document.getElementById('messages');
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const stopBtn = document.getElementById('stop');
+    const sessionListEl = document.getElementById('session-list');
+    const sessionTitleEl = document.getElementById('session-title');
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    let sending = false;
+    let currentSessionId = null;
+    let allSessions = [];
+    let abortController = null;
+    let pendingFiles = []; // { name, path, localUrl }
+
+    // ─── ファイル添付 ───
+    const attachPreview = document.getElementById('attach-preview');
+
+    function handleFileSelect(e) {
+      for (var f of e.target.files) {
+        addPendingFile(f);
+      }
+      e.target.value = '';
+    }
+
+    async function addPendingFile(file) {
+      var formData = new FormData();
+      formData.append('file', file);
+      try {
+        var res = await fetch('/api/upload', { method: 'POST', body: formData });
+        var data = await res.json();
+        if (data.files && data.files.length > 0) {
+          var f = data.files[0];
+          var localUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
+          pendingFiles.push({ name: f.name, path: f.path, localUrl: localUrl });
+          renderAttachPreview();
+        }
+      } catch(err) {
+        console.error('Upload failed:', err);
+      }
+    }
+
+    function removePendingFile(idx) {
+      if (pendingFiles[idx] && pendingFiles[idx].localUrl) {
+        URL.revokeObjectURL(pendingFiles[idx].localUrl);
+      }
+      pendingFiles.splice(idx, 1);
+      renderAttachPreview();
+    }
+
+    function renderAttachPreview() {
+      if (pendingFiles.length === 0) {
+        attachPreview.style.display = 'none';
+        attachPreview.innerHTML = '';
+        return;
+      }
+      attachPreview.style.display = 'block';
+      attachPreview.innerHTML = pendingFiles.map(function(f, i) {
+        var img = f.localUrl ? '<img src="' + f.localUrl + '">' : '';
+        return '<span class="preview-item">' + img + f.name + ' <span class="remove-btn" onclick="removePendingFile(' + i + ')">×</span></span>';
+      }).join('');
+    }
+
+    // ─── サイドバー ───
+    function toggleSidebar() { sidebar.classList.toggle('open'); overlay.classList.toggle('open'); }
+    function closeSidebar() { sidebar.classList.remove('open'); overlay.classList.remove('open'); }
+
+    // ─── メタデータ除去 ───
+    function stripMetadata(text) {
+      if (typeof text !== 'string') return String(text);
+      return text
+        .replace(/^\[プラットフォーム: [^\]]*\]\n?/m, '')
+        .replace(/^\[チャンネル: [^\]]*\]\n?/m, '')
+        .replace(/^\[発言者: [^\]]*\]\n?/m, '')
+        .replace(/^\[現在時刻: [^\]]*\]\n?/m, '')
+        .replace(/^\[チャンネルID: [^\]]*\]\n?/m, '')
+        .trim();
+    }
+
+    /** MEDIA:パスを画像/音声/動画タグに変換 */
+    function convertMediaPaths(text) {
+      var imgExts = ['.png','.jpg','.jpeg','.gif','.webp'];
+      var audioExts = ['.mp3','.wav','.flac'];
+      var videoExts = ['.mp4'];
+      return text.replace(/MEDIA:([^\s\n]+)/g, function(match, path) {
+        var ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+        var url = '/api/workspace-file?path=' + encodeURIComponent(path);
+        if (imgExts.indexOf(ext) >= 0) return '<img src="' + url + '" style="max-width:300px;border-radius:6px;margin:4px 0;cursor:pointer;" onclick="window.open(this.src)">';
+        if (audioExts.indexOf(ext) >= 0) return '<audio controls src="' + url + '"></audio>';
+        if (videoExts.indexOf(ext) >= 0) return '<video controls src="' + url + '" style="max-width:100%;border-radius:6px;"></video>';
+        return '<a href="' + url + '" target="_blank">' + path.split('/').pop() + '</a>';
+      });
+    }
+
+    /** マークダウンレンダリング（marked.js優先、フォールバック付き） */
+    function renderMarkdown(text) {
+      // MEDIA:パスを先に変換
+      text = convertMediaPaths(text);
+      if (typeof marked !== 'undefined' && marked.parse) {
+        try { return marked.parse(text); } catch(e) {}
+      }
+      // フォールバック: 最低限のマークダウン変換
+      return text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+        .replace(/(^|\n)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
+        .replace(/\n/g, '<br>');
+    }
+
+    function formatTime(isoStr) {
+      if (!isoStr) return '';
+      const d = new Date(isoStr);
+      const h = d.getHours().toString().padStart(2,'0');
+      const m = d.getMinutes().toString().padStart(2,'0');
+      return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + h + ':' + m;
+    }
+
+    // ─── メッセージ表示 ───
+    function addMessage(text, role, opts) {
+      opts = opts || {};
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg-wrapper ' + role;
+
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      const cleaned = stripMetadata(text);
+      if (role === 'assistant') {
+        div.innerHTML = renderMarkdown(cleaned);
+        div.style.whiteSpace = 'normal';
+      } else {
+        div.textContent = cleaned;
+      }
+      wrapper.appendChild(div);
+
+      if (opts.createdAt) {
+        const t = document.createElement('div');
+        t.className = 'msg-time';
+        t.textContent = formatTime(opts.createdAt);
+        wrapper.appendChild(t);
+      }
+
+      if (role === 'assistant' && opts.usage) {
+        var u = opts.usage;
+        var parts = [];
+        if (u.num_turns != null) parts.push('\u{1F504} ' + u.num_turns + ' turns');
+        if (u.duration_ms != null) parts.push('\u{23F1}\uFE0F ' + (u.duration_ms/1000).toFixed(1) + 's');
+        if (u.total_cost_usd != null) parts.push('\u{1F4B0} $' + u.total_cost_usd.toFixed(4));
+        if (parts.length > 0) {
+          var uel = document.createElement('div');
+          uel.className = 'msg-usage';
+          uel.innerHTML = parts.map(function(p){ return '<span>'+p+'</span>'; }).join('');
+          wrapper.appendChild(uel);
+        }
+      }
+
+      messagesEl.appendChild(wrapper);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return div;
+    }
+
+    // ─── セッション ───
+    async function loadSessions() {
+      try {
+        var res = await fetch('/api/sessions');
+        var data = await res.json();
+        allSessions = data.sessions || [];
+        renderSessions(allSessions);
+      } catch(e) {}
+    }
+
+    function renderSessions(sessions) {
+      sessionListEl.innerHTML = '';
+      var lastDate = '';
+      for (var i = 0; i < sessions.length; i++) {
+        var s = sessions[i];
+        var date = (s.updatedAt || s.createdAt || '').slice(0, 10);
+        if (date !== lastDate) {
+          lastDate = date;
+          var g = document.createElement('div');
+          g.className = 'date-group';
+          g.textContent = getDateLabel(date);
+          sessionListEl.appendChild(g);
+        }
+        var item = document.createElement('div');
+        item.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+        var icon = s.platform === 'web' ? '\u{1F310}' : s.platform === 'slack' ? '\u{1F4AC}' : '\u{1F48E}';
+        var active = s.isActive ? '\u{1F7E2} ' : '';
+        item.setAttribute('data-id', s.id);
+        item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+        var label = document.createElement('span');
+        label.textContent = active + icon + ' ' + (s.title || s.id);
+        label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+        label.onclick = function(){ var id = this.parentElement.getAttribute('data-id'); loadSession(id); closeSidebar(); };
+        item.appendChild(label);
+        var delBtn = document.createElement('span');
+        delBtn.textContent = '\u{00D7}';
+        delBtn.style.cssText = 'color:#666;cursor:pointer;padding:0 4px;font-size:16px;flex-shrink:0;';
+        delBtn.onmouseover = function(){ this.style.color='#e74c3c'; };
+        delBtn.onmouseout = function(){ this.style.color='#666'; };
+        delBtn.setAttribute('data-id', s.id);
+        delBtn.onclick = function(e){ e.stopPropagation(); deleteSessionById(this.getAttribute('data-id')); };
+        item.appendChild(delBtn);
+        sessionListEl.appendChild(item);
+      }
+    }
+
+    function getDateLabel(d) {
+      var today = new Date().toISOString().slice(0,10);
+      var y = new Date(Date.now()-86400000).toISOString().slice(0,10);
+      if (d === today) return 'Today';
+      if (d === y) return 'Yesterday';
+      return d;
+    }
+
+    function filterSessions(q) {
+      if (!q) { renderSessions(allSessions); return; }
+      q = q.toLowerCase();
+      renderSessions(allSessions.filter(function(s){ return (s.title||s.id).toLowerCase().indexOf(q) >= 0; }));
+    }
+
+    async function loadSession(id) {
+      currentSessionId = id;
+      messagesEl.innerHTML = '';
+      renderSessions(allSessions);
+      try {
+        var res = await fetch('/api/sessions/' + encodeURIComponent(id));
+        var data = await res.json();
+        sessionTitleEl.textContent = data.title || id;
+        var msgs = data.messages || [];
+        for (var i = 0; i < msgs.length; i++) {
+          var m = msgs[i];
+          if (m.role === 'error') continue;
+          var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+          addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
+        }
+        var isActiveWeb = allSessions.some(function(s){ return s.id === id && s.isActive && s.contextKey === 'web-chat'; });
+        if (isActiveWeb) {
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+          inputEl.placeholder = 'Message...';
+        } else {
+          inputEl.disabled = true;
+          sendBtn.disabled = true;
+          inputEl.placeholder = 'Read-only';
+          // Web由来のセッションのみResumeボタンを表示（Discordセッションは対象外）
+          var sessionInfo = allSessions.find(function(s){ return s.id === id; });
+          var isWebSession = !sessionInfo || sessionInfo.platform === 'web';
+          if (isWebSession) {
+            var resumeBtn = document.createElement('button');
+            resumeBtn.textContent = '\u{1F4AC} Resume this session';
+            resumeBtn.style.cssText = 'background:#0f3460;color:#53c0f0;border:1px solid #53c0f0;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;margin:8px auto;display:block;';
+            resumeBtn.onclick = function(){ resumeSession(id); };
+            messagesEl.appendChild(resumeBtn);
+          }
+        }
+      } catch(e) {}
+    }
+
+    // ─── 送信 ───
+    function setProcessing(on) {
+      sending = on;
+      sendBtn.style.display = on ? 'none' : '';
+      stopBtn.style.display = on ? '' : 'none';
+      inputEl.disabled = on;
+    }
+
+    async function send() {
+      var msg = inputEl.value.trim();
+      if (!msg || sending) return;
+
+      // 添付ファイルがあればプロンプトに追加
+      var fullMsg = msg;
+      if (pendingFiles.length > 0) {
+        var attachments = pendingFiles.map(function(f){ return '[添付ファイル] ' + f.path; }).join('\n');
+        fullMsg = msg + '\n\n' + attachments;
+      }
+
+      addMessage(msg, 'user', { createdAt: new Date().toISOString() });
+      // 添付画像のプレビューもメッセージに追加
+      if (pendingFiles.length > 0) {
+        var lastWrapper = messagesEl.lastElementChild;
+        if (lastWrapper) {
+          var imgContainer = document.createElement('div');
+          imgContainer.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;padding:4px 0;';
+          pendingFiles.forEach(function(f) {
+            if (f.localUrl) {
+              var img = document.createElement('img');
+              img.src = f.localUrl;
+              img.style.cssText = 'max-height:80px;border-radius:4px;';
+              imgContainer.appendChild(img);
+            }
+          });
+          if (imgContainer.children.length > 0) {
+            lastWrapper.querySelector('.msg').appendChild(imgContainer);
+          }
+        }
+      }
+      pendingFiles = [];
+      renderAttachPreview();
+
+      inputEl.value = '';
+      inputEl.style.height = 'auto';
+      setProcessing(true);
+
+      // ツール使用表示エリア + ストリーミングテキスト表示エリア
+      var toolsWrapper = document.createElement('div');
+      toolsWrapper.className = 'msg-wrapper assistant';
+      var toolsDiv = document.createElement('div');
+      toolsDiv.className = 'msg thinking';
+      toolsDiv.textContent = 'Thinking...';
+      toolsWrapper.appendChild(toolsDiv);
+      messagesEl.appendChild(toolsWrapper);
+
+      var assistantWrapper = null;
+      var assistantDiv = null;
+      var toolHistory = [];
+
+      abortController = new AbortController();
+      try {
+        var res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: fullMsg }),
+          signal: abortController.signal,
+        });
+
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var buf = '';
+
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buf += decoder.decode(chunk.value, { stream: true });
+
+          var lines = buf.split('\n');
+          buf = lines.pop() || '';
+
+          var eventType = '';
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7);
+            } else if (line.startsWith('data: ') && eventType) {
+              try {
+                var d = JSON.parse(line.slice(6));
+                if (eventType === 'text') {
+                  // ストリーミングテキスト表示
+                  if (!assistantWrapper) {
+                    toolsWrapper.remove();
+                    assistantWrapper = document.createElement('div');
+                    assistantWrapper.className = 'msg-wrapper assistant';
+                    assistantDiv = document.createElement('div');
+                    assistantDiv.className = 'msg assistant';
+                    assistantWrapper.appendChild(assistantDiv);
+                    messagesEl.appendChild(assistantWrapper);
+                  }
+                  // ストリーミング中はプレーンテキスト（不完全なMDでmarkedが壊れるのを防ぐ）
+                  assistantDiv.textContent = d.fullText + ' \u258C';
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                } else if (eventType === 'tool') {
+                  // 初回ツール: 「Thinking...」テキストを消す
+                  if (toolHistory.length === 0) {
+                    toolsDiv.textContent = '';
+                  }
+                  toolHistory.push(d.toolName);
+                  // 新しいツール行を追加（上書きしない）
+                  var toolLine = document.createElement('div');
+                  toolLine.style.cssText = 'font-size:12px;color:#888;padding:1px 0;';
+                  toolLine.textContent = '\u{1F527} ' + d.toolName + (d.inputSummary || '');
+                  toolsDiv.appendChild(toolLine);
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                } else if (eventType === 'done') {
+                  // 完了: 最終テキストをレンダリング
+                  if (!assistantWrapper) {
+                    assistantWrapper = document.createElement('div');
+                    assistantWrapper.className = 'msg-wrapper assistant';
+                    assistantDiv = document.createElement('div');
+                    assistantDiv.className = 'msg assistant';
+                    assistantDiv.style.whiteSpace = 'normal';
+                    assistantWrapper.appendChild(assistantDiv);
+                    messagesEl.appendChild(assistantWrapper);
+                  }
+                  if (toolsWrapper.parentElement) toolsWrapper.remove();
+                  assistantDiv.style.whiteSpace = 'normal';
+                  assistantDiv.innerHTML = renderMarkdown(d.response || '');
+                  // 日時
+                  var t = document.createElement('div');
+                  t.className = 'msg-time';
+                  t.textContent = formatTime(new Date().toISOString());
+                  assistantWrapper.appendChild(t);
+                  // usage
+                  if (d.usage) {
+                    var parts = [];
+                    if (d.usage.num_turns != null) parts.push('\u{1F504} ' + d.usage.num_turns + ' turns');
+                    if (d.usage.duration_ms != null) parts.push('\u{23F1}\uFE0F ' + (d.usage.duration_ms/1000).toFixed(1) + 's');
+                    if (d.usage.total_cost_usd != null) parts.push('\u{1F4B0} $' + d.usage.total_cost_usd.toFixed(4));
+                    if (parts.length > 0) {
+                      var uel = document.createElement('div');
+                      uel.className = 'msg-usage';
+                      uel.innerHTML = parts.map(function(p){ return '<span>'+p+'</span>'; }).join('');
+                      assistantWrapper.appendChild(uel);
+                    }
+                  }
+                  if (d.sessionId) currentSessionId = d.sessionId;
+                  loadSessions();
+                } else if (eventType === 'error') {
+                  toolsWrapper.remove();
+                  addMessage(d.message || 'Error', 'error');
+                }
+              } catch(e) {}
+              eventType = '';
+            }
+          }
+        }
+      } catch(err) {
+        if (toolsWrapper.parentElement) toolsWrapper.remove();
+        if (assistantWrapper && assistantWrapper.parentElement) assistantWrapper.remove();
+        addMessage(err.name === 'AbortError' ? 'Stopped' : 'Connection error', 'error');
+      } finally {
+        setProcessing(false);
+        abortController = null;
+        inputEl.focus();
+      }
+    }
+
+    function stopChat() { if (abortController) abortController.abort(); }
+
+    async function newSession() {
+      try {
+        var res = await fetch('/api/sessions', { method: 'POST' });
+        var data = await res.json();
+        if (data.sessionId) currentSessionId = data.sessionId;
+      } catch(e) {}
+      messagesEl.innerHTML = '';
+      sessionTitleEl.textContent = '';
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      inputEl.placeholder = 'Message...';
+      loadSessions();
+      closeSidebar();
+      inputEl.focus();
+    }
+
+    async function resumeSession(id) {
+      try {
+        var res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+        var data = await res.json();
+        if (data.ok) {
+          currentSessionId = data.sessionId || id;
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+          inputEl.placeholder = 'Message...';
+          // Resumeボタンを消す
+          var btns = messagesEl.querySelectorAll('button');
+          btns.forEach(function(b){ b.remove(); });
+          loadSessions();
+          inputEl.focus();
+        }
+      } catch(e) {}
+    }
+
+    async function deleteSessionById(id) {
+      if (!confirm('Delete this session?')) return;
+      try {
+        await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (currentSessionId === id) {
+          currentSessionId = null;
+          messagesEl.innerHTML = '';
+          sessionTitleEl.textContent = '';
+          inputEl.disabled = true;
+          sendBtn.disabled = true;
+          inputEl.placeholder = 'Select a session or start a new chat';
+        }
+        loadSessions();
+      } catch(e) {}
+    }
+
+    async function editTitle() {
+      if (!currentSessionId) return;
+      var current = sessionTitleEl.textContent;
+      var t = prompt('Session title:', current);
+      if (t && t !== current) {
+        await fetch('/api/sessions/' + encodeURIComponent(currentSessionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: t }),
+        });
+        sessionTitleEl.textContent = t;
+        loadSessions();
+      }
+    }
+
+    // IME変換中のEnterを無視
+    function handleKey(e) {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    }
+
+    inputEl.addEventListener('input', function() {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    });
+
+    // 初期状態: 入力無効、セッション選択またはNew Chatを促す
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+    inputEl.placeholder = 'Select a session or start a new chat';
+    messagesEl.innerHTML = '<div style="text-align:center;color:#666;padding:40px 20px;font-size:15px;">Select a session from the sidebar<br>or click <strong>+ New Chat</strong></div>';
+    // ドラッグ&ドロップ
+    document.body.addEventListener('dragover', function(e) { e.preventDefault(); });
+    document.body.addEventListener('drop', function(e) {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        for (var f of e.dataTransfer.files) { addPendingFile(f); }
+      }
+    });
+
+    loadSessions();
+  </script>
+</body>
+</html>

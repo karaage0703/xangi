@@ -14,6 +14,7 @@ import {
 } from 'discord.js';
 import { loadConfig } from './config.js';
 import { isGitHubAppEnabled } from './github-auth.js';
+import { resolveApproval, requestApproval, setApprovalEnabled } from './approval.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { processManager } from './process-manager.js';
@@ -35,9 +36,18 @@ import {
   type Platform,
   type ScheduleType,
 } from './scheduler.js';
-import { initSessions, getSession, setSession, deleteSession } from './sessions.js';
+import {
+  initSessions,
+  getSession,
+  setSession,
+  deleteSession,
+  ensureSession,
+  incrementMessageCount,
+  getActiveSessionId,
+} from './sessions.js';
 import { join } from 'path';
 import { config as dotenvConfig } from 'dotenv';
+import { startWebChat } from './web-chat.js';
 dotenvConfig({ override: true });
 
 /** メッセージを指定文字数で分割（カスタムセパレータ対応、デフォルトは行単位） */
@@ -152,6 +162,9 @@ function formatToolInput(toolName: string, input: Record<string, unknown>): stri
   }
 }
 
+/**
+ * Discord用のツール承認コールバックを作成
+ */
 async function main() {
   const config = loadConfig();
 
@@ -213,9 +226,19 @@ async function main() {
   // セッション永続化を初期化
   initSessions(dataDir);
 
+  // WebチャットUI起動
+  if (process.env.WEB_CHAT_ENABLED === 'true') {
+    startWebChat({ agentRunner });
+  }
+
   // GitHub認証を初期化
   const { initGitHubAuth } = await import('./github-auth.js');
   initGitHubAuth();
+
+  // ツール承認の有効/無効（デフォルト無効）
+  if (process.env.APPROVAL_ENABLED === 'true') {
+    setApprovalEnabled(true);
+  }
 
   // スラッシュコマンド定義
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
@@ -303,6 +326,42 @@ async function main() {
   client.once(Events.ClientReady, async (c) => {
     console.log(`[xangi] Ready! Logged in as ${c.user.tag}`);
 
+    // ツール承認サーバー起動（Claude Code PreToolUseフック用）
+    const { startApprovalServer } = await import('./approval-server.js');
+    startApprovalServer(async (toolName, toolInput, dangerDescription) => {
+      // 最初のauto-replyチャンネルに承認メッセージを送信
+      const approvalChannelId = config.discord.autoReplyChannels?.[0];
+      if (!approvalChannelId) return true; // チャンネル未設定なら許可
+      const channel = c.channels.cache.get(approvalChannelId);
+      if (!channel || !('send' in channel)) return true;
+
+      const command =
+        toolName === 'Bash'
+          ? String((toolInput as Record<string, unknown>).command || '').slice(0, 200)
+          : `${toolName}: ${String((toolInput as Record<string, unknown>).file_path || '')}`;
+
+      return requestApproval(
+        approvalChannelId,
+        { command, matches: dangerDescription },
+        (approvalId, danger) => {
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`xangi_approve_${approvalId}`)
+              .setLabel('許可')
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`xangi_deny_${approvalId}`)
+              .setLabel('拒否')
+              .setStyle(ButtonStyle.Danger)
+          );
+          (channel as unknown as { send: (opts: unknown) => Promise<unknown> }).send({
+            content: `⚠️ **危険なコマンドを検知**\n\`\`\`\n${danger.command}\n\`\`\`\n${danger.matches.join(', ')}\n\n2分以内に応答がなければ自動拒否`,
+            components: [row],
+          });
+        }
+      );
+    });
+
     const rest = new REST({ version: '10' }).setToken(config.discord.token);
     try {
       // ギルドコマンドとして登録（即時反映）
@@ -371,6 +430,20 @@ async function main() {
         return;
       }
 
+      // 承認ボタン
+      if (interaction.customId.startsWith('xangi_approve_')) {
+        const approvalId = interaction.customId.replace('xangi_approve_', '');
+        resolveApproval(approvalId, true);
+        await interaction.update({ content: '✅ 許可しました', components: [] }).catch(() => {});
+        return;
+      }
+      if (interaction.customId.startsWith('xangi_deny_')) {
+        const approvalId = interaction.customId.replace('xangi_deny_', '');
+        resolveApproval(approvalId, false);
+        await interaction.update({ content: '❌ 拒否しました', components: [] }).catch(() => {});
+        return;
+      }
+
       // 未知のボタン → 何もせずACK
       await interaction.deferUpdate().catch(() => {});
       return;
@@ -418,6 +491,7 @@ async function main() {
 
       try {
         const sessionId = getSession(channelId);
+        const appSessionId = ensureSession(channelId, { platform: 'discord' });
 
         // ワンショットのClaudeCodeRunnerを使用（skipPermissionsを確実に反映するため）
         const skipRunner = new ClaudeCodeRunner(config.agent.config);
@@ -425,6 +499,7 @@ async function main() {
           skipPermissions: true,
           sessionId,
           channelId,
+          appSessionId,
         });
 
         setSession(channelId, runResult.sessionId);
@@ -1439,11 +1514,15 @@ async function main() {
         }
 
         // スケジューラーは毎回新規セッション（stateless）
-        // 会話の文脈継続は不要で、古いセッションIDによるresume失敗を防ぐ
+        const schedAppSessionId = ensureSession(channelId, {
+          platform: 'discord',
+          scope: 'scheduler',
+        });
         const { result, sessionId: newSessionId } = await agentRunner.run(agentPrompt, {
           skipPermissions: config.agent.config.skipPermissions ?? false,
           sessionId: undefined,
           channelId,
+          appSessionId: schedAppSessionId,
         });
 
         // スケジューラーのセッションは scheduler スコープで保存
@@ -1458,12 +1537,12 @@ async function main() {
           console.log(
             `[scheduler] Re-injecting ${feedbackResults.length} feedback result(s) to agent`
           );
-          // フィードバックは直前のスケジューラーセッションを使う（同一タスク内の文脈継続）
           const feedbackSession = getSession(channelId);
           const feedbackRun = await agentRunner.run(feedbackPrompt, {
             skipPermissions: config.agent.config.skipPermissions ?? false,
             sessionId: feedbackSession,
             channelId,
+            appSessionId: schedAppSessionId,
           });
           setSession(channelId, feedbackRun.sessionId, 'scheduler');
           // 再注入後の応答にもコマンドがあれば処理
@@ -1550,9 +1629,10 @@ async function main() {
     console.log('[xangi] Slack bot started');
   }
 
-  if (!config.discord.enabled && !config.slack.enabled) {
+  const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
+  if (!config.discord.enabled && !config.slack.enabled && !webChatEnabled) {
     console.error(
-      '[xangi] No chat platform enabled. Set DISCORD_TOKEN or SLACK_BOT_TOKEN/SLACK_APP_TOKEN'
+      '[xangi] No chat platform enabled. Set DISCORD_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, or WEB_CHAT_ENABLED=true'
     );
     process.exit(1);
   }
@@ -1606,10 +1686,12 @@ async function handleSkill(
   try {
     const prompt = `スキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
     const sessionId = getSession(channelId);
+    const appSessionId = ensureSession(channelId, { platform: 'discord' });
     const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
       skipPermissions,
       sessionId,
       channelId,
+      appSessionId,
     });
 
     setSession(channelId, newSessionId);
@@ -1639,10 +1721,12 @@ async function handleSkillCommand(
   try {
     const prompt = `スキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
     const sessionId = getSession(channelId);
+    const appSessionId = ensureSession(channelId, { platform: 'discord' });
     const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
       skipPermissions,
       sessionId,
       channelId,
+      appSessionId,
     });
 
     setSession(channelId, newSessionId);
@@ -1850,6 +1934,7 @@ async function processPrompt(
     await message.react('👀').catch(() => {});
 
     const sessionId = getSession(channelId);
+    const appSessionId = ensureSession(channelId, { platform: 'discord' });
     const useStreaming = config.discord.streaming ?? true;
     const showThinking = config.discord.showThinking ?? true;
 
@@ -1887,7 +1972,7 @@ async function processPrompt(
         if (firstTextReceived) return;
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
-        const toolDisplay = toolHistory.length > 0 ? '\n' + toolHistory.slice(-5).join('\n') : '';
+        const toolDisplay = toolHistory.length > 0 ? '\n' + toolHistory.join('\n') : '';
         replyMessage!.edit(`🤔 考え中${dots}${toolDisplay}`).catch(() => {});
       }, 1000);
 
@@ -1921,12 +2006,17 @@ async function processPrompt(
               const inputSummary = formatToolInput(toolName, toolInput);
               toolHistory.push(`🔧 ${toolName}${inputSummary}`);
               if (!firstTextReceived) {
-                const toolDisplay = toolHistory.slice(-5).join('\n');
+                const toolDisplay = toolHistory.join('\n');
                 replyMessage!.edit(`🤔 考え中...\n${toolDisplay}`).catch(() => {});
               }
             },
           },
-          { skipPermissions, sessionId, channelId }
+          {
+            skipPermissions,
+            sessionId,
+            channelId,
+            appSessionId,
+          }
         );
       } finally {
         clearInterval(thinkingInterval);
@@ -1943,7 +2033,12 @@ async function processPrompt(
       }, 1000);
 
       try {
-        const runResult = await runner.run(prompt, { skipPermissions, sessionId, channelId });
+        const runResult = await runner.run(prompt, {
+          skipPermissions,
+          sessionId,
+          channelId,
+          appSessionId,
+        });
         result = runResult.result;
         newSessionId = runResult.sessionId;
       } finally {
@@ -1952,6 +2047,11 @@ async function processPrompt(
     }
 
     setSession(channelId, newSessionId);
+    incrementMessageCount(appSessionId);
+    // 最初のメッセージでタイトル自動設定
+    if (!prompt.startsWith('[プラットフォーム:')) {
+      // メタデータ付きプロンプトからユーザーメッセージ部分を抽出
+    }
     console.log(
       `[xangi] Response length: ${result.length}, session: ${newSessionId.slice(0, 8)}...`
     );
@@ -2070,10 +2170,12 @@ async function processPrompt(
         if (sessionId) {
           const followUpPrompt =
             '先ほどの処理がエラー（タイムアウト等）で中断されました。途中まで行った作業内容と現在の状況を簡潔に報告してください。';
+          const followUpAppId = getActiveSessionId(channelId);
           const followUpResult = await agentRunner.run(followUpPrompt, {
             skipPermissions,
             sessionId,
             channelId,
+            appSessionId: followUpAppId,
           });
           if (followUpResult.result) {
             setSession(channelId, followUpResult.sessionId);

@@ -77,6 +77,57 @@ Buttons are displayed on response messages.
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
+### Dangerous Command Approval
+
+When the agent attempts to execute a dangerous command, a confirmation message with buttons appears in Discord.
+
+- Auto-denied after 2 minutes with no response
+- Works with both Claude Code and Local LLM backends
+- Managed by approval server (`localhost:18181`)
+
+**Detected patterns:**
+
+| Category | Pattern | Description |
+|----------|---------|-------------|
+| File deletion | `rm -r`, `rm -f` | Recursive/forced deletion |
+| Git | `git push` | Push to remote |
+| Git | `git reset --hard` | Discard changes |
+| Git | `git clean -f` | Remove untracked files |
+| Git | `git branch -D` | Force delete branch |
+| Permissions | `chmod 777` | Grant full permissions |
+| Permissions | `chown -R` | Recursive ownership change |
+| System | `shutdown`, `reboot` | System halt/restart |
+| System | `kill -9`, `killall` | Force kill processes |
+| Remote exec | `curl \| sh`, `wget \| bash` | Remote script execution |
+| DB | `DROP TABLE`, `TRUNCATE` | Database deletion |
+| Secrets | `cat .env`, `cat *.pem` | Read credentials |
+| Secrets | Write/Edit `.env`, `.pem`, `credentials` | Modify credentials |
+
+**Claude Code backend setup:**
+
+Add a PreToolUse hook to `.claude/settings.json` in your workspace:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:18181/hooks/pre-tool-use",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Local LLM backend:** No setup needed. Automatically queries the approval server.
+
 ## Scheduler
 
 Set up periodic tasks and reminders. The AI interprets natural language and automatically executes `!schedule` commands.
@@ -403,13 +454,47 @@ LOCAL_LLM_MODEL=gpt-oss:20b
 
 Works as-is if Ollama is running.
 
-The Local LLM backend also saves transcript logs (`logs/transcripts/`). Prompts, responses, and errors are recorded in per-channel JSONL files.
+All backends save per-session transcript logs (`logs/sessions/<appSessionId>.jsonl`). Prompts, responses, and errors are recorded in per-session JSONL files.
 
 For Docker deployment, see the [Docker Deployment](#docker-deployment) section.
 
-### Triggers (Lite Mode Extension)
+### Individual Feature Control
 
-Even in lite mode where tool calls are not available, LLMs can invoke functionality by outputting magic words (`!command`) in their response text.
+Each Local LLM feature can be toggled independently via environment variables.
+
+```bash
+# .env — Example: disable only tools
+LOCAL_LLM_TOOLS=false
+
+# Example: chat-only bot (all off)
+LOCAL_LLM_TOOLS=false
+LOCAL_LLM_SKILLS=false
+LOCAL_LLM_XANGI_COMMANDS=false
+
+# Example: chat with triggers
+LOCAL_LLM_TOOLS=false
+LOCAL_LLM_SKILLS=false
+LOCAL_LLM_XANGI_COMMANDS=false
+LOCAL_LLM_TRIGGERS=true
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LOCAL_LLM_TOOLS` | Tool execution (exec/read/web_fetch) | `true` |
+| `LOCAL_LLM_SKILLS` | Skill list injection | `true` |
+| `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS injection | `true` |
+| `LOCAL_LLM_TRIGGERS` | Triggers (!commands) | `false` |
+
+`LOCAL_LLM_MODE` presets are also available (individual settings take priority):
+- `agent` (default) — all on
+- `chat` — all off
+- `lite` — triggers=true, rest off
+
+Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
+
+### Triggers
+
+LLMs can invoke functionality by outputting magic words (`!command`) in their response text. Enable with `LOCAL_LLM_TRIGGERS=true`.
 
 #### Setup
 
@@ -583,6 +668,11 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LOCAL_LLM_BASE_URL` | LLM server URL | `http://localhost:11434` |
+| `LOCAL_LLM_MODE` | Preset (`agent` / `chat` / `lite`) | `agent` |
+| `LOCAL_LLM_TOOLS` | Tool execution | `true` |
+| `LOCAL_LLM_SKILLS` | Skill list injection | `true` |
+| `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS injection | `true` |
+| `LOCAL_LLM_TRIGGERS` | Triggers (!commands) | `false` |
 | `LOCAL_LLM_MODEL` | Model name | - |
 | `LOCAL_LLM_API_KEY` | API key (if required by vLLM, etc.) | - |
 | `LOCAL_LLM_THINKING` | Enable thinking model reasoning | `true` |

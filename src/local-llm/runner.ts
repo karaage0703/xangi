@@ -13,6 +13,7 @@ import { loadWorkspaceContext } from './context.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
 import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
+import { checkApprovalServer } from '../approval-server.js';
 import { logPrompt, logResponse, logError } from '../transcript-logger.js';
 import {
   loadTriggers,
@@ -93,9 +94,12 @@ export class LocalLlmRunner implements AgentRunner {
   private readonly sessions = new Map<string, Session>();
   private readonly sessionTtlMs = 60 * 60 * 1000; // 1時間
   private readonly activeAbortControllers = new Map<string, AbortController>();
-  /** liteモード: tools/スキル/XANGI_COMMANDS無効、1回のLLM呼び出しで完了 */
-  readonly liteMode: boolean;
-  /** liteモード用トリガー定義 */
+  /** 個別機能フラグ */
+  readonly enableTools: boolean;
+  readonly enableSkills: boolean;
+  readonly enableXangiCommands: boolean;
+  readonly enableTriggers: boolean;
+  /** トリガー定義 */
   private triggers: Trigger[];
 
   constructor(config: AgentConfig) {
@@ -110,18 +114,49 @@ export class LocalLlmRunner implements AgentRunner {
       ? parseInt(process.env.LOCAL_LLM_NUM_CTX, 10)
       : undefined;
 
-    // LOCAL_LLM_MODE: "agent" (default) or "lite"
-    const modeEnv = (process.env.LOCAL_LLM_MODE || 'agent').toLowerCase();
-    this.liteMode = modeEnv === 'lite';
+    // 個別フラグ（環境変数で制御、未設定時はLOCAL_LLM_MODEから推定）
+    const modeEnv = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
+    const modeDefaults = {
+      agent: { tools: true, skills: true, xangiCommands: true, triggers: false },
+      chat: { tools: false, skills: false, xangiCommands: false, triggers: false },
+      lite: { tools: false, skills: false, xangiCommands: false, triggers: true },
+    };
+    const defaults = modeDefaults[modeEnv as keyof typeof modeDefaults] || modeDefaults.agent;
+
+    this.enableTools =
+      process.env.LOCAL_LLM_TOOLS !== undefined
+        ? process.env.LOCAL_LLM_TOOLS !== 'false'
+        : defaults.tools;
+    this.enableSkills =
+      process.env.LOCAL_LLM_SKILLS !== undefined
+        ? process.env.LOCAL_LLM_SKILLS !== 'false'
+        : defaults.skills;
+    this.enableXangiCommands =
+      process.env.LOCAL_LLM_XANGI_COMMANDS !== undefined
+        ? process.env.LOCAL_LLM_XANGI_COMMANDS !== 'false'
+        : defaults.xangiCommands;
+    this.enableTriggers =
+      process.env.LOCAL_LLM_TRIGGERS !== undefined
+        ? process.env.LOCAL_LLM_TRIGGERS !== 'false'
+        : defaults.triggers;
 
     this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx);
     this.workdir = config.workdir || process.cwd();
 
-    // liteモード用トリガーを読み込み
-    this.triggers = this.liteMode ? loadTriggers(this.workdir) : [];
+    // トリガーを読み込み
+    this.triggers = this.enableTriggers ? loadTriggers(this.workdir) : [];
 
+    const features =
+      [
+        this.enableTools && 'tools',
+        this.enableSkills && 'skills',
+        this.enableXangiCommands && 'xangi-commands',
+        this.enableTriggers && 'triggers',
+      ]
+        .filter(Boolean)
+        .join(', ') || 'chat-only';
     console.log(
-      `[local-llm] LLM: ${baseUrl} (model: ${model}, thinking: ${thinking}, mode: ${this.liteMode ? 'lite' : 'agent'})`
+      `[local-llm] LLM: ${baseUrl} (model: ${model}, thinking: ${thinking}, features: ${features})`
     );
     if (this.triggers.length > 0) {
       console.log(`[local-llm] Triggers loaded: ${this.triggers.map((t) => t.trigger).join(', ')}`);
@@ -134,8 +169,8 @@ export class LocalLlmRunner implements AgentRunner {
 
     const session = this.getOrCreateSession(sessionId);
     const systemPrompt = this.buildSystemPrompt();
-    const tools = this.liteMode ? [] : getBuiltinTools();
-    const llmTools = this.liteMode ? [] : toLLMTools(tools);
+    const tools = this.enableTools ? getBuiltinTools() : [];
+    const llmTools = this.enableTools ? toLLMTools(tools) : [];
 
     // ユーザーメッセージ追加（画像添付があればマルチモーダルメッセージにする）
     const userMsg = this.buildUserMessage(prompt);
@@ -143,7 +178,8 @@ export class LocalLlmRunner implements AgentRunner {
 
     // トランスクリプトにプロンプトを記録
     const channelId = options?.channelId || sessionId;
-    logPrompt(this.workdir, channelId, prompt, sessionId);
+    const appSid = options?.appSessionId || channelId;
+    logPrompt(this.workdir, appSid, prompt);
 
     // AbortControllerをprocessManager相当として登録
     const abortController = new AbortController();
@@ -157,14 +193,15 @@ export class LocalLlmRunner implements AgentRunner {
         channelId,
         sessionId,
         abortController,
-        options
+        options,
+        appSid
       );
 
       this.trimSession(session);
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
-      logResponse(this.workdir, channelId, { result, sessionId });
+      logResponse(this.workdir, appSid, { result, sessionId });
 
       return { result, sessionId };
     } catch (err) {
@@ -175,9 +212,8 @@ export class LocalLlmRunner implements AgentRunner {
         );
         logError(
           this.workdir,
-          channelId,
-          `Session resume failed, retrying: ${err instanceof Error ? err.message : String(err)}`,
-          sessionId
+          appSid,
+          `Session resume failed, retrying: ${err instanceof Error ? err.message : String(err)}`
         );
 
         // セッションをクリアして最後のユーザーメッセージだけ残す
@@ -194,21 +230,21 @@ export class LocalLlmRunner implements AgentRunner {
             channelId,
             sessionId,
             retryAbortController,
-            options
+            options,
+            appSid
           );
 
           this.trimSession(session);
           session.updatedAt = Date.now();
-          logResponse(this.workdir, channelId, { result, sessionId });
+          logResponse(this.workdir, appSid, { result, sessionId });
 
           return { result, sessionId };
         } catch (retryErr) {
           const errorMsg = formatLlmError(retryErr);
           logError(
             this.workdir,
-            channelId,
-            `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-            sessionId
+            appSid,
+            `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
           );
           return { result: errorMsg, sessionId };
         }
@@ -217,9 +253,8 @@ export class LocalLlmRunner implements AgentRunner {
       const errorMsg = formatLlmError(err);
       logError(
         this.workdir,
-        channelId,
-        `LLM chat error: ${err instanceof Error ? err.message : String(err)}`,
-        sessionId
+        appSid,
+        `LLM chat error: ${err instanceof Error ? err.message : String(err)}`
       );
       return { result: errorMsg, sessionId };
     } finally {
@@ -237,16 +272,17 @@ export class LocalLlmRunner implements AgentRunner {
 
     const session = this.getOrCreateSession(sessionId);
     const systemPrompt = this.buildSystemPrompt();
-    const tools = this.liteMode ? [] : getBuiltinTools();
-    const llmTools = this.liteMode ? [] : toLLMTools(tools);
+    const tools = this.enableTools ? getBuiltinTools() : [];
+    const llmTools = this.enableTools ? toLLMTools(tools) : [];
 
     const userMsg = this.buildUserMessage(prompt);
     session.messages.push(userMsg);
 
     const channelId = options?.channelId || sessionId;
+    const appSid = options?.appSessionId || channelId;
 
     // トランスクリプトにプロンプトを記録
-    logPrompt(this.workdir, channelId, prompt, sessionId);
+    logPrompt(this.workdir, appSid, prompt);
     const abortController = new AbortController();
     this.activeAbortControllers.set(channelId, abortController);
 
@@ -259,7 +295,8 @@ export class LocalLlmRunner implements AgentRunner {
         sessionId,
         abortController,
         callbacks,
-        options
+        options,
+        appSid
       );
 
       session.messages.push({ role: 'assistant', content: fullText });
@@ -298,7 +335,7 @@ export class LocalLlmRunner implements AgentRunner {
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
-      logResponse(this.workdir, channelId, { result: finalText, sessionId });
+      logResponse(this.workdir, appSid, { result: finalText, sessionId });
 
       const result: RunResult = { result: finalText, sessionId };
       callbacks.onComplete?.(result);
@@ -311,9 +348,8 @@ export class LocalLlmRunner implements AgentRunner {
         );
         logError(
           this.workdir,
-          channelId,
-          `Session resume failed (stream), retrying: ${err instanceof Error ? err.message : String(err)}`,
-          sessionId
+          appSid,
+          `Session resume failed (stream), retrying: ${err instanceof Error ? err.message : String(err)}`
         );
 
         // セッションをクリアして最後のユーザーメッセージだけ残す
@@ -331,13 +367,14 @@ export class LocalLlmRunner implements AgentRunner {
             sessionId,
             retryAbortController,
             callbacks,
-            options
+            options,
+            appSid
           );
 
           session.messages.push({ role: 'assistant', content: fullText });
           this.trimSession(session);
           session.updatedAt = Date.now();
-          logResponse(this.workdir, channelId, { result: fullText, sessionId });
+          logResponse(this.workdir, appSid, { result: fullText, sessionId });
 
           const result: RunResult = { result: fullText, sessionId };
           callbacks.onComplete?.(result);
@@ -345,7 +382,7 @@ export class LocalLlmRunner implements AgentRunner {
         } catch (retryErr) {
           const error = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
           const errorMsg = formatLlmError(retryErr);
-          logError(this.workdir, channelId, `LLM stream retry failed: ${error.message}`, sessionId);
+          logError(this.workdir, appSid, `LLM stream retry failed: ${error.message}`);
           callbacks.onError?.(error);
           return { result: errorMsg, sessionId };
         }
@@ -353,7 +390,7 @@ export class LocalLlmRunner implements AgentRunner {
 
       const error = err instanceof Error ? err : new Error(String(err));
       const errorMsg = formatLlmError(err);
-      logError(this.workdir, channelId, `LLM stream error: ${error.message}`, sessionId);
+      logError(this.workdir, appSid, `LLM stream error: ${error.message}`);
       callbacks.onError?.(error);
       return { result: errorMsg, sessionId };
     } finally {
@@ -398,10 +435,12 @@ export class LocalLlmRunner implements AgentRunner {
     channelId: string,
     sessionId: string,
     abortController: AbortController,
-    options?: RunOptions
+    options?: RunOptions,
+    appSessionId?: string
   ): Promise<string> {
-    // liteモード: 1回のLLM呼び出しで完了（ツールなし）+ トリガー検出
-    if (this.liteMode) {
+    const logId = appSessionId || channelId;
+    // ツール無効: 1回のLLM呼び出しで完了 + トリガー検出
+    if (!this.enableTools) {
       let response;
       try {
         response = await this.llm.chat(session.messages, {
@@ -411,7 +450,7 @@ export class LocalLlmRunner implements AgentRunner {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
-        logError(this.workdir, channelId, `LLM chat call failed: ${errorMsg}`, sessionId);
+        logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
       session.messages.push({ role: 'assistant', content: response.content });
@@ -460,7 +499,7 @@ export class LocalLlmRunner implements AgentRunner {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
-        logError(this.workdir, channelId, `LLM chat call failed: ${errorMsg}`, sessionId);
+        logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
 
@@ -487,6 +526,18 @@ export class LocalLlmRunner implements AgentRunner {
         console.log(
           `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
         );
+
+        // 危険コマンド承認チェック（承認サーバー経由、Claude Codeと同じ仕組み）
+        const approvalResult = await checkApprovalServer(toolCall.name, toolCall.arguments);
+        if (approvalResult === 'deny') {
+          console.log(`[local-llm] Tool denied by approval server: ${toolCall.name}`);
+          session.messages.push({
+            role: 'tool',
+            content: 'Tool execution denied by user.',
+          });
+          continue;
+        }
+
         const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
         const rawOutput = result.success
           ? result.output
@@ -494,12 +545,7 @@ export class LocalLlmRunner implements AgentRunner {
         const toolResultContent = trimToolResult(rawOutput);
 
         if (!result.success) {
-          logError(
-            this.workdir,
-            channelId,
-            `Tool ${toolCall.name} failed: ${rawOutput}`,
-            sessionId
-          );
+          logError(this.workdir, logId, `Tool ${toolCall.name} failed: ${rawOutput}`);
         }
 
         console.log(
@@ -534,10 +580,12 @@ export class LocalLlmRunner implements AgentRunner {
     sessionId: string,
     abortController: AbortController,
     callbacks: StreamCallbacks,
-    options?: RunOptions
+    options?: RunOptions,
+    appSessionId?: string
   ): Promise<string> {
-    // liteモードではツールループをスキップ
-    if (!this.liteMode) {
+    const logId = appSessionId || channelId;
+    // ツール有効時のみツールループ実行
+    if (this.enableTools) {
       // ツールループ: non-streaming の chat() でツール呼び出しを処理
       let toolRounds = 0;
       while (toolRounds < MAX_TOOL_ROUNDS) {
@@ -551,12 +599,7 @@ export class LocalLlmRunner implements AgentRunner {
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           console.error(`[local-llm] LLM chat call failed (stream tool loop): ${errorMsg}`);
-          logError(
-            this.workdir,
-            channelId,
-            `LLM chat call failed (stream tool loop): ${errorMsg}`,
-            sessionId
-          );
+          logError(this.workdir, logId, `LLM chat call failed (stream tool loop): ${errorMsg}`);
           throw err;
         }
 
@@ -576,18 +619,25 @@ export class LocalLlmRunner implements AgentRunner {
           console.log(
             `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
           );
+
+          // 危険コマンド承認チェック（承認サーバー経由、Claude Codeと同じ仕組み）
+          const approvalResult2 = await checkApprovalServer(toolCall.name, toolCall.arguments);
+          if (approvalResult2 === 'deny') {
+            console.log(`[local-llm] Tool denied by approval server: ${toolCall.name}`);
+            session.messages.push({
+              role: 'tool',
+              content: 'Tool execution denied by user.',
+            });
+            continue;
+          }
+
           const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
           const rawToolOutput = result.success
             ? result.output
             : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
           const toolResultContent = trimToolResult(rawToolOutput);
           if (!result.success) {
-            logError(
-              this.workdir,
-              channelId,
-              `Tool ${toolCall.name} failed: ${rawToolOutput}`,
-              sessionId
-            );
+            logError(this.workdir, logId, `Tool ${toolCall.name} failed: ${rawToolOutput}`);
           }
           console.log(
             `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
@@ -615,7 +665,7 @@ export class LocalLlmRunner implements AgentRunner {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[local-llm] LLM chatStream failed: ${errorMsg}`);
-      logError(this.workdir, channelId, `LLM chatStream failed: ${errorMsg}`, sessionId);
+      logError(this.workdir, logId, `LLM chatStream failed: ${errorMsg}`);
       throw err;
     }
 
@@ -657,26 +707,26 @@ export class LocalLlmRunner implements AgentRunner {
   private buildSystemPrompt(): string {
     const parts: string[] = [];
 
-    // liteモードではXANGI_COMMANDS・CHAT_SYSTEM_PROMPT・スキル一覧を除外
-    if (!this.liteMode) {
+    // XANGI_COMMANDS注入
+    if (this.enableXangiCommands) {
       parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + XANGI_COMMANDS);
     }
 
-    // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）— 両モードで注入
+    // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）— 常に注入
     const context = loadWorkspaceContext(this.workdir);
     if (context) parts.push(context);
 
-    // liteモードでトリガーが存在する場合、利用可能なコマンド一覧を追加（毎回リロード）
-    if (this.liteMode) {
+    // トリガー（毎回リロード）
+    if (this.enableTriggers) {
       this.triggers = loadTriggers(this.workdir);
-    }
-    if (this.liteMode && this.triggers.length > 0) {
-      const triggersPrompt = buildTriggersPrompt(this.triggers);
-      if (triggersPrompt) parts.push(triggersPrompt);
+      if (this.triggers.length > 0) {
+        const triggersPrompt = buildTriggersPrompt(this.triggers);
+        if (triggersPrompt) parts.push(triggersPrompt);
+      }
     }
 
-    // スキル一覧と使い方 — agentモードのみ
-    if (!this.liteMode) {
+    // スキル一覧
+    if (this.enableSkills) {
       const skills = loadSkills(this.workdir);
       if (skills.length > 0) {
         const skillLines = skills
@@ -740,10 +790,10 @@ export class LocalLlmRunner implements AgentRunner {
   private async processTriggers(
     text: string,
     channelId: string,
-    sessionId: string
+    _sessionId: string
   ): Promise<string | null> {
     // 毎回trigger.yamlを読み直す（再起動なしで変更反映）
-    this.triggers = this.liteMode ? loadTriggers(this.workdir) : [];
+    this.triggers = this.enableTriggers ? loadTriggers(this.workdir) : [];
     if (this.triggers.length === 0) return null;
 
     const match = matchTrigger(text, this.triggers);
@@ -759,12 +809,7 @@ export class LocalLlmRunner implements AgentRunner {
         `[local-llm] Trigger ${match.trigger.name} completed (${result.output.length} chars)`
       );
     } else {
-      logError(
-        this.workdir,
-        channelId,
-        `Trigger ${match.trigger.name} failed: ${result.output}`,
-        sessionId
-      );
+      logError(this.workdir, channelId, `Trigger ${match.trigger.name} failed: ${result.output}`);
     }
 
     return result.output;

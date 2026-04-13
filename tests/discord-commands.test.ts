@@ -51,8 +51,7 @@ function stripCommandsFromDisplay(text: string): string {
         }
         if (
           !inBodyCodeBlock &&
-          (bodyLine.trim().startsWith('!discord ') ||
-            bodyLine.trim().startsWith('!schedule'))
+          (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
         ) {
           break;
         }
@@ -130,8 +129,7 @@ function extractDiscordCommands(text: string): string[] {
           }
           if (
             !inBodyCodeBlock &&
-            (bodyLine.trim().startsWith('!discord ') ||
-              bodyLine.trim().startsWith('!schedule'))
+            (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
           ) {
             break;
           }
@@ -155,8 +153,7 @@ function extractDiscordCommands(text: string): string[] {
           }
           if (
             !inBodyCodeBlock2 &&
-            (bodyLine.trim().startsWith('!discord ') ||
-              bodyLine.trim().startsWith('!schedule'))
+            (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
           ) {
             break;
           }
@@ -255,8 +252,7 @@ function extractDiscordSendFromPrompt(text: string): {
           }
           if (
             !inBodyCodeBlock &&
-            (bodyLine.trim().startsWith('!discord ') ||
-              bodyLine.trim().startsWith('!schedule'))
+            (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
           ) {
             break;
           }
@@ -279,8 +275,7 @@ function extractDiscordSendFromPrompt(text: string): {
           }
           if (
             !inBodyCodeBlock2 &&
-            (bodyLine.trim().startsWith('!discord ') ||
-              bodyLine.trim().startsWith('!schedule'))
+            (bodyLine.trim().startsWith('!discord ') || bodyLine.trim().startsWith('!schedule'))
           ) {
             break;
           }
@@ -347,10 +342,7 @@ describe('Discord Commands', () => {
       const text = `!discord send <#123> hello
 !discord channels`;
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual([
-        '!discord send <#123> hello',
-        '!discord channels',
-      ]);
+      expect(commands).toEqual(['!discord send <#123> hello', '!discord channels']);
     });
 
     it('should skip commands inside code blocks', () => {
@@ -371,10 +363,7 @@ describe('Discord Commands', () => {
 !discord send <#222> include
 !discord channels`;
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual([
-        '!discord send <#222> include',
-        '!discord channels',
-      ]);
+      expect(commands).toEqual(['!discord send <#222> include', '!discord channels']);
     });
 
     it('should return empty array when no commands', () => {
@@ -408,10 +397,7 @@ URL`;
 2行目
 !discord channels`;
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual([
-        '!discord send <#123> 1行目\n2行目',
-        '!discord channels',
-      ]);
+      expect(commands).toEqual(['!discord send <#123> 1行目\n2行目', '!discord channels']);
     });
 
     it('should stop multiline collection at !schedule command', () => {
@@ -419,9 +405,7 @@ URL`;
 メッセージ本文
 !schedule list`;
       const commands = extractDiscordCommands(text);
-      expect(commands).toEqual([
-        '!discord send <#123> メッセージ本文',
-      ]);
+      expect(commands).toEqual(['!discord send <#123> メッセージ本文']);
     });
 
     it('should keep single-line send as-is (backward compat)', () => {
@@ -598,10 +582,7 @@ https://example.com/2`;
     it('should handle multiple send commands', () => {
       const text = '!discord send <#111> msg1\n!discord send <#222> msg2';
       const result = extractDiscordSendFromPrompt(text);
-      expect(result.commands).toEqual([
-        '!discord send <#111> msg1',
-        '!discord send <#222> msg2',
-      ]);
+      expect(result.commands).toEqual(['!discord send <#111> msg1', '!discord send <#222> msg2']);
       expect(result.remaining.trim()).toBe('');
     });
 
@@ -623,9 +604,7 @@ https://example.com/2`;
       const text = '指示テキスト\n!discord send <#123>\nメッセージ本文\n追加行\n他の指示';
       const result = extractDiscordSendFromPrompt(text);
       // 後続行は全て吸収される（次のコマンド行まで）
-      expect(result.commands).toEqual([
-        '!discord send <#123> メッセージ本文\n追加行\n他の指示',
-      ]);
+      expect(result.commands).toEqual(['!discord send <#123> メッセージ本文\n追加行\n他の指示']);
       expect(result.remaining.trim()).toBe('指示テキスト');
     });
 
@@ -752,7 +731,8 @@ https://example.com/2`;
     });
 
     it('should remove !discord delete with message link from display', () => {
-      const text = 'テキスト前\n!discord delete https://discord.com/channels/111/222/333\nテキスト後';
+      const text =
+        'テキスト前\n!discord delete https://discord.com/channels/111/222/333\nテキスト後';
       const result = stripCommandsFromDisplay(text);
       expect(result).toBe('テキスト前\nテキスト後');
     });
