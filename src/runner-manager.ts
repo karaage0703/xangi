@@ -68,10 +68,12 @@ export class RunnerManager implements AgentRunner {
     }
 
     // 新しい PersistentRunner を作成
+    // web-chatチャンネルはWeb用のシステムプロンプトを使用
+    const runnerPlatform = channelId === 'web-chat' ? ('web' as const) : this.platform;
     const runner = new PersistentRunner({
       ...this.agentConfig,
       channelId,
-      platform: this.platform,
+      platform: runnerPlatform,
     });
 
     // セッション無効化イベント: sessions.json からも削除して永続的にリセット

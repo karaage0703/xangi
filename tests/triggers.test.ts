@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadTriggers, matchTrigger, executeTrigger, buildTriggersPrompt } from '../src/local-llm/triggers.js';
+import {
+  loadTriggers,
+  matchTrigger,
+  executeTrigger,
+  buildTriggersPrompt,
+} from '../src/local-llm/triggers.js';
 import type { Trigger } from '../src/local-llm/triggers.js';
 
 describe('triggers', () => {
@@ -80,8 +85,20 @@ describe('triggers', () => {
 
   describe('matchTrigger', () => {
     const triggers: Trigger[] = [
-      { name: 'weather', trigger: '!weather', description: '天気を調べる', handler: 'handler.sh', path: '/tmp/weather' },
-      { name: 'search', trigger: '!search', description: 'Web検索する', handler: 'handler.sh', path: '/tmp/search' },
+      {
+        name: 'weather',
+        trigger: '!weather',
+        description: '天気を調べる',
+        handler: 'handler.sh',
+        path: '/tmp/weather',
+      },
+      {
+        name: 'search',
+        trigger: '!search',
+        description: 'Web検索する',
+        handler: 'handler.sh',
+        path: '/tmp/search',
+      },
     ];
 
     it('should match trigger without args', () => {
@@ -197,8 +214,20 @@ describe('triggers', () => {
 
     it('should build prompt with trigger descriptions', () => {
       const triggers: Trigger[] = [
-        { name: 'weather', trigger: '!weather', description: '天気を調べる', handler: 'handler.sh', path: '/tmp' },
-        { name: 'search', trigger: '!search', description: 'Web検索する', handler: 'handler.sh', path: '/tmp' },
+        {
+          name: 'weather',
+          trigger: '!weather',
+          description: '天気を調べる',
+          handler: 'handler.sh',
+          path: '/tmp',
+        },
+        {
+          name: 'search',
+          trigger: '!search',
+          description: 'Web検索する',
+          handler: 'handler.sh',
+          path: '/tmp',
+        },
       ];
 
       const prompt = buildTriggersPrompt(triggers);

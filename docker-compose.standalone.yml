@@ -1,0 +1,57 @@
+# docker compose -f docker-compose.standalone.yml up --build
+# ブラウザで http://localhost:18888 にアクセス
+
+services:
+  xangi:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.standalone
+    container_name: xangi-standalone
+    restart: unless-stopped
+    ports:
+      - "18888:18888"
+    volumes:
+      - ${WORKSPACE_PATH:-./workspace}:/workspace
+    environment:
+      - NODE_ENV=production
+      - WORKSPACE_PATH=/workspace
+      - DATA_DIR=/workspace/.xangi
+      - AGENT_BACKEND=local-llm
+      - WEB_CHAT_ENABLED=true
+      - WEB_CHAT_PORT=18888
+      - LOCAL_LLM_BASE_URL=http://ollama:11434
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-gemma4:e4b}
+      - LOCAL_LLM_MODE=chat
+    depends_on:
+      ollama:
+        condition: service_started
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+  # 初回起動時にモデルをpull
+  ollama-init:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: "no"
+    entrypoint: >
+      sh -c '
+        echo "Waiting for Ollama...";
+        until curl -sf http://ollama:11434/api/tags > /dev/null 2>&1; do sleep 2; done;
+        echo "Pulling model ${LOCAL_LLM_MODEL:-gemma4:e4b}...";
+        curl -sf http://ollama:11434/api/pull -d "{\"name\": \"${LOCAL_LLM_MODEL:-gemma4:e4b}\"}" || true;
+        echo "Model ready!"
+      '
+    environment:
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-gemma4:e4b}
+
+volumes:
+  ollama-data:

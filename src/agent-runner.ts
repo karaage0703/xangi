@@ -9,6 +9,7 @@ export interface RunOptions {
   skipPermissions?: boolean;
   sessionId?: string;
   channelId?: string; // プロセス管理用
+  appSessionId?: string; // xangi側セッションID（ログ用）
 }
 
 export interface RunResult {

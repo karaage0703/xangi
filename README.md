@@ -10,7 +10,7 @@ Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord 
 
 - マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
 - Local LLM対応（Ollama/vLLM等、エージェントモード/チャットモード切替可能）
-- Discord / Slack 対応
+- Discord / Slack / Web UI 対応
 - Docker対応
 - スキルシステム
 - スケジューラー（cron / 単発 / 起動時タスク）

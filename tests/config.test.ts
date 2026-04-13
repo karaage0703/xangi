@@ -18,7 +18,7 @@ describe('config', () => {
 
     // キャッシュをクリアして再インポート
     const { loadConfig } = await import('../src/config.js');
-    expect(() => loadConfig()).toThrow('DISCORD_TOKEN or SLACK_BOT_TOKEN');
+    expect(() => loadConfig()).toThrow('DISCORD_TOKEN');
   });
 
   it('should load Discord config when DISCORD_TOKEN is set', async () => {

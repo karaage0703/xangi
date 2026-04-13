@@ -48,7 +48,8 @@ describe('extractAttachmentPaths', () => {
   });
 
   it('should extract image paths from attachment section', () => {
-    const prompt = 'この画像を分析して\n\n[添付ファイル]\n  - /tmp/photo.jpg\n  - /tmp/screenshot.png';
+    const prompt =
+      'この画像を分析して\n\n[添付ファイル]\n  - /tmp/photo.jpg\n  - /tmp/screenshot.png';
     const result = extractAttachmentPaths(prompt);
     expect(result.imagePaths).toEqual(['/tmp/photo.jpg', '/tmp/screenshot.png']);
     expect(result.otherPaths).toEqual([]);
@@ -56,7 +57,8 @@ describe('extractAttachmentPaths', () => {
   });
 
   it('should separate image and non-image paths', () => {
-    const prompt = 'ファイルを確認して\n\n[添付ファイル]\n  - /tmp/photo.jpg\n  - /tmp/data.csv\n  - /tmp/image.png';
+    const prompt =
+      'ファイルを確認して\n\n[添付ファイル]\n  - /tmp/photo.jpg\n  - /tmp/data.csv\n  - /tmp/image.png';
     const result = extractAttachmentPaths(prompt);
     expect(result.imagePaths).toEqual(['/tmp/photo.jpg', '/tmp/image.png']);
     expect(result.otherPaths).toEqual(['/tmp/data.csv']);

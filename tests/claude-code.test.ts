@@ -50,7 +50,11 @@ describe('ClaudeCodeRunner args', () => {
   /**
    * spawn に渡された引数を取得するヘルパー
    */
-  async function getSpawnArgs(runner: ClaudeCodeRunner, prompt: string, options?: { sessionId?: string; skipPermissions?: boolean }) {
+  async function getSpawnArgs(
+    runner: ClaudeCodeRunner,
+    prompt: string,
+    options?: { sessionId?: string; skipPermissions?: boolean }
+  ) {
     const { spawn, getMockProcess } = await import('child_process');
 
     const runPromise = runner.run(prompt, options);
@@ -65,15 +69,18 @@ describe('ClaudeCodeRunner args', () => {
 
     // プロセスを終了させてクリーンアップ
     const mockProcess = (getMockProcess as () => any)();
-    mockProcess.stdout.emit('data', JSON.stringify({
-      type: 'result',
-      subtype: 'success',
-      is_error: false,
-      result: 'ok',
-      session_id: 'test-session',
-      total_cost_usd: 0,
-      duration_ms: 100,
-    }));
+    mockProcess.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'ok',
+        session_id: 'test-session',
+        total_cost_usd: 0,
+        duration_ms: 100,
+      })
+    );
     mockProcess.emit('close', 0);
 
     await runPromise.catch(() => {});
@@ -146,7 +153,10 @@ describe('ClaudeCodeRunner args', () => {
   });
 
   it('should have correct arg order with all options', async () => {
-    const runner = new ClaudeCodeRunner({ model: 'claude-sonnet-4-5-20250929', skipPermissions: true });
+    const runner = new ClaudeCodeRunner({
+      model: 'claude-sonnet-4-5-20250929',
+      skipPermissions: true,
+    });
     const { args } = await getSpawnArgs(runner, 'do stuff', { sessionId: 'sess-456' });
 
     // -p と --output-format json は最初
