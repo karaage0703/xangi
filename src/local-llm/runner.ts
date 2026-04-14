@@ -10,6 +10,7 @@ import type { LLMMessage, LLMImageContent } from './types.js';
 import { LLMClient } from './llm-client.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
 import { loadWorkspaceContext } from './context.js';
+import { getIzunaContext } from './context-injector.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
 import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
@@ -87,6 +88,34 @@ export function formatLlmError(err: unknown): string {
   return `LLMエラー: ${msg}`;
 }
 
+function buildTriggerFeedbackMessage(triggerName: string, triggerResult: string): string {
+  let formatRule = '一覧データは省略しすぎず、件数や主要項目を具体的に列挙してください。';
+  if (triggerName === 'mail') {
+    formatRule =
+      '未読メールは件数に加えて、各メールの件名・差出人・日時を省略せず列挙してください。';
+  } else if (triggerName === 'calendar') {
+    formatRule = '予定は今日と明日に分けて、時系列で具体的に列挙してください。';
+  } else if (triggerName === 'tasks') {
+    formatRule = [
+      'タスクは要約せず、trigger結果に含まれる項目名をそのまま使って全件列挙してください。',
+      '返答は必ず P0 と P1 を分けた箇条書きにしてください。',
+      '例:',
+      'P0:',
+      '- タスク名',
+      'P1:',
+      '- タスク名',
+    ].join('\n');
+  }
+  return [
+    `[${triggerName}の結果]`,
+    '以下は実際に取得した最新データです。',
+    'この情報だけを根拠に、元のユーザー依頼へ自然に返答してください。',
+    formatRule,
+    '',
+    triggerResult,
+  ].join('\n');
+}
+
 export class LocalLlmRunner implements AgentRunner {
   private readonly llm: LLMClient;
   private readonly workdir: string;
@@ -133,7 +162,7 @@ export class LocalLlmRunner implements AgentRunner {
     this.cleanupSessions();
 
     const session = this.getOrCreateSession(sessionId);
-    const systemPrompt = this.buildSystemPrompt();
+    const systemPrompt = await this.buildSystemPrompt();
     const tools = this.liteMode ? [] : getBuiltinTools();
     const llmTools = this.liteMode ? [] : toLLMTools(tools);
 
@@ -236,7 +265,7 @@ export class LocalLlmRunner implements AgentRunner {
     this.cleanupSessions();
 
     const session = this.getOrCreateSession(sessionId);
-    const systemPrompt = this.buildSystemPrompt();
+    const systemPrompt = await this.buildSystemPrompt();
     const tools = this.liteMode ? [] : getBuiltinTools();
     const llmTools = this.liteMode ? [] : toLLMTools(tools);
 
@@ -273,16 +302,23 @@ export class LocalLlmRunner implements AgentRunner {
           // feedback: handler結果をLLMに戻して再応答
           session.messages.push({
             role: 'user',
-            content: `[${match.trigger.name}の結果]\n${triggerResult}`,
+            content: buildTriggerFeedbackMessage(match.trigger.name, triggerResult),
           });
           try {
             const feedbackResponse = await this.llm.chat(session.messages, {
-              systemPrompt: this.buildSystemPrompt(),
+              systemPrompt: await this.buildSystemPrompt(),
               signal: abortController.signal,
             });
             session.messages.push({ role: 'assistant', content: feedbackResponse.content });
-            finalText = feedbackResponse.content;
-            callbacks.onText?.(feedbackResponse.content, feedbackResponse.content);
+            // Strip trigger commands from feedback response to prevent
+            // Discord-side handleDiscordCommandsInResponse from re-firing
+            finalText = feedbackResponse.content
+              .split('\n')
+              .filter(
+                (line: string) => !this.triggers.some((t: any) => line.trim().startsWith(t.trigger))
+              )
+              .join('\n');
+            callbacks.onText?.(finalText, finalText);
           } catch {
             finalText = fullText + '\n\n' + triggerResult;
             callbacks.onText?.('\n\n' + triggerResult, finalText);
@@ -293,6 +329,15 @@ export class LocalLlmRunner implements AgentRunner {
           callbacks.onText?.('\n\n' + triggerResult, finalText);
         }
       }
+
+      // Strip any remaining trigger commands from final output
+      finalText = finalText
+        .split('\n')
+        .filter(
+          (line: string) => !this.triggers.some((t: any) => line.trim().startsWith(t.trigger))
+        )
+        .join('\n')
+        .trim();
 
       this.trimSession(session);
       session.updatedAt = Date.now();
@@ -424,7 +469,7 @@ export class LocalLlmRunner implements AgentRunner {
         if (match?.trigger.feedback) {
           session.messages.push({
             role: 'user',
-            content: `[${match.trigger.name}の結果]\n${triggerResult}`,
+            content: buildTriggerFeedbackMessage(match.trigger.name, triggerResult),
           });
           let feedbackResponse;
           try {
@@ -654,7 +699,7 @@ export class LocalLlmRunner implements AgentRunner {
     return msg;
   }
 
-  private buildSystemPrompt(): string {
+  private async buildSystemPrompt(): Promise<string> {
     const parts: string[] = [];
 
     // liteモードではXANGI_COMMANDS・CHAT_SYSTEM_PROMPT・スキル一覧を除外
@@ -665,6 +710,12 @@ export class LocalLlmRunner implements AgentRunner {
     // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）— 両モードで注入
     const context = loadWorkspaceContext(this.workdir);
     if (context) parts.push(context);
+
+    // izuna-workspace コンテキスト注入（L1メモリ・タスク・予定）
+    const izunaContext = await getIzunaContext();
+    if (izunaContext) {
+      parts.push(`## 記憶・タスク・予定\n${izunaContext}`);
+    }
 
     // liteモードでトリガーが存在する場合、利用可能なコマンド一覧を追加（毎回リロード）
     if (this.liteMode) {

@@ -40,6 +40,659 @@ import { join } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 dotenvConfig({ override: true });
 
+// === Izuna Action Hook (Phase 4) ===
+import { execFile } from 'child_process';
+import { join as pathJoin } from 'path';
+const ACTION_HOOK_RE = /\[ACTION:(\w+)(?:\s+(\{[^\]]*\}))?\]/g;
+const ACTION_SCRIPTS_DIR = pathJoin(process.env.HOME || '', '.openclaw/workspace/scripts');
+const GATE_RESPONDER_PATH = pathJoin(ACTION_SCRIPTS_DIR, 'gate_responder.py');
+const ACTION_EXECUTOR_PATH = pathJoin(ACTION_SCRIPTS_DIR, 'action_executor.py');
+const ACTION_ENV = {
+  ...process.env,
+  PYTHONPATH: '/Users/suguru/Library/Python/3.9/lib/python/site-packages',
+};
+
+// === Discord Gate (Phase 4b): L2/L3 confirmation via Discord buttons ===
+interface PendingGate {
+  actionName: string;
+  paramsStr: string;
+  hashPrefix: string;
+  tier: string;
+  token2: string | null;
+  channelId: string;
+  messageId: string;
+  expiresAt: number;
+}
+const pendingGates = new Map<string, PendingGate>();
+// L3 second-step: token2 -> first token
+const pendingL3SecondStep = new Map<string, string>();
+
+function execPython(args: string[], timeout = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'python3',
+      args,
+      {
+        timeout,
+        cwd: ACTION_SCRIPTS_DIR,
+        env: ACTION_ENV,
+      },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(stderr || err.message));
+          return;
+        }
+        resolve(stdout);
+      }
+    );
+  });
+}
+
+function formatActionResult(actionName: string, parsed: any): string {
+  if (parsed.ok) {
+    if (actionName === 'calendar_create') {
+      return (
+        '\u{1f4c5} ' +
+        (parsed.event?.summary || '\u4e88\u5b9a') +
+        ' \u3092\u767b\u9332\u3057\u307e\u3057\u305f'
+      );
+    } else if (actionName === 'gmail_draft') {
+      return '\u2709\ufe0f \u4e0b\u66f8\u304d\u3092\u4f5c\u6210\u3057\u307e\u3057\u305f';
+    } else if (actionName === 'calendar_list') {
+      const evts = parsed.events || [];
+      return (
+        evts.map((e: any) => '- ' + e.start + ' ' + e.summary).join('\n') ||
+        '\u4e88\u5b9a\u306a\u3057'
+      );
+    } else {
+      return '\u2705 ' + actionName + ' \u5b8c\u4e86';
+    }
+  } else {
+    return '\u26a0\ufe0f ' + actionName + ': ' + (parsed.error || '\u30a8\u30e9\u30fc');
+  }
+}
+
+/** Gate 承認ボタン (L2) */
+function createGateButtons(token: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`gate_approve_${token}`)
+      .setLabel('\u2705 \u627f\u8a8d')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`gate_deny_${token}`)
+      .setLabel('\u274c \u62d2\u5426')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+/** Gate L3: 拒否ボタンのみ (承認はテキスト "YES" 入力) */
+function createL3GateButtons(token: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`gate_deny_${token}`)
+      .setLabel('\u274c \u62d2\u5426')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+/** gate_responder.py respond を呼ぶ */
+async function respondToGate(
+  token: string,
+  hashPrefix: string | null,
+  answer: string
+): Promise<{ ok: boolean; reason: string }> {
+  try {
+    const args = [GATE_RESPONDER_PATH, 'respond', '--token', token, '--answer', answer];
+    if (hashPrefix) {
+      args.push('--hash', hashPrefix);
+    }
+    const result = await execPython(args, 10000);
+    return JSON.parse(result);
+  } catch (err: any) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+/** Gate 承認後にアクション実行 (--skip-gate) */
+async function executeGatedAction(actionName: string, paramsStr: string): Promise<string> {
+  try {
+    const result = await execPython([
+      ACTION_EXECUTOR_PATH,
+      '--action',
+      actionName,
+      '--params',
+      paramsStr,
+      '--skip-gate',
+    ]);
+    const parsed = JSON.parse(result);
+    return formatActionResult(actionName, parsed);
+  } catch (err: any) {
+    return '\u26a0\ufe0f ' + actionName + ': ' + err.message;
+  }
+}
+
+/** 期限切れ gate をクリーンアップ */
+function cleanupExpiredGates(): void {
+  const now = Date.now();
+  for (const [token, gate] of pendingGates) {
+    if (now > gate.expiresAt) {
+      pendingGates.delete(token);
+      if (gate.token2) pendingL3SecondStep.delete(gate.token2);
+    }
+  }
+}
+
+async function processIzunaActions(
+  text: string,
+  channelId: string,
+  sendFn: (
+    content: string,
+    components?: ActionRowBuilder<ButtonBuilder>[]
+  ) => Promise<Message | null>
+): Promise<{ cleanText: string; actionMessages: string[] }> {
+  cleanupExpiredGates();
+  const matches = [...text.matchAll(ACTION_HOOK_RE)];
+  if (matches.length === 0) return { cleanText: text, actionMessages: [] };
+  const cleanText = text.replace(ACTION_HOOK_RE, '').trim();
+  const actionMessages: string[] = [];
+  for (const m of matches.slice(0, 1)) {
+    const actionName = m[1];
+    const paramsStr = m[2] || '{}';
+    try {
+      // Step 1: Gate tier 判定
+      const gateResult = await execPython([
+        ACTION_EXECUTOR_PATH,
+        '--action',
+        actionName,
+        '--params',
+        paramsStr,
+        '--check-gate',
+      ]);
+      const gateInfo = JSON.parse(gateResult);
+
+      if (gateInfo.needs_gate) {
+        // L2/L3: Discord 確認 UI を表示
+        const tierLabel =
+          gateInfo.tier === 'L3_double_confirm'
+            ? '\u{1f534} L3 \u4e8c\u91cd\u78ba\u8a8d'
+            : '\u{1f7e0} L2 \u5916\u90e8\u52b9\u679c';
+        const preview = (gateInfo.preview || '').slice(0, 300);
+        const gateMsg = `${tierLabel}\n**Action:** \`${actionName}\`\n\`\`\`json\n${preview}\n\`\`\`\n`;
+
+        let fullMsg: string;
+        let components: ActionRowBuilder<ButtonBuilder>[];
+        if (gateInfo.tier === 'L3_double_confirm') {
+          fullMsg =
+            gateMsg +
+            '\u26a0\ufe0f **L3 \u4e8c\u91cd\u78ba\u8a8d**: \u627f\u8a8d\u3059\u308b\u306b\u306f `YES` \u3068\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044 (5\u5206\u4ee5\u5185)';
+          components = [createL3GateButtons(gateInfo.token)];
+        } else {
+          fullMsg =
+            gateMsg +
+            '\u627f\u8a8d\u307e\u305f\u306f\u62d2\u5426\u3057\u3066\u304f\u3060\u3055\u3044 (5\u5206\u4ee5\u5185)';
+          components = [createGateButtons(gateInfo.token)];
+        }
+
+        const sentMsg = await sendFn(fullMsg, components);
+
+        // Pending gate 登録
+        pendingGates.set(gateInfo.token, {
+          actionName,
+          paramsStr,
+          hashPrefix: gateInfo.hash_prefix,
+          tier: gateInfo.tier,
+          token2: gateInfo.token2 || null,
+          channelId,
+          messageId: sentMsg?.id || '',
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+        if (gateInfo.token2) {
+          pendingL3SecondStep.set(gateInfo.token2, gateInfo.token);
+        }
+        console.log(
+          `[gate] Pending ${gateInfo.tier} gate: ${gateInfo.token.slice(0, 12)}... action=${actionName}`
+        );
+        actionMessages.push(`\u23f3 ${actionName}: \u627f\u8a8d\u5f85\u3061`);
+      } else if (gateInfo.decision === 'deny') {
+        actionMessages.push(
+          `\u{1f6ab} ${actionName}: \u30b2\u30fc\u30c8\u62d2\u5426 \u2014 ${gateInfo.reason}`
+        );
+      } else {
+        // L0/L1: gate 不要 -> 直接実行
+        const result = await execPython([
+          ACTION_EXECUTOR_PATH,
+          '--action',
+          actionName,
+          '--params',
+          paramsStr,
+        ]);
+        const parsed = JSON.parse(result);
+        actionMessages.push(formatActionResult(actionName, parsed));
+      }
+    } catch (err: any) {
+      actionMessages.push('\u26a0\ufe0f ' + actionName + ': ' + err.message);
+    }
+  }
+  return { cleanText, actionMessages };
+}
+
+// === Izuna Worker Direct Execution (Phase 8) ===
+// dispatch.py が worker track + agent を特定した場合、LLM をスキップして直接実行する
+
+interface DispatchResult {
+  track: string | null;
+  agent: string | null;
+  mode: string;
+  blast_radius?: string;
+  reason?: string;
+}
+
+/** Worker 簡易クエリの判定キーワード */
+const WORKER_AUTO_EXEC_PATTERNS: Record<string, { action: string; keywords: string[] }> = {
+  'mail-agent': {
+    action: 'trigger_mail',
+    keywords: ['確認', 'check', 'チェック', '未読', 'unread', '見て'],
+  },
+  'calendar-agent': {
+    action: 'calendar_list',
+    keywords: ['確認', 'check', 'today', '今日', '予定', '一覧', 'リスト'],
+  },
+  'notion-manager': {
+    action: 'notion_tasks',
+    keywords: ['タスク', 'tasks', '一覧', '確認', 'リスト'],
+  },
+};
+
+/**
+ * Worker タスクの直接実行を試行する。
+ * 成功した場合はフォーマット済みテキストを返す。実行不要/失敗時は null。
+ */
+async function tryWorkerDirectExec(
+  dispatch: DispatchResult,
+  rawPrompt: string
+): Promise<string | null> {
+  if (dispatch.track !== 'worker' || !dispatch.agent) return null;
+
+  const pattern = WORKER_AUTO_EXEC_PATTERNS[dispatch.agent];
+  if (!pattern) return null;
+
+  // キーワードマッチ: 簡易クエリ（確認/check系）のみ直接実行
+  const promptLower = rawPrompt.toLowerCase();
+  const isSimpleQuery = pattern.keywords.some((kw) => promptLower.includes(kw.toLowerCase()));
+  if (!isSimpleQuery) return null;
+
+  console.log(`[izuna-worker-exec] Direct executing: ${dispatch.agent} → ${pattern.action}`);
+
+  try {
+    if (pattern.action === 'trigger_mail') {
+      // メール確認: trigger_mail.py を直接実行
+      const result = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'python3',
+          [pathJoin(ACTION_SCRIPTS_DIR, 'trigger_mail.py')],
+          {
+            timeout: 15000,
+            cwd: ACTION_SCRIPTS_DIR,
+            env: {
+              ...process.env,
+              PYTHONPATH: '/Users/suguru/Library/Python/3.9/lib/python/site-packages',
+            },
+          },
+          (err, stdout, stderr) => {
+            if (err) {
+              reject(new Error(stderr || err.message));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+      });
+      return result.trim() || '未読メールはありません。';
+    }
+
+    if (pattern.action === 'calendar_list' || pattern.action === 'notion_tasks') {
+      // action_executor.py 経由で実行
+      const result = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'python3',
+          [
+            pathJoin(ACTION_SCRIPTS_DIR, 'action_executor.py'),
+            '--action',
+            pattern.action,
+            '--params',
+            '{}',
+          ],
+          {
+            timeout: 15000,
+            cwd: ACTION_SCRIPTS_DIR,
+            env: {
+              ...process.env,
+              PYTHONPATH: '/Users/suguru/Library/Python/3.9/lib/python/site-packages',
+            },
+          },
+          (err, stdout, stderr) => {
+            if (err) {
+              reject(new Error(stderr || err.message));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+      });
+
+      const parsed = JSON.parse(result);
+      if (!parsed.ok) return null; // LLM にフォールバック
+
+      if (pattern.action === 'calendar_list') {
+        const events = parsed.events || [];
+        if (events.length === 0) return '📅 今後の予定はありません。';
+        const lines = events.map(
+          (e: { start: string; summary: string }) => `- ${e.start}  ${e.summary}`
+        );
+        return `📅 **予定一覧**\n${lines.join('\n')}`;
+      }
+
+      if (pattern.action === 'notion_tasks') {
+        const tasks = parsed.tasks || [];
+        if (tasks.length === 0) return '📋 タスクはありません。';
+        const lines = tasks.map(
+          (t: { title?: string; status?: string; name?: string }) =>
+            `- ${t.title || t.name || '(無題)'}${t.status ? ` [${t.status}]` : ''}`
+        );
+        return `📋 **タスク一覧**\n${lines.join('\n')}`;
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[izuna-worker-exec] Direct exec failed (fallback to LLM):`,
+      err instanceof Error ? err.message : err
+    );
+    return null; // LLM にフォールバック
+  }
+
+  return null;
+}
+
+// === Izuna Dev Agent Spawning (Phase 9) ===
+// dispatch.py が dev track を特定した場合、Claude Code を対象リポにスコープしてスポーン
+
+/** Dev エージェント → リポジトリパスのマッピング */
+const DEV_AGENT_REPOS: Record<string, string> = {
+  'dmat-keychain-agent': pathJoin(process.env.HOME || '', 'projects/dmat-keychain'),
+  'koereq-agent': pathJoin(process.env.HOME || '', 'projects/koereq'),
+  'nurseai-agent': pathJoin(process.env.HOME || '', 'projects/nurseai'),
+  'hayabusa-agent': pathJoin(process.env.HOME || '', 'projects/hayabusa'),
+};
+
+/**
+ * Dev タスクに対して Claude Code をスポーンし、結果を返す。
+ * 対象リポが見つからない場合は null（LLM フォールバック）。
+ */
+async function spawnDevAgent(
+  dispatch: DispatchResult,
+  prompt: string,
+  channelId: string,
+  config: ReturnType<typeof loadConfig>
+): Promise<string | null> {
+  if (dispatch.track !== 'dev' || !dispatch.agent) return null;
+
+  const repoPath = DEV_AGENT_REPOS[dispatch.agent];
+  if (!repoPath) {
+    console.warn(`[izuna-dev-agent] Unknown dev agent: ${dispatch.agent}`);
+    return null;
+  }
+
+  // リポジトリの存在チェック
+  try {
+    const { statSync } = await import('fs');
+    if (!statSync(repoPath).isDirectory()) {
+      console.warn(`[izuna-dev-agent] Repo not found: ${repoPath}`);
+      return null;
+    }
+  } catch {
+    console.warn(`[izuna-dev-agent] Repo not accessible: ${repoPath}`);
+    return null;
+  }
+
+  console.log(`[izuna-dev-agent] Spawning Claude Code for ${dispatch.agent} in ${repoPath}`);
+
+  // Claude Code を対象リポにスコープしてワンショット実行
+  const devRunner = new ClaudeCodeRunner({
+    model: config.agent.config.model,
+    timeoutMs: config.agent.config.timeoutMs ?? 300000,
+    workdir: repoPath,
+    skipPermissions: config.agent.config.skipPermissions ?? false,
+    platform: config.agent.platform,
+  });
+
+  const devPrompt = `[Dev Agent: ${dispatch.agent}]\n[Repo: ${repoPath}]\n[Blast Radius: ${dispatch.blast_radius || 'unknown'}]\n\n${prompt}`;
+
+  const result = await devRunner.run(devPrompt, { channelId });
+  return result.result;
+}
+
+// === Phase 10: Magika Guard Hook ===
+// パッケージインストールやファイル添付時にセキュリティチェックを実行
+
+const INSTALL_KEYWORDS = [
+  'install',
+  'インストール',
+  'pip install',
+  'npm install',
+  'brew install',
+  '追加',
+  '入れて',
+  '使いたい',
+  'add dependency',
+  'require',
+  'import',
+];
+
+/** インストール系キーワードがメッセージに含まれるか判定 */
+function containsInstallKeyword(text: string): boolean {
+  const lower = text.toLowerCase();
+  return INSTALL_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
+}
+
+/** メッセージからパッケージマネージャとパッケージ名を抽出 */
+function extractPackageInfo(text: string): { manager: string; packageName: string } | null {
+  const patterns: { re: RegExp; manager: string }[] = [
+    { re: /pip\s+install\s+([a-zA-Z0-9_.-]+)/i, manager: 'pip' },
+    { re: /npm\s+install\s+([a-zA-Z0-9@/_.-]+)/i, manager: 'npm' },
+    { re: /brew\s+install\s+([a-zA-Z0-9_.-]+)/i, manager: 'brew' },
+    { re: /yarn\s+add\s+([a-zA-Z0-9@/_.-]+)/i, manager: 'yarn' },
+    { re: /pnpm\s+add\s+([a-zA-Z0-9@/_.-]+)/i, manager: 'pnpm' },
+    { re: /cargo\s+add\s+([a-zA-Z0-9_.-]+)/i, manager: 'cargo' },
+    { re: /gem\s+install\s+([a-zA-Z0-9_.-]+)/i, manager: 'gem' },
+  ];
+  for (const { re, manager } of patterns) {
+    const m = text.match(re);
+    if (m) return { manager, packageName: m[1] };
+  }
+  return null;
+}
+
+/** magika_guard.py scan でファイルをチェック */
+async function checkWithMagika(
+  target: string,
+  expectedType?: string
+): Promise<{
+  verdict: string;
+  reason: string | null;
+  detected_type: string;
+}> {
+  return new Promise((resolve) => {
+    const args = ['magika_guard.py', 'scan', target];
+    if (expectedType) args.push('--expected', expectedType);
+    execFile(
+      'python3',
+      args,
+      { timeout: 15000, cwd: ACTION_SCRIPTS_DIR, env: ACTION_ENV },
+      (err, stdout) => {
+        if (err) {
+          resolve({ verdict: 'error', reason: err.message, detected_type: 'unknown' });
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          resolve({ verdict: 'error', reason: 'parse error', detected_type: 'unknown' });
+        }
+      }
+    );
+  });
+}
+
+/** magika_guard.py check-package でパッケージをチェック */
+async function checkPackageWithMagika(
+  manager: string,
+  packageName: string
+): Promise<{
+  verdict: string;
+  reason: string | null;
+  details: any;
+}> {
+  return new Promise((resolve) => {
+    execFile(
+      'python3',
+      ['magika_guard.py', 'check-package', manager, packageName],
+      { timeout: 30000, cwd: ACTION_SCRIPTS_DIR, env: ACTION_ENV },
+      (err, stdout) => {
+        if (err) {
+          resolve({ verdict: 'error', reason: err.message, details: {} });
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          resolve({ verdict: 'error', reason: 'parse error', details: {} });
+        }
+      }
+    );
+  });
+}
+
+/** Magika verdict をユーザー向けメッセージに変換（safe は null = 表示なし） */
+function formatMagikaVerdict(verdict: string, reason: string | null, label: string): string | null {
+  if (verdict === 'safe') return null;
+  if (verdict === 'blocked') {
+    return `\u{1f6ab} **セキュリティブロック** [${label}]: ${reason || '安全性を確認できませんでした'}`;
+  }
+  if (verdict === 'suspicious') {
+    return `\u26a0\ufe0f **セキュリティ警告** [${label}]: ${reason || '注意が必要です'}`;
+  }
+  // error or unknown
+  return null;
+}
+
+/** LLM応答内のインストールコマンドを抽出して全パッケージ情報を返す */
+function extractInstallCommandsFromResponse(
+  text: string
+): { manager: string; packageName: string }[] {
+  const results: { manager: string; packageName: string }[] = [];
+  const patterns: { re: RegExp; manager: string }[] = [
+    { re: /pip\s+install\s+([a-zA-Z0-9_.-]+)/gi, manager: 'pip' },
+    { re: /npm\s+install\s+([a-zA-Z0-9@/_.-]+)/gi, manager: 'npm' },
+    { re: /brew\s+install\s+([a-zA-Z0-9_.-]+)/gi, manager: 'brew' },
+    { re: /yarn\s+add\s+([a-zA-Z0-9@/_.-]+)/gi, manager: 'yarn' },
+    { re: /pnpm\s+add\s+([a-zA-Z0-9@/_.-]+)/gi, manager: 'pnpm' },
+    { re: /cargo\s+add\s+([a-zA-Z0-9_.-]+)/gi, manager: 'cargo' },
+    { re: /gem\s+install\s+([a-zA-Z0-9_.-]+)/gi, manager: 'gem' },
+  ];
+  for (const { re, manager } of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const pkgName = m[1];
+      if (!results.some((r) => r.manager === manager && r.packageName === pkgName)) {
+        results.push({ manager, packageName: pkgName });
+      }
+    }
+  }
+  return results;
+}
+
+// === Izuna Topic Router (Phase 5) ===
+const TOPIC_CHANNELS: Record<string, string> = {
+  mail: '1492838930213503069',
+  'dev-izuna': '1492838995024150588',
+  schedule: '1492839063059693568',
+  'harness-gate': '1492839143636734013',
+  'audit-log': '1492839299933278289',
+  sns: '1492839607924953259',
+  'dev-dmatkc': '1492839921335930940',
+};
+
+const TOPIC_KEYWORDS: Record<string, string[]> = {
+  mail: [
+    '\u30e1\u30fc\u30eb',
+    'mail',
+    '\u9001\u4fe1',
+    '\u8fd4\u4fe1',
+    'draft',
+    '\u4e0b\u66f8\u304d',
+  ],
+  schedule: [
+    '\u4e88\u5b9a',
+    '\u30ab\u30ec\u30f3\u30c0\u30fc',
+    '\u4f1a\u8b70',
+    'MTG',
+    '\u9762\u8ac7',
+    '\u660e\u65e5',
+    '\u4eca\u9031',
+  ],
+  'dev-izuna': [
+    '\u30b3\u30fc\u30c9',
+    '\u30ea\u30dd',
+    'commit',
+    'PR',
+    'bug',
+    '\u5b9f\u88c5',
+    '\u4fee\u6b63',
+    'koereq',
+    'nurseai',
+  ],
+  'dev-dmatkc': ['dmat', 'DMAT', '\u30ad\u30fc\u30db\u30eb\u30c0\u30fc', 'EC\u30b5\u30a4\u30c8'],
+  sns: ['\u6295\u7a3f', 'SNS', 'X', 'Qiita', '\u30d6\u30ed\u30b0'],
+};
+
+function classifyTopic(userMsg: string, botResp: string): { topic: string; channelId: string } {
+  const combined = (userMsg + ' ' + botResp).toLowerCase();
+
+  // ACTION marker check
+  const actionMatch = botResp.match(/\[ACTION:(\w+)/);
+  if (actionMatch) {
+    const actionMap: Record<string, string> = {
+      calendar_create: 'schedule',
+      calendar_list: 'schedule',
+      calendar_delete: 'schedule',
+      gmail_draft: 'mail',
+      gmail_context: 'mail',
+      mail_process: 'mail',
+    };
+    const topic = actionMap[actionMatch[1]];
+    if (topic && TOPIC_CHANNELS[topic]) {
+      return { topic, channelId: TOPIC_CHANNELS[topic] };
+    }
+  }
+
+  // Keyword match
+  let bestTopic = '';
+  let bestScore = 0;
+  for (const [topic, keywords] of Object.entries(TOPIC_KEYWORDS)) {
+    const score = keywords.filter((kw) => combined.includes(kw.toLowerCase())).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestTopic = topic;
+    }
+  }
+
+  if (bestTopic && bestScore > 0 && TOPIC_CHANNELS[bestTopic]) {
+    return { topic: bestTopic, channelId: TOPIC_CHANNELS[bestTopic] };
+  }
+  return { topic: 'general', channelId: '' };
+}
+
 /** メッセージを指定文字数で分割（カスタムセパレータ対応、デフォルトは行単位） */
 function splitMessage(text: string, maxLength: number, separator: string = '\n'): string[] {
   const chunks: string[] = [];
@@ -368,6 +1021,117 @@ async function main() {
         await interaction
           .followUp({ content: '🆕 新しいセッションを開始しました', ephemeral: true })
           .catch(() => {});
+        return;
+      }
+
+      // === Gate approval/deny buttons (Phase 4b) ===
+      if (interaction.customId.startsWith('gate_approve_')) {
+        const token = interaction.customId.replace('gate_approve_', '');
+        const gate = pendingGates.get(token);
+        if (!gate) {
+          await interaction.reply({
+            content:
+              '\u26a0\ufe0f \u30b2\u30fc\u30c8\u304c\u671f\u9650\u5207\u308c\u307e\u305f\u306f\u5b58\u5728\u3057\u307e\u305b\u3093',
+            ephemeral: true,
+          });
+          return;
+        }
+        await interaction.deferUpdate().catch(() => {});
+
+        // gate_responder に "ok" を送る
+        const resp = await respondToGate(token, gate.hashPrefix, 'ok');
+        if (!resp.ok) {
+          await interaction.followUp({
+            content: `\u274c \u30b2\u30fc\u30c8\u627f\u8a8d\u5931\u6557: ${resp.reason}`,
+            ephemeral: true,
+          });
+          pendingGates.delete(token);
+          return;
+        }
+
+        // L3 の場合は二重確認が必要 (テキスト "YES" 待ち) — L2 のみここで実行
+        if (gate.tier === 'L3_double_confirm') {
+          // L3 は approve ボタンなし (テキスト入力で "YES")
+          pendingGates.delete(token);
+          return;
+        }
+
+        // L2: 承認成功 → アクション実行
+        console.log(`[gate] L2 approved: ${token.slice(0, 12)}... action=${gate.actionName}`);
+        const resultMsg = await executeGatedAction(gate.actionName, gate.paramsStr);
+        pendingGates.delete(token);
+
+        // ボタンを消してメッセージ更新
+        await interaction.editReply({ components: [] }).catch(() => {});
+        await interaction.followUp({ content: resultMsg }).catch(() => {});
+
+        // harness-gate チャンネルにログ送信
+        try {
+          const gateChannelId = TOPIC_CHANNELS['harness-gate'];
+          if (gateChannelId) {
+            const gateChannel = await (interaction.client as any).channels
+              .fetch(gateChannelId)
+              .catch(() => null);
+            if (gateChannel && 'send' in gateChannel) {
+              await (gateChannel as any)
+                .send(
+                  `\u2705 **Gate L2 \u627f\u8a8d**: \`${gate.actionName}\` by ${interaction.user.tag}\n${resultMsg}`
+                )
+                .catch(() => {});
+            }
+          }
+        } catch {
+          /* ignore logging errors */
+        }
+        return;
+      }
+
+      if (interaction.customId.startsWith('gate_deny_')) {
+        const token = interaction.customId.replace('gate_deny_', '');
+        const gate = pendingGates.get(token);
+        if (!gate) {
+          await interaction.reply({
+            content:
+              '\u26a0\ufe0f \u30b2\u30fc\u30c8\u304c\u671f\u9650\u5207\u308c\u307e\u305f\u306f\u5b58\u5728\u3057\u307e\u305b\u3093',
+            ephemeral: true,
+          });
+          return;
+        }
+        await interaction.deferUpdate().catch(() => {});
+
+        // gate_responder に "no" を送る
+        await respondToGate(token, null, 'no');
+        console.log(`[gate] Denied: ${token.slice(0, 12)}... action=${gate.actionName}`);
+
+        pendingGates.delete(token);
+        if (gate.token2) pendingL3SecondStep.delete(gate.token2);
+
+        // ボタンを消して拒否メッセージ
+        await interaction.editReply({ components: [] }).catch(() => {});
+        await interaction
+          .followUp({
+            content: `\u274c ${gate.actionName}: \u62d2\u5426\u3055\u308c\u307e\u3057\u305f`,
+          })
+          .catch(() => {});
+
+        // harness-gate チャンネルにログ
+        try {
+          const gateChannelId = TOPIC_CHANNELS['harness-gate'];
+          if (gateChannelId) {
+            const gateChannel = await (interaction.client as any).channels
+              .fetch(gateChannelId)
+              .catch(() => null);
+            if (gateChannel && 'send' in gateChannel) {
+              await (gateChannel as any)
+                .send(
+                  `\u274c **Gate \u62d2\u5426**: \`${gate.actionName}\` by ${interaction.user.tag}`
+                )
+                .catch(() => {});
+            }
+          }
+        } catch {
+          /* ignore logging errors */
+        }
         return;
       }
 
@@ -1259,6 +2023,94 @@ async function main() {
       .replace(/\s+/g, ' ')
       .trim();
 
+    // === Gate L3 "YES" text handler (Phase 4b) ===
+    if (prompt.trim().toUpperCase() === 'YES') {
+      // L3 二重確認: channelId に紐づく pending L3 gate を検索
+      let matchedToken: string | null = null;
+      let matchedGate: PendingGate | null = null;
+      for (const [token, gate] of pendingGates) {
+        if (
+          gate.channelId === message.channel.id &&
+          gate.tier === 'L3_double_confirm' &&
+          gate.token2
+        ) {
+          matchedToken = token;
+          matchedGate = gate;
+          break;
+        }
+      }
+      if (matchedToken && matchedGate) {
+        // Step 1: first token に "ok" を送る
+        const resp1 = await respondToGate(matchedToken, matchedGate.hashPrefix, 'ok');
+        if (!resp1.ok) {
+          if ('send' in message.channel) {
+            await (message.channel as any).send(
+              `\u274c L3 \u30b2\u30fc\u30c8\u627f\u8a8d\u5931\u6557 (step 1): ${resp1.reason}`
+            );
+          }
+          pendingGates.delete(matchedToken);
+          if (matchedGate.token2) pendingL3SecondStep.delete(matchedGate.token2);
+          return;
+        }
+        // Step 2: token2 に "yes" を送る
+        const resp2 = await respondToGate(matchedGate.token2!, null, 'yes');
+        if (!resp2.ok) {
+          if ('send' in message.channel) {
+            await (message.channel as any).send(
+              `\u274c L3 \u30b2\u30fc\u30c8\u627f\u8a8d\u5931\u6557 (step 2): ${resp2.reason}`
+            );
+          }
+          pendingGates.delete(matchedToken);
+          pendingL3SecondStep.delete(matchedGate.token2!);
+          return;
+        }
+        // Step 3: アクション実行
+        console.log(
+          `[gate] L3 double-confirmed: ${matchedToken.slice(0, 12)}... action=${matchedGate.actionName}`
+        );
+        const resultMsg = await executeGatedAction(matchedGate.actionName, matchedGate.paramsStr);
+        pendingGates.delete(matchedToken);
+        pendingL3SecondStep.delete(matchedGate.token2!);
+
+        if ('send' in message.channel) {
+          await (message.channel as any).send(resultMsg);
+        }
+        // ゲートメッセージのボタンを消す
+        try {
+          if (matchedGate.messageId) {
+            const gateMsg = await message.channel.messages
+              .fetch(matchedGate.messageId)
+              .catch(() => null);
+            if (gateMsg && gateMsg.editable) {
+              await gateMsg.edit({ components: [] }).catch(() => {});
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+
+        // harness-gate チャンネルにログ
+        try {
+          const gateChannelId = TOPIC_CHANNELS['harness-gate'];
+          if (gateChannelId) {
+            const gateChannel = await (message.client as any).channels
+              .fetch(gateChannelId)
+              .catch(() => null);
+            if (gateChannel && 'send' in gateChannel) {
+              await (gateChannel as any)
+                .send(
+                  `\u2705 **Gate L3 \u4e8c\u91cd\u627f\u8a8d**: \`${matchedGate.actionName}\` by ${message.author.tag}\n${resultMsg}`
+                )
+                .catch(() => {});
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    }
+
     // スキップ設定（返信元追加やリンク展開の前に判定する）
     // !skip プレフィックスで一時的にスキップモードにできる
     let skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1323,6 +2175,45 @@ async function main() {
     // テキストも添付もない場合はスキップ
     if (!prompt && attachmentPaths.length === 0) return;
 
+    // === Phase 10C: Magika Guard — 添付ファイルスキャン ===
+    const magikaAttachmentWarnings: string[] = [];
+    if (attachmentPaths.length > 0) {
+      for (const filePath of attachmentPaths) {
+        try {
+          const scanResult = await checkWithMagika(filePath);
+          console.log(`[magika-guard] scan ${filePath}: ${scanResult.verdict}`);
+          if (scanResult.verdict === 'blocked') {
+            const msg = formatMagikaVerdict(
+              scanResult.verdict,
+              scanResult.reason,
+              filePath.split('/').pop() || filePath
+            );
+            if (msg) magikaAttachmentWarnings.push(msg);
+          } else if (scanResult.verdict === 'suspicious') {
+            const msg = formatMagikaVerdict(
+              scanResult.verdict,
+              scanResult.reason,
+              filePath.split('/').pop() || filePath
+            );
+            if (msg) magikaAttachmentWarnings.push(msg);
+          }
+        } catch (err) {
+          console.error(`[magika-guard] scan error for ${filePath}:`, err);
+        }
+      }
+    }
+
+    // ブロックされた添付がある場合はユーザーに通知して処理中断
+    const blockedAttachments = magikaAttachmentWarnings.filter((w) => w.includes('\u{1f6ab}'));
+    if (blockedAttachments.length > 0) {
+      await message.reply(blockedAttachments.join('\n'));
+      return;
+    }
+    // 疑わしい添付は警告をプロンプトコンテキストに追加
+    if (magikaAttachmentWarnings.length > 0) {
+      await message.reply(magikaAttachmentWarnings.join('\n'));
+    }
+
     // 添付ファイル情報をプロンプトに追加
     prompt = buildPromptWithAttachments(
       prompt || '添付ファイルを確認してください',
@@ -1349,7 +2240,8 @@ async function main() {
 
     processingChannels.add(channelId);
     try {
-      const result = await processPrompt(
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _result = await processPrompt(
         message,
         agentRunner,
         prompt,
@@ -1358,28 +2250,9 @@ async function main() {
         config
       );
 
-      // AIの応答から !discord コマンドを検知して実行
-      if (result) {
-        const feedbackResults = await handleDiscordCommandsInResponse(result, message);
-
-        // フィードバック結果があればエージェントに再注入
-        if (feedbackResults.length > 0) {
-          const feedbackPrompt = `あなたが実行したコマンドの結果が返ってきました。この情報を踏まえて、元の会話の文脈に沿ってユーザーに返答してください。\n\n${feedbackResults.join('\n\n')}`;
-          console.log(`[xangi] Re-injecting ${feedbackResults.length} feedback result(s) to agent`);
-          const feedbackResult = await processPrompt(
-            message,
-            agentRunner,
-            feedbackPrompt,
-            skipPermissions,
-            channelId,
-            config
-          );
-          // 再注入後の応答にもコマンドがあれば処理（ただし再帰は1回のみ）
-          if (feedbackResult) {
-            await handleDiscordCommandsInResponse(feedbackResult, message);
-          }
-        }
-      }
+      // [DISABLED] Discord-side command re-processing.
+      // Trigger feedback is handled inside runner.ts (lite mode).
+      // Re-enabling causes duplicate messages.
     } finally {
       processingChannels.delete(channelId);
     }
@@ -1847,6 +2720,192 @@ async function processPrompt(
     }
 
     console.log(`[xangi] Processing message in channel ${channelId}`);
+
+    // === Izuna Dispatch (Phase 7+8+9): Track A/B 事前振り分け + 直接実行 + Dev Agent ===
+    let dispatch: DispatchResult | null = null;
+    try {
+      const dispatchResult = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'python3',
+          [
+            pathJoin(ACTION_SCRIPTS_DIR, 'dispatch.py'),
+            prompt.replace(/\[.*?\]\n/g, '').trim(), // メタデータ除去
+          ],
+          { timeout: 3000, cwd: ACTION_SCRIPTS_DIR },
+          (err, stdout, stderr) => {
+            if (err) {
+              reject(new Error(stderr || err.message));
+              return;
+            }
+            resolve(stdout);
+          }
+        );
+      });
+      dispatch = JSON.parse(dispatchResult) as DispatchResult;
+      if (dispatch.track && dispatch.agent) {
+        console.log(`[izuna-dispatch] ${dispatch.track}/${dispatch.agent} (${dispatch.mode})`);
+      }
+    } catch (err) {
+      console.error(
+        '[izuna-dispatch] error (fallback to LLM):',
+        err instanceof Error ? err.message : err
+      );
+    }
+
+    // === Phase 8: Worker 直接実行（LLM スキップ）===
+    if (dispatch?.track === 'worker' && dispatch.agent) {
+      try {
+        const directResult = await tryWorkerDirectExec(dispatch, prompt);
+        if (directResult) {
+          console.log(
+            `[izuna-worker-exec] Direct result for ${dispatch.agent} (${directResult.length} chars)`
+          );
+          await message.react('⚡').catch(() => {});
+          await message.reply(directResult.slice(0, DISCORD_MAX_LENGTH));
+          // Memory Hook: 直接実行の結果も記録
+          try {
+            const content = `[user] ${prompt.slice(0, 300)}\n[worker-direct] ${directResult.slice(0, 500)}`;
+            execFile(
+              'python3',
+              [
+                pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
+                'record',
+                '--agent',
+                'izuna',
+                '--type',
+                'worker_exec',
+                '--content',
+                content,
+                '--source-type',
+                'discord',
+                '--session-id',
+                channelId,
+              ],
+              { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
+              (err) => {
+                if (err) console.error('[izuna-memory] worker-exec record error:', err);
+              }
+            );
+          } catch {
+            /* ignore */
+          }
+          return directResult;
+        }
+      } catch (err) {
+        console.error(
+          '[izuna-worker-exec] error (fallback to LLM):',
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    // === Phase 9: Dev Agent スポーン（Claude Code を対象リポで実行）===
+    if (dispatch?.track === 'dev' && dispatch.agent) {
+      try {
+        await message.react('🔧').catch(() => {});
+        const devReply = await message.reply(
+          `🔧 ${dispatch.agent} を起動中... (repo スコープ実行)`
+        );
+        const devResult = await spawnDevAgent(dispatch, prompt, channelId, config);
+        if (devResult) {
+          console.log(`[izuna-dev-agent] Result for ${dispatch.agent} (${devResult.length} chars)`);
+          const chunks = splitMessage(devResult, DISCORD_SAFE_LENGTH);
+          await devReply.edit(chunks[0] || '完了');
+          if ('send' in message.channel && chunks.length > 1) {
+            const channel = message.channel as unknown as {
+              send: (content: string) => Promise<unknown>;
+            };
+            for (let i = 1; i < chunks.length; i++) {
+              await channel.send(chunks[i]);
+            }
+          }
+          // Memory Hook
+          try {
+            const content = `[user] ${prompt.slice(0, 300)}\n[dev-agent:${dispatch.agent}] ${devResult.slice(0, 500)}`;
+            execFile(
+              'python3',
+              [
+                pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
+                'record',
+                '--agent',
+                dispatch.agent,
+                '--type',
+                'dev_task',
+                '--content',
+                content,
+                '--source-type',
+                'discord',
+                '--session-id',
+                channelId,
+              ],
+              { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
+              (err) => {
+                if (err) console.error('[izuna-memory] dev-agent record error:', err);
+              }
+            );
+          } catch {
+            /* ignore */
+          }
+          return devResult;
+        }
+        // dev agent が null を返した場合 → LLM フォールバック
+        await devReply
+          .edit('🔧 Dev agent のリポが見つかりません。LLM で処理します...')
+          .catch(() => {});
+      } catch (err) {
+        console.error(
+          '[izuna-dev-agent] error (fallback to LLM):',
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    // Dispatch hint を LLM プロンプトに注入（直接実行できなかった場合のフォールバック）
+    if (dispatch?.track && dispatch?.agent) {
+      const dispatchHint = `\n[DISPATCH: track=${dispatch.track}, agent=${dispatch.agent}, mode=${dispatch.mode}, blast=${dispatch.blast_radius || 'unknown'}]`;
+      prompt = prompt + dispatchHint;
+    }
+
+    // === Phase 10A: Magika Guard — インストールキーワード事前チェック ===
+    if (containsInstallKeyword(prompt)) {
+      const pkgInfo = extractPackageInfo(prompt);
+      if (pkgInfo) {
+        try {
+          console.log(
+            `[magika-guard] Pre-check package: ${pkgInfo.manager}/${pkgInfo.packageName}`
+          );
+          const pkgResult = await checkPackageWithMagika(pkgInfo.manager, pkgInfo.packageName);
+          console.log(`[magika-guard] Package verdict: ${pkgResult.verdict}`);
+          if (pkgResult.verdict === 'blocked') {
+            const blockMsg = formatMagikaVerdict(
+              pkgResult.verdict,
+              pkgResult.reason,
+              `${pkgInfo.manager}:${pkgInfo.packageName}`
+            );
+            if (blockMsg) {
+              await message.reply(blockMsg);
+              return null;
+            }
+          } else if (pkgResult.verdict === 'suspicious') {
+            const warnMsg = formatMagikaVerdict(
+              pkgResult.verdict,
+              pkgResult.reason,
+              `${pkgInfo.manager}:${pkgInfo.packageName}`
+            );
+            if (warnMsg) {
+              await message.reply(warnMsg);
+              prompt += `\n[MAGIKA_WARNING: ${pkgInfo.manager}:${pkgInfo.packageName} — ${pkgResult.reason || 'suspicious'}]`;
+            }
+          }
+        } catch (err) {
+          console.error(
+            '[magika-guard] pre-check error:',
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+    }
+
     await message.react('👀').catch(() => {});
 
     const sessionId = getSession(channelId);
@@ -1956,6 +3015,64 @@ async function processPrompt(
       `[xangi] Response length: ${result.length}, session: ${newSessionId.slice(0, 8)}...`
     );
 
+    // === Phase 10B: Magika Guard — LLM応答内のインストールコマンドチェック ===
+    try {
+      const responsePackages = extractInstallCommandsFromResponse(result);
+      if (responsePackages.length > 0) {
+        const warnings: string[] = [];
+        for (const pkg of responsePackages) {
+          try {
+            console.log(
+              `[magika-guard] Post-check package in response: ${pkg.manager}/${pkg.packageName}`
+            );
+            const pkgResult = await checkPackageWithMagika(pkg.manager, pkg.packageName);
+            console.log(`[magika-guard] Response package verdict: ${pkgResult.verdict}`);
+            const msg = formatMagikaVerdict(
+              pkgResult.verdict,
+              pkgResult.reason,
+              `${pkg.manager}:${pkg.packageName}`
+            );
+            if (msg) warnings.push(msg);
+          } catch (err) {
+            console.error(
+              `[magika-guard] post-check error for ${pkg.manager}:${pkg.packageName}:`,
+              err
+            );
+          }
+        }
+        if (warnings.length > 0) {
+          result += '\n\n' + warnings.join('\n');
+        }
+      }
+    } catch (err) {
+      console.error('[magika-guard] post-response check error:', err);
+    }
+
+    // === Izuna Action Hook (Phase 4): アクションマーカー検出・実行 ===
+    let izunaActionMessages: string[] = [];
+    try {
+      const gateSendFn = async (
+        content: string,
+        components?: ActionRowBuilder<ButtonBuilder>[]
+      ): Promise<Message | null> => {
+        if ('send' in message.channel) {
+          return (await (message.channel as any).send({
+            content,
+            components: components || [],
+          })) as Message;
+        }
+        return null;
+      };
+      const actionResult = await processIzunaActions(result, channelId, gateSendFn);
+      if (actionResult.actionMessages.length > 0) {
+        result = actionResult.cleanText;
+        izunaActionMessages = actionResult.actionMessages;
+        console.log('[xangi] Action executed:', izunaActionMessages);
+      }
+    } catch (err) {
+      console.error('[xangi] action_hook error:', err);
+    }
+
     // ファイルパスを抽出して添付送信
     const filePaths = extractFilePaths(result);
     const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
@@ -2017,6 +3134,69 @@ async function processPrompt(
       } catch (err) {
         console.error('[xangi] Failed to send files:', err);
       }
+    }
+
+    // === Izuna Action Results (Phase 4): アクション結果を追加メッセージで送信 ===
+    if (izunaActionMessages.length > 0 && 'send' in message.channel) {
+      const actionChannel = message.channel as unknown as {
+        send: (content: string) => Promise<unknown>;
+      };
+      for (const actionMsg of izunaActionMessages) {
+        await actionChannel
+          .send(actionMsg)
+          .catch((e: any) => console.error('[xangi] action send error:', e));
+      }
+
+      // === Izuna Topic Router (Phase 5): 話題別チャンネルにログ転送 ===
+      try {
+        const topicResult = classifyTopic(prompt, result);
+        if (topicResult.channelId && topicResult.topic !== 'general') {
+          const topicChannel = await (message.client as any).channels
+            .fetch(topicResult.channelId)
+            .catch(() => null);
+          if (topicChannel && 'send' in topicChannel) {
+            const logMsg = `**[${topicResult.topic}]**\n> ${prompt.slice(0, 150)}\n\n${result
+              .replace(/\[ACTION:\w+(?:\s+\{[^\]]*\})?\]/g, '')
+              .trim()
+              .slice(0, 400)}`;
+            await (topicChannel as any)
+              .send(logMsg)
+              .catch((e: any) => console.error('[xangi] topic route error:', e));
+          }
+        }
+      } catch (err) {
+        console.error('[xangi] topic router error:', err);
+      }
+    }
+
+    // === Izuna Memory Hook (Phase 6): L1記憶にDiscordメッセージ + 応答を記録 ===
+    try {
+      const cleanResp = result.replace(ACTION_HOOK_RE, '').trim().slice(0, 500);
+      const content = `[user] ${prompt.slice(0, 300)}\n[assistant] ${cleanResp}`;
+      execFile(
+        'python3',
+        [
+          pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
+          'record',
+          '--agent',
+          'izuna',
+          '--type',
+          'conversation',
+          '--content',
+          content,
+          '--source-type',
+          'discord',
+          '--session-id',
+          message.channel.id,
+        ],
+        { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
+        (err, _stdout, stderr) => {
+          if (err) console.error('[izuna-memory] L1 record error:', stderr || err.message);
+          else console.log('[izuna-memory] L1 recorded');
+        }
+      );
+    } catch (err) {
+      console.error('[izuna-memory] hook error:', err);
     }
 
     // AIの応答を返す（!discord コマンド処理用）

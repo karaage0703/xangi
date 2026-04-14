@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 // CLAUDE.md is typically a symlink to AGENTS.md, so only read AGENTS.md to avoid duplication
-const CONTEXT_FILES = ['AGENTS.md', 'MEMORY.md'];
+const CONTEXT_FILES = ['SOUL.md', 'AGENTS.md', 'USER.md', 'IDENTITY.md', 'MEMORY.md'];
 
 export function loadWorkspaceContext(workspace: string): string {
   const parts: string[] = [];
