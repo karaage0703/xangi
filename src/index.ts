@@ -12,6 +12,9 @@ import {
   ButtonBuilder,
   ButtonStyle,
 } from 'discord.js';
+import { execSync } from 'node:child_process';
+import { statSync } from 'node:fs';
+
 import { loadConfig } from './config.js';
 import { isGitHubAppEnabled } from './github-auth.js';
 import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
@@ -805,7 +808,54 @@ function formatToolInput(toolName: string, input: Record<string, unknown>): stri
   }
 }
 
+import { fileURLToPath } from 'node:url';
+const __ESM_FILE = fileURLToPath(import.meta.url);
+const __ESM_DIR = pathJoin(__ESM_FILE, '..');
+
+function getGitShortSha(): string {
+  try {
+    return execSync('git rev-parse HEAD', { cwd: pathJoin(__ESM_DIR, '..') })
+      .toString()
+      .trim()
+      .slice(0, 7);
+  } catch {
+    return 'unknown';
+  }
+}
+
+function assertDistFresh(): void {
+  const srcDir = pathJoin(__ESM_DIR, '..', 'src');
+  const srcIndex = pathJoin(srcDir, 'index.ts');
+  const distIndex = __ESM_FILE;
+  const gitSha = getGitShortSha();
+  try {
+    const srcStat = statSync(srcIndex);
+    const distStat = statSync(distIndex);
+    if (srcStat.mtimeMs > distStat.mtimeMs) {
+      const delta = Math.round((srcStat.mtimeMs - distStat.mtimeMs) / 1000);
+      console.error(
+        '[FATAL] dist stale: src/index.ts is ' +
+          delta +
+          's newer than dist/index.js. Run npm run build and restart. git=' +
+          gitSha
+      );
+      process.exit(1);
+    }
+    console.log(
+      '[startup] build check OK: git=' +
+        gitSha +
+        ' dist=' +
+        new Date(distStat.mtimeMs).toISOString() +
+        ' src=' +
+        new Date(srcStat.mtimeMs).toISOString()
+    );
+  } catch (e) {
+    console.error('[startup] build check skipped (dev mode?):', (e as Error).message);
+  }
+}
+
 async function main() {
+  assertDistFresh();
   const config = loadConfig();
 
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
