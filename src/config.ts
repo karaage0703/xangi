@@ -22,6 +22,7 @@ export interface Config {
     token: string;
     allowedUsers?: string[];
     autoReplyChannels?: string[];
+    autoReplyAll?: boolean;
     streaming?: boolean;
     showThinking?: boolean;
     injectChannelTopic?: boolean;
@@ -120,6 +121,7 @@ export function loadConfig(): Config {
         process.env.AUTO_REPLY_CHANNELS?.split(',')
           .map((s) => s.trim())
           .filter(Boolean) || [],
+      autoReplyAll: process.env.AUTO_REPLY_ALL === 'true',
       streaming: process.env.DISCORD_STREAMING !== 'false',
       showThinking: process.env.DISCORD_SHOW_THINKING !== 'false',
       injectChannelTopic: process.env.INJECT_CHANNEL_TOPIC !== 'false', // デフォルトON

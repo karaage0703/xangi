@@ -107,6 +107,46 @@ function formatActionResult(actionName: string, parsed: any): string {
         evts.map((e: any) => '- ' + e.start + ' ' + e.summary).join('\n') ||
         '\u4e88\u5b9a\u306a\u3057'
       );
+    } else if (actionName === 'script_write') {
+      const typeJa: Record<string, string> = {
+        character: '\u30ad\u30e3\u30e9\u30af\u30bf\u30fc\u8a2d\u5b9a',
+        outline: '\u3042\u3089\u3059\u3058\u30fb\u69cb\u6210',
+        scene: '\u30b7\u30fc\u30f3',
+        brainstorm: '\u58c1\u6253\u3061\u30e1\u30e2',
+      };
+      const label = typeJa[parsed.type as string] || parsed.type || 'script';
+      const parts: string[] = [
+        `\u2705 ${label} (${parsed.chars || 0}\u5b57) \u3092 \`${parsed.file ? String(parsed.file).split('/').pop() : ''}\` \u306b\u4fdd\u5b58\u3057\u307e\u3057\u305f`,
+      ];
+      if (parsed.preview) {
+        parts.push('\n---\n' + String(parsed.preview).slice(0, 1500));
+      }
+      return parts.join('\n');
+    } else if (actionName === 'script_list') {
+      const files = parsed.files || [];
+      if (files.length === 0)
+        return '\ud83d\udcc1 \u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u5185\u306b\u30d5\u30a1\u30a4\u30eb\u306a\u3057';
+      const lines = files.map(
+        (f: { path: string; chars: number; mtime: string }) =>
+          `- \`${f.path}\` (${f.chars}\u5b57, ${f.mtime})`
+      );
+      return (
+        `\ud83d\udcc1 **\u30d5\u30a1\u30a4\u30eb\u4e00\u89a7** (${parsed.project || 'manga'}, ${files.length}\u4ef6)\n` +
+        lines.join('\n')
+      );
+    } else if (actionName === 'script_read') {
+      const content = parsed.content || '';
+      const fname = parsed.file ? String(parsed.file).split('/').pop() : '';
+      const preview = content.slice(0, 1800);
+      const truncated =
+        content.length > 1800
+          ? '\n\n...(\u4ee5\u4e0b\u7701\u7565, \u5168\u4f53 ' + parsed.chars + '\u5b57)'
+          : '';
+      return `\ud83d\udcc4 **${fname}**\n\n${preview}${truncated}`;
+    } else if (actionName === 'discord_admin') {
+      const msg = parsed.message || `\u2705 ${actionName}`;
+      const url = parsed.url ? `\n\ud83d\udd17 ${parsed.url}` : '';
+      return msg + url;
     } else {
       return '\u2705 ' + actionName + ' \u5b8c\u4e86';
     }
@@ -2049,8 +2089,9 @@ async function main() {
 
     const isMentioned = message.mentions.has(client.user!);
     const isDM = !message.guild;
+    const isAutoReplyAll = config.discord.autoReplyAll === true;
     const isAutoReplyChannel =
-      config.discord.autoReplyChannels?.includes(message.channel.id) ?? false;
+      isAutoReplyAll || (config.discord.autoReplyChannels?.includes(message.channel.id) ?? false);
 
     if (!isMentioned && !isDM && !isAutoReplyChannel) return;
 
