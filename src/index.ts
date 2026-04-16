@@ -121,7 +121,10 @@ function formatActionResult(actionName: string, parsed: any): string {
       if (parsed.file) {
         parts.push(`MEDIA:${parsed.file}`);
       }
-      if (parsed.preview) {
+      // 全文表示: full_content 優先. splitMessage で 2000 字チャンクに分割される.
+      if (parsed.full_content) {
+        parts.push('\n---\n' + String(parsed.full_content));
+      } else if (parsed.preview) {
         parts.push(
           '\n---\n' +
             String(parsed.preview).slice(0, 500) +
@@ -3240,9 +3243,13 @@ async function processPrompt(
         send: (content: string) => Promise<unknown>;
       };
       for (const actionMsg of izunaActionMessages) {
-        await actionChannel
-          .send(actionMsg)
-          .catch((e: any) => console.error('[xangi] action send error:', e));
+        // Discord 2000 字 limit 対応: splitMessage で分割送信
+        const actChunks = splitMessage(actionMsg, DISCORD_SAFE_LENGTH);
+        for (const chunk of actChunks) {
+          await actionChannel
+            .send(chunk)
+            .catch((e: any) => console.error('[xangi] action send error:', e));
+        }
       }
 
       // === Izuna Topic Router (Phase 5): 話題別チャンネルにログ転送 ===
