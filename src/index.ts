@@ -46,7 +46,7 @@ dotenvConfig({ override: true });
 // === Izuna Action Hook (Phase 4) ===
 import { execFile } from 'child_process';
 import { join as pathJoin } from 'path';
-const ACTION_HOOK_RE = /\[ACTION:(\w+)(?:\s+(\{[^\]]*\}))?\s*\]/g;
+const ACTION_HOOK_RE = /\[ACTION:(\w+)(?:\s*(\{[\s\S]*?\}))?\s*\]?/g;
 const ACTION_SCRIPTS_DIR = pathJoin(process.env.HOME || '', '.openclaw/workspace/scripts');
 const GATE_RESPONDER_PATH = pathJoin(ACTION_SCRIPTS_DIR, 'gate_responder.py');
 const ACTION_EXECUTOR_PATH = pathJoin(ACTION_SCRIPTS_DIR, 'action_executor.py');
