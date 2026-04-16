@@ -214,14 +214,10 @@ async function respondToGate(
 /** Gate 承認後にアクション実行 (--skip-gate) */
 async function executeGatedAction(actionName: string, paramsStr: string): Promise<string> {
   try {
-    const result = await execPython([
-      ACTION_EXECUTOR_PATH,
-      '--action',
-      actionName,
-      '--params',
-      paramsStr,
-      '--skip-gate',
-    ]);
+    const result = await execPython(
+      [ACTION_EXECUTOR_PATH, '--action', actionName, '--params', paramsStr, '--skip-gate'],
+      180000
+    );
     const parsed = JSON.parse(result);
     return formatActionResult(actionName, parsed);
   } catch (err: any) {
@@ -317,13 +313,10 @@ async function processIzunaActions(
         );
       } else {
         // L0/L1: gate 不要 -> 直接実行
-        const result = await execPython([
-          ACTION_EXECUTOR_PATH,
-          '--action',
-          actionName,
-          '--params',
-          paramsStr,
-        ]);
+        const result = await execPython(
+          [ACTION_EXECUTOR_PATH, '--action', actionName, '--params', paramsStr],
+          180000
+        );
         const parsed = JSON.parse(result);
         actionMessages.push(formatActionResult(actionName, parsed));
       }
