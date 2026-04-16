@@ -119,7 +119,15 @@ function formatActionResult(actionName: string, parsed: any): string {
         `\u2705 ${label} (${parsed.chars || 0}\u5b57) \u3092 \`${parsed.file ? String(parsed.file).split('/').pop() : ''}\` \u306b\u4fdd\u5b58\u3057\u307e\u3057\u305f`,
       ];
       if (parsed.preview) {
-        parts.push('\n---\n' + String(parsed.preview).slice(0, 1500));
+        parts.push(
+          '\n---\n' +
+            String(parsed.preview).slice(0, 500) +
+            ' ...(\u672c\u6587\u306f' +
+            (parsed.chars || 0) +
+            '\u5b57, \u30d5\u30a1\u30a4\u30eb\u3092\u78ba\u8a8d' +
+            (parsed.file ? ':\\`' + String(parsed.file).split('/').pop() + '\\`' : '') +
+            ')'
+        );
       }
       return parts.join('\n');
     } else if (actionName === 'script_list') {
