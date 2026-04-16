@@ -118,6 +118,9 @@ function formatActionResult(actionName: string, parsed: any): string {
       const parts: string[] = [
         `\u2705 ${label} (${parsed.chars || 0}\u5b57) \u3092 \`${parsed.file ? String(parsed.file).split('/').pop() : ''}\` \u306b\u4fdd\u5b58\u3057\u307e\u3057\u305f`,
       ];
+      if (parsed.file) {
+        parts.push(`MEDIA:${parsed.file}`);
+      }
       if (parsed.preview) {
         parts.push(
           '\n---\n' +
@@ -145,12 +148,15 @@ function formatActionResult(actionName: string, parsed: any): string {
     } else if (actionName === 'script_read') {
       const content = parsed.content || '';
       const fname = parsed.file ? String(parsed.file).split('/').pop() : '';
-      const preview = content.slice(0, 1800);
+      const preview = content.slice(0, 500);
       const truncated =
-        content.length > 1800
-          ? '\n\n...(\u4ee5\u4e0b\u7701\u7565, \u5168\u4f53 ' + parsed.chars + '\u5b57)'
+        content.length > 500
+          ? '\n\n...(\u4ee5\u4e0b\u7701\u7565, \u5168\u4f53 ' +
+            parsed.chars +
+            '\u5b57, \u6dfb\u4ed8\u53c2\u7167)'
           : '';
-      return `\ud83d\udcc4 **${fname}**\n\n${preview}${truncated}`;
+      const media = parsed.file ? `\nMEDIA:${parsed.file}` : '';
+      return `\ud83d\udcc4 **${fname}**${media}\n\n${preview}${truncated}`;
     } else if (actionName === 'discord_admin') {
       const msg = parsed.message || `\u2705 ${actionName}`;
       const url = parsed.url ? `\n\ud83d\udd17 ${parsed.url}` : '';
