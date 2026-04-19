@@ -15,6 +15,7 @@ export interface ClaudeCodeOptions {
   workdir?: string;
   skipPermissions?: boolean;
   platform?: ChatPlatform;
+  effort?: string;
 }
 
 interface ClaudeCodeResponse {
@@ -36,6 +37,7 @@ export class ClaudeCodeRunner {
   private workdir?: string;
   private skipPermissions: boolean;
   private systemPrompt: string;
+  private effort?: string;
 
   constructor(options?: ClaudeCodeOptions) {
     this.model = options?.model;
@@ -43,6 +45,7 @@ export class ClaudeCodeRunner {
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
     this.systemPrompt = buildSystemPrompt(options?.platform);
+    this.effort = options?.effort;
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
@@ -61,6 +64,11 @@ export class ClaudeCodeRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    const effort = options?.effort ?? this.effort;
+    if (effort) {
+      args.push('--effort', effort);
     }
 
     // チャットプラットフォーム連携のシステムプロンプト + AGENTS.md
@@ -98,10 +106,14 @@ export class ClaudeCodeRunner {
   private execute(args: string[], channelId?: string): Promise<string> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
 
       // プロセスマネージャーに登録
@@ -184,6 +196,11 @@ export class ClaudeCodeRunner {
       args.push('--model', this.model);
     }
 
+    const effort = options?.effort ?? this.effort;
+    if (effort) {
+      args.push('--effort', effort);
+    }
+
     // チャットプラットフォーム連携のシステムプロンプト + AGENTS.md
     args.push('--append-system-prompt', this.systemPrompt);
 
@@ -204,10 +221,14 @@ export class ClaudeCodeRunner {
   ): Promise<RunResult> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
 
       // プロセスマネージャーに登録

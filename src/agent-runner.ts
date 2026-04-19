@@ -1,4 +1,4 @@
-import type { AgentBackend, AgentConfig } from './config.js';
+import type { AgentBackend, AgentConfig, EffortLevel } from './config.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
 import { GeminiRunner } from './gemini-cli.js';
@@ -10,6 +10,7 @@ export interface RunOptions {
   sessionId?: string;
   channelId?: string; // プロセス管理用
   appSessionId?: string; // xangi側セッションID（ログ用）
+  effort?: EffortLevel; // Claude Code の --effort オプション
 }
 
 export interface RunResult {

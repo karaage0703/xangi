@@ -50,6 +50,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private resumeSessionId?: string; // プロセス再起動時に --resume で復元するセッションID
   private channelId?: string; // トランスクリプトログ用
   private appSessionId?: string; // xangi側のセッションID
+  private effort?: string; // Claude Code の --effort オプション
 
   constructor(options?: {
     model?: string;
@@ -58,6 +59,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     skipPermissions?: boolean;
     channelId?: string;
     platform?: ChatPlatform;
+    effort?: string;
   }) {
     super();
     this.model = options?.model;
@@ -66,6 +68,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     this.skipPermissions = options?.skipPermissions ?? false;
     this.systemPrompt = buildPersistentSystemPrompt(options?.platform);
     this.channelId = options?.channelId;
+    this.effort = options?.effort;
   }
 
   /**
@@ -113,6 +116,10 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    if (this.effort) {
+      args.push('--effort', this.effort);
     }
 
     // セッション復元: 保存済みセッションIDがあれば --resume で継続

@@ -156,10 +156,14 @@ export class CodexRunner implements AgentRunner {
   ): Promise<{ stdout: string; sessionId: string }> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('codex', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 
@@ -272,10 +276,14 @@ export class CodexRunner implements AgentRunner {
   ): Promise<RunResult> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('codex', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 

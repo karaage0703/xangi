@@ -13,7 +13,7 @@ export type ChatPlatform = 'discord' | 'slack' | 'web';
  * プラットフォームに応じたXANGI_COMMANDSを構築
  * - discord: 共通 + チャットPF共通 + Discord専用
  * - slack: 共通 + チャットPF共通 + Slack専用
- * - web: 共通 + Web専用（チャットPF共通・Discord・Slackコマンドなし）
+ * - web: 共通 + Web専用
  * - undefined: 共通 + チャットPF共通 + 全プラットフォーム
  */
 export function buildXangiCommands(platform?: ChatPlatform): string {
@@ -22,7 +22,6 @@ export function buildXangiCommands(platform?: ChatPlatform): string {
   if (platform === 'web') {
     parts.push(XANGI_COMMANDS_WEB);
   } else {
-    // Discord/Slack/undefined → チャットプラットフォーム共通を含める
     parts.push(XANGI_COMMANDS_CHAT_PLATFORM);
 
     if (platform === 'discord') {
@@ -38,7 +37,7 @@ export function buildXangiCommands(platform?: ChatPlatform): string {
   return parts.join('\n\n');
 }
 
-// 後方互換: プラットフォーム未指定時は全部入り
+// 後方互換
 export const XANGI_COMMANDS = buildXangiCommands();
 
 export {

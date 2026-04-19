@@ -1,0 +1,109 @@
+#!/bin/bash
+# xangi-cmd — xangi tool-serverへのCLIラッパー
+#
+# 使い方:
+#   xangi-cmd discord_history --channel 123456 --count 10
+#   xangi-cmd discord_send --channel 123456 --message "hello"
+#   xangi-cmd schedule_list
+#
+# 接続先は環境変数 XANGI_TOOL_SERVER で明示指定する。
+# xangi本体が子プロセス起動時に注入する前提。
+
+# ポート検出
+resolve_server() {
+  if [ -n "$XANGI_TOOL_SERVER" ]; then
+    echo "$XANGI_TOOL_SERVER"
+    return
+  fi
+  return 1
+}
+
+TOOL_SERVER=$(resolve_server) || {
+  echo "Error: XANGI_TOOL_SERVER が設定されていません" >&2
+  echo "xangi配下で起動するか、XANGI_TOOL_SERVER=http://127.0.0.1:<port> を指定してください" >&2
+  exit 1
+}
+COMMAND="$1"
+shift
+
+if [ -z "$COMMAND" ] || [ "$COMMAND" = "help" ]; then
+  echo "xangi-cmd — xangiコマンドCLI
+
+Discord操作:
+  discord_history   チャンネル履歴取得
+  discord_send      メッセージ送信
+  discord_channels  チャンネル一覧
+  discord_search    メッセージ検索
+  discord_edit      メッセージ編集
+  discord_delete    メッセージ削除
+  media_send        ファイル送信
+
+スケジュール:
+  schedule_list     一覧表示
+  schedule_add      追加
+  schedule_remove   削除
+  schedule_toggle   有効/無効切替
+
+システム:
+  system_restart    再起動
+  system_settings   設定変更"
+  exit 0
+fi
+
+# 引数を --key value ペアからJSONオブジェクトに変換
+FLAGS="{"
+FIRST=true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --*)
+      KEY="${1#--}"
+      shift
+      VALUE="$1"
+      shift
+      if [ "$FIRST" = true ]; then
+        FIRST=false
+      else
+        FLAGS+=","
+      fi
+      # JSONエスケープ（改行・ダブルクォート・バックスラッシュ）
+      VALUE=$(printf '%s' "$VALUE" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed '$ s/\\n$//')
+      FLAGS+="\"$KEY\":\"$VALUE\""
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+FLAGS+="}"
+
+CONTEXT="{}"
+if [ -n "$XANGI_CHANNEL_ID" ]; then
+  ESCAPED_CHANNEL_ID=$(printf '%s' "$XANGI_CHANNEL_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  CONTEXT="{\"channelId\":\"$ESCAPED_CHANNEL_ID\"}"
+fi
+
+# tool-serverにリクエスト送信
+RESPONSE=$(curl -sf "$TOOL_SERVER/api/execute" \
+  -H 'Content-Type: application/json' \
+  -d "{\"command\":\"$COMMAND\",\"flags\":$FLAGS,\"context\":$CONTEXT}" 2>&1)
+
+CURL_EXIT=$?
+
+if [ $CURL_EXIT -ne 0 ]; then
+  echo "Error: tool-server に接続できません ($TOOL_SERVER)" >&2
+  echo "XANGI_TOOL_SERVER の値と xangiプロセスの起動状態を確認してください" >&2
+  exit 1
+fi
+
+# JSONレスポンスからresultを抽出（jqがあれば使う、なければそのまま出力）
+if command -v jq &>/dev/null; then
+  OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+  if [ "$OK" = "true" ]; then
+    echo "$RESPONSE" | jq -r '.result'
+  else
+    echo "$RESPONSE" | jq -r '.error // "Unknown error"' >&2
+    exit 1
+  fi
+else
+  echo "$RESPONSE"
+fi

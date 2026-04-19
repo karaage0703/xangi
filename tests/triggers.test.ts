@@ -4,9 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   loadTriggers,
-  matchTrigger,
   executeTrigger,
-  buildTriggersPrompt,
+  triggersToToolHandlers,
 } from '../src/local-llm/triggers.js';
 import type { Trigger } from '../src/local-llm/triggers.js';
 
@@ -33,14 +32,13 @@ describe('triggers', () => {
       mkdirSync(triggersDir, { recursive: true });
       writeFileSync(
         join(triggersDir, 'trigger.yaml'),
-        'name: weather\ntrigger: "!weather"\ndescription: "天気を調べる"\nhandler: handler.sh\n'
+        'name: weather\ndescription: "天気を調べる"\nhandler: handler.sh\n'
       );
       writeFileSync(join(triggersDir, 'handler.sh'), 'echo "sunny"');
 
       const triggers = loadTriggers(tmpDir);
       expect(triggers).toHaveLength(1);
       expect(triggers[0].name).toBe('weather');
-      expect(triggers[0].trigger).toBe('!weather');
       expect(triggers[0].description).toBe('天気を調べる');
       expect(triggers[0].handler).toBe('handler.sh');
       expect(triggers[0].path).toBe(triggersDir);
@@ -54,11 +52,11 @@ describe('triggers', () => {
 
       writeFileSync(
         join(weatherDir, 'trigger.yaml'),
-        'name: weather\ntrigger: "!weather"\ndescription: "天気を調べる"\nhandler: handler.sh\n'
+        'name: weather\ndescription: "天気を調べる"\nhandler: handler.sh\n'
       );
       writeFileSync(
         join(searchDir, 'trigger.yaml'),
-        'name: search\ntrigger: "!search"\ndescription: "Web検索する"\nhandler: handler.sh\n'
+        'name: search\ndescription: "Web検索する"\nhandler: handler.sh\n'
       );
 
       const triggers = loadTriggers(tmpDir);
@@ -83,75 +81,6 @@ describe('triggers', () => {
     });
   });
 
-  describe('matchTrigger', () => {
-    const triggers: Trigger[] = [
-      {
-        name: 'weather',
-        trigger: '!weather',
-        description: '天気を調べる',
-        handler: 'handler.sh',
-        path: '/tmp/weather',
-      },
-      {
-        name: 'search',
-        trigger: '!search',
-        description: 'Web検索する',
-        handler: 'handler.sh',
-        path: '/tmp/search',
-      },
-    ];
-
-    it('should match trigger without args', () => {
-      const result = matchTrigger('!weather', triggers);
-      expect(result).not.toBeNull();
-      expect(result!.trigger.name).toBe('weather');
-      expect(result!.args).toBe('');
-    });
-
-    it('should match trigger with args', () => {
-      const result = matchTrigger('!weather 名古屋', triggers);
-      expect(result).not.toBeNull();
-      expect(result!.trigger.name).toBe('weather');
-      expect(result!.args).toBe('名古屋');
-    });
-
-    it('should match trigger with multiple args', () => {
-      const result = matchTrigger('!search Claude Code 使い方', triggers);
-      expect(result).not.toBeNull();
-      expect(result!.trigger.name).toBe('search');
-      expect(result!.args).toBe('Claude Code 使い方');
-    });
-
-    it('should match trigger in multiline text', () => {
-      const text = '天気を調べますね。\n!weather 東京\nお待ちください。';
-      const result = matchTrigger(text, triggers);
-      expect(result).not.toBeNull();
-      expect(result!.trigger.name).toBe('weather');
-      expect(result!.args).toBe('東京');
-    });
-
-    it('should return null when no match', () => {
-      const result = matchTrigger('こんにちは', triggers);
-      expect(result).toBeNull();
-    });
-
-    it('should return null for empty triggers', () => {
-      const result = matchTrigger('!weather', []);
-      expect(result).toBeNull();
-    });
-
-    it('should not match partial trigger words', () => {
-      const result = matchTrigger('!weathering', triggers);
-      expect(result).toBeNull();
-    });
-
-    it('should match first trigger when multiple could match', () => {
-      const result = matchTrigger('!weather 東京\n!search test', triggers);
-      expect(result).not.toBeNull();
-      expect(result!.trigger.name).toBe('weather');
-    });
-  });
-
   describe('executeTrigger', () => {
     it('should execute handler and return stdout', async () => {
       const triggerDir = join(tmpDir, 'test-trigger');
@@ -160,7 +89,6 @@ describe('triggers', () => {
 
       const trigger: Trigger = {
         name: 'test',
-        trigger: '!test',
         description: 'test',
         handler: 'handler.sh',
         path: triggerDir,
@@ -178,7 +106,6 @@ describe('triggers', () => {
 
       const trigger: Trigger = {
         name: 'fail',
-        trigger: '!fail',
         description: 'fail',
         handler: 'handler.sh',
         path: triggerDir,
@@ -195,7 +122,6 @@ describe('triggers', () => {
 
       const trigger: Trigger = {
         name: 'noargs',
-        trigger: '!noargs',
         description: 'no args',
         handler: 'handler.sh',
         path: triggerDir,
@@ -207,35 +133,42 @@ describe('triggers', () => {
     });
   });
 
-  describe('buildTriggersPrompt', () => {
-    it('should return empty string for empty triggers', () => {
-      expect(buildTriggersPrompt([])).toBe('');
-    });
-
-    it('should build prompt with trigger descriptions', () => {
+  describe('triggersToToolHandlers', () => {
+    it('should convert triggers to tool handlers', () => {
       const triggers: Trigger[] = [
         {
           name: 'weather',
-          trigger: '!weather',
           description: '天気を調べる',
           handler: 'handler.sh',
-          path: '/tmp',
-        },
-        {
-          name: 'search',
-          trigger: '!search',
-          description: 'Web検索する',
-          handler: 'handler.sh',
-          path: '/tmp',
+          path: '/tmp/weather',
         },
       ];
 
-      const prompt = buildTriggersPrompt(triggers);
-      expect(prompt).toContain('!weather');
-      expect(prompt).toContain('天気を調べる');
-      expect(prompt).toContain('!search');
-      expect(prompt).toContain('Web検索する');
-      expect(prompt).toContain('トリガーコマンド');
+      const handlers = triggersToToolHandlers(triggers, tmpDir);
+      expect(handlers).toHaveLength(1);
+      expect(handlers[0].name).toBe('weather');
+      expect(handlers[0].description).toBe('天気を調べる');
+      expect(handlers[0].parameters.properties.args).toBeDefined();
+    });
+
+    it('should execute handler via tool handler', async () => {
+      const triggerDir = join(tmpDir, 'tool-trigger');
+      mkdirSync(triggerDir, { recursive: true });
+      writeFileSync(join(triggerDir, 'handler.sh'), '#!/bin/bash\necho "Result: $1"');
+
+      const triggers: Trigger[] = [
+        {
+          name: 'tool-test',
+          description: 'test',
+          handler: 'handler.sh',
+          path: triggerDir,
+        },
+      ];
+
+      const handlers = triggersToToolHandlers(triggers, tmpDir);
+      const result = await handlers[0].execute({ args: 'hello' }, { workspace: tmpDir });
+      expect(result.success).toBe(true);
+      expect(result.output.trim()).toBe('Result: hello');
     });
   });
 });

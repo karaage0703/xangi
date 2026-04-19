@@ -15,6 +15,7 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "typecheck": "tsc --noEmit",
+    "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js",
     "prepare": "husky"
   },
   "lint-staged": {

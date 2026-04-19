@@ -24,6 +24,8 @@ export const ALLOWED_ENV_KEYS = [
   'AGENT_MODEL',
   'SKIP_PERMISSIONS',
   'DATA_DIR',
+  'XANGI_TOOL_SERVER',
+  'XANGI_CHANNEL_ID',
 ];
 
 /**
@@ -36,5 +38,16 @@ export function getSafeEnv(): NodeJS.ProcessEnv {
       env[key] = process.env[key];
     }
   }
+
+  // xangi-cmd (bin/) をPATHに追加
+  if (env.PATH && XANGI_BIN_DIR) {
+    env.PATH = `${XANGI_BIN_DIR}:${env.PATH}`;
+  }
+
   return env;
 }
+
+// xangiのbin/ディレクトリを起動時に解決
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+const XANGI_BIN_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin');

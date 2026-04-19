@@ -492,9 +492,11 @@ LOCAL_LLM_TRIGGERS=true
 
 Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
 
-### Triggers
+### Triggers (Custom Tools)
 
-LLMs can invoke functionality by outputting magic words (`!command`) in their response text. Enable with `LOCAL_LLM_TRIGGERS=true`.
+Add custom tools to the LLM by placing shell scripts in the `triggers/` directory. Enable with `LOCAL_LLM_TRIGGERS=true`.
+
+The LLM calls triggers via function calling, and handler.sh is executed to return results.
 
 #### Setup
 
@@ -515,37 +517,35 @@ workspace/
 
 ```yaml
 name: weather
-trigger: "!weather"
-description: "Check the weather"
+description: "Get weather forecast (e.g., weather Tokyo)"
 handler: handler.sh
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | Trigger name |
-| `trigger` | Yes | Magic word (starts with `!`) |
-| `description` | No | Description (shown in system prompt) |
+| `name` | Yes | Tool name (used by LLM in function calling) |
+| `description` | No | Tool description (included in the tool definition passed to LLM) |
 | `handler` | Yes | Handler script filename |
 
 #### Handler Specification
 
 - Executed as `bash handler.sh [args...]` with workspace root as `cwd`
-- Arguments are passed as space-separated command line args (e.g., `!weather Tokyo` → `bash handler.sh Tokyo`)
+- Arguments are passed from the LLM's function calling `args` parameter
 - Timeout: `EXEC_TIMEOUT_MS` (default 120 seconds)
-- `stdout` content is sent to Discord
+- `stdout` content is returned to the LLM, which generates a natural language response
 
 #### How It Works
 
-1. On startup, xangi scans the workspace `triggers/` directory
-2. Available triggers are added to the system prompt
-3. When the LLM response contains a trigger word, the handler is executed
-4. Handler output is sent to Discord
+1. On startup, xangi scans `triggers/` and auto-generates tool definitions
+2. Triggers are registered as custom tools for the LLM
+3. LLM calls the tool via function calling
+4. handler.sh is executed and results are returned to the LLM
+5. LLM generates a natural response based on the results
 
 #### Notes
 
-- **Chat mode only**. Triggers are ignored in agent mode
-- Triggers scan the entire LLM response text line by line
-- If multiple triggers match in one response, only the first match is executed
+- Works in modes with tools enabled (lite/agent)
+- Restart xangi after adding new triggers
 
 ### Multimodal (Image Input)
 
@@ -611,7 +611,7 @@ Other models available via Ollama/vLLM are also supported.
 
 Environment variables passed to the AI agent (CLI spawn / Local LLM exec) are managed in `src/safe-env.ts`. Only variables listed in the whitelist are passed; secrets like `DISCORD_TOKEN` are not accessible to the AI.
 
-**Allowed variables:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`
+**Allowed variables:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`, `XANGI_TOOL_SERVER`, `XANGI_CHANNEL_ID`
 
 **Not passed (examples):** `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `LOCAL_LLM_API_KEY`, `GH_TOKEN`
 

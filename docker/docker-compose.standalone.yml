@@ -4,14 +4,14 @@
 services:
   xangi:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.standalone
     container_name: xangi-standalone
     restart: unless-stopped
     ports:
       - "18888:18888"
     volumes:
-      - ${WORKSPACE_PATH:-./workspace}:/workspace
+      - ${WORKSPACE_PATH:-../ai-assistant-workspace}:/workspace
     environment:
       - NODE_ENV=production
       - WORKSPACE_PATH=/workspace
@@ -21,7 +21,7 @@ services:
       - WEB_CHAT_PORT=18888
       - LOCAL_LLM_BASE_URL=http://ollama:11434
       - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-gemma4:e4b}
-      - LOCAL_LLM_MODE=chat
+      - LOCAL_LLM_MODE=lite
     depends_on:
       ollama:
         condition: service_started

@@ -5,3 +5,4 @@ export {
 } from './chat-system-persistent.js';
 export { XANGI_COMMANDS, buildXangiCommands } from './xangi-commands.js';
 export type { ChatPlatform } from './xangi-commands.js';
+export { TOOLS_USAGE_PROMPT } from './tools-usage.js';

@@ -15,7 +15,9 @@ import {
 import { loadConfig } from './config.js';
 import { isGitHubAppEnabled } from './github-auth.js';
 import { resolveApproval, requestApproval, setApprovalEnabled } from './approval.js';
-import { createAgentRunner, getBackendDisplayName, type AgentRunner } from './agent-runner.js';
+import { getBackendDisplayName, type AgentRunner } from './agent-runner.js';
+import { BackendResolver } from './backend-resolver.js';
+import { DynamicRunnerManager } from './dynamic-runner.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { processManager } from './process-manager.js';
 import { loadSkills, formatSkillList, type Skill } from './skills.js';
@@ -200,10 +202,9 @@ async function main() {
     ],
   });
 
-  // エージェントランナーを作成
-  const agentRunner = createAgentRunner(config.agent.backend, config.agent.config, {
-    platform: config.agent.platform,
-  });
+  // バックエンドリゾルバー & 動的ランナーマネージャーを作成
+  const resolver = new BackendResolver(config);
+  const agentRunner = new DynamicRunnerManager(config, resolver);
   const backendName = getBackendDisplayName(config.agent.backend);
   console.log(
     `[xangi] Using ${backendName} as agent backend (platform: ${config.agent.platform ?? 'all'})`
@@ -297,6 +298,45 @@ async function main() {
           )
       )
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName('backend')
+      .setDescription('バックエンド/モデルの切り替え')
+      .addSubcommand((sub) => sub.setName('show').setDescription('現在のバックエンド設定を表示'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('set')
+          .setDescription('バックエンド/モデルを設定')
+          .addStringOption((opt) =>
+            opt
+              .setName('type')
+              .setDescription('バックエンド名')
+              .setRequired(true)
+              .addChoices(
+                { name: 'Claude Code', value: 'claude-code' },
+                { name: 'Codex', value: 'codex' },
+                { name: 'Gemini', value: 'gemini' },
+                { name: 'Local LLM', value: 'local-llm' }
+              )
+          )
+          .addStringOption((opt) => opt.setName('model').setDescription('モデル名'))
+          .addStringOption((opt) =>
+            opt
+              .setName('effort')
+              .setDescription('effortレベル（Claude Code用）')
+              .addChoices(
+                { name: 'デフォルト', value: 'none' },
+                { name: 'low', value: 'low' },
+                { name: 'medium', value: 'medium' },
+                { name: 'high', value: 'high' },
+                { name: 'max', value: 'max' }
+              )
+          )
+      )
+      .addSubcommand((sub) => sub.setName('reset').setDescription('デフォルトに戻す'))
+      .addSubcommand((sub) =>
+        sub.setName('list').setDescription('利用可能なバックエンド一覧を表示')
+      )
+      .toJSON(),
   ];
 
   // 各スキルを個別のスラッシュコマンドとして追加
@@ -361,6 +401,10 @@ async function main() {
         }
       );
     });
+
+    // ツールサーバー起動（Claude Codeからcurlで叩くAPI）
+    const { startToolServer } = await import('./tool-server.js');
+    startToolServer();
 
     const rest = new REST({ version: '10' }).setToken(config.discord.token);
     try {
@@ -483,6 +527,186 @@ async function main() {
       const settings = loadSettings();
       await interaction.reply(formatSettings(settings));
       return;
+    }
+
+    if (interaction.commandName === 'backend') {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === 'show') {
+        const resolved = agentRunner.resolveForChannel(channelId);
+        const override = resolver.getChannelOverride(channelId);
+        const defaultRes = resolver.getDefault();
+        const lines = [
+          `**現在のバックエンド設定** (<#${channelId}>)`,
+          `- バックエンド: **${getBackendDisplayName(resolved.backend)}**`,
+        ];
+        if (resolved.model) lines.push(`- モデル: ${resolved.model}`);
+        if (resolved.effort) lines.push(`- effort: ${resolved.effort}`);
+        if (override) {
+          lines.push(`- ソース: チャンネル設定`);
+        } else {
+          lines.push(`- ソース: デフォルト (.env)`);
+        }
+        lines.push(
+          ``,
+          `**デフォルト:** ${getBackendDisplayName(defaultRes.backend)}${defaultRes.model ? ` (${defaultRes.model})` : ''}`
+        );
+        await interaction.reply(lines.join('\n'));
+        return;
+      }
+
+      if (sub === 'set') {
+        const backendValue = interaction.options.getString(
+          'type',
+          true
+        ) as import('./config.js').AgentBackend;
+        const modelValue = interaction.options.getString('model') ?? undefined;
+        const rawEffort = interaction.options.getString('effort');
+        const effortValue =
+          rawEffort && rawEffort !== 'none'
+            ? (rawEffort as import('./config.js').EffortLevel)
+            : undefined;
+
+        // 許可チェック: ALLOWED_BACKENDSが未設定なら切り替え不可
+        if (!resolver.isBackendAllowed(backendValue)) {
+          const allowedBackends = resolver.getAllowedBackends();
+          if (!config.agent.allowedBackends) {
+            await interaction.reply({
+              content: `❌ バックエンド切り替えが有効になっていません。\n.envに \`ALLOWED_BACKENDS\` を設定してください。`,
+              ephemeral: true,
+            });
+          } else {
+            await interaction.reply({
+              content: `❌ バックエンド \`${backendValue}\` は許可されていません\n許可: ${allowedBackends.map((b) => getBackendDisplayName(b)).join(', ')}`,
+              ephemeral: true,
+            });
+          }
+          return;
+        }
+        if (modelValue && !resolver.isModelAllowed(modelValue)) {
+          await interaction.reply({
+            content: `❌ モデル \`${modelValue}\` は許可されていません`,
+            ephemeral: true,
+          });
+          return;
+        }
+
+        // Local LLMの場合、Ollamaにモデルが存在するか確認
+        if (backendValue === 'local-llm' && modelValue) {
+          try {
+            const ollamaBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
+            const res = await fetch(`${ollamaBase}/api/tags`, {
+              signal: AbortSignal.timeout(3000),
+            });
+            if (res.ok) {
+              const data = (await res.json()) as {
+                models?: Array<{ name: string }>;
+              };
+              const modelNames = data.models?.map((m) => m.name) ?? [];
+              // "qwen3.5:9b" と "qwen3.5:9b" の完全一致、または "qwen3.5" のようなプレフィックス一致
+              const found = modelNames.some(
+                (n) => n === modelValue || n.startsWith(modelValue + ':')
+              );
+              if (!found) {
+                await interaction.reply({
+                  content: `❌ モデル \`${modelValue}\` はOllamaにインストールされていません\nインストール済み: ${modelNames.map((n) => `\`${n}\``).join(', ')}`,
+                  ephemeral: true,
+                });
+                return;
+              }
+            }
+          } catch {
+            // Ollama接続失敗は無視（モデル確認をスキップ）
+          }
+        }
+
+        // channelOverrides に保存
+        resolver.setChannelOverride(channelId, {
+          backend: backendValue,
+          model: modelValue,
+          effort: effortValue,
+        });
+
+        // セッション & ランナー破棄
+        agentRunner.switchBackend(channelId);
+
+        // 切り替え結果を明確に表示
+        const display = getBackendDisplayName(backendValue);
+        const resolvedModel =
+          modelValue ||
+          (backendValue === 'local-llm'
+            ? process.env.LOCAL_LLM_MODEL || '(デフォルト)'
+            : backendValue === 'claude-code'
+              ? process.env.AGENT_MODEL || 'Claude (デフォルト)'
+              : '(デフォルト)');
+        const lines = [
+          `🔄 モデルを切り替えました。新しいセッションを開始します。`,
+          `- バックエンド: **${display}**`,
+          `- モデル: **${resolvedModel}**`,
+        ];
+        if (effortValue) lines.push(`- effort: **${effortValue}**`);
+        await interaction.reply(lines.join('\n'));
+        return;
+      }
+
+      if (sub === 'reset') {
+        resolver.deleteChannelOverride(channelId);
+        agentRunner.switchBackend(channelId);
+        const defaultRes = resolver.getDefault();
+        await interaction.reply(
+          `🔄 デフォルト (**${getBackendDisplayName(defaultRes.backend)}**) に戻しました。新しいセッションを開始します。`
+        );
+        return;
+      }
+
+      if (sub === 'list') {
+        await interaction.deferReply();
+        const allowed = resolver.getAllowedBackends();
+        const allowedModels = resolver.getAllowedModels();
+        const defaultRes = resolver.getDefault();
+        const lines = ['**利用可能なバックエンド:**'];
+        for (const b of allowed) {
+          const isDefault = b === defaultRes.backend;
+          lines.push(`- ${getBackendDisplayName(b)}${isDefault ? ' (デフォルト)' : ''}`);
+        }
+        if (allowedModels && allowedModels.length > 0) {
+          lines.push('', '**許可モデル:**');
+          for (const m of allowedModels) {
+            lines.push(`- \`${m}\``);
+          }
+        }
+
+        // Ollamaモデル一覧を取得（Local LLMが許可されている場合）
+        if (allowed.includes('local-llm')) {
+          try {
+            const ollamaBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
+            const res = await fetch(`${ollamaBase}/api/tags`, {
+              signal: AbortSignal.timeout(3000),
+            });
+            if (res.ok) {
+              const data = (await res.json()) as {
+                models?: Array<{ name: string; size: number }>;
+              };
+              if (data.models && data.models.length > 0) {
+                lines.push('', '**Ollamaモデル（インストール済み）:**');
+                for (const m of data.models) {
+                  const sizeGB = (m.size / 1e9).toFixed(1);
+                  lines.push(`- \`${m.name}\` (${sizeGB}GB)`);
+                }
+              }
+            }
+          } catch {
+            // Ollama接続失敗は無視
+          }
+        }
+
+        if (!config.agent.allowedBackends) {
+          lines.push('', '⚠️ `ALLOWED_BACKENDS` が未設定のため、切り替えは無効です。');
+        }
+
+        await interaction.editReply(lines.join('\n'));
+        return;
+      }
     }
 
     if (interaction.commandName === 'skip') {

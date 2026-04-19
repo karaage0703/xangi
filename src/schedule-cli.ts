@@ -18,7 +18,7 @@ import {
   type Platform,
 } from './scheduler.js';
 
-const DATA_DIR = process.env.XANGI_DATA_DIR || process.env.DATA_DIR || undefined;
+const DATA_DIR = process.env.DATA_DIR || undefined;
 const schedulerConfig = {
   enabled: process.env.SCHEDULER_ENABLED !== 'false',
   startupEnabled: process.env.STARTUP_ENABLED !== 'false',

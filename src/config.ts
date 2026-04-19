@@ -16,6 +16,8 @@ export interface AgentConfig {
   idleTimeoutMs?: number;
 }
 
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+
 export interface Config {
   discord: {
     enabled: boolean;
@@ -42,6 +44,10 @@ export interface Config {
     backend: AgentBackend;
     config: AgentConfig;
     platform?: ChatPlatform;
+    /** 切り替え許可バックエンド一覧（未設定=全て許可） */
+    allowedBackends?: AgentBackend[];
+    /** 切り替え許可モデル一覧（未設定=全て許可） */
+    allowedModels?: string[];
   };
   scheduler: {
     enabled: boolean;
@@ -114,6 +120,23 @@ export function loadConfig(): Config {
       : 30 * 60 * 1000, // 30分
   };
 
+  // ALLOWED_BACKENDS / ALLOWED_MODELS パース
+  const allowedBackendsRaw = process.env.ALLOWED_BACKENDS;
+  const allowedBackends: AgentBackend[] | undefined = allowedBackendsRaw
+    ? (allowedBackendsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean) as AgentBackend[])
+    : undefined;
+
+  const allowedModelsRaw = process.env.ALLOWED_MODELS;
+  const allowedModels: string[] | undefined = allowedModelsRaw
+    ? allowedModelsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+
   return {
     discord: {
       enabled: !!discordToken,
@@ -146,6 +169,8 @@ export function loadConfig(): Config {
       backend,
       config: agentConfig,
       platform,
+      allowedBackends,
+      allowedModels,
     },
     scheduler: {
       enabled: process.env.SCHEDULER_ENABLED !== 'false', // デフォルトで有効

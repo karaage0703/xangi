@@ -1,14 +1,10 @@
 /**
- * チャットプラットフォーム（Discord/Slack）共通のコマンド
+ * チャットプラットフォーム（Discord/Slack）共通コマンド
+ *
+ * テキストパース: MEDIA:, ===セパレータ
+ * CLIツール: スケジュール, システムコマンド
  */
-export const XANGI_COMMANDS_CHAT_PLATFORM = `## 記述ルール（全コマンド共通）
-
-- **行頭に書くこと** — 各行をtrimしてから \`startsWith\` でチェックされるため、行の途中に書いても認識されない
-- **コードブロック内は無視される** — \` \`\`\` \` で囲んだ中のコマンドは実行されない（ドキュメント例示に安全に使える）
-- \`!discord\`, \`!schedule\`, \`SYSTEM_COMMAND:\` はすべて行頭必須
-- \`MEDIA:\` だけは例外で、行の途中でも認識される
-
-## ファイル送信
+export const XANGI_COMMANDS_CHAT_PLATFORM = `## ファイル送信
 
 チャットにファイルを送信する場合は、出力に以下の形式でパスを含める（**行頭でなくてもOK**、テキスト途中でも認識される）：
 
@@ -20,14 +16,6 @@ MEDIA:/path/to/file
 
 ユーザーが添付したファイルは \`[添付ファイル]\` としてパスが渡される。
 
-## システムコマンド
-
-応答に以下の形式を含めることで、システムを操作できる（行頭に記述）：
-
-- \`SYSTEM_COMMAND:restart\` — ボットを再起動
-- \`SYSTEM_COMMAND:set autoRestart=true\` — 自動再起動を有効化
-- \`SYSTEM_COMMAND:set autoRestart=false\` — 自動再起動を無効化
-
 ## メッセージ分割セパレータ
 
 応答テキストに \`\\n===\\n\`（前後に改行を含む \`===\`）を入れると、そこで分割して別メッセージとして送信される。
@@ -35,23 +23,21 @@ MEDIA:/path/to/file
 
 ## スケジュール・リマインダー
 
-\`!schedule\` コマンドでリマインダーや定期実行を設定できる。
-
+\`\`\`bash
+xangi-cmd schedule_list
+xangi-cmd schedule_add --input "毎日 9:00 おはよう" --channel <チャンネルID>
+xangi-cmd schedule_add --input "30分後 ミーティング" --channel <チャンネルID>
+xangi-cmd schedule_add --input "15:00 レビュー" --channel <チャンネルID>
+xangi-cmd schedule_add --input "毎週月曜 10:00 週次MTG" --channel <チャンネルID>
+xangi-cmd schedule_add --input "cron 0 9 * * * おはよう" --channel <チャンネルID>
+xangi-cmd schedule_remove --id <スケジュールID>
+xangi-cmd schedule_toggle --id <スケジュールID>
 \`\`\`
-!schedule add <設定>     # スケジュール追加
-!schedule list           # 一覧表示
-!schedule remove <ID>    # 削除
-!schedule toggle <ID>    # 有効/無効切り替え
-\`\`\`
 
-### 設定フォーマット
+## システムコマンド
 
-- \`30分後 ミーティング\` — N分後（秒/時間も可）
-- \`15:00 レビュー\` — 今日のその時刻（過ぎたら翌日）
-- \`毎日 9:00 おはよう\` — 毎日定時
-- \`毎週月曜 10:00 週次MTG\` — 毎週
-- \`cron 0 9 * * * おはよう\` — cron式直接指定
-
-### 別チャンネルへの送信
-
-\`-c <#チャンネルID>\` を先頭に付けると、指定チャンネルに送信できる。`;
+\`\`\`bash
+xangi-cmd system_restart
+xangi-cmd system_settings --key autoRestart --value true
+xangi-cmd system_settings  # 設定一覧
+\`\`\``;
