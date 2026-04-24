@@ -729,7 +729,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `PERSISTENT_MODE` | 常駐プロセスモード | `true` |
 | `MAX_PROCESSES` | 同時実行プロセス数の上限 | `10` |
 | `IDLE_TIMEOUT_MS` | アイドルプロセスの自動終了時間 | `1800000` |
-| `DATA_DIR` | データ保存ディレクトリ | `.xangi` |
+| `DATA_DIR` | データ保存ディレクトリ（スケジュール・セッション等） | `WORKSPACE_PATH/.xangi` |
 | `GH_TOKEN` | GitHub CLIトークン | - |
 
 ### GitHub App認証（オプション）

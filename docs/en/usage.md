@@ -11,10 +11,11 @@ Detailed usage guide for xangi.
 - [Timestamp Injection](#timestamp-injection)
 - [Session Management](#session-management)
 - [Scheduler](#scheduler)
-- [Discord Commands](#discord-commands)
-- [Command Prefix](#command-prefix)
+- [Discord Operations (xangi-cmd)](#discord-operations-xangi-cmd)
+- [Skipping Permission Confirmations](#skipping-permission-confirmations)
 - [Runtime Settings](#runtime-settings)
 - [Autonomous AI Operations](#autonomous-ai-operations)
+- [Standalone Mode](#standalone-mode)
 - [Docker Deployment](#docker-deployment)
 - [Local LLM (Ollama)](#local-llm-ollama)
 - [Troubleshooting](#troubleshooting)
@@ -208,50 +209,54 @@ Schedule data is saved in `${DATA_DIR}/schedules.json`.
 - Default: `/workspace/.xangi/schedules.json`
 - Configurable via the `DATA_DIR` environment variable
 
-## Discord Commands
+## Discord Operations (xangi-cmd)
 
-Commands for the AI to perform Discord operations.
+The AI performs Discord operations via the `xangi-cmd` CLI tool. Because it routes through xangi's built-in tool-server (HTTP API), secrets like `DISCORD_TOKEN` are never accessible to the AI CLI.
 
 | Command | Description |
 | --- | --- |
-| `!discord send <#channel> message` | Send a message to a specified channel |
-| `!discord channels` | List server channels |
-| `!discord history [count] [<#channel>]` | Get latest messages from a channel (default 10, max 100) |
-| `!discord search keyword` | Search messages in the current channel |
-| `!discord delete <messageID>` | Delete a specified message |
-| `!discord delete <message link>` | Delete a message by link (works across channels) |
-| `!discord edit <ID/link/last> content` | Edit own message (`last` for the most recent message) |
+| `xangi-cmd discord_history --channel <ID> [--count N] [--offset M]` | Get channel history |
+| `xangi-cmd discord_send --channel <ID> --message "text"` | Send a message |
+| `xangi-cmd discord_channels --guild <ID>` | List channels |
+| `xangi-cmd discord_search --channel <ID> --keyword "text"` | Search messages |
+| `xangi-cmd discord_edit --channel <ID> --message-id <ID> --content "text"` | Edit a message |
+| `xangi-cmd discord_delete --channel <ID> --message-id <ID>` | Delete a message |
+| `xangi-cmd media_send --channel <ID> --file /path/to/file` | Send a file |
 
 ### Examples
 
-```
-# Post to another channel
-!discord send <#1234567890> Work completed!
+```bash
+# Get channel history
+xangi-cmd discord_history --count 10
+xangi-cmd discord_history --channel 1234567890 --count 10
+xangi-cmd discord_history --channel 1234567890 --count 30 --offset 30  # scroll back
 
-# Check channel list
-!discord channels
+# Send a message to another channel
+xangi-cmd discord_send --channel 1234567890 --message "Work completed!"
 
-# Get channel history (results return to the AI's context)
-!discord history              # Latest 10 from current channel
-!discord history 50           # Latest 50 from current channel
-!discord history 20 <#1234>   # 20 from a specified channel
-!discord history 30 offset:30 # Get messages 30-60 (scrolling back)
+# List channels
+xangi-cmd discord_channels --guild 9876543210
 
 # Search messages
-!discord search PR
-
-# Delete by message ID
-!discord delete 123456789012345678
-
-# Delete by message link (works for messages in other channels too)
-!discord delete https://discord.com/channels/111/222/333
-
-# Edit the most recent own message
-!discord edit last corrected content
-
-# Edit by message ID
-!discord edit 123456789012345678 new content
+xangi-cmd discord_search --channel 1234567890 --keyword "PR"
 ```
+
+If `--channel` is omitted while running inside xangi, the current channel ID is used automatically. When running the CLI standalone, `--channel` is required.
+
+```bash
+# Edit and delete messages
+xangi-cmd discord_edit --channel 1234567890 --message-id 111222333 --content "updated content"
+xangi-cmd discord_delete --channel 1234567890 --message-id 111222333
+```
+
+### Tool Server
+
+`xangi-cmd` relays requests to the tool-server (HTTP API) running inside the xangi process.
+
+- Port is assigned automatically by the OS (no conflicts when running multiple instances)
+- xangi injects `XANGI_TOOL_SERVER` into child processes at startup
+- `xangi-cmd` uses `XANGI_TOOL_SERVER` to resolve the connection endpoint
+- Runtime context such as the current channel ID is passed to the tool-server as `context`
 
 ## Skipping Permission Confirmations
 
@@ -296,6 +301,44 @@ Runtime settings are saved in `${WORKSPACE_PATH}/settings.json`.
 | --- | --- |
 | `/settings` | Show current settings |
 | `/restart` | Restart the bot |
+
+### Backend Dynamic Switching
+
+You can switch the backend, model, and effort level per channel.
+
+| Command | Description |
+| --- | --- |
+| `/backend show` | Show the current backend and model |
+| `/backend set claude-code` | Switch to Claude Code |
+| `/backend set local-llm --model nemotron-3-nano` | Switch to Local LLM with a specific model |
+| `/backend set claude-code --effort high` | Switch with a specific effort level |
+| `/backend reset` | Reset to the default (.env settings) |
+| `/backend list` | List available backends and models |
+
+Switching always starts a new session (conversation history is not carried over).
+
+#### Restricting via Environment Variables
+
+```bash
+# Allowed backends for switching (if unset, switching is disabled)
+ALLOWED_BACKENDS=claude-code,local-llm
+
+# Allowed models for switching (if unset, no restriction)
+ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
+
+# Per-channel backend overrides (JSON)
+CHANNEL_OVERRIDES={"channelId":{"backend":"local-llm","model":"nemotron-3-nano"}}
+```
+
+#### Persistence
+
+Settings changed with `/backend set` are automatically saved to `CHANNEL_OVERRIDES` in `.env` and persist across restarts.
+
+In a Docker environment, `.env` lives outside the container and cannot be modified by the AI (Claude Code, etc.).
+
+#### effort Option (Claude Code Only)
+
+The Claude Code `--effort` option (`low` / `medium` / `high` / `max`) can be configured per channel. Because a process restart is required in persistent mode, the session resets on each switch. Use `/backend set claude-code --effort default` to clear the effort setting.
 
 ## Autonomous AI Operations
 
@@ -355,6 +398,42 @@ pm2 restart xangi
 > **Warning: Do not use `pm2 restart --update-env`!**
 > `--update-env` saves all shell environment variables to pm2. If you're running multiple xangi instances, another instance's `DISCORD_TOKEN` etc. may leak in, causing dual login with the same bot token.
 > `node --env-file=.env` does not overwrite existing environment variables, so values set by pm2 take precedence.
+
+## Standalone Mode
+
+If you have Docker, you can launch an AI assistant with a single command. No Discord or Slack token required. Runs with a local LLM (Ollama) and a web chat UI.
+
+### Setup
+
+```bash
+git clone https://github.com/karaage0703/xangi.git
+cd xangi
+./quickstart.sh
+```
+
+Open your browser at `http://localhost:18888` to start chatting.
+
+### How It Works
+
+- **Ollama** — Local LLM server (downloads `gemma4:e4b` automatically on first launch)
+- **xangi** — AI assistant (with web chat UI)
+- **[ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace)** — Workspace (AGENTS.md, skills, memory)
+
+### Changing the Model
+
+```bash
+LOCAL_LLM_MODEL=gemma4:26b ./quickstart.sh
+```
+
+### Stopping
+
+```bash
+docker compose -f docker-compose.standalone.yml down
+```
+
+### Workspace Persistence
+
+The workspace is mounted to the host's `workspace/` directory. Data is preserved even when the container is stopped or removed. You can also edit files in `workspace/` directly or push them with git.
 
 ## Docker Deployment
 
@@ -644,7 +723,7 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `PERSISTENT_MODE` | Persistent process mode | `true` |
 | `MAX_PROCESSES` | Maximum concurrent processes | `10` |
 | `IDLE_TIMEOUT_MS` | Auto-terminate idle processes after | `1800000` |
-| `DATA_DIR` | Data storage directory | `.xangi` |
+| `DATA_DIR` | Data storage directory (schedules, sessions, etc.) | `WORKSPACE_PATH/.xangi` |
 | `GH_TOKEN` | GitHub CLI token | - |
 
 ### GitHub App Authentication (Optional)

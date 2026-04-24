@@ -125,6 +125,18 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 6. リトライも失敗 → formatLlmError() でエラーメッセージを返却
 ```
 
+**ツール呼び出しフロー（llm-client.ts）:**
+
+LLMクライアントはOllamaネイティブAPIとOpenAI互換APIの2経路を持つ。ツール呼び出し時のメッセージフォーマットが異なる点に注意:
+
+| 項目 | OpenAI互換API | Ollama ネイティブAPI |
+|------|---------------|---------------------|
+| assistantのツール呼び出し | `tool_calls[].id` で識別 | `tool_calls[].function` で識別 |
+| toolメッセージの関連付け | `tool_call_id`（ID指定） | `tool_name`（名前指定） |
+| 変換関数 | `toOpenAIMessages()` | `chatOllamaNative()` 内でインライン変換 |
+
+Ollamaネイティブ経由では `toolCallId` → `tool_name` の逆引きマップで関連付けを行う。
+
 **エラーハンドリングの設計:**
 
 - `isSessionRelatedError()` — Error インスタンスのメッセージを小文字化して、セッション履歴に起因する既知のパターンにマッチするか判定。非Errorオブジェクトは常にfalseを返す

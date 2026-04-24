@@ -23,7 +23,8 @@ interface Schedule {
 }
 
 function getScheduleFilePath(): string {
-  const dataDir = process.env.DATA_DIR || join(process.cwd(), '.xangi');
+  const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
