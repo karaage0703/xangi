@@ -8,6 +8,7 @@ import {
   isOpusModel,
   type ChannelModelConfig,
 } from './channel-models.js';
+import { deleteSession } from './sessions.js';
 
 /**
  * プール内のランナー情報
@@ -102,6 +103,17 @@ export class RunnerManager implements AgentRunner {
       effort,
       channelId,
     });
+
+    // セッション無効化イベント: sessions.json からも削除して永続的にリセット
+    runner.on('session-invalidated', (ch: string, oldSessionId: string) => {
+      if (ch) {
+        deleteSession(ch);
+        console.log(
+          `[runner-manager] Session invalidated for channel ${ch} (was: ${oldSessionId?.slice(0, 8) ?? 'none'}). Deleted from sessions.json.`
+        );
+      }
+    });
+
     this.pool.set(channelId, {
       runner,
       lastUsed: Date.now(),
