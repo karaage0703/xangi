@@ -150,6 +150,43 @@ function createCompletedButtons(): ActionRowBuilder<ButtonBuilder>[] {
   return [sessionRow, modelRow];
 }
 
+/**
+ * ツール入力の要約を生成（Discord表示用）
+ */
+function formatToolInput(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'Read':
+      return input.file_path ? `: ${String(input.file_path).split('/').slice(-2).join('/')}` : '';
+    case 'Edit':
+    case 'Write':
+      return input.file_path ? `: ${String(input.file_path).split('/').slice(-2).join('/')}` : '';
+    case 'Bash': {
+      if (!input.command) return '';
+      const cmd = String(input.command);
+      return `: \`${cmd.slice(0, 60)}${cmd.length > 60 ? '...' : ''}\``;
+    }
+    case 'Glob':
+      return input.pattern ? `: ${String(input.pattern)}` : '';
+    case 'Grep':
+      return input.pattern ? `: ${String(input.pattern)}` : '';
+    case 'WebFetch':
+      return input.url ? `: ${String(input.url).slice(0, 60)}` : '';
+    case 'Agent':
+      return input.description ? `: ${String(input.description)}` : '';
+    case 'Skill':
+      return input.skill ? `: ${String(input.skill)}` : '';
+    default:
+      // MCPツール (mcp__server__tool 形式)
+      if (toolName.startsWith('mcp__')) {
+        const parts = toolName.split('__');
+        const server = parts[1] || '';
+        const tool = parts[2] || '';
+        return ` (${server}/${tool})`;
+      }
+      return '';
+  }
+}
+
 async function main() {
   const config = loadConfig();
 
@@ -2158,6 +2195,20 @@ async function processPrompt(
                     pendingUpdate = false;
                   });
               }
+            },
+            onToolUse: (toolName, toolInput) => {
+              if (!firstTextReceived) {
+                firstTextReceived = true;
+                clearInterval(thinkingInterval);
+              }
+              const detail = formatToolInput(toolName, toolInput);
+              const toolStatus = `🔧 ${toolName}${detail}`;
+              replyMessage!
+                .edit({
+                  content: toolStatus.slice(0, DISCORD_MAX_LENGTH),
+                  components: [createProcessingButtons()],
+                })
+                .catch(() => {});
             },
           },
           { skipPermissions, sessionId, channelId }
