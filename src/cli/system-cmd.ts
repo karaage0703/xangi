@@ -12,7 +12,8 @@ interface Settings {
 }
 
 function getSettingsFilePath(): string {
-  const dataDir = process.env.DATA_DIR || join(process.cwd(), '.xangi');
+  const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const dataDir = join(workdir, '.xangi');
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
@@ -41,7 +42,8 @@ async function systemRestart(): Promise<string> {
   }
 
   // 再起動トリガーファイルを作成（xangiプロセスが監視して再起動）
-  const dataDir = process.env.DATA_DIR || join(process.cwd(), '.xangi');
+  const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const dataDir = join(workdir, '.xangi');
   writeFileSync(join(dataDir, 'restart-trigger'), Date.now().toString());
 
   return '🔄 再起動をリクエストしました';
