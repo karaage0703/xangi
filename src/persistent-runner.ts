@@ -241,7 +241,14 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private handleJsonMessage(json: {
     type: string;
     session_id?: string;
-    message?: { content?: Array<{ type: string; text?: string }> };
+    message?: {
+      content?: Array<{
+        type: string;
+        text?: string;
+        name?: string;
+        input?: Record<string, unknown>;
+      }>;
+    };
     result?: string;
     is_error?: boolean;
   }): void {
@@ -255,6 +262,9 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
         if (block.type === 'text' && block.text) {
           this.fullText += block.text;
           this.currentItem?.callbacks?.onText?.(block.text, this.fullText);
+        }
+        if (block.type === 'tool_use' && block.name) {
+          this.currentItem?.callbacks?.onToolUse?.(block.name, block.input ?? {});
         }
       }
     }
