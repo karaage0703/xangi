@@ -198,7 +198,53 @@ AI CLI（Claude Code等）
 **セキュリティ:**
 - DISCORD_TOKEN 等のシークレットは xangi プロセス内のみ
 - AI CLI には `safe-env.ts` のホワイトリストで安全な環境変数のみ渡す
-- Docker環境ではコンテナ分離により物理的にトークンへアクセス不可
+- GitHub App秘密鍵は起動時にメモリに読み込み、トークン生成は tool-server の `/github-token` エンドポイント経由（短寿命トークンのみ取得可能）
+
+### 承認フロー（approval.ts / approval-server.ts）
+
+AIが実行しようとするコマンドの中から危険なもの（`rm -rf`、`git push --force` 等）を検知し、実行前にユーザーの承認を求める仕組み。
+
+```
+AI CLI がコマンド出力
+  → approval.ts がパターンマッチ（approval-patterns.json）
+  → 危険コマンド検知
+  → approval-server.ts がDiscord/Slackにボタン付きメッセージ送信
+  → ユーザーが承認/拒否
+  → 結果をAI CLIに返却
+```
+
+- `APPROVAL_ENABLED=true` で有効化（デフォルト無効）
+- パターンは `src/approval-patterns.json` で定義
+
+### GitHub App認証（github-auth.ts）
+
+GitHub Appの秘密鍵を使ってInstallation Token（短寿命・1時間有効）を生成し、`gh` CLIをラップする。
+
+```
+gh コマンド実行（AI CLI内）
+  → /tmp/xangi-gh-wrapper/gh（ラッパー）
+  → curl で tool-server の /github-token エンドポイントにリクエスト
+  → github-auth.ts がメモリ上の秘密鍵でトークン生成
+  → GH_TOKEN として注入 → 本物の gh を exec
+```
+
+- 秘密鍵は起動時にファイルからメモリに読み込み、以降ファイルアクセス不要
+- AIエージェント（子プロセス）からは秘密鍵に直接アクセスできない
+- トークン生成失敗時はPATへのフォールバックなし（エラー）
+
+### トリガー機能（local-llm/triggers.ts）
+
+Local LLMのchatモードで、LLM応答テキスト内のマジックワードを検出してスクリプトを自動実行する。
+
+```
+triggers/
+├── my-trigger/
+│   ├── trigger.yaml    # name, description, handler を定義
+│   └── handler.sh      # 実行スクリプト
+```
+
+- ワークスペースの `triggers/` ディレクトリから `trigger.yaml` を読み込み
+- LLM応答テキストにトリガーワードが含まれていれば handler を実行
 
 ### スキルシステム（skills.ts）
 
@@ -284,10 +330,12 @@ AIが出力する特殊コマンドを検出して自動実行：
 | 方式 | コマンド例 | 動作 |
 |------|----------|------|
 | CLIツール | `xangi-cmd discord_send --channel ID --message "..."` | Discord操作 |
+| CLIツール | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | ボタン付きメッセージ送信 |
 | CLIツール | `xangi-cmd schedule_add --input "毎日 9:00 ..."` | スケジュール操作 |
 | CLIツール | `xangi-cmd system_restart` | プロセス再起動 |
 | テキストパース | `MEDIA:/path/to/file` | ファイル送信 |
 | テキストパース | `\n===\n` | メッセージ分割 |
+| スラッシュコマンド | `/autoreply` | チャンネルごとのメンションなし応答トグル |
 
 CLIツール（`xangi-cmd`）は xangi 内蔵の tool-server（HTTPエンドポイント）経由で実行される。
 DISCORD_TOKEN 等のシークレットは xangi プロセス内に閉じ込められ、AI CLI からはアクセスできない。
@@ -359,8 +407,14 @@ src/
 ├── gemini-cli.ts       # Gemini CLIアダプター
 ├── web-chat.ts         # WebチャットUI（HTTPサーバー）
 ├── tool-server.ts      # Tool Server（AI CLI向けHTTP API）
-├── approval-server.ts  # 承認サーバー（危険コマンド検知・対話的承認）
+├── approval.ts         # 危険コマンド検知（パターンマッチ）
+├── approval-server.ts  # 承認サーバー（Discord/Slack対話的承認フロー）
+├── github-auth.ts      # GitHub App認証（秘密鍵メモリ管理・トークン生成）
+├── backend-resolver.ts # チャンネル別バックエンド解決
+├── dynamic-runner.ts   # 動的ランナーマネージャー
 ├── safe-env.ts         # 環境変数ホワイトリスト
+├── constants.ts        # アプリケーション定数
+├── schedule-cli.ts     # スケジューラCLI（レガシー、tool-server移行済み）
 ├── cli/                # CLIモジュール（tool-serverから呼ばれる）
 │   ├── discord-api.ts  #   Discord REST API直叩き
 │   ├── schedule-cmd.ts #   スケジュール操作
@@ -372,13 +426,21 @@ src/
 │   ├── context.ts      #   ワークスペースコンテキスト読み込み
 │   ├── tools.ts        #   ビルトインツール（exec/read/web_fetch）
 │   ├── xangi-tools.ts  #   xangi専用ツール（function calling版）
+│   ├── image-utils.ts  #   画像処理ユーティリティ（マルチモーダル対応）
+│   ├── triggers.ts     #   トリガー機能（chatモードのマジックワード検出・実行）
 │   └── types.ts        #   型定義
 ├── prompts/            # プロンプト定義
+│   ├── index.ts                   # エクスポート集約
 │   ├── xangi-commands.ts          # プラットフォーム別組み立て
 │   ├── xangi-commands-common.ts   # 共通（タイムアウト等）
 │   ├── xangi-commands-chat-platform.ts # チャットPF共通（MEDIA:/スケジュール/システム）
 │   ├── xangi-commands-discord.ts  # Discord専用（xangi-cmd discord_*）
-│   └── xangi-commands-slack.ts    # Slack専用
+│   ├── xangi-commands-slack.ts    # Slack専用
+│   ├── xangi-commands-web.ts      # Web専用
+│   ├── chat-system-persistent.ts  # 常駐プロセス用システムプロンプト
+│   ├── chat-system-resume.ts      # セッション再開用システムプロンプト
+│   ├── platform-labels.ts         # プラットフォーム表示名
+│   └── tools-usage.ts             # Local LLM用ツール使い方プロンプト
 ├── scheduler.ts        # スケジューラー
 ├── skills.ts           # スキルローダー
 ├── config.ts           # 設定読み込み

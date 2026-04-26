@@ -77,8 +77,10 @@ done
 FLAGS+="}"
 
 CONTEXT="{}"
-if [ -n "$XANGI_CHANNEL_ID" ]; then
-  ESCAPED_CHANNEL_ID=$(printf '%s' "$XANGI_CHANNEL_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
+# XANGI_CHANNEL_ID（xangi本体から注入）またはXANGI_DEFAULT_CHANNEL（手動設定）を使う
+_CHANNEL_ID="${XANGI_CHANNEL_ID:-$XANGI_DEFAULT_CHANNEL}"
+if [ -n "$_CHANNEL_ID" ]; then
+  ESCAPED_CHANNEL_ID=$(printf '%s' "$_CHANNEL_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
   CONTEXT="{\"channelId\":\"$ESCAPED_CHANNEL_ID\"}"
 fi
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 /**
  * annotateChannelMentions のテスト用に関数を再実装
@@ -117,6 +117,79 @@ describe('Discord Commands', () => {
       const text = 'テキスト前\n普通のテキスト\nテキスト後';
       const result = stripCommandsFromDisplay(text);
       expect(result).toBe('テキスト前\n普通のテキスト\nテキスト後');
+    });
+  });
+
+  describe('/autoreply command guard', () => {
+    /**
+     * コマンド登録ロジック: allowAutoreplyCommand が true の場合のみ autoreply コマンドを登録
+     */
+    function buildCommandNames(allowAutoreplyCommand: boolean): string[] {
+      const commands: string[] = ['new', 'stop', 'skip', 'restart', 'backend'];
+      if (allowAutoreplyCommand) {
+        commands.push('autoreply');
+      }
+      return commands;
+    }
+
+    /**
+     * コマンド実行ガード: allowAutoreplyCommand が false なら拒否
+     */
+    function handleAutoreply(
+      allowAutoreplyCommand: boolean,
+      autoReplyChannels: string[],
+      channelId: string
+    ): { allowed: boolean; status?: string; channels?: string[] } {
+      if (!allowAutoreplyCommand) {
+        return { allowed: false };
+      }
+      const channels = [...autoReplyChannels];
+      const idx = channels.indexOf(channelId);
+      const isCurrentlyOn = idx !== -1;
+      if (isCurrentlyOn) {
+        channels.splice(idx, 1);
+      } else {
+        channels.push(channelId);
+      }
+      const status = isCurrentlyOn ? 'OFF' : 'ON';
+      return { allowed: true, status, channels };
+    }
+
+    it('should not register autoreply command when allowAutoreplyCommand is false', () => {
+      const commands = buildCommandNames(false);
+      expect(commands).not.toContain('autoreply');
+    });
+
+    it('should register autoreply command when allowAutoreplyCommand is true', () => {
+      const commands = buildCommandNames(true);
+      expect(commands).toContain('autoreply');
+    });
+
+    it('should reject autoreply execution when allowAutoreplyCommand is false', () => {
+      const result = handleAutoreply(false, [], '123');
+      expect(result.allowed).toBe(false);
+      expect(result.status).toBeUndefined();
+    });
+
+    it('should allow autoreply execution and toggle ON when allowAutoreplyCommand is true', () => {
+      const result = handleAutoreply(true, [], '123');
+      expect(result.allowed).toBe(true);
+      expect(result.status).toBe('ON');
+      expect(result.channels).toEqual(['123']);
+    });
+
+    it('should toggle OFF when channel is already in autoReplyChannels', () => {
+      const result = handleAutoreply(true, ['123', '456'], '123');
+      expect(result.allowed).toBe(true);
+      expect(result.status).toBe('OFF');
+      expect(result.channels).toEqual(['456']);
+    });
+
+    it('should add channel when not in autoReplyChannels', () => {
+      const result = handleAutoreply(true, ['456'], '123');
+      expect(result.allowed).toBe(true);
+      expect(result.status).toBe('ON');
+      expect(result.channels).toEqual(['456', '123']);
     });
   });
 });
