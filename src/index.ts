@@ -814,7 +814,7 @@ async function main() {
     }
 
     if (interaction.commandName === 'skill') {
-      await handleSkill(interaction, agentRunner, config, channelId);
+      await handleSkill(interaction, agentRunner, config, channelId, skills);
       return;
     }
 
@@ -830,7 +830,7 @@ async function main() {
     });
 
     if (matchedSkill) {
-      await handleSkillCommand(interaction, agentRunner, config, channelId, matchedSkill.name);
+      await handleSkillCommand(interaction, agentRunner, config, channelId, matchedSkill);
       return;
     }
   });
@@ -1243,7 +1243,8 @@ async function handleSkill(
   interaction: ChatInputCommandInteraction,
   agentRunner: AgentRunner,
   config: ReturnType<typeof loadConfig>,
-  channelId: string
+  channelId: string,
+  skills: Skill[]
 ) {
   const skillName = interaction.options.getString('name', true);
   const args = interaction.options.getString('args') || '';
@@ -1252,10 +1253,15 @@ async function handleSkill(
   await interaction.deferReply();
 
   try {
+    const matchedSkill = skills.find((s) => s.name === skillName);
+    const runner = matchedSkill?.model
+      ? new ClaudeCodeRunner({ ...config.agent.config, model: matchedSkill.model })
+      : agentRunner;
+
     const prompt = `スキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
     const sessionId = getSession(channelId);
     const appSessionId = ensureSession(channelId, { platform: 'discord' });
-    const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
+    const { result, sessionId: newSessionId } = await runner.run(prompt, {
       skipPermissions,
       sessionId,
       channelId,
@@ -1279,7 +1285,7 @@ async function handleSkillCommand(
   agentRunner: AgentRunner,
   config: ReturnType<typeof loadConfig>,
   channelId: string,
-  skillName: string
+  skill: Skill
 ) {
   const args = interaction.options.getString('args') || '';
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1287,10 +1293,14 @@ async function handleSkillCommand(
   await interaction.deferReply();
 
   try {
-    const prompt = `スキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
+    const runner = skill.model
+      ? new ClaudeCodeRunner({ ...config.agent.config, model: skill.model })
+      : agentRunner;
+
+    const prompt = `スキル「${skill.name}」を実行してください。${args ? `引数: ${args}` : ''}`;
     const sessionId = getSession(channelId);
     const appSessionId = ensureSession(channelId, { platform: 'discord' });
-    const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
+    const { result, sessionId: newSessionId } = await runner.run(prompt, {
       skipPermissions,
       sessionId,
       channelId,

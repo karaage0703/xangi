@@ -6,6 +6,7 @@ export interface Skill {
   name: string;
   description: string;
   path: string;
+  model?: string;
 }
 
 /**
@@ -89,16 +90,22 @@ function parseSkillFile(filePath: string, defaultName: string): Skill | null {
     let description = '';
     let name = defaultName;
 
+    let model: string | undefined;
+
     if (frontmatterMatch) {
       const frontmatter = frontmatterMatch[1];
       const descMatch = frontmatter.match(/description:\s*["']?([^"'\n]+)["']?/);
       const nameMatch = frontmatter.match(/name:\s*["']?([^"'\n]+)["']?/);
+      const modelMatch = frontmatter.match(/model:\s*["']?([^"'\n]+)["']?/);
 
       if (descMatch) {
         description = descMatch[1].trim();
       }
       if (nameMatch) {
         name = nameMatch[1].trim();
+      }
+      if (modelMatch) {
+        model = modelMatch[1].trim();
       }
     }
 
@@ -116,6 +123,7 @@ function parseSkillFile(filePath: string, defaultName: string): Skill | null {
       name,
       description: description || '(説明なし)',
       path: filePath,
+      ...(model && { model }),
     };
   } catch {
     return null;
