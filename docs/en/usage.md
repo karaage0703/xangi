@@ -301,6 +301,7 @@ Runtime settings are saved in `${WORKSPACE_PATH}/settings.json`.
 | --- | --- |
 | `/settings` | Show current settings |
 | `/restart` | Restart the bot |
+| `/autoreply` | Toggle mention-free auto-reply for this channel (no restart needed) |
 
 ### Backend Dynamic Switching
 
@@ -350,6 +351,9 @@ The AI can edit the `.env` file to change settings:
 "Please respond in this channel too"
 → AI edits AUTO_REPLY_CHANNELS → restarts
 ```
+
+You can also use the `/autoreply` command to toggle mention-free auto-reply per channel (no restart needed, persisted to `.env`).
+To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 
 ### System Commands
 
@@ -707,6 +711,8 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention (comma-separated) | - |
 | `DISCORD_STREAMING` | Streaming output | `true` |
 | `DISCORD_SHOW_THINKING` | Show thinking process | `true` |
+| `DISCORD_SHOW_BUTTONS` | Show Stop/New Session buttons | `true` |
+| `ALLOW_AUTOREPLY_COMMAND` | Enable `/autoreply` command | `true` |
 | `INJECT_CHANNEL_TOPIC` | Inject channel topic into prompt | `true` |
 | `INJECT_TIMESTAMP` | Inject current time into prompt | `true` |
 
@@ -720,11 +726,35 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `XANGI_WORKSPACE` | Host-side workspace path (Docker execution) | `./workspace` |
 | `SKIP_PERMISSIONS` | Skip permissions by default | `false` |
 | `TIMEOUT_MS` | Timeout (milliseconds) | `300000` |
+| `ALLOWED_BACKENDS` | Allowed backends for `/backend` switching (comma-separated) | - |
+| `ALLOWED_MODELS` | Allowed models for `/backend` switching (comma-separated) | - |
+| `CHANNEL_OVERRIDES` | Per-channel backend settings (JSON) | - |
 | `PERSISTENT_MODE` | Persistent process mode | `true` |
 | `MAX_PROCESSES` | Maximum concurrent processes | `10` |
 | `IDLE_TIMEOUT_MS` | Auto-terminate idle processes after | `1800000` |
 | `DATA_DIR` | Data storage directory (schedules, sessions, etc.) | `WORKSPACE_PATH/.xangi` |
 | `GH_TOKEN` | GitHub CLI token | - |
+
+### Tool Approval
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `APPROVAL_ENABLED` | Require Discord/Slack approval before dangerous commands | `false` |
+| `APPROVAL_SERVER_PORT` | Approval server listen port | `18181` |
+
+### Web Chat UI
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `WEB_CHAT_ENABLED` | Enable Web Chat UI | `false` |
+| `WEB_CHAT_PORT` | Web Chat UI port | `18888` |
+
+### Scheduler
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SCHEDULER_ENABLED` | Enable scheduler | `true` |
+| `STARTUP_ENABLED` | Enable startup tasks | `true` |
 
 ### GitHub App Authentication (Optional)
 
@@ -740,7 +770,10 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 
 **Docker:** The private key is auto-mounted to `/secrets/github-app.pem`. Set the host-side path in `.env`.
 
-**Security:** If token generation fails, it does NOT fall back to PAT — it errors out. A `🔑App` badge appears in tool display when `gh` runs.
+**Security:**
+- The private key is loaded into memory at startup and is not directly accessible as a file by the AI agent
+- Token generation is performed via the tool-server's HTTP endpoint (`/github-token`), and the AI agent can only obtain short-lived installation tokens (valid for 1 hour)
+- If token generation fails, it does NOT fall back to PAT — it errors out
 
 ### Local LLM (when `AGENT_BACKEND=local-llm`)
 

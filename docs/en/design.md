@@ -200,7 +200,53 @@ AI CLI (Claude Code, etc.)
 **Security:**
 - Secrets such as DISCORD_TOKEN remain inside the xangi process only
 - AI CLIs receive only safe environment variables via the whitelist in `safe-env.ts`
-- In Docker environments, container isolation physically prevents access to tokens
+- GitHub App private keys are loaded into memory at startup; token generation is handled via the tool-server's `/github-token` endpoint (only short-lived tokens are accessible)
+
+### Approval Flow (approval.ts / approval-server.ts)
+
+Detects dangerous commands (e.g., `rm -rf`, `git push --force`) in AI output and requires user approval before execution.
+
+```
+AI CLI outputs command
+  → approval.ts pattern matches (approval-patterns.json)
+  → Dangerous command detected
+  → approval-server.ts sends button-attached message to Discord/Slack
+  → User approves/rejects
+  → Result returned to AI CLI
+```
+
+- Enabled via `APPROVAL_ENABLED=true` (disabled by default)
+- Patterns defined in `src/approval-patterns.json`
+
+### GitHub App Authentication (github-auth.ts)
+
+Generates Installation Tokens (short-lived, 1-hour validity) using a GitHub App private key and wraps the `gh` CLI.
+
+```
+gh command execution (inside AI CLI)
+  → /tmp/xangi-gh-wrapper/gh (wrapper)
+  → curl to tool-server's /github-token endpoint
+  → github-auth.ts generates token using in-memory private key
+  → Injected as GH_TOKEN → exec real gh
+```
+
+- Private key is read from file into memory at startup; file access is no longer needed
+- AI agent (child processes) cannot directly access the private key
+- No fallback to PAT on token generation failure (errors out)
+
+### Trigger Feature (local-llm/triggers.ts)
+
+In Local LLM chat mode, detects magic words in LLM response text and automatically executes scripts.
+
+```
+triggers/
+├── my-trigger/
+│   ├── trigger.yaml    # Defines name, description, handler
+│   └── handler.sh      # Execution script
+```
+
+- Reads `trigger.yaml` from the workspace's `triggers/` directory
+- Executes the handler when trigger words are found in LLM response text
 
 ### Skill System (skills.ts)
 
@@ -286,10 +332,12 @@ Detects and automatically executes special commands output by the AI:
 | Method | Command Example | Action |
 |--------|----------------|--------|
 | CLI tool | `xangi-cmd discord_send --channel ID --message "..."` | Discord operations |
+| CLI tool | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | Button-attached message |
 | CLI tool | `xangi-cmd schedule_add --input "Daily 9:00 ..."` | Schedule operations |
 | CLI tool | `xangi-cmd system_restart` | Process restart |
 | Text parsing | `MEDIA:/path/to/file` | File sending |
 | Text parsing | `\n===\n` | Message splitting |
+| Slash command | `/autoreply` | Toggle mention-free auto-reply per channel |
 
 CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
@@ -361,8 +409,14 @@ src/
 ├── gemini-cli.ts       # Gemini CLI adapter
 ├── web-chat.ts         # Web Chat UI (HTTP server)
 ├── tool-server.ts      # Tool Server (HTTP API for AI CLIs)
-├── approval-server.ts  # Approval server (dangerous command detection & interactive approval)
+├── approval.ts         # Dangerous command detection (pattern matching)
+├── approval-server.ts  # Approval server (Discord/Slack interactive approval flow)
+├── github-auth.ts      # GitHub App authentication (in-memory key management & token generation)
+├── backend-resolver.ts # Per-channel backend resolution
+├── dynamic-runner.ts   # Dynamic runner manager
 ├── safe-env.ts         # Environment variable whitelist
+├── constants.ts        # Application-wide constants
+├── schedule-cli.ts     # Scheduler CLI (legacy, migrated to tool-server)
 ├── cli/                # CLI modules (called from tool-server)
 │   ├── discord-api.ts  #   Discord REST API calls
 │   ├── schedule-cmd.ts #   Schedule operations
@@ -374,13 +428,21 @@ src/
 │   ├── context.ts      #   Workspace context loading
 │   ├── tools.ts        #   Built-in tools (exec/read/web_fetch)
 │   ├── xangi-tools.ts  #   xangi-specific tools (function calling version)
+│   ├── image-utils.ts  #   Image processing utilities (multimodal support)
+│   ├── triggers.ts     #   Trigger feature (magic word detection & execution in chat mode)
 │   └── types.ts        #   Type definitions
 ├── prompts/            # Prompt definitions
+│   ├── index.ts                   # Export aggregation
 │   ├── xangi-commands.ts          # Per-platform assembly
 │   ├── xangi-commands-common.ts   # Common (timeout handling, etc.)
 │   ├── xangi-commands-chat-platform.ts # Chat platform common (MEDIA:/schedule/system)
 │   ├── xangi-commands-discord.ts  # Discord-specific (xangi-cmd discord_*)
-│   └── xangi-commands-slack.ts    # Slack-specific
+│   ├── xangi-commands-slack.ts    # Slack-specific
+│   ├── xangi-commands-web.ts      # Web-specific
+│   ├── chat-system-persistent.ts  # System prompt for persistent process
+│   ├── chat-system-resume.ts      # System prompt for session resume
+│   ├── platform-labels.ts         # Platform display name labels
+│   └── tools-usage.ts             # Tool usage prompt for Local LLM
 ├── scheduler.ts        # Scheduler
 ├── skills.ts           # Skill loader
 ├── config.ts           # Configuration loading

@@ -12,6 +12,7 @@ import { createServer, type Server } from 'http';
 import { discordApi } from './cli/discord-api.js';
 import { scheduleCmd } from './cli/schedule-cmd.js';
 import { systemCmd } from './cli/system-cmd.js';
+import { isGitHubAppEnabled, generateInstallationToken } from './github-auth.js';
 
 let server: Server | null = null;
 
@@ -68,6 +69,27 @@ export function startToolServer(): void {
       const port = typeof addr === 'object' && addr ? addr.port : 0;
       res.writeHead(200);
       res.end(JSON.stringify({ status: 'ok', port }));
+      return;
+    }
+
+    // GitHub App トークン生成エンドポイント
+    if (req.url === '/github-token' && req.method === 'GET') {
+      if (!isGitHubAppEnabled()) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'GitHub App is not configured' }));
+        return;
+      }
+      try {
+        const token = await generateInstallationToken();
+        res.setHeader('Content-Type', 'text/plain');
+        res.writeHead(200);
+        res.end(token);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[tool-server] GitHub token generation failed: ${message}`);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: message }));
+      }
       return;
     }
 

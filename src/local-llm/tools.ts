@@ -6,6 +6,7 @@ import { resolve, join } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler } from './types.js';
 import { getSafeEnv } from '../safe-env.js';
+import { getGitHubEnv } from '../github-auth.js';
 
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
 async function shellExec(
@@ -61,7 +62,7 @@ const execToolHandler: ToolHandler = {
         cwd,
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: getSafeEnv(),
+        env: { ...getSafeEnv(), ...getGitHubEnv(getSafeEnv()) },
       });
       return { success: true, output: [stdout, stderr].filter(Boolean).join('\n').trim() };
     } catch (err) {

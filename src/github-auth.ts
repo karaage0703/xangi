@@ -2,16 +2,20 @@
  * GitHub App認証
  *
  * GitHub App設定があれば gh ラッパースクリプトを自動生成し、
- * エージェントの PATH に差し込む。gh 実行時に毎回トークンを生成。
- * 設定がなければ既存の gh 認証をそのまま使用。
+ * エージェントの PATH に差し込む。gh 実行時にtool-server経由でトークンを取得。
+ *
+ * 秘密鍵は起動時にメモリに読み込み、ファイルシステムには残さない。
+ * トークン生成はtool-serverのHTTPエンドポイント経由で行い、
+ * 子プロセス（Claude Code等）から秘密鍵にアクセスできないようにする。
  */
-import { writeFileSync, mkdirSync, chmodSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { writeFileSync, mkdirSync, chmodSync, existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 interface GitHubAppConfig {
   appId: string;
   installationId: string;
-  privateKeyPath: string;
+  /** メモリ上に保持した秘密鍵の内容 */
+  privateKey: string;
 }
 
 let appConfig: GitHubAppConfig | null = null;
@@ -20,11 +24,11 @@ let appConfig: GitHubAppConfig | null = null;
 const WRAPPER_DIR = '/tmp/xangi-gh-wrapper';
 const WRAPPER_PATH = join(WRAPPER_DIR, 'gh');
 
-// トークン生成スクリプト
-const TOKEN_SCRIPT_PATH = join(WRAPPER_DIR, 'generate-token.cjs');
-
 /**
  * GitHub App設定を初期化しラッパーを生成
+ *
+ * 秘密鍵をファイルから読み込んでメモリに保持する。
+ * ファイル自体は読み込み後にアクセス不要。
  */
 export function initGitHubAuth(): void {
   const appId = process.env.GITHUB_APP_ID;
@@ -35,8 +39,19 @@ export function initGitHubAuth(): void {
     // Docker環境ではマウント先の固定パスを使用
     const dockerPemPath = '/secrets/github-app.pem';
     const resolvedKeyPath = existsSync(dockerPemPath) ? dockerPemPath : privateKeyPath;
-    appConfig = { appId, installationId, privateKeyPath: resolvedKeyPath };
-    generateWrapper(appConfig);
+
+    // 秘密鍵をメモリに読み込み
+    let privateKey: string;
+    try {
+      privateKey = readFileSync(resolvedKeyPath, 'utf-8');
+    } catch (err) {
+      console.error(`[github-auth] Failed to read private key from ${resolvedKeyPath}:`, err);
+      console.log('[github-auth] Falling back to default gh authentication');
+      return;
+    }
+
+    appConfig = { appId, installationId, privateKey };
+    generateWrapper();
     console.log(`[github-auth] GitHub App mode enabled (App ID: ${appId})`);
   } else {
     console.log('[github-auth] Using default gh authentication');
@@ -73,36 +88,52 @@ export function getGitHubEnv(
 }
 
 /**
- * ラッパースクリプトとトークン生成スクリプトを生成
+ * GitHub App Installation Tokenを生成
+ *
+ * tool-serverから呼ばれる。メモリ上の秘密鍵を使って
+ * 短寿命（1時間）のInstallation Tokenを生成する。
  */
-function generateWrapper(config: GitHubAppConfig): void {
+export async function generateInstallationToken(): Promise<string> {
+  if (!appConfig) {
+    throw new Error('GitHub App is not configured');
+  }
+
+  // 動的import（パッケージがインストールされていない環境でもビルドが通るように）
+  const { createAppAuth } = (await import('@octokit/auth-app' as string)) as {
+    createAppAuth: (...args: unknown[]) => { (opts: { type: string }): Promise<{ token: string }> };
+  };
+
+  const auth = createAppAuth({
+    appId: appConfig.appId,
+    privateKey: appConfig.privateKey,
+    installationId: parseInt(appConfig.installationId, 10),
+  });
+
+  const { token } = await auth({ type: 'installation' });
+  return token;
+}
+
+/**
+ * ghラッパースクリプトを生成
+ *
+ * tool-serverのHTTPエンドポイント経由でトークンを取得するラッパー。
+ * 秘密鍵へのアクセスは不要。
+ */
+function generateWrapper(): void {
   mkdirSync(WRAPPER_DIR, { recursive: true });
 
-  // Node.js トークン生成スクリプト（CommonJS形式、@octokit/auth-app使用）
-  const tokenScript = `const { createAppAuth } = require('@octokit/auth-app');
-const { readFileSync } = require('fs');
-(async () => {
-  const auth = createAppAuth({
-    appId: '${config.appId}',
-    privateKey: readFileSync('${config.privateKeyPath}', 'utf-8'),
-    installationId: ${config.installationId},
-  });
-  const { token } = await auth({ type: 'installation' });
-  process.stdout.write(token);
-})();
-`;
-  writeFileSync(TOKEN_SCRIPT_PATH, tokenScript, 'utf-8');
-
   // gh ラッパーシェルスクリプト
-  // CJS形式なのでNODE_PATHでnode_modulesを参照
-  const xangiDir = join(dirname(new URL(import.meta.url).pathname), '..');
+  // XANGI_TOOL_SERVER経由でトークンを取得（秘密鍵不要）
   const wrapper = `#!/bin/bash
-export GH_TOKEN="$(NODE_PATH="${xangiDir}/node_modules" node "${TOKEN_SCRIPT_PATH}")"
-if [ -z "$GH_TOKEN" ]; then
-  echo "Error: Failed to generate GitHub App token" >&2
+if [ -z "$XANGI_TOOL_SERVER" ]; then
+  echo "Error: XANGI_TOOL_SERVER is not set" >&2
   exit 1
 fi
-echo "[github-auth] Using GitHub App token (App ID: ${config.appId})" >&2
+export GH_TOKEN="$(curl -sf "$XANGI_TOOL_SERVER/github-token")"
+if [ -z "$GH_TOKEN" ]; then
+  echo "Error: Failed to get GitHub App token from tool-server" >&2
+  exit 1
+fi
 exec "$(which -a gh | grep -v "${WRAPPER_DIR}" | head -1)" "$@"
 `;
   writeFileSync(WRAPPER_PATH, wrapper, 'utf-8');

@@ -613,9 +613,6 @@ export class LocalLlmRunner implements AgentRunner {
             continue;
           }
 
-          // Discordにツール実行状況を通知
-          callbacks.onToolUse?.(toolCall.name, toolCall.arguments);
-
           const result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
           const rawToolOutput = result.success
             ? result.output

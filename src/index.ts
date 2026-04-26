@@ -29,6 +29,7 @@ import {
   buildPromptWithAttachments,
 } from './file-utils.js';
 import { initSettings, loadSettings, saveSettings, formatSettings } from './settings.js';
+import { readFileSync, writeFileSync } from 'fs';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH, STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import {
   Scheduler,
@@ -238,7 +239,7 @@ async function main() {
     startWebChat({ agentRunner });
   }
 
-  // GitHub認証を初期化
+  // GitHub認証を初期化（秘密鍵をメモリに読み込む）
   const { initGitHubAuth } = await import('./github-auth.js');
   initGitHubAuth();
 
@@ -344,6 +345,16 @@ async function main() {
       )
       .toJSON(),
   ];
+
+  // ALLOW_AUTOREPLY_COMMAND=true の場合のみコマンドを登録
+  if (config.discord.allowAutoreplyCommand) {
+    commands.push(
+      new SlashCommandBuilder()
+        .setName('autoreply')
+        .setDescription('このチャンネルのメンションなし応答を切り替え')
+        .toJSON()
+    );
+  }
 
   // 各スキルを個別のスラッシュコマンドとして追加
   for (const skill of skills) {
@@ -783,6 +794,44 @@ async function main() {
         }
         await interaction.editReply(errorDetail).catch(() => {});
       }
+      return;
+    }
+
+    if (interaction.commandName === 'autoreply') {
+      if (!config.discord.allowAutoreplyCommand) {
+        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+        return;
+      }
+      const chId = interaction.channelId;
+      const channels = config.discord.autoReplyChannels ?? [];
+      const idx = channels.indexOf(chId);
+      const isCurrentlyOn = idx !== -1;
+
+      if (isCurrentlyOn) {
+        // OFF: メモリから削除
+        channels.splice(idx, 1);
+      } else {
+        // ON: メモリに追加
+        channels.push(chId);
+      }
+      config.discord.autoReplyChannels = channels;
+
+      // .env に永続化
+      try {
+        const envPath = join(process.cwd(), '.env');
+        const envContent = readFileSync(envPath, 'utf-8');
+        const newValue = channels.join(',');
+        const updated = envContent.replace(
+          /^AUTO_REPLY_CHANNELS=.*$/m,
+          `AUTO_REPLY_CHANNELS=${newValue}`
+        );
+        writeFileSync(envPath, updated, 'utf-8');
+      } catch (e) {
+        console.error('[xangi] Failed to persist AUTO_REPLY_CHANNELS to .env:', e);
+      }
+
+      const status = isCurrentlyOn ? '❌ OFF' : '✅ ON';
+      await interaction.reply(`メンションなし応答: ${status} (<#${chId}>)`);
       return;
     }
 

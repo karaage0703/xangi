@@ -29,6 +29,7 @@ export interface Config {
     injectChannelTopic?: boolean;
     injectTimestamp?: boolean;
     showButtons?: boolean;
+    allowAutoreplyCommand?: boolean;
   };
   slack: {
     enabled: boolean;
@@ -151,6 +152,7 @@ export function loadConfig(): Config {
       injectChannelTopic: process.env.INJECT_CHANNEL_TOPIC !== 'false', // デフォルトON
       injectTimestamp: process.env.INJECT_TIMESTAMP !== 'false', // デフォルトON
       showButtons: process.env.DISCORD_SHOW_BUTTONS !== 'false', // デフォルトON
+      allowAutoreplyCommand: process.env.ALLOW_AUTOREPLY_COMMAND !== 'false', // デフォルトON
     },
     slack: {
       enabled: !!slackBotToken && !!slackAppToken,
