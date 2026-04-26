@@ -20,7 +20,10 @@ logs/
 .DS_Store
 
 # Claude Code
-.claude/
+# チーム共有ファイル（CLAUDE.md / settings.json / agents/ / commands/ / rules/）はコミット
+# 個人ローカル設定とクレデンシャルのみ無視する
+.claude/settings.local.json
+.claude/.credentials.json
 
 # Workspace
 workspace/*
