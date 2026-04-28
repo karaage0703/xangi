@@ -67,7 +67,6 @@ Injection format: `[Current time: 2026/3/8 12:34:56]`
 | Command | Description |
 | --- | --- |
 | `/new`, `!new`, `new` | Start a new session |
-| `/clear`, `!clear`, `clear` | Clear session history |
 
 ### Discord Button Controls
 
