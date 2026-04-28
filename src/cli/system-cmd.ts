@@ -1,7 +1,7 @@
 /**
  * システムコマンドCLIモジュール
  *
- * 再起動・設定変更をファイル経由で実行。
+ * 設定変更はファイル経由、再起動は xangi本体プロセスへSIGTERM送信で行う。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -10,6 +10,11 @@ interface Settings {
   autoRestart?: boolean;
   [key: string]: unknown;
 }
+
+// src/settings.ts の DEFAULT_SETTINGS と揃える
+const DEFAULT_SETTINGS: Settings = {
+  autoRestart: true,
+};
 
 function getSettingsFilePath(): string {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
@@ -22,11 +27,12 @@ function getSettingsFilePath(): string {
 
 function loadSettings(): Settings {
   const filePath = getSettingsFilePath();
-  if (!existsSync(filePath)) return {};
+  if (!existsSync(filePath)) return { ...DEFAULT_SETTINGS };
   try {
-    return JSON.parse(readFileSync(filePath, 'utf-8')) as Settings;
+    const parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as Settings;
+    return { ...DEFAULT_SETTINGS, ...parsed };
   } catch {
-    return {};
+    return { ...DEFAULT_SETTINGS };
   }
 }
 
@@ -41,10 +47,34 @@ async function systemRestart(): Promise<string> {
     return '⚠️ 自動再起動が無効です。先に system_settings --key autoRestart --value true で有効にしてください。';
   }
 
-  // 再起動トリガーファイルを作成（xangiプロセスが監視して再起動）
+  // PIDファイルを読んで xangi 本体プロセスに SIGTERM を送る
+  // SIGTERM ハンドラ内で graceful shutdown → process.exit(0) → pm2/Docker 等が再起動
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
-  writeFileSync(join(dataDir, 'restart-trigger'), Date.now().toString());
+  const pidFilePath = join(dataDir, 'xangi.pid');
+
+  if (!existsSync(pidFilePath)) {
+    return `⚠️ PIDファイルが見つかりません (${pidFilePath})。xangi本体が起動しているか確認してください。`;
+  }
+
+  const pidStr = readFileSync(pidFilePath, 'utf-8').trim();
+  const pid = parseInt(pidStr, 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return `⚠️ PIDファイルの内容が不正です: "${pidStr}"`;
+  }
+
+  // process.kill(pid, 0) はシグナルを送らずに対象プロセスの存在のみ確認
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return `⚠️ PID ${pid} のプロセスが存在しません（stale PIDファイル）。xangi本体を起動してください。`;
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    return `⚠️ PID ${pid} へのSIGTERM送信に失敗しました: ${err instanceof Error ? err.message : String(err)}`;
+  }
 
   return '🔄 再起動をリクエストしました';
 }

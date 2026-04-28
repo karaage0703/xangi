@@ -29,7 +29,7 @@ import {
   buildPromptWithAttachments,
 } from './file-utils.js';
 import { initSettings, loadSettings, saveSettings, formatSettings } from './settings.js';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH, STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import {
   Scheduler,
@@ -230,6 +230,14 @@ async function main() {
   // スケジューラを初期化（ワークスペースの .xangi を使用）
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const scheduler = new Scheduler(dataDir);
+
+  // PIDファイル書き出し（xangi-cmd system_restart からシグナルで再起動するため）
+  const pidFilePath = join(dataDir, 'xangi.pid');
+  try {
+    writeFileSync(pidFilePath, String(process.pid));
+  } catch (err) {
+    console.warn(`[xangi] Failed to write PID file: ${err}`);
+  }
 
   // セッション永続化を初期化
   initSessions(dataDir);
@@ -1244,6 +1252,11 @@ async function main() {
   const shutdown = () => {
     console.log('[xangi] Shutting down scheduler...');
     scheduler.stopAll();
+    try {
+      unlinkSync(pidFilePath);
+    } catch {
+      // PIDファイルが既に消えていても問題ない
+    }
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

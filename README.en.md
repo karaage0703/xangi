@@ -93,7 +93,6 @@ pm2 logs xangi     # View logs
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a new session |
-| `/clear` | Clear session history |
 | `/stop` | Stop running task |
 | `/settings` | Show current settings |
 | `xangi-cmd schedule_*` | Scheduler (cron / reminders) |

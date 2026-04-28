@@ -350,6 +350,7 @@ Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be ac
 | Runtime settings | `${WORKSPACE}/settings.json` | JSON |
 | Sessions | `${DATA_DIR}/sessions.json` | JSON (appSessionId-based, activeByContext + sessions) |
 | Transcripts | `logs/sessions/{appSessionId}.jsonl` | JSONL (per-session conversation logs) |
+| Process PID | `${DATA_DIR}/xangi.pid` | Text (used by `xangi-cmd system_restart` to send SIGTERM; removed on shutdown) |
 
 ### Session Management
 
