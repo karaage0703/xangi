@@ -85,12 +85,14 @@ if [ -n "$_CHANNEL_ID" ]; then
 fi
 
 # tool-serverにリクエスト送信
-RESPONSE=$(curl -sf "$TOOL_SERVER/api/execute" \
+# -f は使わない: 4xx/5xx でも body を読めるようにする（サーバー側エラー詳細を表示するため）
+RESPONSE=$(curl -s "$TOOL_SERVER/api/execute" \
   -H 'Content-Type: application/json' \
   -d "{\"command\":\"$COMMAND\",\"flags\":$FLAGS,\"context\":$CONTEXT}" 2>&1)
 
 CURL_EXIT=$?
 
+# curl 自体が失敗した場合のみ「接続できません」を表示
 if [ $CURL_EXIT -ne 0 ]; then
   echo "Error: tool-server に接続できません ($TOOL_SERVER)" >&2
   echo "XANGI_TOOL_SERVER の値と xangiプロセスの起動状態を確認してください" >&2
@@ -99,11 +101,18 @@ fi
 
 # JSONレスポンスからresultを抽出（jqがあれば使う、なければそのまま出力）
 if command -v jq &>/dev/null; then
-  OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+  OK=$(echo "$RESPONSE" | jq -r '.ok // false' 2>/dev/null)
   if [ "$OK" = "true" ]; then
     echo "$RESPONSE" | jq -r '.result'
   else
-    echo "$RESPONSE" | jq -r '.error // "Unknown error"' >&2
+    # サーバー側のエラーメッセージを表示（HTTP 4xx/5xx で返ってきたJSONも読める）
+    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null)
+    if [ -n "$ERROR_MSG" ]; then
+      echo "Error: $ERROR_MSG" >&2
+    else
+      # JSONとしてパースできない場合は生のレスポンスを出す
+      echo "Error: 予期しないレスポンス: $RESPONSE" >&2
+    fi
     exit 1
   fi
 else

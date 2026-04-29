@@ -133,10 +133,15 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     console.log('[persistent-runner] Starting persistent process...');
 
+    const safeEnv = getSafeEnv();
+    const childEnv: NodeJS.ProcessEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+    if (this.channelId) {
+      childEnv.XANGI_CHANNEL_ID = this.channelId;
+    }
     this.process = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: this.workdir,
-      env: { ...getSafeEnv(), ...getGitHubEnv(getSafeEnv()) },
+      env: childEnv,
     });
     this.processAlive = true;
 
