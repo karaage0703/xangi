@@ -395,4 +395,54 @@ describe('PersistentRunner', () => {
       // ignore
     }
   });
+
+  // リグレッションテスト: PersistentRunner が channelId を XANGI_CHANNEL_ID として
+  // claude 子プロセスに注入することを検証。これが漏れると常駐セッション内から
+  // xangi-cmd を呼んだ時に context.channelId が空になり、tool-server で
+  // 「channel未指定」エラーが返って content-digest 等の投稿確認が失敗する。
+  it('should inject XANGI_CHANNEL_ID into spawned process when channelId is provided', async () => {
+    const { spawn } = await import('child_process');
+    (spawn as unknown as { mockClear: () => void }).mockClear();
+
+    const channelRunner = new PersistentRunner({
+      workdir: '/test/workdir',
+      skipPermissions: true,
+      channelId: 'test-channel-456',
+    });
+
+    // run() でプロセス起動をトリガー（レスポンスは待たない）
+    channelRunner.run('test prompt').catch(() => {
+      // shutdown によるエラーは無視
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(spawn).toHaveBeenCalled();
+    const callArgs = (spawn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const spawnOptions = callArgs[2] as { env: Record<string, string | undefined> };
+    expect(spawnOptions.env.XANGI_CHANNEL_ID).toBe('test-channel-456');
+
+    try {
+      channelRunner.shutdown();
+    } catch {
+      // ignore
+    }
+  });
+
+  it('should NOT inject XANGI_CHANNEL_ID when channelId is not provided', async () => {
+    const { spawn } = await import('child_process');
+    (spawn as unknown as { mockClear: () => void }).mockClear();
+
+    // 既定の runner は constructor に channelId なし
+    runner.run('test prompt').catch(() => {
+      // ignore
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(spawn).toHaveBeenCalled();
+    const callArgs = (spawn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const spawnOptions = callArgs[2] as { env: Record<string, string | undefined> };
+    expect(spawnOptions.env.XANGI_CHANNEL_ID).toBeUndefined();
+  });
 });

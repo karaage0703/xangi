@@ -153,10 +153,14 @@ export class GeminiRunner implements AgentRunner {
   ): Promise<{ stdout: string; sessionId: string }> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv: NodeJS.ProcessEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('gemini', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 
@@ -276,10 +280,14 @@ export class GeminiRunner implements AgentRunner {
   ): Promise<RunResult> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv: NodeJS.ProcessEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('gemini', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 

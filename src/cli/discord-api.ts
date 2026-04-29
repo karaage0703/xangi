@@ -5,6 +5,8 @@
  * REST APIで直接Discord操作を行う。
  */
 
+import { ValidationError } from '../errors.js';
+
 const API_BASE = 'https://discord.com/api/v10';
 const MAX_MESSAGE_LENGTH = 2000;
 
@@ -73,7 +75,7 @@ function resolveHistoryChannelId(
   const currentChannelId = context?.channelId ?? process.env.XANGI_CHANNEL_ID;
   if (currentChannelId) return currentChannelId;
 
-  throw new Error(
+  throw new ValidationError(
     [
       'discord_history: channel が未指定です。',
       'xangi上で実行中なら現在のチャンネルIDを自動補完します。',
@@ -135,8 +137,8 @@ async function discordHistory(
 async function discordSend(flags: Record<string, string>): Promise<string> {
   const channelId = flags['channel'];
   const message = flags['message'];
-  if (!channelId) throw new Error('--channel is required');
-  if (!message) throw new Error('--message is required');
+  if (!channelId) throw new ValidationError('--channel is required');
+  if (!message) throw new ValidationError('--message is required');
 
   // 2000文字制限に合わせて分割送信
   const chunks: string[] = [];
@@ -159,7 +161,7 @@ async function discordSend(flags: Record<string, string>): Promise<string> {
 
 async function discordChannels(flags: Record<string, string>): Promise<string> {
   const guildId = flags['guild'];
-  if (!guildId) throw new Error('--guild is required');
+  if (!guildId) throw new ValidationError('--guild is required');
 
   const channels = (await discordFetch(`/guilds/${guildId}/channels`)) as DiscordChannel[];
 
@@ -175,8 +177,8 @@ async function discordChannels(flags: Record<string, string>): Promise<string> {
 async function discordSearch(flags: Record<string, string>): Promise<string> {
   const channelId = flags['channel'];
   const keyword = flags['keyword'];
-  if (!channelId) throw new Error('--channel is required');
-  if (!keyword) throw new Error('--keyword is required');
+  if (!channelId) throw new ValidationError('--channel is required');
+  if (!keyword) throw new ValidationError('--keyword is required');
 
   // Discord REST APIにはメッセージ検索がないため、最新100件を取得してフィルタ
   const messages = (await discordFetch(
@@ -206,9 +208,9 @@ async function discordEdit(flags: Record<string, string>): Promise<string> {
   const channelId = flags['channel'];
   const messageId = flags['message-id'];
   const content = flags['content'];
-  if (!channelId) throw new Error('--channel is required');
-  if (!messageId) throw new Error('--message-id is required');
-  if (!content) throw new Error('--content is required');
+  if (!channelId) throw new ValidationError('--channel is required');
+  if (!messageId) throw new ValidationError('--message-id is required');
+  if (!content) throw new ValidationError('--content is required');
 
   // 自分のメッセージか確認
   const botId = getBotId();
@@ -232,8 +234,8 @@ async function discordEdit(flags: Record<string, string>): Promise<string> {
 async function discordDelete(flags: Record<string, string>): Promise<string> {
   const channelId = flags['channel'];
   const messageId = flags['message-id'];
-  if (!channelId) throw new Error('--channel is required');
-  if (!messageId) throw new Error('--message-id is required');
+  if (!channelId) throw new ValidationError('--channel is required');
+  if (!messageId) throw new ValidationError('--message-id is required');
 
   // 自分のメッセージか確認
   const botId = getBotId();
@@ -256,14 +258,14 @@ async function discordDelete(flags: Record<string, string>): Promise<string> {
 async function mediaSend(flags: Record<string, string>): Promise<string> {
   const channelId = flags['channel'];
   const filePath = flags['file'];
-  if (!channelId) throw new Error('--channel is required');
-  if (!filePath) throw new Error('--file is required');
+  if (!channelId) throw new ValidationError('--channel is required');
+  if (!filePath) throw new ValidationError('--file is required');
 
   const { readFileSync, existsSync } = await import('fs');
   const { basename } = await import('path');
 
   if (!existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
+    throw new ValidationError(`File not found: ${filePath}`);
   }
 
   const fileName = basename(filePath);
@@ -333,6 +335,6 @@ export async function discordApi(
     case 'media_send':
       return mediaSend(flags);
     default:
-      throw new Error(`Unknown discord command: ${command}`);
+      throw new ValidationError(`Unknown discord command: ${command}`);
   }
 }

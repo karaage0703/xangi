@@ -13,6 +13,7 @@ import { discordApi } from './cli/discord-api.js';
 import { scheduleCmd } from './cli/schedule-cmd.js';
 import { systemCmd } from './cli/system-cmd.js';
 import { isGitHubAppEnabled, generateInstallationToken } from './github-auth.js';
+import { ValidationError } from './errors.js';
 
 let server: Server | null = null;
 
@@ -52,7 +53,7 @@ async function executeCommand(
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
   } else {
-    throw new Error(`Unknown command: ${command}`);
+    throw new ValidationError(`Unknown command: ${command}`);
   }
 }
 
@@ -112,8 +113,14 @@ export function startToolServer(): void {
         res.end(JSON.stringify({ ok: true, result }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[tool-server] Error: ${message}`);
-        res.writeHead(500);
+        // ValidationError はクライアント入力の問題なので 400、それ以外は 500。
+        // name ベースで判定する（vitest 等で module が二重ロードされても安全）
+        const isValidation =
+          err instanceof ValidationError ||
+          (err instanceof Error && err.name === 'ValidationError');
+        const status = isValidation ? 400 : 500;
+        console.error(`[tool-server] Error (${status}): ${message}`);
+        res.writeHead(status);
         res.end(JSON.stringify({ ok: false, error: message }));
       }
       return;
