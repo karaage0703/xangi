@@ -95,6 +95,13 @@ export function formatLlmError(err: unknown): string {
 export class LocalLlmRunner implements AgentRunner {
   private readonly llm: ILLMClient;
   /**
+   * channel-specific dev client (built-in tools 解禁) — `CLAUDE_DEV_CHANNEL_IDS` env で
+   * 指定された channelId からの request のみこちらにルーティングする。null = dev mode 無効。
+   */
+  private readonly llmDev: ILLMClient | null;
+  /** dev client にルーティングする channelId 集合 */
+  private readonly devChannelIds: Set<string>;
+  /**
    * - 'claude' (default): claude -p 司令塔。built-in tools 不可、ACTION マーカーで委譲
    * - 'claude_dev': claude -p + built-in tools (Read/Write/Bash) 許可。Phase 2 self-mod 用
    * - 'hayabusa': Gemma4 26B Q4 (旧経路、fallback)
@@ -189,9 +196,41 @@ export class LocalLlmRunner implements AgentRunner {
       console.log(
         `[local-llm] LLM: claude -p (backend: ${this.backend}, cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}${allowedTools ? `, allowedTools: ${allowedTools.join(',')}` : ''})`
       );
+      // CLAUDE_DEV_CHANNEL_IDS が指定されており、default が claude (非 dev) なら、
+      // 該当 channel 専用の dev クライアントを別建てで用意する。
+      // (default が claude_dev なら全 channel が既に dev なので不要)
+      const devIdsEnv = (process.env.CLAUDE_DEV_CHANNEL_IDS || '').trim();
+      this.devChannelIds = devIdsEnv
+        ? new Set(
+            devIdsEnv
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          )
+        : new Set();
+      if (this.backend === 'claude' && this.devChannelIds.size > 0) {
+        const devTools = (process.env.CLAUDE_ALLOWED_TOOLS || 'Read,Edit,Write,Bash,Glob,Grep')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        this.llmDev = new ClaudeCliClient({
+          cwd: claudeCwd,
+          timeoutMs,
+          sessionStore: this.claudeSessionStore,
+          logger: (l) => console.log('[claude-cli/dev]', l),
+          allowedTools: devTools,
+        });
+        console.log(
+          `[local-llm] dev client armed for channels: ${[...this.devChannelIds].join(',')} (allowedTools: ${devTools.join(',')})`
+        );
+      } else {
+        this.llmDev = null;
+      }
     } else {
       this.claudeSessionStore = null;
       this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx);
+      this.llmDev = null;
+      this.devChannelIds = new Set();
     }
 
     // トリガーを読み込み
@@ -236,6 +275,17 @@ export class LocalLlmRunner implements AgentRunner {
     console.log(
       `[local-llm] LLM: ${baseUrl} (model: ${model}, thinking: ${thinking}, features: ${features})`
     );
+  }
+
+  /**
+   * channelId に応じて default または dev client を返す。
+   * dev set にない channel は default (built-in tools 不可)。
+   */
+  private pickLlm(channelId?: string): ILLMClient {
+    if (this.llmDev && channelId && this.devChannelIds.has(channelId)) {
+      return this.llmDev;
+    }
+    return this.llm;
   }
 
   /**
@@ -499,7 +549,7 @@ export class LocalLlmRunner implements AgentRunner {
     if (!this.enableTools) {
       let response;
       try {
-        response = await this.llm.chat(session.messages, {
+        response = await this.pickLlm(channelId).chat(session.messages, {
           systemPrompt,
           signal: abortController.signal,
           channelId,
@@ -522,7 +572,7 @@ export class LocalLlmRunner implements AgentRunner {
     while (toolRounds <= MAX_TOOL_ROUNDS) {
       let response;
       try {
-        response = await this.llm.chat(session.messages, {
+        response = await this.pickLlm(channelId).chat(session.messages, {
           systemPrompt,
           tools: llmTools.length > 0 ? llmTools : undefined,
           signal: abortController.signal,
@@ -640,7 +690,7 @@ export class LocalLlmRunner implements AgentRunner {
       while (toolRounds < MAX_TOOL_ROUNDS) {
         let response;
         try {
-          response = await this.llm.chat(session.messages, {
+          response = await this.pickLlm(channelId).chat(session.messages, {
             systemPrompt,
             tools: llmTools.length > 0 ? llmTools : undefined,
             signal: abortController.signal,
@@ -718,7 +768,7 @@ export class LocalLlmRunner implements AgentRunner {
     // 最終応答をストリーミングで取得
     let fullText = '';
     try {
-      for await (const chunk of this.llm.chatStream(session.messages, {
+      for await (const chunk of this.pickLlm(channelId).chatStream(session.messages, {
         systemPrompt,
         signal: abortController.signal,
         channelId,
