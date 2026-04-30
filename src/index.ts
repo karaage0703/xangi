@@ -1244,6 +1244,8 @@ const TOPIC_CHANNELS: Record<string, string> = {
   sns: '1492839607924953259',
   'dev-dmatkc': '1492839921335930940',
 };
+const GENERAL_TEXT_CHANNEL_ID = '1492792411204882535';
+const HANDOFF_EMOJI = '🧭';
 
 function isClaudeDevChannel(channelId: string): boolean {
   return (process.env.CLAUDE_DEV_CHANNEL_IDS || '')
@@ -2916,6 +2918,48 @@ async function main() {
     }
 
     const emojiName = reaction.emoji.name || '';
+    if (emojiName === HANDOFF_EMOJI) {
+      const message = reaction.message;
+      const ref = message.reference;
+      if (!ref?.messageId) return;
+
+      try {
+        const refChannelId = ref.channelId || message.channel.id;
+        const refChannel = await message.client.channels.fetch(refChannelId).catch(() => null);
+        if (!refChannel || !('messages' in refChannel)) return;
+
+        const original = await (refChannel as any).messages.fetch(ref.messageId).catch(() => null);
+        if (!original) return;
+
+        const topicResult = classifyTopic(String(original.content || ''), String(message.content || ''));
+        if (!topicResult.channelId || topicResult.topic === 'general') {
+          await message.reply('⚠️ 専用チャンネルへの移動先を特定できませんでした。').catch(() => {});
+          return;
+        }
+        if (message.channel.id !== GENERAL_TEXT_CHANNEL_ID) {
+          await message.reply(`🧭 この移動は #一般 から使う想定です。`).catch(() => {});
+          return;
+        }
+
+        const targetChannel = await message.client.channels.fetch(topicResult.channelId).catch(() => null);
+        if (!targetChannel || !('send' in targetChannel)) return;
+
+        const movedText = [
+          `**[handoff:${topicResult.topic}]** <#${message.channel.id}> から移動`,
+          `> ${String(original.content || '').slice(0, 220)}`,
+          '',
+          String(message.content || '').slice(0, 1200),
+        ].join('\n');
+        await (targetChannel as any)
+          .send(movedText)
+          .catch((e: any) => console.error('[xangi] handoff route error:', e));
+        await message.reply(`🧭 <#${topicResult.channelId}> に移しました。`).catch(() => {});
+      } catch (err) {
+        console.error('[xangi] handoff reaction error:', err);
+        await message.reply('⚠️ 移動処理に失敗しました。').catch(() => {});
+      }
+      return;
+    }
     const target = PUBLISH_EMOJI_TO_TARGET[emojiName];
     if (!target) return;
 
@@ -4459,6 +4503,18 @@ async function processPrompt(
       content: firstChunks[0] || '✅',
       ...(showButtons && { components: [createCompletedButtons()] }),
     });
+    try {
+      const topicResult = classifyTopic(prompt, result);
+      if (
+        message.channel.id === GENERAL_TEXT_CHANNEL_ID &&
+        topicResult.channelId &&
+        topicResult.topic !== 'general'
+      ) {
+        await replyMessage!.react(HANDOFF_EMOJI).catch(() => {});
+      }
+    } catch (err) {
+      console.error('[xangi] handoff reaction attach error:', err);
+    }
     if ('send' in message.channel) {
       const channel = message.channel as unknown as {
         send: (content: string) => Promise<unknown>;
