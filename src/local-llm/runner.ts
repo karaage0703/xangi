@@ -4,13 +4,17 @@
  * Ollama等のOpenAI互換APIを直接叩いてエージェントループを実行する。
  * 外部HTTPサーバー不要。
  */
+import * as os from 'os';
+import * as path from 'path';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import type { AgentConfig } from '../config.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
-import { LLMClient } from './llm-client.js';
+import { LLMClient, type ILLMClient } from './llm-client.js';
+import { ClaudeCliClient } from './claude-client.js';
+import { ClaudeSessionStore } from './claude-session-store.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
 import { loadWorkspaceContext } from './context.js';
-import { getIzunaContext } from './context-injector.js';
+import { getIzunaContext, getRecentConversation } from './context-injector.js';
 import { getBuiltinTools, toLLMTools, executeTool } from './tools.js';
 import { loadSkills } from '../skills.js';
 import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
@@ -117,7 +121,9 @@ function buildTriggerFeedbackMessage(triggerName: string, triggerResult: string)
 }
 
 export class LocalLlmRunner implements AgentRunner {
-  private readonly llm: LLMClient;
+  private readonly llm: ILLMClient;
+  /** 'claude' | 'hayabusa' — buildSystemPrompt の出力量制御等に使う */
+  readonly backend: 'claude' | 'hayabusa';
   private readonly workdir: string;
   private readonly sessions = new Map<string, Session>();
   private readonly sessionTtlMs = 60 * 60 * 1000; // 1時間
@@ -126,6 +132,8 @@ export class LocalLlmRunner implements AgentRunner {
   readonly liteMode: boolean;
   /** liteモード用トリガー定義 */
   private triggers: Trigger[];
+  /** claude バックエンド時の channel別 session_id store (諦めモード reset 用に直アクセス) */
+  private readonly claudeSessionStore: ClaudeSessionStore | null;
 
   constructor(config: AgentConfig) {
     const baseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
@@ -143,18 +151,54 @@ export class LocalLlmRunner implements AgentRunner {
     const modeEnv = (process.env.LOCAL_LLM_MODE || 'agent').toLowerCase();
     this.liteMode = modeEnv === 'lite';
 
-    this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx);
+    // LLM_BACKEND: "claude" (default) or "hayabusa"
+    const backendEnv = (process.env.LLM_BACKEND || 'claude').toLowerCase();
+    this.backend = backendEnv === 'hayabusa' ? 'hayabusa' : 'claude';
+
     this.workdir = config.workdir || process.cwd();
+
+    if (this.backend === 'claude') {
+      const claudeCwd =
+        process.env.CLAUDE_CWD || path.join(os.homedir(), 'projects', 'izuna-workspace');
+      const timeoutMs = process.env.CLAUDE_TIMEOUT_MS
+        ? parseInt(process.env.CLAUDE_TIMEOUT_MS, 10)
+        : undefined;
+      this.claudeSessionStore = new ClaudeSessionStore();
+      this.llm = new ClaudeCliClient({
+        cwd: claudeCwd,
+        timeoutMs,
+        sessionStore: this.claudeSessionStore,
+        logger: (l) => console.log('[claude-cli]', l),
+      });
+      console.log(
+        `[local-llm] LLM: claude -p (cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}, mode: ${this.liteMode ? 'lite' : 'agent'})`
+      );
+    } else {
+      this.claudeSessionStore = null;
+      this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx);
+      console.log(
+        `[local-llm] LLM: ${baseUrl} (model: ${model}, thinking: ${thinking}, mode: ${this.liteMode ? 'lite' : 'agent'})`
+      );
+    }
 
     // liteモード用トリガーを読み込み
     this.triggers = this.liteMode ? loadTriggers(this.workdir) : [];
 
-    console.log(
-      `[local-llm] LLM: ${baseUrl} (model: ${model}, thinking: ${thinking}, mode: ${this.liteMode ? 'lite' : 'agent'})`
-    );
+    // 既存ログ出力を維持(backend 別に上で出している)
+    console.log(`[local-llm] backend: ${this.backend}`);
     if (this.triggers.length > 0) {
       console.log(`[local-llm] Triggers loaded: ${this.triggers.map((t) => t.trigger).join(', ')}`);
     }
+  }
+
+  /**
+   * claude session の channel エントリを消す (諦めモード対策)。
+   * 次の同 channel メッセージは新規 session で開始される。
+   * hayabusa バックエンドでは no-op。
+   */
+  async clearChannelSession(channelId: string): Promise<void> {
+    if (!this.claudeSessionStore || !channelId) return;
+    await this.claudeSessionStore.clear(channelId);
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
@@ -162,7 +206,7 @@ export class LocalLlmRunner implements AgentRunner {
     this.cleanupSessions();
 
     const session = this.getOrCreateSession(sessionId);
-    const systemPrompt = await this.buildSystemPrompt();
+    const systemPrompt = await this.buildSystemPrompt(options?.channelAgent, options?.channelId);
     const tools = this.liteMode ? [] : getBuiltinTools();
     const llmTools = this.liteMode ? [] : toLLMTools(tools);
 
@@ -265,7 +309,7 @@ export class LocalLlmRunner implements AgentRunner {
     this.cleanupSessions();
 
     const session = this.getOrCreateSession(sessionId);
-    const systemPrompt = await this.buildSystemPrompt();
+    const systemPrompt = await this.buildSystemPrompt(options?.channelAgent, options?.channelId);
     const tools = this.liteMode ? [] : getBuiltinTools();
     const llmTools = this.liteMode ? [] : toLLMTools(tools);
 
@@ -306,7 +350,7 @@ export class LocalLlmRunner implements AgentRunner {
           });
           try {
             const feedbackResponse = await this.llm.chat(session.messages, {
-              systemPrompt: await this.buildSystemPrompt(),
+              systemPrompt: await this.buildSystemPrompt(options?.channelAgent, options?.channelId),
               signal: abortController.signal,
             });
             session.messages.push({ role: 'assistant', content: feedbackResponse.content });
@@ -452,6 +496,7 @@ export class LocalLlmRunner implements AgentRunner {
         response = await this.llm.chat(session.messages, {
           systemPrompt,
           signal: abortController.signal,
+          channelId,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -476,6 +521,7 @@ export class LocalLlmRunner implements AgentRunner {
             feedbackResponse = await this.llm.chat(session.messages, {
               systemPrompt,
               signal: abortController.signal,
+              channelId,
             });
           } catch {
             // feedbackのLLM呼び出し失敗時はtrigger結果をそのまま返す
@@ -501,6 +547,7 @@ export class LocalLlmRunner implements AgentRunner {
           systemPrompt,
           tools: llmTools.length > 0 ? llmTools : undefined,
           signal: abortController.signal,
+          channelId,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -592,6 +639,7 @@ export class LocalLlmRunner implements AgentRunner {
             systemPrompt,
             tools: llmTools.length > 0 ? llmTools : undefined,
             signal: abortController.signal,
+            channelId,
           });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -653,6 +701,7 @@ export class LocalLlmRunner implements AgentRunner {
       for await (const chunk of this.llm.chatStream(session.messages, {
         systemPrompt,
         signal: abortController.signal,
+        channelId,
       })) {
         fullText += chunk;
         callbacks.onText?.(chunk, fullText);
@@ -699,8 +748,48 @@ export class LocalLlmRunner implements AgentRunner {
     return msg;
   }
 
-  private async buildSystemPrompt(): Promise<string> {
+  private async buildSystemPrompt(channelAgent?: string, channelId?: string): Promise<string> {
     const parts: string[] = [];
+
+    // 🔒 Channel Lock: このチャンネルは指定 agent の作業場 → その専門業務は全部このチャンネルで実行する。
+    //    他 agent 領域の依頼 (明らかに別カテゴリ) だけ #一般 へ誘導する。
+    if (channelAgent) {
+      const domainHints: Record<string, string> = {
+        'script-writer-agent':
+          '漫画・小説・台本・プロット・キャラ設定・シーン執筆・ストーリー壁打ち',
+        'mail-agent': 'メール返信・下書き・メール本文の精査',
+        'calendar-agent': '予定登録・空き時間確認・スケジュール調整',
+        'social-agent': 'X/note/SNS 投稿原稿の作成・公開',
+        'notion-manager': 'Notion 保存・タスク記録',
+        'dmat-keychain-agent': 'DMAT-Keychain リポジトリの開発',
+      };
+      const domain = domainHints[channelAgent] || `${channelAgent} の専門業務`;
+      parts.push(
+        [
+          '## 🔒 Channel Lock (最優先、他の全指示を上書きする)',
+          `このチャンネルはあなた (${channelAgent}) の作業場です。専門領域: **${domain}**`,
+          '',
+          '### 基本動作',
+          '- 専門業務の依頼を即座に実行する (「よろしく」「書き直して」「作って」も含む)',
+          '- 他の agent に DISPATCH せず、あなた自身が作業を完了させる',
+          '',
+          '### コンテキスト汚染への対処 (重要)',
+          '- System prompt 末尾に注入される `🎭 Persona` / `🪞 直近の内省` / `🧠 長期記憶` / `📋 進行中タスク` 等は',
+          '  **全 channel 共通**のコンテキストで、他 agent 領域の情報 (漫画台本 / 予定 / SNS等) も混在する。',
+          `- このチャンネルでは **${channelAgent} 領域の情報だけ**を参照する。それ以外は context noise として無視。`,
+          `- たとえ memory に 台本 / 予定 / SNS の話題が含まれていても、この channel の応答には絶対に持ち込まない。`,
+          `- 出力は必ず ${channelAgent} の専門領域 (${domain}) の内容だけで構成する。`,
+          '',
+          '### 禁止事項',
+          '- 他 agent への [DISPATCH:] 出力',
+          '- 他 agent 領域のコンテンツ出力 (例: mail-agent なのに漫画台本を書く)',
+          '- 「〜専用です」「#一般 へ移動してください」を safe choice として多用',
+          '',
+          `### refuse してよい場面`,
+          `- ユーザーが明確に別領域を依頼した時のみ (例: #mail で「台本書いて」→ 「#台本 へどうぞ」)。`,
+        ].join('\n')
+      );
+    }
 
     // liteモードではXANGI_COMMANDS・CHAT_SYSTEM_PROMPT・スキル一覧を除外
     if (!this.liteMode) {
@@ -715,6 +804,18 @@ export class LocalLlmRunner implements AgentRunner {
     const izunaContext = await getIzunaContext();
     if (izunaContext) {
       parts.push(`## 記憶・タスク・予定\n${izunaContext}`);
+    }
+
+    // 📜 直近会話ログ注入: channelAgent が無い orchestrator channel (#一般 等) で
+    //    短い訂正 ("17時だよ今日の") を前後文脈から解釈できるようにする。
+    //    agent 固有チャンネルでは Channel Lock で noise 防止のため入れない。
+    if (channelId && !channelAgent) {
+      try {
+        const recent = await getRecentConversation(channelId, '#一般');
+        if (recent) parts.push(recent);
+      } catch {
+        /* ignore */
+      }
     }
 
     // liteモードでトリガーが存在する場合、利用可能なコマンド一覧を追加（毎回リロード）

@@ -127,6 +127,12 @@ export class CodexRunner implements AgentRunner {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    if (options?.channelAgent) {
+      console.warn(
+        `[codex-runner] channelAgent="${options.channelAgent}" set but ChannelLock is ` +
+          `localLLM-only currently (no injection for codex-cli).`
+      );
+    }
     const args = this.buildArgs(prompt, options);
 
     const sessionInfo = options?.sessionId

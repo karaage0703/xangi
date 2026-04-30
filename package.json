@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "postbuild": "node -e \"require('child_process').execFileSync('/Users/suguru/venvs/izuna/bin/python3', ['/Users/suguru/projects/izuna-workspace/scripts/integrity_check.py', 'update'], { stdio: 'inherit' })\"",
     "dev": "tsx watch src/index.ts",
     "start": "node --env-file=.env dist/index.js",
     "test": "vitest run",

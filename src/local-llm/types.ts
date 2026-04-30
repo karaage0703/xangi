@@ -36,6 +36,8 @@ export interface LLMChatOptions {
   maxTokens?: number;
   systemPrompt?: string;
   signal?: AbortSignal;
+  /** Discord channel id — claude バックエンドの session ルックアップに使う。Hayabusa は無視 */
+  channelId?: string;
 }
 
 export interface LLMChatResponse {

@@ -80,6 +80,12 @@ export class GeminiRunner implements AgentRunner {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    if (options?.channelAgent) {
+      console.warn(
+        `[gemini-runner] channelAgent="${options.channelAgent}" set but ChannelLock is ` +
+          `localLLM-only currently (no injection for gemini-cli).`
+      );
+    }
     const systemPrompt = buildSystemPrompt();
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
     const args = [

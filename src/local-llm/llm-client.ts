@@ -440,3 +440,12 @@ export class LLMClient {
     }
   }
 }
+
+/**
+ * LLMClient と互換のミニマルインターフェイス。
+ * 別バックエンド (ClaudeCliClient 等) を runner.ts で差し替えるために使う。
+ */
+export interface ILLMClient {
+  chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMChatResponse>;
+  chatStream(messages: LLMMessage[], options?: LLMChatOptions): AsyncGenerator<string>;
+}

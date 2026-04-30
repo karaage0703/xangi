@@ -46,6 +46,14 @@ export class ClaudeCodeRunner {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
+    if (options?.channelAgent) {
+      // Claude Code CLI は --append-system-prompt で渡すが、現状このランナーは system 注入経路が
+      // 無いため channel lock は未対応。localLLM backend 使用時のみ有効。
+      console.warn(
+        `[claude-code-runner] channelAgent="${options.channelAgent}" is set but ` +
+          `ChannelLock injection is not supported in claude-code runner yet (localLLM backend only).`
+      );
+    }
     const prompt = sanitizeSurrogates(rawPrompt);
     const args: string[] = ['-p', '--output-format', 'json'];
 
