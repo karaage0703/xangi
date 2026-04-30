@@ -1243,6 +1243,14 @@ const TOPIC_CHANNELS: Record<string, string> = {
   'dev-dmatkc': '1492839921335930940',
 };
 
+function isClaudeDevChannel(channelId: string): boolean {
+  return (process.env.CLAUDE_DEV_CHANNEL_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(channelId);
+}
+
 const TOPIC_KEYWORDS: Record<string, string[]> = {
   mail: [
     '\u30e1\u30fc\u30eb',
@@ -4404,17 +4412,20 @@ async function processPrompt(
 
     // === Izuna Memory Hook (Phase 6): L1記憶にDiscordメッセージ + 応答を記録 ===
     try {
-      const cleanResp = result.replace(ACTION_HOOK_RE, '').trim().slice(0, 500);
-      const content = `[user] ${prompt.slice(0, 300)}\n[assistant] ${cleanResp}`;
+      const cleanResp = result.replace(ACTION_HOOK_RE, '').trim();
+      const isDevMemory = isClaudeDevChannel(message.channel.id);
+      const content = isDevMemory
+        ? `[claude_dev]\n[user] ${prompt.slice(0, 800)}\n[assistant] ${cleanResp.slice(0, 1200)}`
+        : `[user] ${prompt.slice(0, 300)}\n[assistant] ${cleanResp.slice(0, 500)}`;
       execFile(
         'python3',
         [
           pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
           'record',
           '--agent',
-          'izuna',
+          isDevMemory ? 'claude_dev' : 'izuna',
           '--type',
-          'conversation',
+          isDevMemory ? 'dev_task' : 'conversation',
           '--content',
           content,
           '--source-type',
