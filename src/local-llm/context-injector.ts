@@ -1,6 +1,7 @@
 /**
  * izuna-workspace の context_provider.py を呼び出して
- * L1メモリ・タスク・MEMORY.md の内容をシステムプロンプトに注入する。
+ * live state をシステムプロンプトに注入する。
+ * 長期記憶は RLM-lite 方針で ACTION:memory_recall に寄せる。
  *
  * - 60秒キャッシュ（毎メッセージで呼ばない）
  * - 失敗時は空文字を返す（graceful degradation）
@@ -17,8 +18,11 @@ const IZUNA_PYTHON = join(process.env.HOME || '/Users/suguru', 'venvs', 'izuna',
 /** キャッシュ有効期間（ミリ秒） */
 const CACHE_TTL_MS = 60_000;
 
-/** context_provider.py のトークン上限。memory/persona/reflection 全部載せる */
+/** context_provider.py のトークン上限。RLM-lite では live state 中心に使う */
 const MAX_TOKENS = 3500;
+
+/** RLM-lite context mode. 長期記憶の大量注入を避け、memory_recall を使わせる。 */
+const RLM_LITE_CONTEXT = process.env.IZUNA_CONTEXT_MODE !== 'full';
 
 /** 直近会話ターン数（システムプロンプトには少なめで十分） */
 const RECENT_TURNS = 3;
@@ -177,16 +181,20 @@ export async function getRecentConversation(channelId: string, channelLabel = ''
 function runContextProvider(): Promise<string> {
   // izuna venv があればそちらを使う (duckdb/pyarrow が必要なため)
   const pythonBin = existsSync(IZUNA_PYTHON) ? IZUNA_PYTHON : 'python3';
+  const args = [
+    CONTEXT_PROVIDER_SCRIPT,
+    '--max-tokens',
+    String(MAX_TOKENS),
+    '--recent-turns',
+    String(RECENT_TURNS),
+  ];
+  if (RLM_LITE_CONTEXT) {
+    args.push('--rlm-lite');
+  }
   return new Promise((resolve, reject) => {
     execFile(
       pythonBin,
-      [
-        CONTEXT_PROVIDER_SCRIPT,
-        '--max-tokens',
-        String(MAX_TOKENS),
-        '--recent-turns',
-        String(RECENT_TURNS),
-      ],
+      args,
       {
         timeout: EXEC_TIMEOUT_MS,
         cwd: IZUNA_WORKSPACE,
