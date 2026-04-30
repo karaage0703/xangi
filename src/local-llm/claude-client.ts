@@ -7,8 +7,12 @@
  *
  * channel 別 session 継続は ClaudeSessionStore + `--resume <id>` で実現。
  *
+ * モード:
+ *   - default (Phase 1): allowedTools 未指定 → built-in tools 不可、副作用は ACTION マーカー
+ *   - claude_dev (Phase 2): allowedTools 指定 → Read/Write/Bash 等を claude 側に許可
+ *
  * Phase 1 の制約:
- *   - tools (LLMTool[]) は無視する (warn のみ)。副作用は ACTION マーカー方式。
+ *   - LLMTool[] (xangi の dynamic tools) は無視する (warn のみ)。
  *   - chatStream は一括取得 → 1 chunk yield (生成器互換のため)。本物の stream は将来。
  */
 import { spawn } from 'child_process';
@@ -30,6 +34,12 @@ interface ClaudeCliOptions {
   skipPermissions?: boolean;
   /** モデル指定 (例: claude-sonnet-4-6)。空なら claude 側 default */
   model?: string;
+  /**
+   * 許可する built-in tools のリスト (例: ["Read","Write","Edit","Bash","Glob","Grep"])。
+   * 未指定なら `--allowed-tools` を付けず、claude 側の default 挙動に任せる。
+   * Phase 2 (`LLM_BACKEND=claude_dev`) で self-mod を解禁する用途。
+   */
+  allowedTools?: string[];
 }
 
 interface ClaudeJsonOutput {
@@ -75,6 +85,7 @@ export class ClaudeCliClient {
   private readonly binPath: string;
   private readonly skipPermissions: boolean;
   private readonly model?: string;
+  private readonly allowedTools?: string[];
   private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
 
   constructor(opts: ClaudeCliOptions) {
@@ -85,6 +96,8 @@ export class ClaudeCliClient {
     this.binPath = opts.binPath || process.env.CLAUDE_BIN || 'claude';
     this.skipPermissions = opts.skipPermissions ?? true;
     this.model = opts.model || process.env.CLAUDE_MODEL || undefined;
+    this.allowedTools =
+      opts.allowedTools && opts.allowedTools.length > 0 ? opts.allowedTools : undefined;
 
     // プロセス終了時に活動中の subprocess を巻き込んで kill
     const killAll = () => {
@@ -105,6 +118,9 @@ export class ClaudeCliClient {
     const args: string[] = ['-p', '--output-format', 'json'];
     if (this.skipPermissions) args.push('--dangerously-skip-permissions');
     if (this.model) args.push('--model', this.model);
+    if (this.allowedTools && this.allowedTools.length > 0) {
+      args.push('--allowed-tools', this.allowedTools.join(','));
+    }
     if (sessionId) args.push('--resume', sessionId);
     if (systemPrompt && systemPrompt.length > 0) {
       args.push('--append-system-prompt', systemPrompt);

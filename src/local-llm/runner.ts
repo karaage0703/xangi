@@ -94,8 +94,12 @@ export function formatLlmError(err: unknown): string {
 
 export class LocalLlmRunner implements AgentRunner {
   private readonly llm: ILLMClient;
-  /** 'claude' | 'hayabusa' — buildSystemPrompt の出力量制御等に使う */
-  readonly backend: 'claude' | 'hayabusa';
+  /**
+   * - 'claude' (default): claude -p 司令塔。built-in tools 不可、ACTION マーカーで委譲
+   * - 'claude_dev': claude -p + built-in tools (Read/Write/Bash) 許可。Phase 2 self-mod 用
+   * - 'hayabusa': Gemma4 26B Q4 (旧経路、fallback)
+   */
+  readonly backend: 'claude' | 'claude_dev' | 'hayabusa';
   private readonly workdir: string;
   private readonly sessions = new Map<string, Session>();
   private readonly sessionTtlMs = 60 * 60 * 1000; // 1時間
@@ -148,27 +152,42 @@ export class LocalLlmRunner implements AgentRunner {
         ? process.env.LOCAL_LLM_TRIGGERS !== 'false'
         : defaults.triggers;
 
-    // LLM_BACKEND: "claude" (default) or "hayabusa"
+    // LLM_BACKEND: "claude" (default) | "claude_dev" | "hayabusa"
     const backendEnv = (process.env.LLM_BACKEND || 'claude').toLowerCase();
-    this.backend = backendEnv === 'hayabusa' ? 'hayabusa' : 'claude';
+    this.backend =
+      backendEnv === 'hayabusa'
+        ? 'hayabusa'
+        : backendEnv === 'claude_dev'
+          ? 'claude_dev'
+          : 'claude';
 
     this.workdir = config.workdir || process.cwd();
 
-    if (this.backend === 'claude') {
+    if (this.backend === 'claude' || this.backend === 'claude_dev') {
       const claudeCwd =
         process.env.CLAUDE_CWD || path.join(os.homedir(), 'projects', 'izuna-workspace');
       const timeoutMs = process.env.CLAUDE_TIMEOUT_MS
         ? parseInt(process.env.CLAUDE_TIMEOUT_MS, 10)
         : undefined;
       this.claudeSessionStore = new ClaudeSessionStore();
+      // claude_dev: built-in tools 解禁。env CLAUDE_ALLOWED_TOOLS で上書き可能。
+      // 例: CLAUDE_ALLOWED_TOOLS="Read,Edit,Bash,Glob,Grep"
+      const allowedTools =
+        this.backend === 'claude_dev'
+          ? (process.env.CLAUDE_ALLOWED_TOOLS || 'Read,Edit,Write,Bash,Glob,Grep')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined;
       this.llm = new ClaudeCliClient({
         cwd: claudeCwd,
         timeoutMs,
         sessionStore: this.claudeSessionStore,
         logger: (l) => console.log('[claude-cli]', l),
+        allowedTools,
       });
       console.log(
-        `[local-llm] LLM: claude -p (cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'})`
+        `[local-llm] LLM: claude -p (backend: ${this.backend}, cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}${allowedTools ? `, allowedTools: ${allowedTools.join(',')}` : ''})`
       );
     } else {
       this.claudeSessionStore = null;
