@@ -320,6 +320,8 @@ const DATA_FEEDBACK_ACTIONS = new Set<string>([
   'memory_stats',
   'memory_where',
   'memory_recall',
+  'agent_bus_recent',
+  'agent_bus_stats',
   'memory_list_pending',
   'task_list',
   'calendar_list',
