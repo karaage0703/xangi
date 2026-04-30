@@ -6,6 +6,7 @@
  */
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import type { AgentConfig } from '../config.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
@@ -286,6 +287,29 @@ export class LocalLlmRunner implements AgentRunner {
       return this.llmDev;
     }
     return this.llm;
+  }
+
+  private isDevModeChannel(channelId?: string): boolean {
+    return (
+      this.backend === 'claude_dev' ||
+      Boolean(this.llmDev && channelId && this.devChannelIds.has(channelId))
+    );
+  }
+
+  private loadClaudeDevPrompt(): string | null {
+    const configured = (process.env.CLAUDE_DEV_PROMPT_PATH || '').trim();
+    const promptPath =
+      configured ||
+      path.join(
+        process.env.CLAUDE_CWD || path.join(os.homedir(), 'projects', 'izuna-workspace'),
+        'CLAUDE_dev.md'
+      );
+    try {
+      if (!fs.existsSync(promptPath)) return null;
+      return fs.readFileSync(promptPath, 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -825,6 +849,21 @@ export class LocalLlmRunner implements AgentRunner {
 
   private async buildSystemPrompt(channelAgent?: string, channelId?: string): Promise<string> {
     const parts: string[] = [];
+
+    if (this.isDevModeChannel(channelId)) {
+      const devPrompt = this.loadClaudeDevPrompt();
+      parts.push(
+        [
+          '## 🔧 Izuna Dev Mode (最優先)',
+          'この channel は Discord 方針変更から Izuna 自身のプログラム/プロンプト/設定を更新する self-mod ランタイムです。',
+          '目標は「秘書官LLM → 必要なプログラム変更 + ユーザ記憶 → 秘書官LLM」の閉ループを成立させることです。',
+          '通常応答用の CLAUDE.md より、この dev mode 指針を優先してください。',
+          devPrompt
+            ? `\n${devPrompt}`
+            : '\nCLAUDE_dev.md が見つかりません。変更は最小限にし、必ずユーザに報告してください。',
+        ].join('\n')
+      );
+    }
 
     // 🔒 Channel Lock: このチャンネルは指定 agent の作業場 → その専門業務は全部このチャンネルで実行する。
     //    他 agent 領域の依頼 (明らかに別カテゴリ) だけ #一般 へ誘導する。
