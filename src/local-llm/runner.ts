@@ -7,6 +7,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFileSync } from 'child_process';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import type { AgentConfig } from '../config.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
@@ -33,6 +34,26 @@ const MAX_TOOL_OUTPUT_CHARS = 8000;
 const CONTEXT_MAX_CHARS = 120000; // 約48000トークン相当（1トークン≈2.5文字）
 const CONTEXT_KEEP_LAST = 10; // 直近10件は保護
 const TOOL_RESULT_MAX_CHARS_IN_CONTEXT = 4000; // コンテキスト内のツール結果上限
+const DEFAULT_DEV_ALLOWED_TOOLS = [
+  'Read',
+  'Edit',
+  'Write',
+  'Glob',
+  'Grep',
+  'Bash(git status:*)',
+  'Bash(git diff:*)',
+  'Bash(git add:*)',
+  'Bash(git commit:*)',
+  'Bash(git log:*)',
+  'Bash(npm run build)',
+  'Bash(npm test:*)',
+  'Bash(npx prettier:*)',
+  'Bash(rg:*)',
+  'Bash(sed:*)',
+  'Bash(tail:*)',
+  'Bash(/Users/suguru/venvs/izuna/bin/python3:*)',
+  'Bash(launchctl kickstart:*)',
+].join(',');
 
 /** ツール結果を切り詰める（head/tail方式、karaagebot準拠） */
 function trimToolResult(content: string, maxChars: number = MAX_TOOL_OUTPUT_CHARS): string {
@@ -44,6 +65,13 @@ function trimToolResult(content: string, maxChars: number = MAX_TOOL_OUTPUT_CHAR
     `\n\n... [${content.length - headChars - tailChars} chars truncated] ...\n\n` +
     content.slice(-tailChars)
   );
+}
+
+function parseCsvEnv(value: string | undefined, fallback = ''): string[] {
+  return (value || fallback)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /** セッション（会話履歴） */
@@ -182,17 +210,32 @@ export class LocalLlmRunner implements AgentRunner {
       // 例: CLAUDE_ALLOWED_TOOLS="Read,Edit,Bash,Glob,Grep"
       const allowedTools =
         this.backend === 'claude_dev'
-          ? (process.env.CLAUDE_ALLOWED_TOOLS || 'Read,Edit,Write,Bash,Glob,Grep')
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)
+          ? parseCsvEnv(process.env.CLAUDE_ALLOWED_TOOLS, DEFAULT_DEV_ALLOWED_TOOLS)
           : undefined;
+      const devAddDirs = parseCsvEnv(
+        process.env.CLAUDE_DEV_ADD_DIRS,
+        [
+          claudeCwd,
+          path.join(os.homedir(), 'projects', 'xangi-izuna-discord'),
+          path.join(os.homedir(), 'Library', 'LaunchAgents'),
+        ].join(',')
+      );
+      const devPermissionMode = (process.env.CLAUDE_DEV_PERMISSION_MODE || 'auto') as
+        | 'acceptEdits'
+        | 'bypassPermissions'
+        | 'default'
+        | 'dontAsk'
+        | 'plan'
+        | 'auto';
       this.llm = new ClaudeCliClient({
         cwd: claudeCwd,
         timeoutMs,
         sessionStore: this.claudeSessionStore,
         logger: (l) => console.log('[claude-cli]', l),
         allowedTools,
+        skipPermissions: this.backend === 'claude_dev' ? false : undefined,
+        permissionMode: this.backend === 'claude_dev' ? devPermissionMode : undefined,
+        addDirs: this.backend === 'claude_dev' ? devAddDirs : undefined,
       });
       console.log(
         `[local-llm] LLM: claude -p (backend: ${this.backend}, cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}${allowedTools ? `, allowedTools: ${allowedTools.join(',')}` : ''})`
@@ -210,19 +253,19 @@ export class LocalLlmRunner implements AgentRunner {
           )
         : new Set();
       if (this.backend === 'claude' && this.devChannelIds.size > 0) {
-        const devTools = (process.env.CLAUDE_ALLOWED_TOOLS || 'Read,Edit,Write,Bash,Glob,Grep')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
+        const devTools = parseCsvEnv(process.env.CLAUDE_ALLOWED_TOOLS, DEFAULT_DEV_ALLOWED_TOOLS);
         this.llmDev = new ClaudeCliClient({
           cwd: claudeCwd,
           timeoutMs,
           sessionStore: this.claudeSessionStore,
           logger: (l) => console.log('[claude-cli/dev]', l),
           allowedTools: devTools,
+          skipPermissions: false,
+          permissionMode: devPermissionMode,
+          addDirs: devAddDirs,
         });
         console.log(
-          `[local-llm] dev client armed for channels: ${[...this.devChannelIds].join(',')} (allowedTools: ${devTools.join(',')})`
+          `[local-llm] dev client armed for channels: ${[...this.devChannelIds].join(',')} (permissionMode: ${devPermissionMode}, addDirs: ${devAddDirs.join(',')}, allowedTools: ${devTools.join(',')})`
         );
       } else {
         this.llmDev = null;
@@ -312,6 +355,48 @@ export class LocalLlmRunner implements AgentRunner {
     }
   }
 
+  private auditDevEvent(event: Record<string, unknown>): void {
+    try {
+      const auditPath =
+        process.env.CLAUDE_DEV_AUDIT_PATH ||
+        path.join(os.homedir(), 'projects', 'izuna-workspace', 'audit', 'claude_dev_xangi.jsonl');
+      fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+      fs.appendFileSync(
+        auditPath,
+        JSON.stringify(
+          {
+            ts: new Date().toISOString(),
+            ...event,
+          },
+          null,
+          0
+        ) + '\n'
+      );
+    } catch {
+      /* audit must not break user flow */
+    }
+  }
+
+  private devRepoStatus(): Record<string, string> {
+    const repos = {
+      izuna_workspace: path.join(os.homedir(), 'projects', 'izuna-workspace'),
+      xangi_discord: path.join(os.homedir(), 'projects', 'xangi-izuna-discord'),
+    };
+    const out: Record<string, string> = {};
+    for (const [name, cwd] of Object.entries(repos)) {
+      try {
+        out[name] = execFileSync('git', ['status', '--short'], {
+          cwd,
+          encoding: 'utf8',
+          timeout: 5000,
+        }).trim();
+      } catch (err) {
+        out[name] = `status_error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    return out;
+  }
+
   /**
    * claude session の channel エントリを消す (諦めモード対策)。
    * 次の同 channel メッセージは新規 session で開始される。
@@ -338,6 +423,17 @@ export class LocalLlmRunner implements AgentRunner {
     // トランスクリプトにプロンプトを記録
     const channelId = options?.channelId || sessionId;
     const appSid = options?.appSessionId || channelId;
+    const isDevMode = this.isDevModeChannel(channelId);
+    if (isDevMode) {
+      this.auditDevEvent({
+        event: 'run_start',
+        channelId,
+        appSessionId: appSid,
+        sessionId,
+        prompt: prompt.slice(0, 2000),
+        repoStatusBefore: this.devRepoStatus(),
+      });
+    }
     logPrompt(this.workdir, appSid, prompt);
 
     // AbortControllerをprocessManager相当として登録
@@ -361,6 +457,17 @@ export class LocalLlmRunner implements AgentRunner {
 
       // トランスクリプトにレスポンスを記録
       logResponse(this.workdir, appSid, { result, sessionId });
+      if (isDevMode) {
+        this.auditDevEvent({
+          event: 'run_complete',
+          channelId,
+          appSessionId: appSid,
+          sessionId,
+          resultChars: result.length,
+          resultPreview: result.slice(0, 2000),
+          repoStatusAfter: this.devRepoStatus(),
+        });
+      }
 
       return { result, sessionId };
     } catch (err) {
@@ -396,6 +503,17 @@ export class LocalLlmRunner implements AgentRunner {
           this.trimSession(session);
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, { result, sessionId });
+          if (isDevMode) {
+            this.auditDevEvent({
+              event: 'run_retry_complete',
+              channelId,
+              appSessionId: appSid,
+              sessionId,
+              resultChars: result.length,
+              resultPreview: result.slice(0, 2000),
+              repoStatusAfter: this.devRepoStatus(),
+            });
+          }
 
           return { result, sessionId };
         } catch (retryErr) {
@@ -405,6 +523,16 @@ export class LocalLlmRunner implements AgentRunner {
             appSid,
             `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
           );
+          if (isDevMode) {
+            this.auditDevEvent({
+              event: 'run_retry_error',
+              channelId,
+              appSessionId: appSid,
+              sessionId,
+              error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+              repoStatusAfter: this.devRepoStatus(),
+            });
+          }
           return { result: errorMsg, sessionId };
         }
       }
@@ -415,6 +543,16 @@ export class LocalLlmRunner implements AgentRunner {
         appSid,
         `LLM chat error: ${err instanceof Error ? err.message : String(err)}`
       );
+      if (isDevMode) {
+        this.auditDevEvent({
+          event: 'run_error',
+          channelId,
+          appSessionId: appSid,
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+          repoStatusAfter: this.devRepoStatus(),
+        });
+      }
       return { result: errorMsg, sessionId };
     } finally {
       this.activeAbortControllers.delete(channelId);
@@ -439,8 +577,19 @@ export class LocalLlmRunner implements AgentRunner {
 
     const channelId = options?.channelId || sessionId;
     const appSid = options?.appSessionId || channelId;
+    const isDevMode = this.isDevModeChannel(channelId);
 
     // トランスクリプトにプロンプトを記録
+    if (isDevMode) {
+      this.auditDevEvent({
+        event: 'stream_start',
+        channelId,
+        appSessionId: appSid,
+        sessionId,
+        prompt: prompt.slice(0, 2000),
+        repoStatusBefore: this.devRepoStatus(),
+      });
+    }
     logPrompt(this.workdir, appSid, prompt);
     const abortController = new AbortController();
     this.activeAbortControllers.set(channelId, abortController);
@@ -466,6 +615,17 @@ export class LocalLlmRunner implements AgentRunner {
 
       // トランスクリプトにレスポンスを記録
       logResponse(this.workdir, appSid, { result: fullText, sessionId });
+      if (isDevMode) {
+        this.auditDevEvent({
+          event: 'stream_complete',
+          channelId,
+          appSessionId: appSid,
+          sessionId,
+          resultChars: fullText.length,
+          resultPreview: fullText.slice(0, 2000),
+          repoStatusAfter: this.devRepoStatus(),
+        });
+      }
 
       const result: RunResult = { result: fullText, sessionId };
       callbacks.onComplete?.(result);
@@ -505,6 +665,17 @@ export class LocalLlmRunner implements AgentRunner {
           this.trimSession(session);
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, { result: fullText, sessionId });
+          if (isDevMode) {
+            this.auditDevEvent({
+              event: 'stream_retry_complete',
+              channelId,
+              appSessionId: appSid,
+              sessionId,
+              resultChars: fullText.length,
+              resultPreview: fullText.slice(0, 2000),
+              repoStatusAfter: this.devRepoStatus(),
+            });
+          }
 
           const result: RunResult = { result: fullText, sessionId };
           callbacks.onComplete?.(result);
@@ -513,6 +684,16 @@ export class LocalLlmRunner implements AgentRunner {
           const error = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
           const errorMsg = formatLlmError(retryErr);
           logError(this.workdir, appSid, `LLM stream retry failed: ${error.message}`);
+          if (isDevMode) {
+            this.auditDevEvent({
+              event: 'stream_retry_error',
+              channelId,
+              appSessionId: appSid,
+              sessionId,
+              error: error.message,
+              repoStatusAfter: this.devRepoStatus(),
+            });
+          }
           callbacks.onError?.(error);
           return { result: errorMsg, sessionId };
         }
@@ -521,6 +702,16 @@ export class LocalLlmRunner implements AgentRunner {
       const error = err instanceof Error ? err : new Error(String(err));
       const errorMsg = formatLlmError(err);
       logError(this.workdir, appSid, `LLM stream error: ${error.message}`);
+      if (isDevMode) {
+        this.auditDevEvent({
+          event: 'stream_error',
+          channelId,
+          appSessionId: appSid,
+          sessionId,
+          error: error.message,
+          repoStatusAfter: this.devRepoStatus(),
+        });
+      }
       callbacks.onError?.(error);
       return { result: errorMsg, sessionId };
     } finally {

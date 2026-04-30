@@ -40,6 +40,10 @@ interface ClaudeCliOptions {
    * Phase 2 (`LLM_BACKEND=claude_dev`) で self-mod を解禁する用途。
    */
   allowedTools?: string[];
+  /** Permission mode for Claude Code (e.g. auto, acceptEdits, default). */
+  permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
+  /** Additional directories passed to --add-dir. */
+  addDirs?: string[];
 }
 
 interface ClaudeJsonOutput {
@@ -86,6 +90,8 @@ export class ClaudeCliClient {
   private readonly skipPermissions: boolean;
   private readonly model?: string;
   private readonly allowedTools?: string[];
+  private readonly permissionMode?: string;
+  private readonly addDirs: string[];
   private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
 
   constructor(opts: ClaudeCliOptions) {
@@ -98,6 +104,8 @@ export class ClaudeCliClient {
     this.model = opts.model || process.env.CLAUDE_MODEL || undefined;
     this.allowedTools =
       opts.allowedTools && opts.allowedTools.length > 0 ? opts.allowedTools : undefined;
+    this.permissionMode = opts.permissionMode;
+    this.addDirs = opts.addDirs?.filter(Boolean) ?? [];
 
     // プロセス終了時に活動中の subprocess を巻き込んで kill
     const killAll = () => {
@@ -117,6 +125,8 @@ export class ClaudeCliClient {
   private buildArgs(prompt: string, sessionId: string | null, systemPrompt?: string): string[] {
     const args: string[] = ['-p', '--output-format', 'json'];
     if (this.skipPermissions) args.push('--dangerously-skip-permissions');
+    if (this.permissionMode) args.push('--permission-mode', this.permissionMode);
+    if (this.addDirs.length > 0) args.push('--add-dir', ...this.addDirs);
     if (this.model) args.push('--model', this.model);
     if (this.allowedTools && this.allowedTools.length > 0) {
       args.push('--allowed-tools', this.allowedTools.join(','));
