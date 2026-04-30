@@ -17,7 +17,8 @@
     "format:check": "prettier --check src/",
     "typecheck": "tsc --noEmit",
     "prepare": "husky",
-    "prestart": "npm run build"
+    "prestart": "npm run build",
+    "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js"
   },
   "lint-staged": {
     "src/**/*.ts": [

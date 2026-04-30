@@ -353,7 +353,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const threadTs = config.slack.replyInThread ? event.thread_ts || event.ts : undefined;
 
     // セッションクリアコマンド
-    if (['!new', 'new', '/new', '!clear', 'clear', '/clear'].includes(text)) {
+    if (['!new', 'new', '/new'].includes(text)) {
       sessions.delete(channelId);
       await say({
         text: '🆕 新しいセッションを開始しました',
@@ -469,7 +469,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const threadTs = config.slack.replyInThread ? messageEvent.ts : undefined;
 
     // セッションクリアコマンド
-    if (['!new', 'new', '/new', '!clear', 'clear', '/clear'].includes(text)) {
+    if (['!new', 'new', '/new'].includes(text)) {
       sessions.delete(channelId);
       await say({
         text: '🆕 新しいセッションを開始しました',

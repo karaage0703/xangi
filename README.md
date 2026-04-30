@@ -9,8 +9,9 @@ Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord 
 ## Features
 
 - マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
+- `/backend` コマンドでチャンネルごとにバックエンド・モデル・effortを動的切り替え
 - Local LLM対応（Ollama/vLLM等、エージェントモード/チャットモード切替可能）
-- Discord / Slack 対応
+- Discord / Slack / Web UI 対応
 - Docker対応
 - スキルシステム
 - スケジューラー（cron / 単発 / 起動時タスク）
@@ -92,11 +93,10 @@ pm2 logs xangi     # ログ確認
 | コマンド | 説明 |
 |----------|------|
 | `/new` | 新しいセッションを開始 |
-| `/clear` | セッション履歴をクリア |
 | `/stop` | 実行中のタスクを停止 |
 | `/settings` | 現在の設定を表示 |
-| `!schedule` | スケジューラー（定期実行・リマインダー） |
-| `!discord` | Discord操作（チャンネル送信・検索） |
+| `xangi-cmd schedule_*` | スケジューラー（定期実行・リマインダー） |
+| `xangi-cmd discord_*` | Discord操作（履歴取得・メッセージ送信・検索等） |
 
 応答メッセージにはボタン（Stop / New Session）が表示されます。`DISCORD_SHOW_BUTTONS=false` で非表示。
 

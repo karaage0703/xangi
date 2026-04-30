@@ -9,7 +9,7 @@ const CLI_PATH = join(import.meta.dirname, '..', 'src', 'schedule-cli.ts');
 function runCli(args: string, dataDir: string): { stdout: string; exitCode: number } {
   try {
     const stdout = execSync(`npx tsx ${CLI_PATH} ${args}`, {
-      env: { ...process.env, XANGI_DATA_DIR: dataDir },
+      env: { ...process.env, DATA_DIR: dataDir },
       encoding: 'utf-8',
       timeout: 10000,
     });

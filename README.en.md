@@ -9,8 +9,9 @@ An AI assistant for Discord / Slack, powered by Claude Code / Codex / Gemini CLI
 ## Features
 
 - Multi-backend support (Claude Code / Codex / Gemini CLI / Local LLM)
-- Local LLM support (Ollama/vLLM, etc.)
-- Discord / Slack support
+- `/backend` command for dynamic per-channel backend/model/effort switching
+- Local LLM support (Ollama/vLLM, etc., with agent mode / chat mode toggle)
+- Discord / Slack / Web UI support
 - Docker support
 - Skill system
 - Scheduler (cron / one-shot / startup tasks)
@@ -92,11 +93,10 @@ pm2 logs xangi     # View logs
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a new session |
-| `/clear` | Clear session history |
 | `/stop` | Stop running task |
 | `/settings` | Show current settings |
-| `!schedule` | Scheduler (cron / reminders) |
-| `!discord` | Discord operations (send / search) |
+| `xangi-cmd schedule_*` | Scheduler (cron / reminders) |
+| `xangi-cmd discord_*` | Discord operations (history / send / search, etc.) |
 
 Response messages include buttons (Stop / New Session). Set `DISCORD_SHOW_BUTTONS=false` to hide.
 

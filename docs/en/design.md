@@ -29,7 +29,8 @@ graph LR
 | Layer | Role | Implementation |
 |-------|------|----------------|
 | Chat | User interface | Discord.js, Slack Bolt |
-| xangi | AI CLI integration & control | index.ts, agent-runner.ts |
+| xangi | AI CLI integration & control | index.ts, agent-runner.ts, dynamic-runner.ts |
+| Backend Resolution | Per-channel backend resolution | backend-resolver.ts, settings.ts |
 | AI CLI | Actual AI processing | Claude Code, Codex CLI, Gemini CLI, Local LLM |
 | Workspace | Files & skills | skills/, AGENTS.md |
 
@@ -43,7 +44,7 @@ The main orchestrator. Integrates the following:
 - Message reception and routing
 - AI CLI invocation
 - Scheduler management
-- Command handling (`!discord`, `!schedule`, etc.)
+- Command handling (via `xangi-cmd` CLI tool + text parsing)
 
 ### Agent Runner (agent-runner.ts)
 
@@ -56,14 +57,31 @@ interface AgentRunner {
 }
 ```
 
+### Dynamic Runner Manager (dynamic-runner.ts)
+
+A wrapper that dynamically switches backend, model, and effort per channel:
+
+```
+Message received
+  → BackendResolver.resolve(channelId)
+  → Retrieve { backend, model, effort }
+  → DynamicRunnerManager routes to the appropriate runner
+  → Execute
+```
+
+BackendResolver priority:
+1. channelOverrides set via `/backend set` (in-memory, persisted to CHANNEL_OVERRIDES in `.env`)
+2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`)
+
 ### System Prompt (base-runner.ts)
 
 Manages the system prompts that xangi injects into AI CLIs:
 
 - **Chat platform info** — A short fixed text indicating the conversation is via Discord/Slack
 - **XANGI_COMMANDS** — Injects platform-specific command specifications from `src/prompts/`
-  - Common commands (`xangi-commands-common.ts`): File sending, system commands, scheduler, etc.
-  - Discord-specific (`xangi-commands-discord.ts`): `!discord send/history/search/delete/edit`, auto-expand
+  - Common commands (`xangi-commands-common.ts`): Timeout handling, etc.
+  - Chat platform common (`xangi-commands-chat-platform.ts`): File sending (MEDIA:), message separators (===), scheduling, system commands
+  - Discord-specific (`xangi-commands-discord.ts`): `xangi-cmd discord_*` CLI tools, auto-expand
   - Slack-specific (`xangi-commands-slack.ts`): Slack-specific operations
   - Automatic platform detection: If only Discord is active, only Discord-specific commands are injected (saves tokens)
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
@@ -109,6 +127,18 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 6. Retry also failed → Return error message via formatLlmError()
 ```
 
+**Tool Calling Flow (llm-client.ts):**
+
+The LLM client has two API paths: Ollama native API and OpenAI-compatible API. Note the different message formats for tool calling:
+
+| Item | OpenAI-compatible API | Ollama Native API |
+|------|----------------------|-------------------|
+| Assistant tool calls | Identified by `tool_calls[].id` | Identified by `tool_calls[].function` |
+| Tool message association | `tool_call_id` (by ID) | `tool_name` (by name) |
+| Conversion function | `toOpenAIMessages()` | Inline conversion in `chatOllamaNative()` |
+
+In the Ollama native path, a reverse lookup map from `toolCallId` to `tool_name` is used for association.
+
 **Error Handling Design:**
 
 - `isSessionRelatedError()` — Lowercases the Error instance message and checks if it matches known patterns caused by session history. Always returns false for non-Error objects
@@ -149,6 +179,75 @@ Manages periodic execution and reminders:
 - Follows the server's system timezone (`TZ` environment variable)
 - In Docker environments, setting `TZ=Asia/Tokyo` etc. is recommended
 
+### Tool Server (tool-server.ts)
+
+An HTTP API server that allows AI CLIs to safely invoke xangi features (Discord operations, scheduling, system control).
+
+```
+AI CLI (Claude Code, etc.)
+  → xangi-cmd (shell script)
+  → HTTP POST http://localhost:<port>/api/execute
+  → tool-server (inside xangi process)
+  → Discord REST API / Scheduler / Settings
+```
+
+**Port Management:**
+- Binds to port 0 (OS auto-assigns, no conflicts with multiple instances)
+- The started URL is injected into child processes as `XANGI_TOOL_SERVER`
+- `xangi-cmd` connects using `XANGI_TOOL_SERVER`
+- Execution context such as the current channel ID is passed to tool-server via the `context` field of the HTTP request
+
+**Security:**
+- Secrets such as DISCORD_TOKEN remain inside the xangi process only
+- AI CLIs receive only safe environment variables via the whitelist in `safe-env.ts`
+- GitHub App private keys are loaded into memory at startup; token generation is handled via the tool-server's `/github-token` endpoint (only short-lived tokens are accessible)
+
+### Approval Flow (approval.ts / approval-server.ts)
+
+Detects dangerous commands (e.g., `rm -rf`, `git push --force`) in AI output and requires user approval before execution.
+
+```
+AI CLI outputs command
+  → approval.ts pattern matches (approval-patterns.json)
+  → Dangerous command detected
+  → approval-server.ts sends button-attached message to Discord/Slack
+  → User approves/rejects
+  → Result returned to AI CLI
+```
+
+- Enabled via `APPROVAL_ENABLED=true` (disabled by default)
+- Patterns defined in `src/approval-patterns.json`
+
+### GitHub App Authentication (github-auth.ts)
+
+Generates Installation Tokens (short-lived, 1-hour validity) using a GitHub App private key and wraps the `gh` CLI.
+
+```
+gh command execution (inside AI CLI)
+  → /tmp/xangi-gh-wrapper/gh (wrapper)
+  → curl to tool-server's /github-token endpoint
+  → github-auth.ts generates token using in-memory private key
+  → Injected as GH_TOKEN → exec real gh
+```
+
+- Private key is read from file into memory at startup; file access is no longer needed
+- AI agent (child processes) cannot directly access the private key
+- No fallback to PAT on token generation failure (errors out)
+
+### Trigger Feature (local-llm/triggers.ts)
+
+In Local LLM chat mode, detects magic words in LLM response text and automatically executes scripts.
+
+```
+triggers/
+├── my-trigger/
+│   ├── trigger.yaml    # Defines name, description, handler
+│   └── handler.sh      # Execution script
+```
+
+- Reads `trigger.yaml` from the workspace's `triggers/` directory
+- Executes the handler when trigger words are found in LLM response text
+
 ### Skill System (skills.ts)
 
 Loads skills from the `skills/` directory in the workspace and registers them as slash commands.
@@ -174,8 +273,6 @@ skills/
 3. Permission check (allowedUsers)
    ↓
 4. Special command detection
-   - !discord → handleDiscordCommand()
-   - !schedule → handleScheduleMessage()
    - /command → Slash command handling
    ↓
 5. Attach channel info and sender info
@@ -184,9 +281,8 @@ skills/
    ↓
 7. Response processing
    - Streaming display
-   - File attachment extraction
+   - File attachment extraction (MEDIA: pattern)
    - SYSTEM_COMMAND detection
-   - !discord / !schedule detection & execution
    ↓
 8. Reply to user
 ```
@@ -233,13 +329,18 @@ When new AI CLIs emerge in the future, support can be added simply by creating a
 
 Detects and automatically executes special commands output by the AI:
 
-| Command | Action |
-|---------|--------|
-| `SYSTEM_COMMAND:restart` | Restart the process |
-| `!discord send ...` | Send a Discord message |
-| `!schedule ...` | Schedule operations |
+| Method | Command Example | Action |
+|--------|----------------|--------|
+| CLI tool | `xangi-cmd discord_send --channel ID --message "..."` | Discord operations |
+| CLI tool | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | Button-attached message |
+| CLI tool | `xangi-cmd schedule_add --input "Daily 9:00 ..."` | Schedule operations |
+| CLI tool | `xangi-cmd system_restart` | Process restart |
+| Text parsing | `MEDIA:/path/to/file` | File sending |
+| Text parsing | `\n===\n` | Message splitting |
+| Slash command | `/autoreply` | Toggle mention-free auto-reply per channel |
 
-This allows the AI to operate the system autonomously.
+CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
+Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
 
 ### Persistence Strategy
 
@@ -247,26 +348,44 @@ This allows the AI to operate the system autonomously.
 |------|-----------------|--------|
 | Schedules | `${DATA_DIR}/schedules.json` | JSON |
 | Runtime settings | `${WORKSPACE}/settings.json` | JSON |
-| Sessions | `${DATA_DIR}/sessions.json` | JSON (channel ID → session ID) |
-| Transcripts | `logs/transcripts/YYYY-MM-DD/{channelId}.jsonl` | JSONL (sent prompts, responses, errors) |
+| Sessions | `${DATA_DIR}/sessions.json` | JSON (appSessionId-based, activeByContext + sessions) |
+| Transcripts | `logs/sessions/{appSessionId}.jsonl` | JSONL (per-session conversation logs) |
+| Process PID | `${DATA_DIR}/xangi.pid` | Text (used by `xangi-cmd system_restart` to send SIGTERM; removed on shutdown) |
+
+### Session Management
+
+Sessions are managed using xangi's own `appSessionId`. The backend's `providerSessionId` (e.g., Claude Code's session_id) is saved after the response.
+
+**sessions.json Structure:**
+```json
+{
+  "activeByContext": { "<contextKey>": "<appSessionId>" },
+  "sessions": {
+    "<appSessionId>": {
+      "id": "<appSessionId>",
+      "title": "...",
+      "platform": "discord|slack|web",
+      "contextKey": "<channelId>",
+      "agent": { "backend": "claude-code", "providerSessionId": "..." }
+    }
+  }
+}
+```
 
 ### Transcript Logs
 
-Automatically saves per-channel AI conversation logs in JSONL format. Used for debugging and incident analysis.
+Automatically saves per-session AI conversation logs in JSONL format. Used for debugging, incident analysis, and WebUI browsing.
 
 **Directory Structure:**
 ```
-logs/transcripts/
-  2026-03-08/
-    1469606785672417383.jsonl   # Per-channel logs
-    1477591157423734785.jsonl
-  2026-03-09/
-    ...
+logs/sessions/
+  m4abc123_def456.jsonl   # Per-session logs
+  m4xyz789_ghi012.jsonl
 ```
 
 **Recorded Content:**
-- `prompt`: Prompt sent by the user (after timestamp and channel topic injection)
-- `response`: Claude Code's final response (result message)
+- `user`: Prompt sent by the user
+- `assistant`: AI's final response
 - `error`: Timeouts, API errors, etc.
 
 **Notes:**
@@ -277,23 +396,55 @@ logs/transcripts/
 ## File Structure
 
 ```
+bin/
+└── xangi-cmd           # CLI wrapper (shell script, relays to tool-server)
+
 src/
 ├── index.ts            # Entry point, Discord integration
 ├── slack.ts            # Slack integration
 ├── agent-runner.ts     # AI CLI interface
-├── base-runner.ts      # System prompt generation, XANGI_COMMANDS.md loading
+├── base-runner.ts      # System prompt generation
 ├── claude-code.ts      # Claude Code adapter (per-request)
 ├── persistent-runner.ts # Claude Code adapter (persistent process)
 ├── codex-cli.ts        # Codex CLI adapter
 ├── gemini-cli.ts       # Gemini CLI adapter
+├── web-chat.ts         # Web Chat UI (HTTP server)
+├── tool-server.ts      # Tool Server (HTTP API for AI CLIs)
+├── approval.ts         # Dangerous command detection (pattern matching)
+├── approval-server.ts  # Approval server (Discord/Slack interactive approval flow)
+├── github-auth.ts      # GitHub App authentication (in-memory key management & token generation)
+├── backend-resolver.ts # Per-channel backend resolution
+├── dynamic-runner.ts   # Dynamic runner manager
+├── safe-env.ts         # Environment variable whitelist
+├── constants.ts        # Application-wide constants
+├── schedule-cli.ts     # Scheduler CLI (legacy, migrated to tool-server)
+├── cli/                # CLI modules (called from tool-server)
+│   ├── discord-api.ts  #   Discord REST API calls
+│   ├── schedule-cmd.ts #   Schedule operations
+│   ├── system-cmd.ts   #   System operations
+│   └── xangi-cmd.ts    #   Node.js CLI entry point
 ├── local-llm/          # Local LLM adapter
 │   ├── runner.ts       #   Main runner (session management, tool execution loop)
 │   ├── llm-client.ts   #   LLM API client (Ollama native + OpenAI compatible)
 │   ├── context.ts      #   Workspace context loading
 │   ├── tools.ts        #   Built-in tools (exec/read/web_fetch)
+│   ├── xangi-tools.ts  #   xangi-specific tools (function calling version)
+│   ├── image-utils.ts  #   Image processing utilities (multimodal support)
+│   ├── triggers.ts     #   Trigger feature (magic word detection & execution in chat mode)
 │   └── types.ts        #   Type definitions
+├── prompts/            # Prompt definitions
+│   ├── index.ts                   # Export aggregation
+│   ├── xangi-commands.ts          # Per-platform assembly
+│   ├── xangi-commands-common.ts   # Common (timeout handling, etc.)
+│   ├── xangi-commands-chat-platform.ts # Chat platform common (MEDIA:/schedule/system)
+│   ├── xangi-commands-discord.ts  # Discord-specific (xangi-cmd discord_*)
+│   ├── xangi-commands-slack.ts    # Slack-specific
+│   ├── xangi-commands-web.ts      # Web-specific
+│   ├── chat-system-persistent.ts  # System prompt for persistent process
+│   ├── chat-system-resume.ts      # System prompt for session resume
+│   ├── platform-labels.ts         # Platform display name labels
+│   └── tools-usage.ts             # Tool usage prompt for Local LLM
 ├── scheduler.ts        # Scheduler
-├── schedule-cli.ts     # Scheduler CLI
 ├── skills.ts           # Skill loader
 ├── config.ts           # Configuration loading
 ├── settings.ts         # Runtime settings
@@ -301,10 +452,7 @@ src/
 ├── file-utils.ts       # File operation utilities
 ├── process-manager.ts  # Process management
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)
-└── transcript-logger.ts # Transcript logging
-
-prompts/
-└── XANGI_COMMANDS.md   # xangi-specific command specs (injected into AI CLI)
+└── transcript-logger.ts # Per-session transcript logging
 ```
 
 ## Docker Architecture

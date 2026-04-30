@@ -110,27 +110,36 @@ describe('LocalLlmRunner liteMode', () => {
     }
   });
 
-  it('should default to agent mode (liteMode=false)', () => {
+  it('should default to all features enabled', () => {
     delete process.env.LOCAL_LLM_MODE;
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
-    expect(runner.liteMode).toBe(false);
+    expect(runner.enableTools).toBe(true);
+    expect(runner.enableSkills).toBe(true);
+    expect(runner.enableXangiCommands).toBe(true);
+    expect(runner.enableTriggers).toBe(false);
   });
 
-  it('should enable liteMode when LOCAL_LLM_MODE=lite', () => {
+  it('should use lite defaults when LOCAL_LLM_MODE=lite', () => {
     process.env.LOCAL_LLM_MODE = 'lite';
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
-    expect(runner.liteMode).toBe(true);
+    expect(runner.enableTools).toBe(true);
+    expect(runner.enableTriggers).toBe(true);
   });
 
-  it('should stay in agent mode when LOCAL_LLM_MODE=agent', () => {
-    process.env.LOCAL_LLM_MODE = 'agent';
+  it('should use chat defaults when LOCAL_LLM_MODE=chat', () => {
+    process.env.LOCAL_LLM_MODE = 'chat';
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
-    expect(runner.liteMode).toBe(false);
+    expect(runner.enableTools).toBe(false);
+    expect(runner.enableSkills).toBe(false);
+    expect(runner.enableXangiCommands).toBe(false);
+    expect(runner.enableTriggers).toBe(false);
   });
 
-  it('should be case-insensitive for LOCAL_LLM_MODE', () => {
-    process.env.LOCAL_LLM_MODE = 'Lite';
+  it('should allow individual overrides over mode defaults', () => {
+    process.env.LOCAL_LLM_MODE = 'chat';
+    process.env.LOCAL_LLM_TOOLS = 'true';
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
-    expect(runner.liteMode).toBe(true);
+    expect(runner.enableTools).toBe(true);
+    expect(runner.enableSkills).toBe(false);
   });
 });

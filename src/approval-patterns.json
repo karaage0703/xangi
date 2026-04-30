@@ -1,0 +1,22 @@
+[
+  { "command": "rm -r", "description": "再帰的ファイル削除", "category": "file" },
+  { "command": "rm -f", "description": "強制ファイル削除", "category": "file" },
+  { "command": "git push", "description": "Git push", "category": "git" },
+  { "command": "git reset --hard", "description": "Git hard reset", "category": "git" },
+  { "command": "git clean -f", "description": "Git clean (強制)", "category": "git" },
+  { "command": "git branch -D", "description": "Git branch 強制削除", "category": "git" },
+  { "command": "chmod 777", "description": "全権限付与", "category": "permission" },
+  { "command": "chown -R", "description": "再帰的所有権変更", "category": "permission" },
+  { "command": "shutdown", "description": "システムシャットダウン", "category": "system" },
+  { "command": "reboot", "description": "システム再起動", "category": "system" },
+  { "command": "kill -9", "description": "プロセス強制終了", "category": "system" },
+  { "command": "killall", "description": "全プロセス終了", "category": "system" },
+  { "command": "| sh", "description": "パイプ経由スクリプト実行", "category": "network" },
+  { "command": "| bash", "description": "パイプ経由スクリプト実行", "category": "network" },
+  { "command": "DROP TABLE", "description": "データベース削除", "category": "database" },
+  { "command": "DROP DATABASE", "description": "データベース削除", "category": "database" },
+  { "command": "TRUNCATE TABLE", "description": "テーブルデータ全削除", "category": "database" },
+  { "command": ".env", "description": ".envファイルアクセス", "category": "secrets" },
+  { "command": "credentials", "description": "認証ファイルアクセス", "category": "secrets" },
+  { "command": ".pem", "description": "秘密鍵アクセス", "category": "secrets" }
+]

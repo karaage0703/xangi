@@ -3,7 +3,10 @@ import path from 'path';
 import os from 'os';
 
 const DOWNLOAD_DIR = path.join(
-  process.env.DATA_DIR || path.join(os.homedir(), '.xangi'),
+  process.env.DATA_DIR ||
+    (process.env.WORKSPACE_PATH
+      ? path.join(process.env.WORKSPACE_PATH, '.xangi')
+      : path.join(os.homedir(), '.xangi')),
   'media',
   'attachments'
 );

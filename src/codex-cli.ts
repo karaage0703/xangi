@@ -141,16 +141,16 @@ export class CodexRunner implements AgentRunner {
     console.log(`[codex] Executing in ${this.workdir || 'default dir'}${sessionInfo}`);
 
     // トランスクリプトログ: 送信プロンプトを記録
-    if (options?.channelId && this.workdir) {
-      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    if (options?.appSessionId && this.workdir) {
+      logPrompt(this.workdir, options.appSessionId, prompt);
     }
 
     const { stdout, sessionId } = await this.execute(args, options?.channelId);
     const result = this.extractResult(stdout);
 
     // トランスクリプトログ: 応答を記録
-    if (options?.channelId && this.workdir) {
-      logResponse(this.workdir, options.channelId, { result, sessionId });
+    if (options?.appSessionId && this.workdir) {
+      logResponse(this.workdir, options.appSessionId, { result, sessionId });
     }
 
     return { result, sessionId };
@@ -162,10 +162,14 @@ export class CodexRunner implements AgentRunner {
   ): Promise<{ stdout: string; sessionId: string }> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('codex', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 
@@ -263,24 +267,29 @@ export class CodexRunner implements AgentRunner {
     console.log(`[codex] Streaming in ${this.workdir || 'default dir'}${sessionInfo}`);
 
     // トランスクリプトログ: 送信プロンプトを記録
-    if (options?.channelId && this.workdir) {
-      logPrompt(this.workdir, options.channelId, prompt, options?.sessionId);
+    if (options?.appSessionId && this.workdir) {
+      logPrompt(this.workdir, options.appSessionId, prompt);
     }
 
-    return this.executeStream(args, callbacks, options?.channelId);
+    return this.executeStream(args, callbacks, options?.channelId, options?.appSessionId);
   }
 
   private executeStream(
     args: string[],
     callbacks: StreamCallbacks,
-    channelId?: string
+    channelId?: string,
+    appSessionId?: string
   ): Promise<RunResult> {
     const safeEnv = getSafeEnv();
     return new Promise((resolve, reject) => {
+      const childEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
+      if (channelId) {
+        childEnv.XANGI_CHANNEL_ID = channelId;
+      }
       const proc = spawn('codex', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: this.workdir,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env: childEnv,
       });
       this.currentProcess = proc;
 
@@ -366,8 +375,8 @@ export class CodexRunner implements AgentRunner {
         const result: RunResult = { result: fullText, sessionId };
 
         // トランスクリプトログ: 応答を記録
-        if (channelId && this.workdir) {
-          logResponse(this.workdir, channelId, { result: fullText, sessionId });
+        if (appSessionId && this.workdir) {
+          logResponse(this.workdir, appSessionId, { result: fullText, sessionId });
         }
 
         callbacks.onComplete?.(result);

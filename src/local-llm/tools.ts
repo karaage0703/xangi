@@ -6,6 +6,7 @@ import { resolve, join } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler } from './types.js';
 import { getSafeEnv } from '../safe-env.js';
+import { getGitHubEnv } from '../github-auth.js';
 
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
 async function shellExec(
@@ -61,7 +62,7 @@ const execToolHandler: ToolHandler = {
         cwd,
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: getSafeEnv(),
+        env: { ...getSafeEnv(), ...getGitHubEnv(getSafeEnv()) },
       });
       return { success: true, output: [stdout, stderr].filter(Boolean).join('\n').trim() };
     } catch (err) {
@@ -187,8 +188,25 @@ const webFetchToolHandler: ToolHandler = {
 
 const ALL_TOOLS: ToolHandler[] = [execToolHandler, readToolHandler, webFetchToolHandler];
 
+// 動的に追加されたツール（トリガー由来等）
+let dynamicTools: ToolHandler[] = [];
+
 export function getBuiltinTools(): ToolHandler[] {
   return ALL_TOOLS;
+}
+
+/**
+ * 動的ツールを登録する（トリガーのツール化等）
+ */
+export function registerDynamicTools(tools: ToolHandler[]): void {
+  dynamicTools = tools;
+}
+
+/**
+ * 全ツール（ビルトイン + 動的）を取得
+ */
+export function getAllTools(): ToolHandler[] {
+  return [...ALL_TOOLS, ...dynamicTools];
 }
 
 export function toLLMTools(handlers: ToolHandler[]): LLMTool[] {
@@ -204,7 +222,8 @@ export async function executeTool(
   args: Record<string, unknown>,
   context: ToolContext
 ): Promise<ToolResult> {
-  const handler = ALL_TOOLS.find((t) => t.name === name);
+  const allTools = getAllTools();
+  const handler = allTools.find((t) => t.name === name);
   if (!handler) return { success: false, output: '', error: `Unknown tool: ${name}` };
 
   try {

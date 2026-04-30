@@ -1,61 +1,57 @@
 /**
- * Discord専用のxangiコマンド
+ * Discord操作コマンド（xangi-cmd CLIツール版）
+ *
+ * Discord固有の操作のみ。スケジュール・システム操作はchat-platform共通。
  */
-export const XANGI_COMMANDS_DISCORD = `## Discord操作コマンド
+export const XANGI_COMMANDS_DISCORD = `## Discord操作
 
-**⚠️ \`!discord\` コマンドはBashコマンドではない！**
-応答テキストに直接書くこと。Bashツールで実行すると \`command not found\` エラーになる。
-xangiがテキスト出力を各行ごとにパースして処理する仕組み。
-
-### 別チャンネルにメッセージ送信
-
-\`\`\`
-!discord send <#チャンネルID> メッセージ内容
-\`\`\`
-
-**注意：**
-- \`<#チャンネルID>\` の形式を守ること（\`<#\` と \`>\` で囲む）
-- 「〇〇チャンネルに△△って言って」と頼まれたら、このコマンドを使う
-
-### チャンネル一覧を取得
-
-\`\`\`
-!discord channels
-\`\`\`
+Discord操作は **Bashツールで \`xangi-cmd\` を実行** して行う。
 
 ### チャンネル履歴の取得
 
-\`\`\`
-!discord history [件数] [<#チャンネルID>]
+\`\`\`bash
+xangi-cmd discord_history --count <件数> --offset <N>
+xangi-cmd discord_history --channel <チャンネルID> --count <件数> --offset <N>
 \`\`\`
 
-チャンネルの最新メッセージを取得する。**結果はDiscordに送信されず、自分のコンテキストに返る。**
+結果は標準出力に返る（Discordには送信されない）。
+件数省略時はデフォルト10件、最大100件。offset で古いメッセージに遡れる。
+\`--channel\` を省略した場合、xangi上で実行中なら現在のチャンネルを使う。CLI単体実行では \`--channel\` が必要。
 
-- 件数省略時はデフォルト10件、最大100件
-- チャンネルID省略時は現在のチャンネル
-- \`offset:N\` で古いメッセージに遡れる（30件ずつ取得でタイムアウト防止）
+### 別チャンネルにメッセージ送信
+
+\`\`\`bash
+xangi-cmd discord_send --channel <チャンネルID> --message "メッセージ内容"
+\`\`\`
+
+### チャンネル一覧
+
+\`\`\`bash
+xangi-cmd discord_channels --guild <サーバーID>
+\`\`\`
 
 ### メッセージ検索
 
+\`\`\`bash
+xangi-cmd discord_search --channel <チャンネルID> --keyword "キーワード"
 \`\`\`
-!discord search キーワード
+
+### メッセージ編集
+
+\`\`\`bash
+xangi-cmd discord_edit --channel <チャンネルID> --message-id <メッセージID> --content "新しい内容"
 \`\`\`
 
 ### メッセージ削除
 
-\`\`\`
-!discord delete <メッセージID>
-!discord delete <メッセージリンク>
+\`\`\`bash
+xangi-cmd discord_delete --channel <チャンネルID> --message-id <メッセージID>
 \`\`\`
 
-- 自分（bot）のメッセージのみ削除可能
+### ファイル送信
 
-### メッセージ編集
-
-\`\`\`
-!discord edit <メッセージID> 新しい内容
-!discord edit <メッセージリンク> 新しい内容
-!discord edit last 新しい内容
+\`\`\`bash
+xangi-cmd media_send --channel <チャンネルID> --file /path/to/file
 \`\`\`
 
 ## 自動展開機能（読み取り専用）

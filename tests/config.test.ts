@@ -18,7 +18,7 @@ describe('config', () => {
 
     // キャッシュをクリアして再インポート
     const { loadConfig } = await import('../src/config.js');
-    expect(() => loadConfig()).toThrow('DISCORD_TOKEN or SLACK_BOT_TOKEN');
+    expect(() => loadConfig()).toThrow('DISCORD_TOKEN');
   });
 
   it('should load Discord config when DISCORD_TOKEN is set', async () => {
@@ -83,5 +83,35 @@ describe('config', () => {
 
     expect(config.scheduler.enabled).toBe(false);
     expect(config.scheduler.startupEnabled).toBe(false);
+  });
+
+  it('should enable allowAutoreplyCommand by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.ALLOW_AUTOREPLY_COMMAND;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowAutoreplyCommand).toBe(true);
+  });
+
+  it('should enable allowAutoreplyCommand when ALLOW_AUTOREPLY_COMMAND=true', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.ALLOW_AUTOREPLY_COMMAND = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowAutoreplyCommand).toBe(true);
+  });
+
+  it('should disable allowAutoreplyCommand when ALLOW_AUTOREPLY_COMMAND=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.ALLOW_AUTOREPLY_COMMAND = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowAutoreplyCommand).toBe(false);
   });
 });

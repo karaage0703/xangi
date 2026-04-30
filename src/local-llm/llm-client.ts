@@ -97,14 +97,37 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): Promise<LLMChatResponse> {
+    // toolCallId → tool name の逆引きマップ（Ollamaはtool_nameで関連付ける）
+    const toolCallNameById = new Map<string, string>();
+
     const ollamaMessages = messages.map((msg) => {
-      const m: { role: string; content: string; images?: string[] } = {
+      const m: Record<string, unknown> = {
         role: msg.role,
         content: msg.content,
       };
       // Ollama形式: images フィールドにbase64画像を配列で渡す
       if (msg.images && msg.images.length > 0) {
         m.images = msg.images.map((img) => img.base64);
+      }
+      // assistant メッセージ: tool_calls を渡す
+      if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+        m.tool_calls = msg.toolCalls.map((tc) => {
+          toolCallNameById.set(tc.id, tc.name);
+          return {
+            type: 'function',
+            function: {
+              name: tc.name,
+              arguments: tc.arguments,
+            },
+          };
+        });
+      }
+      // tool メッセージ: tool_name で呼び出し元を関連付ける
+      if (msg.role === 'tool' && msg.toolCallId) {
+        const toolName = toolCallNameById.get(msg.toolCallId);
+        if (toolName) {
+          m.tool_name = toolName;
+        }
       }
       return m;
     });

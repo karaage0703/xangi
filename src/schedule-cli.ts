@@ -10,6 +10,7 @@
  *   schedule-cli toggle <id>
  */
 
+import { join } from 'path';
 import {
   Scheduler,
   parseScheduleInput,
@@ -18,7 +19,9 @@ import {
   type Platform,
 } from './scheduler.js';
 
-const DATA_DIR = process.env.XANGI_DATA_DIR || process.env.DATA_DIR || undefined;
+const DATA_DIR =
+  process.env.DATA_DIR ||
+  (process.env.WORKSPACE_PATH ? join(process.env.WORKSPACE_PATH, '.xangi') : undefined);
 const schedulerConfig = {
   enabled: process.env.SCHEDULER_ENABLED !== 'false',
   startupEnabled: process.env.STARTUP_ENABLED !== 'false',
@@ -42,7 +45,8 @@ Usage:
   "毎週月曜 10:00 週次MTG"
 
 環境変数:
-  XANGI_DATA_DIR or DATA_DIR  データディレクトリ（default: ./.xangi）
+  DATA_DIR         データディレクトリ（default: WORKSPACE_PATH/.xangi）
+  WORKSPACE_PATH   ワークスペースパス
 `);
 }
 

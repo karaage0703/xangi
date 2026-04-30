@@ -1,4 +1,4 @@
-import type { AgentBackend, AgentConfig } from './config.js';
+import type { AgentBackend, AgentConfig, EffortLevel } from './config.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
 import { GeminiRunner } from './gemini-cli.js';
@@ -11,6 +11,8 @@ export interface RunOptions {
   channelId?: string; // プロセス管理用
   /** CHANNEL_AGENT_MAP により preset されたエージェント名。set 時は LLM を「この channel はこの agent 専用」でロックする。 */
   channelAgent?: string;
+  appSessionId?: string; // xangi側セッションID（ログ用）
+  effort?: EffortLevel; // Claude Code の --effort オプション
 }
 
 export interface RunResult {

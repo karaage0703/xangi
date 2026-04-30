@@ -50,7 +50,11 @@ describe('CodexRunner buildArgs', () => {
   /**
    * spawn に渡された引数を取得するヘルパー
    */
-  async function getSpawnArgs(runner: CodexRunner, prompt: string, options?: { sessionId?: string; skipPermissions?: boolean }) {
+  async function getSpawnArgs(
+    runner: CodexRunner,
+    prompt: string,
+    options?: { sessionId?: string; skipPermissions?: boolean }
+  ) {
     const { spawn, getMockProcess } = await import('child_process');
 
     // run を開始（完了は待たない）

@@ -25,6 +25,7 @@ export class RunnerManager implements AgentRunner {
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private agentConfig: AgentConfig;
   private platform?: ChatPlatform;
+  private effort?: string;
 
   /** デフォルトのチャンネルID（channelIdが未指定の場合に使用） */
   private static readonly DEFAULT_CHANNEL = '__default__';
@@ -37,10 +38,12 @@ export class RunnerManager implements AgentRunner {
       maxProcesses?: number;
       idleTimeoutMs?: number;
       platform?: ChatPlatform;
+      effort?: string;
     }
   ) {
     this.agentConfig = agentConfig;
     this.platform = options?.platform;
+    this.effort = options?.effort;
     this.maxProcesses = options?.maxProcesses ?? 10;
     this.idleTimeoutMs = options?.idleTimeoutMs ?? 30 * 60 * 1000; // 30分
 
@@ -68,10 +71,13 @@ export class RunnerManager implements AgentRunner {
     }
 
     // 新しい PersistentRunner を作成
+    // web-chatチャンネルはWeb用のシステムプロンプトを使用
+    const runnerPlatform = channelId === 'web-chat' ? ('web' as const) : this.platform;
     const runner = new PersistentRunner({
       ...this.agentConfig,
       channelId,
-      platform: this.platform,
+      platform: runnerPlatform,
+      effort: this.effort,
     });
 
     // セッション無効化イベント: sessions.json からも削除して永続的にリセット
