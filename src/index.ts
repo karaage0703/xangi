@@ -1274,6 +1274,75 @@ function buildRecallFriendlyDevMemory(prompt: string, result: string): string {
   ].join('\n');
 }
 
+function extractArtifactMentions(text: string): string[] {
+  return [
+    ...text.matchAll(/(?:[\w.-]+\/)+[\w.-]+\.(?:ts|js|py|md|json|yml|yaml|plist|txt|html|css)/g),
+  ]
+    .map((m) => m[0])
+    .filter((file, idx, arr) => arr.indexOf(file) === idx)
+    .slice(0, 12);
+}
+
+function recordAgentBusTask(params: {
+  prompt: string;
+  dispatch: DispatchResult;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  result?: string;
+  channelId: string;
+  source?: string;
+  remember?: boolean;
+  metadata?: Record<string, unknown>;
+}): void {
+  try {
+    const route = params.dispatch.track || 'llm';
+    const agent = params.dispatch.agent || '';
+    const result = params.result || '';
+    const artifacts = extractArtifactMentions(result);
+    const args = [
+      pathJoin(ACTION_SCRIPTS_DIR, 'agent_bus.py'),
+      'record',
+      '--user-intent',
+      params.prompt.slice(0, 4000),
+      '--route',
+      route,
+      '--agent',
+      agent,
+      '--status',
+      params.status,
+      '--result',
+      result.slice(0, 4000),
+      '--artifacts',
+      JSON.stringify(artifacts),
+      '--source',
+      params.source || 'discord',
+      '--session-id',
+      params.channelId,
+      '--metadata',
+      JSON.stringify({
+        mode: params.dispatch.mode,
+        blast_radius: params.dispatch.blast_radius || null,
+        reason: params.dispatch.reason || null,
+        ...params.metadata,
+      }),
+    ];
+    const shouldRemember = params.remember ?? (params.status === 'completed');
+    if (shouldRemember) {
+      args.push('--remember');
+    }
+    execFile(
+      'python3',
+      args,
+      { timeout: 7000, cwd: ACTION_SCRIPTS_DIR },
+      (err, _stdout, stderr) => {
+        if (err) console.error('[izuna-agent-bus] record error:', stderr || err.message);
+        else console.log(`[izuna-agent-bus] recorded ${route}/${agent || 'unassigned'}`);
+      }
+    );
+  } catch (err) {
+    console.error('[izuna-agent-bus] hook error:', err);
+  }
+}
+
 const TOPIC_KEYWORDS: Record<string, string[]> = {
   mail: [
     '\u30e1\u30fc\u30eb',
@@ -3951,6 +4020,14 @@ async function processPrompt(
           console.log(
             `[izuna-worker-exec] Direct result for ${dispatch.agent} (${directResult.length} chars)`
           );
+          recordAgentBusTask({
+            prompt,
+            dispatch,
+            status: 'completed',
+            result: directResult,
+            channelId,
+            metadata: { execution: 'worker_direct' },
+          });
           await message.react('⚡').catch(() => {});
           const workerChunks = splitMessage(directResult, DISCORD_SAFE_LENGTH);
           await message.reply(workerChunks[0] || '✅');
@@ -4009,6 +4086,14 @@ async function processPrompt(
         const devResult = await spawnDevAgent(dispatch, prompt, channelId, config);
         if (devResult) {
           console.log(`[izuna-dev-agent] Result for ${dispatch.agent} (${devResult.length} chars)`);
+          recordAgentBusTask({
+            prompt,
+            dispatch,
+            status: 'completed',
+            result: devResult,
+            channelId,
+            metadata: { execution: 'dev_agent' },
+          });
           const chunks = splitMessage(devResult, DISCORD_SAFE_LENGTH);
           await devReply.edit(chunks[0] || '完了');
           if ('send' in message.channel && chunks.length > 1) {
@@ -4336,6 +4421,17 @@ async function processPrompt(
       }
     } catch (err) {
       console.error('[xangi] action_hook error:', err);
+    }
+
+    if (dispatch?.track && dispatch.agent) {
+      recordAgentBusTask({
+        prompt,
+        dispatch,
+        status: 'completed',
+        result,
+        channelId,
+        metadata: { execution: 'llm_with_dispatch_hint' },
+      });
     }
 
     // ファイルパスを抽出して添付送信
