@@ -1251,6 +1251,29 @@ function isClaudeDevChannel(channelId: string): boolean {
     .includes(channelId);
 }
 
+function buildRecallFriendlyDevMemory(prompt: string, result: string): string {
+  const compact = (s: string, max: number) =>
+    s.replace(ACTION_HOOK_RE, '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const commits = [...result.matchAll(/\b[0-9a-f]{7,12}\b/g)]
+    .map((m) => m[0])
+    .filter((sha, idx, arr) => arr.indexOf(sha) === idx)
+    .slice(0, 5);
+  const fileMentions = [
+    ...result.matchAll(/(?:[\w.-]+\/)+[\w.-]+\.(?:ts|js|py|md|json|yml|yaml|plist)/g),
+  ]
+    .map((m) => m[0])
+    .filter((file, idx, arr) => arr.indexOf(file) === idx)
+    .slice(0, 8);
+  return [
+    '[recall_key] claude_dev self_mod discord_policy programming_change izuna_secretary_loop',
+    `[user_intent] ${compact(prompt, 500)}`,
+    `[outcome] ${compact(result, 900)}`,
+    commits.length ? `[commits] ${commits.join(', ')}` : '[commits] none_detected',
+    fileMentions.length ? `[artifacts] ${fileMentions.join(', ')}` : '[artifacts] none_detected',
+    '[next_recall_hint] この記憶は、Discord上の方針変更がプログラム/プロンプト/設定変更へ反映された経緯を思い出すためのもの。',
+  ].join('\n');
+}
+
 const TOPIC_KEYWORDS: Record<string, string[]> = {
   mail: [
     '\u30e1\u30fc\u30eb',
@@ -4415,24 +4438,36 @@ async function processPrompt(
       const cleanResp = result.replace(ACTION_HOOK_RE, '').trim();
       const isDevMemory = isClaudeDevChannel(message.channel.id);
       const content = isDevMemory
-        ? `[claude_dev]\n[user] ${prompt.slice(0, 800)}\n[assistant] ${cleanResp.slice(0, 1200)}`
+        ? buildRecallFriendlyDevMemory(prompt, cleanResp)
         : `[user] ${prompt.slice(0, 300)}\n[assistant] ${cleanResp.slice(0, 500)}`;
+      const memoryArgs = [
+        pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
+        'record',
+        '--agent',
+        isDevMemory ? 'claude_dev' : 'izuna',
+        '--type',
+        isDevMemory ? 'dev_task' : 'conversation',
+        '--content',
+        content,
+        '--source-type',
+        'discord',
+        '--session-id',
+        message.channel.id,
+      ];
+      if (isDevMemory) {
+        memoryArgs.push(
+          '--impact',
+          'architecture',
+          '--tags',
+          'claude_dev',
+          'self_mod',
+          'secretary_loop',
+          'discord_policy'
+        );
+      }
       execFile(
         'python3',
-        [
-          pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
-          'record',
-          '--agent',
-          isDevMemory ? 'claude_dev' : 'izuna',
-          '--type',
-          isDevMemory ? 'dev_task' : 'conversation',
-          '--content',
-          content,
-          '--source-type',
-          'discord',
-          '--session-id',
-          message.channel.id,
-        ],
+        memoryArgs,
         { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
         (err, _stdout, stderr) => {
           if (err) console.error('[izuna-memory] L1 record error:', stderr || err.message);
