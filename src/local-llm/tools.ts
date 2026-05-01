@@ -1,8 +1,9 @@
 /**
- * ローカルLLM用ビルトインツール（exec, read, web_fetch）
+ * ローカルLLM用ビルトインツール（exec, read, write, edit, glob, grep, web_fetch）
  */
-import { readFileSync, existsSync, statSync } from 'fs';
-import { resolve, join } from 'path';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, readdirSync } from 'fs';
+import { promises as fsp } from 'fs';
+import { resolve, join, dirname, relative, sep } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler } from './types.js';
 import { getSafeEnv } from '../safe-env.js';
@@ -18,10 +19,29 @@ async function shellExec(
   return execAsync(command, options);
 }
 
-// --- Configurable timeouts ---
+// --- Configurable limits ---
 
 const EXEC_TIMEOUT_MS = parseInt(process.env.EXEC_TIMEOUT_MS ?? '120000', 10);
 const WEB_FETCH_TIMEOUT_MS = parseInt(process.env.WEB_FETCH_TIMEOUT_MS ?? '15000', 10);
+const READ_MAX_BYTES = parseInt(process.env.LOCAL_LLM_READ_MAX_BYTES ?? String(512 * 1024), 10);
+const READ_JSON_MAX_BYTES = parseInt(
+  process.env.LOCAL_LLM_READ_JSON_MAX_BYTES ?? String(5 * 1024),
+  10
+);
+const WRITE_MAX_BYTES = parseInt(process.env.LOCAL_LLM_WRITE_MAX_BYTES ?? String(512 * 1024), 10);
+
+/**
+ * パスをワークスペース基準で解決し、ワークスペース外（../traversal や絶対パス経由）に
+ * 出るパスは Error を投げる。ツール側で try/catch して ToolResult のエラーに変換する。
+ */
+function resolveWorkspacePath(filePath: string, workspace: string): string {
+  const resolved = filePath.startsWith('/') ? filePath : resolve(join(workspace, filePath));
+  const rel = relative(workspace, resolved);
+  if (rel === '..' || rel.startsWith('..' + sep)) {
+    throw new Error(`Path outside workspace: ${filePath}`);
+  }
+  return resolved;
+}
 
 // --- exec tool ---
 
@@ -92,19 +112,22 @@ const readToolHandler: ToolHandler = {
     const filePath = args.path as string;
     if (!filePath) return { success: false, output: '', error: 'path is required' };
 
-    const resolved = filePath.startsWith('/')
-      ? filePath
-      : resolve(join(context.workspace, filePath));
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(filePath, context.workspace);
+    } catch (err) {
+      return { success: false, output: '', error: (err as Error).message };
+    }
     if (!existsSync(resolved))
       return { success: false, output: '', error: `File not found: ${resolved}` };
 
     const stat = statSync(resolved);
     if (!stat.isFile()) return { success: false, output: '', error: `Not a file: ${resolved}` };
-    if (stat.size > 512 * 1024)
+    if (stat.size > READ_MAX_BYTES)
       return { success: false, output: '', error: `File too large: ${stat.size} bytes` };
 
     // JSONファイルが大きい場合は警告（profile_tool.py等のCLI経由を推奨）
-    if (resolved.endsWith('.json') && stat.size > 5 * 1024)
+    if (resolved.endsWith('.json') && stat.size > READ_JSON_MAX_BYTES)
       return {
         success: false,
         output: '',
@@ -116,6 +139,320 @@ const readToolHandler: ToolHandler = {
     } catch (err) {
       return { success: false, output: '', error: String(err) };
     }
+  },
+};
+
+// --- write tool ---
+
+const writeToolHandler: ToolHandler = {
+  name: 'write',
+  description:
+    'Write content to a file. Creates parent directories if needed. Overwrites the file if it already exists.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Path to the file (absolute or relative to workspace)',
+      },
+      content: { type: 'string', description: 'Content to write to the file' },
+    },
+    required: ['path', 'content'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const filePath = args.path as string;
+    const content = args.content as string;
+
+    if (!filePath) return { success: false, output: '', error: 'path is required' };
+    if (typeof content !== 'string')
+      return { success: false, output: '', error: 'content must be a string' };
+
+    const byteLength = Buffer.byteLength(content, 'utf-8');
+    if (byteLength > WRITE_MAX_BYTES)
+      return {
+        success: false,
+        output: '',
+        error: `Content too large: ${byteLength} bytes (max ${WRITE_MAX_BYTES})`,
+      };
+
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(filePath, context.workspace);
+    } catch (err) {
+      return { success: false, output: '', error: (err as Error).message };
+    }
+
+    try {
+      const parent = dirname(resolved);
+      if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+      writeFileSync(resolved, content, 'utf-8');
+      return { success: true, output: `Wrote ${byteLength} bytes to ${resolved}` };
+    } catch (err) {
+      return { success: false, output: '', error: String(err) };
+    }
+  },
+};
+
+// --- edit tool ---
+
+const editToolHandler: ToolHandler = {
+  name: 'edit',
+  description:
+    'Replace old_string with new_string in a file. By default, old_string must match exactly once; set replace_all=true to replace every occurrence.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Path to the file (absolute or relative to workspace)',
+      },
+      old_string: { type: 'string', description: 'Exact text to find' },
+      new_string: { type: 'string', description: 'Replacement text' },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace all occurrences (default: false)',
+      },
+    },
+    required: ['path', 'old_string', 'new_string'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const filePath = args.path as string;
+    const oldString = args.old_string as string;
+    const newString = args.new_string as string;
+    const replaceAll = args.replace_all === true;
+
+    if (!filePath) return { success: false, output: '', error: 'path is required' };
+    if (typeof oldString !== 'string' || oldString.length === 0)
+      return { success: false, output: '', error: 'old_string must be a non-empty string' };
+    if (typeof newString !== 'string')
+      return { success: false, output: '', error: 'new_string must be a string' };
+    if (oldString === newString)
+      return { success: false, output: '', error: 'old_string and new_string must differ' };
+
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(filePath, context.workspace);
+    } catch (err) {
+      return { success: false, output: '', error: (err as Error).message };
+    }
+    if (!existsSync(resolved))
+      return { success: false, output: '', error: `File not found: ${resolved}` };
+
+    const stat = statSync(resolved);
+    if (!stat.isFile()) return { success: false, output: '', error: `Not a file: ${resolved}` };
+    if (stat.size > WRITE_MAX_BYTES)
+      return { success: false, output: '', error: `File too large: ${stat.size} bytes` };
+
+    let original: string;
+    try {
+      original = readFileSync(resolved, 'utf-8');
+    } catch (err) {
+      return { success: false, output: '', error: String(err) };
+    }
+
+    const occurrences = original.split(oldString).length - 1;
+    if (occurrences === 0)
+      return { success: false, output: '', error: 'old_string not found in file' };
+    if (!replaceAll && occurrences > 1)
+      return {
+        success: false,
+        output: '',
+        error: `old_string matches ${occurrences} occurrences; provide a more specific string or set replace_all=true`,
+      };
+
+    const updated = replaceAll
+      ? original.split(oldString).join(newString)
+      : original.replace(oldString, newString);
+
+    try {
+      writeFileSync(resolved, updated, 'utf-8');
+      return {
+        success: true,
+        output: `Replaced ${replaceAll ? occurrences : 1} occurrence(s) in ${resolved}`,
+      };
+    } catch (err) {
+      return { success: false, output: '', error: String(err) };
+    }
+  },
+};
+
+// --- glob tool ---
+
+const GLOB_MAX_RESULTS = 500;
+const DEFAULT_EXCLUDES = new Set(['node_modules', '.git', 'dist', '.next', '.cache']);
+
+const globToolHandler: ToolHandler = {
+  name: 'glob',
+  description:
+    'Find files matching a glob pattern (e.g. "**/*.ts", "src/**/*.{js,ts}"). Returns paths relative to the search directory.',
+  parameters: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Glob pattern' },
+      cwd: {
+        type: 'string',
+        description: 'Directory to search in (defaults to workspace)',
+      },
+    },
+    required: ['pattern'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const pattern = args.pattern as string;
+    const cwdArg = args.cwd as string | undefined;
+
+    if (!pattern || typeof pattern !== 'string')
+      return { success: false, output: '', error: 'pattern must be a non-empty string' };
+
+    let searchRoot: string;
+    try {
+      searchRoot = cwdArg ? resolveWorkspacePath(cwdArg, context.workspace) : context.workspace;
+    } catch (err) {
+      return { success: false, output: '', error: (err as Error).message };
+    }
+
+    if (!existsSync(searchRoot))
+      return { success: false, output: '', error: `Directory not found: ${searchRoot}` };
+
+    try {
+      const results: string[] = [];
+      const iterator = fsp.glob(pattern, {
+        cwd: searchRoot,
+        exclude: (entry: string) => {
+          const base = entry.split('/').pop() ?? entry;
+          return DEFAULT_EXCLUDES.has(base);
+        },
+      } as Parameters<typeof fsp.glob>[1]);
+
+      for await (const entry of iterator) {
+        results.push(entry as string);
+        if (results.length >= GLOB_MAX_RESULTS) break;
+      }
+
+      const truncated = results.length >= GLOB_MAX_RESULTS;
+      const output = results.join('\n') + (truncated ? '\n... [truncated]' : '');
+      return {
+        success: true,
+        output: results.length === 0 ? '(no matches)' : output,
+      };
+    } catch (err) {
+      return { success: false, output: '', error: String(err) };
+    }
+  },
+};
+
+// --- grep tool ---
+
+const GREP_MAX_MATCHES = 200;
+const GREP_MAX_LINE_LEN = 500;
+const GREP_MAX_FILE_BYTES = 2 * 1024 * 1024; // skip files larger than 2MB
+
+function* walkFiles(root: string): Generator<string> {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (DEFAULT_EXCLUDES.has(entry.name)) continue;
+    const full = join(root, entry.name);
+    if (entry.isDirectory()) {
+      yield* walkFiles(full);
+    } else if (entry.isFile()) {
+      yield full;
+    }
+  }
+}
+
+const grepToolHandler: ToolHandler = {
+  name: 'grep',
+  description:
+    'Search file contents for a regular expression. Returns "path:line:matched_line" entries. Skips node_modules, .git, dist, etc.',
+  parameters: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'JavaScript regular expression' },
+      path: {
+        type: 'string',
+        description: 'File or directory to search (defaults to workspace)',
+      },
+      file_pattern: {
+        type: 'string',
+        description: 'Optional file extension filter (e.g. ".ts" or ".md")',
+      },
+      ignore_case: { type: 'boolean', description: 'Case-insensitive match' },
+    },
+    required: ['pattern'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const pattern = args.pattern as string;
+    const pathArg = args.path as string | undefined;
+    const filePattern = args.file_pattern as string | undefined;
+    const ignoreCase = args.ignore_case === true;
+
+    if (!pattern || typeof pattern !== 'string')
+      return { success: false, output: '', error: 'pattern must be a non-empty string' };
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, ignoreCase ? 'i' : '');
+    } catch (err) {
+      return { success: false, output: '', error: `Invalid regex: ${String(err)}` };
+    }
+
+    let searchRoot: string;
+    try {
+      searchRoot = pathArg ? resolveWorkspacePath(pathArg, context.workspace) : context.workspace;
+    } catch (err) {
+      return { success: false, output: '', error: (err as Error).message };
+    }
+
+    if (!existsSync(searchRoot))
+      return { success: false, output: '', error: `Path not found: ${searchRoot}` };
+
+    const stat = statSync(searchRoot);
+    const matches: string[] = [];
+    let truncated = false;
+
+    const fileIter: Iterable<string> = stat.isFile()
+      ? [searchRoot]
+      : stat.isDirectory()
+        ? walkFiles(searchRoot)
+        : [];
+
+    if (!stat.isFile() && !stat.isDirectory())
+      return { success: false, output: '', error: `Not a file or directory: ${searchRoot}` };
+
+    outer: for (const file of fileIter) {
+      if (filePattern && !file.endsWith(filePattern)) continue;
+      try {
+        const fstat = statSync(file);
+        if (fstat.size > GREP_MAX_FILE_BYTES) continue;
+        const content = readFileSync(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            const display =
+              lines[i].length > GREP_MAX_LINE_LEN
+                ? lines[i].slice(0, GREP_MAX_LINE_LEN) + '...'
+                : lines[i];
+            const rel = relative(context.workspace, file) || file;
+            matches.push(`${rel}:${i + 1}:${display}`);
+            if (matches.length >= GREP_MAX_MATCHES) {
+              truncated = true;
+              break outer;
+            }
+          }
+        }
+      } catch {
+        // unreadable / binary file — skip silently
+      }
+    }
+
+    if (matches.length === 0) return { success: true, output: '(no matches)' };
+
+    const output = matches.join('\n') + (truncated ? '\n... [truncated]' : '');
+    return { success: true, output };
   },
 };
 
@@ -184,9 +521,64 @@ const webFetchToolHandler: ToolHandler = {
   },
 };
 
+// --- send_file tool ---
+
+const sendFileToolHandler: ToolHandler = {
+  name: 'send_file',
+  description:
+    'Send a local file to the user as a chat attachment. Use this whenever the user wants the actual file delivered (HTML/text/source/image/audio/PDF/zip etc.), instead of pasting its contents inline. The file is attached to the next chat message.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Path to the file (absolute or relative to workspace).',
+      },
+    },
+    required: ['path'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const filePath = args.path as string;
+    if (!filePath || typeof filePath !== 'string') {
+      return { success: false, output: '', error: 'path must be a non-empty string' };
+    }
+
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(filePath, context.workspace);
+    } catch (err) {
+      return { success: false, output: '', error: String(err) };
+    }
+
+    if (!existsSync(resolved)) {
+      return { success: false, output: '', error: `File not found: ${resolved}` };
+    }
+    const stat = statSync(resolved);
+    if (!stat.isFile()) {
+      return { success: false, output: '', error: `Not a file: ${resolved}` };
+    }
+
+    // 結果に MEDIA: 形式でパスを含めると、runner 側の mediaPattern が拾って
+    // 添付として送信される。LLM が応答テキストに MEDIA: を書く必要はない。
+    return {
+      success: true,
+      output: `MEDIA:${resolved}\nQueued ${filePath} (${stat.size} bytes) as attachment.`,
+    };
+  },
+};
+
 // --- Registry ---
 
-const ALL_TOOLS: ToolHandler[] = [execToolHandler, readToolHandler, webFetchToolHandler];
+const ALL_TOOLS: ToolHandler[] = [
+  execToolHandler,
+  readToolHandler,
+  writeToolHandler,
+  editToolHandler,
+  globToolHandler,
+  grepToolHandler,
+  sendFileToolHandler,
+  webFetchToolHandler,
+];
 
 // 動的に追加されたツール（トリガー由来等）
 let dynamicTools: ToolHandler[] = [];
