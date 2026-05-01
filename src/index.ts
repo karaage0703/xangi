@@ -1329,7 +1329,7 @@ function recordAgentBusTask(params: {
         ...params.metadata,
       }),
     ];
-    const shouldRemember = params.remember ?? (params.status === 'completed');
+    const shouldRemember = params.remember ?? params.status === 'completed';
     if (shouldRemember) {
       args.push('--remember');
     }
@@ -1344,6 +1344,91 @@ function recordAgentBusTask(params: {
     );
   } catch (err) {
     console.error('[izuna-agent-bus] hook error:', err);
+  }
+}
+
+type ConversationMemoryKind =
+  | 'conversation'
+  | 'worker_exec'
+  | 'dev_task'
+  | 'cancelled'
+  | 'error'
+  | 'fast_path';
+
+interface ConversationMemoryParams {
+  channelId: string;
+  prompt: string;
+  result: string;
+  kind: ConversationMemoryKind;
+  agent?: string;
+  metadata?: Record<string, unknown>;
+}
+
+function recordConversationMemory(params: ConversationMemoryParams): void {
+  try {
+    if (!params.prompt || params.prompt.trim().length < 1) return;
+    const isDev = isClaudeDevChannel(params.channelId);
+    const cleanResp = (params.result || '').replace(ACTION_HOOK_RE, '').trim();
+    const headerKind = isDev ? 'dev_task' : params.kind;
+    let content: string;
+    if (isDev) {
+      content = buildRecallFriendlyDevMemory(params.prompt, cleanResp);
+    } else {
+      const respLabel =
+        params.kind === 'worker_exec'
+          ? `[worker:${params.agent || 'direct'}]`
+          : params.kind === 'dev_task'
+            ? `[dev-agent:${params.agent || 'unknown'}]`
+            : params.kind === 'fast_path'
+              ? `[fast-path:${params.agent || 'unknown'}]`
+              : params.kind === 'cancelled'
+                ? '[cancelled]'
+                : params.kind === 'error'
+                  ? '[error]'
+                  : '[assistant]';
+      const userBudget = params.kind === 'cancelled' || params.kind === 'error' ? 600 : 300;
+      const respBudget = params.kind === 'worker_exec' || params.kind === 'fast_path' ? 700 : 500;
+      content = `[user] ${params.prompt.slice(0, userBudget)}\n${respLabel} ${cleanResp.slice(0, respBudget)}`;
+    }
+    const args = [
+      pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
+      'record',
+      '--agent',
+      isDev ? 'claude_dev' : params.agent || 'izuna',
+      '--type',
+      headerKind,
+      '--content',
+      content,
+      '--source-type',
+      'discord',
+      '--session-id',
+      params.channelId,
+    ];
+    if (isDev) {
+      args.push(
+        '--impact',
+        'architecture',
+        '--tags',
+        'claude_dev',
+        'self_mod',
+        'secretary_loop',
+        'discord_policy'
+      );
+    } else if (params.kind === 'cancelled' || params.kind === 'error') {
+      args.push('--tags', 'incomplete', params.kind);
+    }
+    execFile(
+      'python3',
+      args,
+      { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
+      (err, _stdout, stderr) => {
+        if (err)
+          console.error(`[izuna-memory] L1 record error (${params.kind}):`, stderr || err.message);
+        else console.log(`[izuna-memory] L1 recorded (${params.kind})`);
+      }
+    );
+  } catch (err) {
+    console.error('[izuna-memory] hook error:', err);
   }
 }
 
@@ -2931,9 +3016,14 @@ async function main() {
         const original = await (refChannel as any).messages.fetch(ref.messageId).catch(() => null);
         if (!original) return;
 
-        const topicResult = classifyTopic(String(original.content || ''), String(message.content || ''));
+        const topicResult = classifyTopic(
+          String(original.content || ''),
+          String(message.content || '')
+        );
         if (!topicResult.channelId || topicResult.topic === 'general') {
-          await message.reply('⚠️ 専用チャンネルへの移動先を特定できませんでした。').catch(() => {});
+          await message
+            .reply('⚠️ 専用チャンネルへの移動先を特定できませんでした。')
+            .catch(() => {});
           return;
         }
         if (message.channel.id !== GENERAL_TEXT_CHANNEL_ID) {
@@ -2941,7 +3031,9 @@ async function main() {
           return;
         }
 
-        const targetChannel = await message.client.channels.fetch(topicResult.channelId).catch(() => null);
+        const targetChannel = await message.client.channels
+          .fetch(topicResult.channelId)
+          .catch(() => null);
         if (!targetChannel || !('send' in targetChannel)) return;
 
         const movedText = [
@@ -3885,6 +3977,16 @@ async function processPrompt(
   let replyMessage: Message | null = null;
   const toolHistory: string[] = []; // ツール実行履歴（stop時にも参照するため関数スコープ）
   let lastStreamedText = ''; // エラー時に途中テキストを残すため関数スコープ
+  let memoryRecorded = false;
+  let memoryKind: ConversationMemoryKind = 'conversation';
+  let memoryAgent: string | undefined;
+  let memoryResult = '';
+  const markMemory = (kind: ConversationMemoryKind, result: string, agent?: string): void => {
+    memoryKind = kind;
+    memoryResult = result || '';
+    memoryAgent = agent;
+    memoryRecorded = true;
+  };
   try {
     // チャンネル・ユーザー情報をプロンプトに付与
     const channelName =
@@ -3986,6 +4088,7 @@ async function processPrompt(
           const { actionMessages } = await processIzunaActions(actionText, channelId, gateSendFn);
           const replyText = actionMessages.join('\n') || '🔄 予定訂正を承認待ちに差し替え';
           await message.reply(replyText);
+          markMemory('fast_path', replyText, 'calendar-agent');
           return replyText;
         }
       }
@@ -4045,6 +4148,7 @@ async function processPrompt(
             const { actionMessages } = await processIzunaActions(actionText, channelId, gateSendFn);
             const replyText = actionMessages.join('\n') || '⏳ 予定登録: 承認待ち';
             await message.reply(replyText);
+            markMemory('fast_path', replyText, 'calendar-agent');
             return replyText;
           } else {
             console.log('[calendar-fast] extract failed → LLM fallback');
@@ -4085,33 +4189,7 @@ async function processPrompt(
               await workerChannel.send(workerChunks[i]);
             }
           }
-          // Memory Hook: 直接実行の結果も記録
-          try {
-            const content = `[user] ${prompt.slice(0, 300)}\n[worker-direct] ${directResult.slice(0, 500)}`;
-            execFile(
-              'python3',
-              [
-                pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
-                'record',
-                '--agent',
-                'izuna',
-                '--type',
-                'worker_exec',
-                '--content',
-                content,
-                '--source-type',
-                'discord',
-                '--session-id',
-                channelId,
-              ],
-              { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
-              (err) => {
-                if (err) console.error('[izuna-memory] worker-exec record error:', err);
-              }
-            );
-          } catch {
-            /* ignore */
-          }
+          markMemory('worker_exec', directResult, dispatch.agent);
           return directResult;
         }
       } catch (err) {
@@ -4150,33 +4228,7 @@ async function processPrompt(
               await channel.send(chunks[i]);
             }
           }
-          // Memory Hook
-          try {
-            const content = `[user] ${prompt.slice(0, 300)}\n[dev-agent:${dispatch.agent}] ${devResult.slice(0, 500)}`;
-            execFile(
-              'python3',
-              [
-                pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
-                'record',
-                '--agent',
-                dispatch.agent,
-                '--type',
-                'dev_task',
-                '--content',
-                content,
-                '--source-type',
-                'discord',
-                '--session-id',
-                channelId,
-              ],
-              { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
-              (err) => {
-                if (err) console.error('[izuna-memory] dev-agent record error:', err);
-              }
-            );
-          } catch {
-            /* ignore */
-          }
+          markMemory('dev_task', devResult, dispatch.agent);
           return devResult;
         }
         // dev agent が null を返した場合 → LLM フォールバック
@@ -4587,50 +4639,7 @@ async function processPrompt(
       }
     }
 
-    // === Izuna Memory Hook (Phase 6): L1記憶にDiscordメッセージ + 応答を記録 ===
-    try {
-      const cleanResp = result.replace(ACTION_HOOK_RE, '').trim();
-      const isDevMemory = isClaudeDevChannel(message.channel.id);
-      const content = isDevMemory
-        ? buildRecallFriendlyDevMemory(prompt, cleanResp)
-        : `[user] ${prompt.slice(0, 300)}\n[assistant] ${cleanResp.slice(0, 500)}`;
-      const memoryArgs = [
-        pathJoin(ACTION_SCRIPTS_DIR, 'memory_curator.py'),
-        'record',
-        '--agent',
-        isDevMemory ? 'claude_dev' : 'izuna',
-        '--type',
-        isDevMemory ? 'dev_task' : 'conversation',
-        '--content',
-        content,
-        '--source-type',
-        'discord',
-        '--session-id',
-        message.channel.id,
-      ];
-      if (isDevMemory) {
-        memoryArgs.push(
-          '--impact',
-          'architecture',
-          '--tags',
-          'claude_dev',
-          'self_mod',
-          'secretary_loop',
-          'discord_policy'
-        );
-      }
-      execFile(
-        'python3',
-        memoryArgs,
-        { timeout: 5000, cwd: ACTION_SCRIPTS_DIR },
-        (err, _stdout, stderr) => {
-          if (err) console.error('[izuna-memory] L1 record error:', stderr || err.message);
-          else console.log('[izuna-memory] L1 recorded');
-        }
-      );
-    } catch (err) {
-      console.error('[izuna-memory] hook error:', err);
-    }
+    markMemory('conversation', result);
 
     // AIの応答を返す（!discord コマンド処理用）
     return result;
@@ -4645,6 +4654,7 @@ async function processPrompt(
           components: [],
         })
         .catch(() => {});
+      markMemory('cancelled', lastStreamedText || '🛑 停止');
       return null;
     }
     console.error('[xangi] Error:', error);
@@ -4707,6 +4717,7 @@ async function processPrompt(
       }
     }
 
+    markMemory('error', errorDetail || errorMsg);
     return null;
   } finally {
     // 👀 リアクションを削除
@@ -4716,6 +4727,24 @@ async function processPrompt(
       .catch((err) => {
         console.error('[xangi] Failed to remove 👀 reaction:', err.message || err);
       });
+
+    // === Phase 6: 会話記憶を必ず一回保存（早期return / cancel / error すべて拾う） ===
+    if (memoryRecorded) {
+      recordConversationMemory({
+        channelId: message.channel.id,
+        prompt,
+        result: memoryResult,
+        kind: memoryKind,
+        agent: memoryAgent,
+      });
+    } else {
+      recordConversationMemory({
+        channelId: message.channel.id,
+        prompt,
+        result: lastStreamedText || '(no response captured)',
+        kind: 'error',
+      });
+    }
   }
 }
 
