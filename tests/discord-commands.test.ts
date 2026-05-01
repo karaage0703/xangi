@@ -9,38 +9,6 @@ function annotateChannelMentions(text: string): string {
 }
 
 /**
- * 表示用テキストからコマンド行を除去する（コードブロック内は残す）
- * SYSTEM_COMMAND: で始まる行を除去
- */
-function stripCommandsFromDisplay(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
-  let inCodeBlock = false;
-
-  for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      result.push(line);
-      continue;
-    }
-
-    if (inCodeBlock) {
-      result.push(line);
-      continue;
-    }
-
-    // SYSTEM_COMMAND: 行を除去
-    if (line.trim().startsWith('SYSTEM_COMMAND:')) {
-      continue;
-    }
-
-    result.push(line);
-  }
-
-  return result.join('\n').trim();
-}
-
-/**
  * コードブロック判定のテスト用
  */
 function isInCodeBlock(lines: string[], targetIndex: number): boolean {
@@ -92,31 +60,6 @@ describe('Discord Commands', () => {
       expect(isInCodeBlock(lines, 1)).toBe(true);
       expect(isInCodeBlock(lines, 3)).toBe(false);
       expect(isInCodeBlock(lines, 5)).toBe(true);
-    });
-  });
-
-  describe('stripCommandsFromDisplay', () => {
-    it('should remove SYSTEM_COMMAND lines', () => {
-      const text = `テキスト\nSYSTEM_COMMAND:setting=value\n続き`;
-      const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('テキスト\n続き');
-    });
-
-    it('should keep SYSTEM_COMMAND inside code blocks', () => {
-      const text = `例:\n\`\`\`\nSYSTEM_COMMAND:setting=value\n\`\`\`\n以上`;
-      const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('例:\n```\nSYSTEM_COMMAND:setting=value\n```\n以上');
-    });
-
-    it('should handle empty text', () => {
-      const result = stripCommandsFromDisplay('');
-      expect(result).toBe('');
-    });
-
-    it('should not strip regular text', () => {
-      const text = 'テキスト前\n普通のテキスト\nテキスト後';
-      const result = stripCommandsFromDisplay(text);
-      expect(result).toBe('テキスト前\n普通のテキスト\nテキスト後');
     });
   });
 

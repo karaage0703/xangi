@@ -28,7 +28,7 @@ import {
   stripFilePaths,
   buildPromptWithAttachments,
 } from './file-utils.js';
-import { initSettings, loadSettings, saveSettings, formatSettings } from './settings.js';
+import { initSettings, loadSettings, formatSettings } from './settings.js';
 import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH, STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import {
@@ -757,9 +757,8 @@ async function main() {
         const filePaths = extractFilePaths(runResult.result);
         const displayText =
           filePaths.length > 0 ? stripFilePaths(runResult.result) : runResult.result;
-        const cleanText = stripCommandsFromDisplay(displayText);
 
-        const chunks = splitMessage(cleanText, DISCORD_SAFE_LENGTH);
+        const chunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
         await interaction.editReply(chunks[0] || '✅');
         if (chunks.length > 1 && 'send' in interaction.channel!) {
           const channel = interaction.channel as unknown as {
@@ -785,9 +784,6 @@ async function main() {
             console.error('[xangi] Failed to send files via /skip:', err);
           }
         }
-
-        // SYSTEM_COMMAND処理
-        handleSettingsFromResponse(runResult.result);
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         let errorDetail: string;
@@ -1354,38 +1350,6 @@ async function handleSkillCommand(
   }
 }
 
-/**
- * 表示用テキストからコマンド行を除去する（コードブロック内は残す）
- * SYSTEM_COMMAND: で始まる行を除去
- */
-function stripCommandsFromDisplay(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
-  let inCodeBlock = false;
-
-  for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      result.push(line);
-      continue;
-    }
-
-    if (inCodeBlock) {
-      result.push(line);
-      continue;
-    }
-
-    // SYSTEM_COMMAND: 行を除去
-    if (line.trim().startsWith('SYSTEM_COMMAND:')) {
-      continue;
-    }
-
-    result.push(line);
-  }
-
-  return result.join('\n').trim();
-}
-
 async function processPrompt(
   message: Message,
   agentRunner: AgentRunner,
@@ -1544,18 +1508,15 @@ async function processPrompt(
     const filePaths = extractFilePaths(result);
     const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
 
-    // SYSTEM_COMMAND: 行を表示テキストから除去（コードブロック内は残す）
-    const cleanText = stripCommandsFromDisplay(displayText);
-
     // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
     // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
     const SEPARATOR_REGEX = /\n\s*===\s*\n/;
-    const messageParts = SEPARATOR_REGEX.test(cleanText)
-      ? cleanText
+    const messageParts = SEPARATOR_REGEX.test(displayText)
+      ? displayText
           .split(SEPARATOR_REGEX)
           .map((p) => p.trim())
           .filter(Boolean)
-      : [cleanText];
+      : [displayText];
 
     // 最初のパートは既存のreplyMessageを編集して送信
     const firstChunks = splitMessage(messageParts[0], DISCORD_SAFE_LENGTH);
@@ -1579,9 +1540,6 @@ async function processPrompt(
         }
       }
     }
-
-    // AIの応答から SYSTEM_COMMAND: を検知して実行
-    handleSettingsFromResponse(result);
 
     if (filePaths.length > 0 && 'send' in message.channel) {
       try {
@@ -1681,40 +1639,6 @@ async function processPrompt(
       .catch((err) => {
         console.error('[xangi] Failed to remove 👀 reaction:', err.message || err);
       });
-  }
-}
-
-/**
- * AIの応答から SYSTEM_COMMAND: を検知して実行
- * 形式: SYSTEM_COMMAND:restart / SYSTEM_COMMAND:set key=value
- */
-function handleSettingsFromResponse(text: string): void {
-  const commands = text.match(/^SYSTEM_COMMAND:(.+)$/gm);
-  if (!commands) return;
-
-  for (const cmd of commands) {
-    const action = cmd.replace('SYSTEM_COMMAND:', '').trim();
-
-    if (action === 'restart') {
-      const settings = loadSettings();
-      if (!settings.autoRestart) {
-        console.log('[xangi] Restart requested but autoRestart is disabled');
-        continue;
-      }
-      console.log('[xangi] Restart requested by agent, restarting in 1s...');
-      setTimeout(() => process.exit(0), 1000);
-      return;
-    }
-
-    const setMatch = action.match(/^set\s+(\w+)=(.*)/);
-    if (setMatch) {
-      const [, key, value] = setMatch;
-      if (key === 'autoRestart') {
-        const enabled = value === 'true';
-        saveSettings({ autoRestart: enabled });
-        console.log(`[xangi] autoRestart ${enabled ? 'enabled' : 'disabled'} by agent`);
-      }
-    }
   }
 }
 

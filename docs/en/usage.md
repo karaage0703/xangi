@@ -354,14 +354,6 @@ The AI can edit the `.env` file to change settings:
 You can also use the `/autoreply` command to toggle mention-free auto-reply per channel (no restart needed, persisted to `.env`).
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 
-### System Commands
-
-Special commands output by the AI:
-
-| Command | Description |
-| --- | --- |
-| `SYSTEM_COMMAND:restart` | Restart the bot |
-
 ### Message Split Separator
 
 When the AI's response text contains `\n===\n` (i.e. `===` surrounded by newlines), the response is split and sent as separate messages. This works not only for scheduler-triggered responses but also for direct Discord mention messages. Useful when you want to generate multiple independent posts from a single LLM response.
@@ -562,7 +554,7 @@ LOCAL_LLM_TRIGGERS=true
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LOCAL_LLM_TOOLS` | Tool execution (exec/read/web_fetch) | `true` |
+| `LOCAL_LLM_TOOLS` | Tool execution (exec/read/write/edit/glob/grep/send_file/web_fetch) | `true` |
 | `LOCAL_LLM_SKILLS` | Skill list injection | `true` |
 | `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS injection | `true` |
 | `LOCAL_LLM_TRIGGERS` | Triggers (!commands) | `false` |
@@ -791,6 +783,9 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 | `LOCAL_LLM_NUM_CTX` | Context window size (for Ollama) | Model default |
 | `EXEC_TIMEOUT_MS` | Exec tool timeout (milliseconds) | `120000` |
 | `WEB_FETCH_TIMEOUT_MS` | web_fetch tool timeout (milliseconds) | `15000` |
+| `LOCAL_LLM_READ_MAX_BYTES` | read tool file size limit (bytes) | `524288` (512KB) |
+| `LOCAL_LLM_READ_JSON_MAX_BYTES` | read tool JSON file size limit (bytes) | `5120` (5KB) |
+| `LOCAL_LLM_WRITE_MAX_BYTES` | write tool content size limit (bytes) | `524288` (512KB) |
 
 ### Slack
 

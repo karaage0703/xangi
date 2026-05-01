@@ -11,7 +11,7 @@ import {
   stripFilePaths,
   buildPromptWithAttachments,
 } from './file-utils.js';
-import { loadSettings, saveSettings, formatSettings } from './settings.js';
+import { loadSettings, formatSettings } from './settings.js';
 import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import type { KnownBlock } from '@slack/types';
 
@@ -173,39 +173,6 @@ function splitTextByBytes(text: string, maxBytes: number): string[] {
 }
 
 // メッセージ削除の共通関数
-/**
- * AIの応答から SYSTEM_COMMAND: を検知して実行
- */
-function handleSystemCommands(text: string): void {
-  const commands = text.match(/^SYSTEM_COMMAND:(.+)$/gm);
-  if (!commands) return;
-
-  for (const cmd of commands) {
-    const action = cmd.replace('SYSTEM_COMMAND:', '').trim();
-
-    if (action === 'restart') {
-      const settings = loadSettings();
-      if (!settings.autoRestart) {
-        console.log('[slack] Restart requested but autoRestart is disabled');
-        continue;
-      }
-      console.log('[slack] Restart requested by agent, restarting in 1s...');
-      setTimeout(() => process.exit(0), 1000);
-      return;
-    }
-
-    const setMatch = action.match(/^set\s+(\w+)=(.*)/);
-    if (setMatch) {
-      const [, key, value] = setMatch;
-      if (key === 'autoRestart') {
-        const enabled = value === 'true';
-        saveSettings({ autoRestart: enabled });
-        console.log(`[slack] autoRestart ${enabled ? 'enabled' : 'disabled'} by agent`);
-      }
-    }
-  }
-}
-
 async function deleteMessage(client: WebClient, channelId: string, arg: string): Promise<string> {
   let messageTs: string | undefined;
 
@@ -817,13 +784,7 @@ async function processMessage(
 
     // ファイルパスを抽出して添付送信
     const filePaths = extractFilePaths(result);
-    let displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
-
-    // SYSTEM_COMMAND: 行を表示テキストから除去
-    displayText = displayText.replace(/^SYSTEM_COMMAND:.+$/gm, '').trim();
-
-    // SYSTEM_COMMAND: を検知して実行
-    handleSystemCommands(result);
+    const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
 
     // 最終結果を更新（長い場合は分割送信）
     await sendSlackResult(client, channelId, messageTs, threadTs, displayText || '✅');

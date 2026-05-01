@@ -282,7 +282,6 @@ skills/
 7. Response processing
    - Streaming display
    - File attachment extraction (MEDIA: pattern)
-   - SYSTEM_COMMAND detection
    ↓
 8. Reply to user
 ```
@@ -427,7 +426,7 @@ src/
 │   ├── runner.ts       #   Main runner (session management, tool execution loop)
 │   ├── llm-client.ts   #   LLM API client (Ollama native + OpenAI compatible)
 │   ├── context.ts      #   Workspace context loading
-│   ├── tools.ts        #   Built-in tools (exec/read/web_fetch)
+│   ├── tools.ts        #   Built-in tools (exec/read/write/edit/glob/grep/send_file/web_fetch)
 │   ├── xangi-tools.ts  #   xangi-specific tools (function calling version)
 │   ├── image-utils.ts  #   Image processing utilities (multimodal support)
 │   ├── triggers.ts     #   Trigger feature (magic word detection & execution in chat mode)

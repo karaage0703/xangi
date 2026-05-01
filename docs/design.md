@@ -280,7 +280,6 @@ skills/
 7. レスポンス処理
    - ストリーミング表示
    - ファイル添付抽出（MEDIA:パターン）
-   - SYSTEM_COMMAND検出
    ↓
 8. ユーザーに返信
 ```
@@ -425,7 +424,7 @@ src/
 │   ├── runner.ts       #   メインランナー（セッション管理・ツール実行ループ）
 │   ├── llm-client.ts   #   LLM APIクライアント（Ollama native + OpenAI互換）
 │   ├── context.ts      #   ワークスペースコンテキスト読み込み
-│   ├── tools.ts        #   ビルトインツール（exec/read/web_fetch）
+│   ├── tools.ts        #   ビルトインツール（exec/read/write/edit/glob/grep/send_file/web_fetch）
 │   ├── xangi-tools.ts  #   xangi専用ツール（function calling版）
 │   ├── image-utils.ts  #   画像処理ユーティリティ（マルチモーダル対応）
 │   ├── triggers.ts     #   トリガー機能（chatモードのマジックワード検出・実行）
