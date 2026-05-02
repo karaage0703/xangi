@@ -44,6 +44,11 @@ interface ClaudeCliOptions {
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
   /** Additional directories passed to --add-dir. */
   addDirs?: string[];
+  /**
+   * Extra environment variables merged into the subprocess env.
+   * `CLAUDE_DEV_GUARD=1` 等、dev session に signal を送るための pipe。
+   */
+  extraEnv?: Record<string, string>;
 }
 
 interface ClaudeJsonOutput {
@@ -92,6 +97,7 @@ export class ClaudeCliClient {
   private readonly allowedTools?: string[];
   private readonly permissionMode?: string;
   private readonly addDirs: string[];
+  private readonly extraEnv: Record<string, string>;
   private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
 
   constructor(opts: ClaudeCliOptions) {
@@ -106,6 +112,7 @@ export class ClaudeCliClient {
       opts.allowedTools && opts.allowedTools.length > 0 ? opts.allowedTools : undefined;
     this.permissionMode = opts.permissionMode;
     this.addDirs = opts.addDirs?.filter(Boolean) ?? [];
+    this.extraEnv = opts.extraEnv ?? {};
 
     // プロセス終了時に活動中の subprocess を巻き込んで kill
     const killAll = () => {
@@ -148,7 +155,7 @@ export class ClaudeCliClient {
     return new Promise((resolve, reject) => {
       const child = spawn(this.binPath, args, {
         cwd: this.cwd,
-        env: process.env,
+        env: { ...process.env, ...this.extraEnv },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.activeChildren.add(child);

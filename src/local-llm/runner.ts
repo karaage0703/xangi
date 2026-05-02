@@ -7,7 +7,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import type { AgentConfig } from '../config.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
@@ -72,6 +72,40 @@ function parseCsvEnv(value: string | undefined, fallback = ''): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * dev mode で claude が編集してよい root prefix。env が誤って `/` 等を含めても
+ * fail-closed で dev client を無効化するための allowlist。
+ *
+ * `CLAUDE_DEV_ALLOWED_ROOTS` env (CSV) で override 可能だが、env 自体が信頼できない
+ * 場合は本来のハードコード値が最後の砦になる。
+ */
+function getDevAllowedRoots(): string[] {
+  const home = os.homedir();
+  const defaults = [
+    path.join(home, 'projects', 'izuna-workspace'),
+    path.join(home, 'projects', 'xangi-izuna-discord'),
+    path.join(home, 'Library', 'LaunchAgents'),
+  ];
+  const fromEnv = parseCsvEnv(process.env.CLAUDE_DEV_ALLOWED_ROOTS, '');
+  const merged = [...defaults, ...fromEnv].map((p) => path.resolve(p)).filter(Boolean);
+  return Array.from(new Set(merged));
+}
+
+/**
+ * `candidate` が allowedRoots のいずれかの prefix 配下にあるか確認する。
+ * Symlink/`..` を防ぐため path.resolve して比較。root と完全一致または `${root}/` 始まりを許す。
+ */
+function isPathUnderAllowedRoot(candidate: string, allowedRoots: string[]): boolean {
+  if (!candidate) return false;
+  const resolved = path.resolve(candidate);
+  if (resolved === '/' || resolved === '') return false;
+  for (const root of allowedRoots) {
+    if (resolved === root) return true;
+    if (resolved.startsWith(root + path.sep)) return true;
+  }
+  return false;
 }
 
 /** セッション（会話履歴） */
@@ -227,18 +261,40 @@ export class LocalLlmRunner implements AgentRunner {
         | 'dontAsk'
         | 'plan'
         | 'auto';
+
+      // P2.2 hard guard: backend='claude_dev' (全 channel dev mode) の場合、
+      // cwd / addDirs が allowlist 外なら dev 解禁を取りやめて 'claude' 相当に degrade。
+      let effectiveDevMode = this.backend === 'claude_dev';
+      if (effectiveDevMode) {
+        const allowedRoots = getDevAllowedRoots();
+        const cwdAllowed = isPathUnderAllowedRoot(claudeCwd, allowedRoots);
+        const badDirs = devAddDirs.filter((d) => !isPathUnderAllowedRoot(d, allowedRoots));
+        if (!cwdAllowed || badDirs.length > 0) {
+          console.error(
+            `[local-llm] ❌ backend=claude_dev DEGRADED to 'claude' (fail-closed): ` +
+              (cwdAllowed ? '' : `cwd '${claudeCwd}' not under allowlist; `) +
+              (badDirs.length > 0 ? `addDirs out-of-allowlist: ${badDirs.join(',')}; ` : '') +
+              `allowedRoots=${allowedRoots.join(',')}.`
+          );
+          effectiveDevMode = false;
+        }
+      }
       this.llm = new ClaudeCliClient({
         cwd: claudeCwd,
         timeoutMs,
         sessionStore: this.claudeSessionStore,
         logger: (l) => console.log('[claude-cli]', l),
-        allowedTools,
-        skipPermissions: this.backend === 'claude_dev' ? false : undefined,
-        permissionMode: this.backend === 'claude_dev' ? devPermissionMode : undefined,
-        addDirs: this.backend === 'claude_dev' ? devAddDirs : undefined,
+        allowedTools: effectiveDevMode ? allowedTools : undefined,
+        skipPermissions: effectiveDevMode ? false : undefined,
+        permissionMode: effectiveDevMode ? devPermissionMode : undefined,
+        addDirs: effectiveDevMode ? devAddDirs : undefined,
+        // P2.3: dev session subprocess に sentinel を立てて、共有 git-hooks に
+        // main 直 commit/push を阻止させる。非 dev session には流さない。
+        extraEnv: effectiveDevMode ? { CLAUDE_DEV_GUARD: '1' } : undefined,
       });
+      const guardTripped = this.backend === 'claude_dev' && !effectiveDevMode;
       console.log(
-        `[local-llm] LLM: claude -p (backend: ${this.backend}, cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}${allowedTools ? `, allowedTools: ${allowedTools.join(',')}` : ''})`
+        `[local-llm] LLM: claude -p (backend: ${this.backend}${guardTripped ? ' [dev guard tripped → safe mode]' : ''}, cwd: ${claudeCwd}, model: ${process.env.CLAUDE_MODEL || 'default'}${effectiveDevMode && allowedTools ? `, allowedTools: ${allowedTools.join(',')}` : ''})`
       );
       // CLAUDE_DEV_CHANNEL_IDS が指定されており、default が claude (非 dev) なら、
       // 該当 channel 専用の dev クライアントを別建てで用意する。
@@ -253,20 +309,35 @@ export class LocalLlmRunner implements AgentRunner {
           )
         : new Set();
       if (this.backend === 'claude' && this.devChannelIds.size > 0) {
-        const devTools = parseCsvEnv(process.env.CLAUDE_ALLOWED_TOOLS, DEFAULT_DEV_ALLOWED_TOOLS);
-        this.llmDev = new ClaudeCliClient({
-          cwd: claudeCwd,
-          timeoutMs,
-          sessionStore: this.claudeSessionStore,
-          logger: (l) => console.log('[claude-cli/dev]', l),
-          allowedTools: devTools,
-          skipPermissions: false,
-          permissionMode: devPermissionMode,
-          addDirs: devAddDirs,
-        });
-        console.log(
-          `[local-llm] dev client armed for channels: ${[...this.devChannelIds].join(',')} (permissionMode: ${devPermissionMode}, addDirs: ${devAddDirs.join(',')}, allowedTools: ${devTools.join(',')})`
-        );
+        // P2.2 hard guard: addDirs / cwd が allowlist 外なら dev client を無効化 (fail-closed)
+        const allowedRoots = getDevAllowedRoots();
+        const cwdAllowed = isPathUnderAllowedRoot(claudeCwd, allowedRoots);
+        const badDirs = devAddDirs.filter((d) => !isPathUnderAllowedRoot(d, allowedRoots));
+        if (!cwdAllowed || badDirs.length > 0) {
+          console.error(
+            `[local-llm] ❌ dev client DISABLED (fail-closed): ` +
+              (cwdAllowed ? '' : `cwd '${claudeCwd}' not under allowlist; `) +
+              (badDirs.length > 0 ? `addDirs out-of-allowlist: ${badDirs.join(',')}; ` : '') +
+              `allowedRoots=${allowedRoots.join(',')}. Set CLAUDE_DEV_ALLOWED_ROOTS to extend.`
+          );
+          this.llmDev = null;
+        } else {
+          const devTools = parseCsvEnv(process.env.CLAUDE_ALLOWED_TOOLS, DEFAULT_DEV_ALLOWED_TOOLS);
+          this.llmDev = new ClaudeCliClient({
+            cwd: claudeCwd,
+            timeoutMs,
+            sessionStore: this.claudeSessionStore,
+            logger: (l) => console.log('[claude-cli/dev]', l),
+            allowedTools: devTools,
+            skipPermissions: false,
+            permissionMode: devPermissionMode,
+            addDirs: devAddDirs,
+            extraEnv: { CLAUDE_DEV_GUARD: '1' },
+          });
+          console.log(
+            `[local-llm] dev client armed for channels: ${[...this.devChannelIds].join(',')} (permissionMode: ${devPermissionMode}, addDirs: ${devAddDirs.join(',')}, allowedTools: ${devTools.join(',')})`
+          );
+        }
       } else {
         this.llmDev = null;
       }
@@ -374,6 +445,65 @@ export class LocalLlmRunner implements AgentRunner {
       );
     } catch {
       /* audit must not break user flow */
+    }
+    // P2.4: skill_bus にも outcome を記録 (terminal events のみ)。fire-and-forget。
+    this.recordSkillBusOutcome(event);
+  }
+
+  private recordSkillBusOutcome(event: Record<string, unknown>): void {
+    try {
+      const evType = typeof event.event === 'string' ? event.event : '';
+      const outcomeMap: Record<string, { score: number; result: string }> = {
+        run_complete: { score: 1.0, result: 'success' },
+        stream_complete: { score: 1.0, result: 'success' },
+        run_retry_complete: { score: 0.5, result: 'retry_ok' },
+        stream_retry_complete: { score: 0.5, result: 'retry_ok' },
+        run_error: { score: 0.0, result: 'error' },
+        stream_error: { score: 0.0, result: 'error' },
+        run_retry_error: { score: 0.0, result: 'retry_error' },
+        stream_retry_error: { score: 0.0, result: 'retry_error' },
+      };
+      const outcome = outcomeMap[evType];
+      if (!outcome) return; // start events 等は記録しない
+
+      const py =
+        process.env.IZUNA_VENV_PYTHON ||
+        path.join(os.homedir(), 'venvs', 'izuna', 'bin', 'python3');
+      const script = path.join(
+        os.homedir(),
+        'projects',
+        'izuna-workspace',
+        'scripts',
+        'skill_bus.py'
+      );
+      const channelId = typeof event.channelId === 'string' ? event.channelId : '';
+      const errSnippet = typeof event.error === 'string' ? event.error.slice(0, 200) : '';
+      const notes = [`channel=${channelId}`, `event=${evType}`, errSnippet]
+        .filter(Boolean)
+        .join(' | ')
+        .slice(0, 500);
+      const child = spawn(
+        py,
+        [
+          script,
+          'record',
+          '--skill',
+          'claude_dev_session',
+          '--score',
+          String(outcome.score),
+          '--result',
+          outcome.result,
+          '--notes',
+          notes,
+        ],
+        { stdio: 'ignore', detached: false }
+      );
+      child.on('error', () => {
+        /* skill_bus optional */
+      });
+      child.unref();
+    } catch {
+      /* skill_bus is best-effort */
     }
   }
 

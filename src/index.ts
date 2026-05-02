@@ -4289,7 +4289,8 @@ async function processPrompt(
       }
     }
 
-    await message.react('👀').catch(() => {});
+    const isDevModeReply = isClaudeDevChannel(channelId);
+    await message.react(isDevModeReply ? '🔧' : '👀').catch(() => {});
 
     const sessionId = getSession(channelId);
     const appSessionId = ensureSession(channelId, { platform: 'discord' });
@@ -4310,8 +4311,9 @@ async function processPrompt(
 
     // 最初のメッセージを送信
     const showButtons = config.discord.showButtons ?? true;
+    const initialContent = isDevModeReply ? '🔧 dev mode armed — 🤔 考え中.' : '🤔 考え中.';
     replyMessage = await message.reply({
-      content: '🤔 考え中.',
+      content: initialContent,
       ...(showButtons && { components: [createStopButton()] }),
     });
 
@@ -4326,12 +4328,13 @@ async function processPrompt(
 
       // 最初のテキストが届くまで考え中アニメーション
       let dotCount = 1;
+      const thinkingPrefix = isDevModeReply ? '🔧 dev mode armed — 🤔 考え中' : '🤔 考え中';
       const thinkingInterval = setInterval(() => {
         if (firstTextReceived) return;
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
         const toolDisplay = toolHistory.length > 0 ? '\n' + toolHistory.join('\n') : '';
-        replyMessage!.edit(`🤔 考え中${dots}${toolDisplay}`).catch(() => {});
+        replyMessage!.edit(`${thinkingPrefix}${dots}${toolDisplay}`).catch(() => {});
       }, 1000);
 
       let streamResult: { result: string; sessionId: string };
@@ -4366,7 +4369,7 @@ async function processPrompt(
               toolHistory.push(`🔧 ${toolName}${inputSummary}`);
               const toolDisplay = toolHistory.join('\n');
               if (!firstTextReceived) {
-                replyMessage!.edit(`🤔 考え中...\n${toolDisplay}`).catch(() => {});
+                replyMessage!.edit(`${thinkingPrefix}...\n${toolDisplay}`).catch(() => {});
               } else {
                 // テキストストリーミング中でもツール表示を更新
                 const currentText = lastStreamedText || '';
@@ -4392,10 +4395,11 @@ async function processPrompt(
     } else {
       // 非ストリーミング or ワンショットskipランナー
       let dotCount = 1;
+      const nonStreamPrefix = isDevModeReply ? '🔧 dev mode armed — 🤔 考え中' : '🤔 考え中';
       const thinkingInterval = setInterval(() => {
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
-        replyMessage!.edit(`🤔 考え中${dots}`).catch(() => {});
+        replyMessage!.edit(`${nonStreamPrefix}${dots}`).catch(() => {});
       }, 1000);
 
       try {

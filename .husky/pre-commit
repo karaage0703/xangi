@@ -1,1 +1,8 @@
+# claude_dev guard: claude_dev session 中は main/master への直 commit を阻止。
+# 人間 commit (CLAUDE_DEV_GUARD 未設定) は素通り。
+guard="$HOME/projects/izuna-workspace/git-hooks/claude-dev/pre-commit"
+if [ -x "$guard" ]; then
+  "$guard" "$@" || exit $?
+fi
+
 npx lint-staged
