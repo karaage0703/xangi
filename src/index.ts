@@ -958,11 +958,21 @@ const CLAUDE_DEV_SCRIPT = pathJoin(
   'projects/izuna-workspace/scripts/claude_dev.py'
 );
 
+interface ClaudeDevRouteOption {
+  key: string;
+  emoji: string;
+  label: string;
+  payload?: Record<string, unknown>;
+}
+
 interface ClaudeDevOutput {
   ok: boolean;
   active?: boolean;
   stage?: string;
   message?: string;
+  options?: ClaudeDevRouteOption[];
+  task?: string;
+  route_message_id?: string;
 }
 
 function runClaudeDevSync(args: string[], timeoutMs = 60_000): Promise<ClaudeDevOutput> {
@@ -1010,6 +1020,74 @@ async function postChunked(channel: any, text: string): Promise<void> {
   }
 }
 
+/** route 質問メッセージへリアクションを順次貼る (rate-limit 対策で逐次)。 */
+async function postRouteOptions(
+  ch: any,
+  text: string,
+  options: ClaudeDevRouteOption[]
+): Promise<{ messageId: string | null }> {
+  // route メッセージは 1 つに収める (リアクションを貼る対象を分散させない)。
+  // 万一 2000 字超えたら末尾を切る。
+  const trimmed = text.length > 1900 ? text.slice(0, 1850) + '\n…(切詰)' : text;
+  const sent = await ch.send(trimmed).catch((e: any) => {
+    console.error('[dev-izuna] route send error:', e);
+    return null;
+  });
+  if (!sent) return { messageId: null };
+
+  for (const opt of options) {
+    const e = (opt.emoji || '').trim();
+    if (!e) continue;
+    try {
+      await sent.react(e);
+    } catch (err: any) {
+      // 一部の絵文字 (1️⃣ 等) は failed when not properly URL-encoded — fallback
+      console.warn(`[dev-izuna] react failed for ${opt.key}/${e}: ${err?.message || err}`);
+    }
+  }
+  return { messageId: sent.id || null };
+}
+
+async function dispatchClaudeDevResume(ch: any, choice: string): Promise<void> {
+  await ch.send(`🔨 確定: \`${choice}\` → 開発開始します…完了時にここへ結果を投稿します。`);
+
+  const proc = spawnProc('python3', [CLAUDE_DEV_SCRIPT, 'resume', choice], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false,
+  });
+  let stdout = '';
+  let stderr = '';
+  proc.stdout.on('data', (d) => (stdout += d.toString()));
+  proc.stderr.on('data', (d) => (stderr += d.toString()));
+  proc.on('close', async (code) => {
+    try {
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      const last = lines[lines.length - 1];
+      let msg = '(no output)';
+      if (last) {
+        try {
+          const parsed = JSON.parse(last) as ClaudeDevOutput;
+          msg = parsed.message || JSON.stringify(parsed);
+        } catch {
+          msg = stdout.slice(-1800);
+        }
+      } else if (stderr) {
+        msg = `(stderr)\n${stderr.slice(-1500)}`;
+      }
+      if (code !== 0 && !msg.includes('❌')) {
+        msg = `⚠️ exit code ${code}\n${msg}`;
+      }
+      await postChunked(ch, msg);
+    } catch (e) {
+      console.error('[dev-izuna] post-run error:', e);
+    }
+  });
+  proc.on('error', async (e) => {
+    console.error('[dev-izuna] spawn error:', e);
+    await ch.send(`❌ python3 起動失敗: ${e.message}`).catch(() => {});
+  });
+}
+
 async function handleDevIzunaMessage(message: Message): Promise<void> {
   const ch: any = message.channel;
   if (!ch || typeof ch.send !== 'function') return;
@@ -1037,54 +1115,26 @@ async function handleDevIzunaMessage(message: Message): Promise<void> {
 
   if (!status.active) {
     const r = await runClaudeDevSync(['start', raw]);
-    await postChunked(ch, r.message || '(no response)');
+    if (r.stage === 'awaiting_route' && Array.isArray(r.options) && r.options.length > 0) {
+      const { messageId } = await postRouteOptions(ch, r.message || '(no response)', r.options);
+      if (messageId) {
+        // claude_dev に Discord message_id を覚えさせる → リアクション handler で照合
+        await runClaudeDevSync(['track-message', messageId]).catch(() => null);
+      }
+    } else {
+      await postChunked(ch, r.message || '(no response)');
+    }
     return;
   }
 
-  if (stage === 'awaiting_confirm' || stage === 'awaiting_repo') {
-    // raw input は python 側で番号/肯定語/リポ名 を解釈する
+  if (stage === 'awaiting_confirm' || stage === 'awaiting_repo' || stage === 'awaiting_route') {
+    // raw input は python 側で番号/肯定語/リポ名/route key を解釈する
     const choice = raw.trim();
     if (!choice) {
-      await ch.send('⚠️ 候補番号 (1-3) / 👍 / はい / リポ名 のいずれかを送ってください');
+      await ch.send('⚠️ 番号 (1-3) / 👍 / はい / リポ名 のいずれかを送ってください');
       return;
     }
-    await ch.send(`🔨 確定: \`${choice}\` → 開発開始します…完了時にここへ結果を投稿します。`);
-
-    const proc = spawnProc('python3', [CLAUDE_DEV_SCRIPT, 'resume', choice], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-    });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => (stdout += d.toString()));
-    proc.stderr.on('data', (d) => (stderr += d.toString()));
-    proc.on('close', async (code) => {
-      try {
-        const lines = stdout.trim().split('\n').filter(Boolean);
-        const last = lines[lines.length - 1];
-        let msg = '(no output)';
-        if (last) {
-          try {
-            const parsed = JSON.parse(last) as ClaudeDevOutput;
-            msg = parsed.message || JSON.stringify(parsed);
-          } catch {
-            msg = stdout.slice(-1800);
-          }
-        } else if (stderr) {
-          msg = `(stderr)\n${stderr.slice(-1500)}`;
-        }
-        if (code !== 0 && !msg.includes('❌')) {
-          msg = `⚠️ exit code ${code}\n${msg}`;
-        }
-        await postChunked(ch, msg);
-      } catch (e) {
-        console.error('[dev-izuna] post-run error:', e);
-      }
-    });
-    proc.on('error', async (e) => {
-      console.error('[dev-izuna] spawn error:', e);
-      await ch.send(`❌ python3 起動失敗: ${e.message}`).catch(() => {});
-    });
+    await dispatchClaudeDevResume(ch, choice);
     return;
   }
 
@@ -3003,6 +3053,44 @@ async function main() {
     }
 
     const emojiName = reaction.emoji.name || '';
+
+    // === #dev-izuna route リアクション ===
+    if (reaction.message.channel.id === DEV_IZUNA_CHANNEL_ID) {
+      try {
+        const stateRes = await runClaudeDevSync(['route-state']);
+        if (
+          stateRes.ok &&
+          stateRes.active &&
+          stateRes.stage === 'awaiting_route' &&
+          stateRes.route_message_id &&
+          stateRes.route_message_id === reaction.message.id &&
+          Array.isArray(stateRes.options)
+        ) {
+          // 絵文字 → option key を照合
+          let matched: ClaudeDevRouteOption | null = null;
+          for (const opt of stateRes.options) {
+            // 絵文字一致 (variation selector も考慮して空白除去・正規化比較)
+            const a = (opt.emoji || '').replace(/\uFE0F/g, '').trim();
+            const b = emojiName.replace(/\uFE0F/g, '').trim();
+            if (a && a === b) {
+              matched = opt;
+              break;
+            }
+          }
+          if (matched) {
+            const ch: any = reaction.message.channel;
+            await ch.send(`✅ \`${matched.label.slice(0, 80)}\` を選択`).catch(() => {});
+            await dispatchClaudeDevResume(ch, matched.key);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('[dev-izuna] route reaction error:', err);
+      }
+      // dev-izuna の他のリアクションは fall through せず無視
+      return;
+    }
+
     if (emojiName === HANDOFF_EMOJI) {
       const message = reaction.message;
       const ref = message.reference;
