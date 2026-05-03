@@ -1063,14 +1063,39 @@ async function dispatchClaudeDevResume(ch: any, choice: string): Promise<void> {
     try {
       const lines = stdout.trim().split('\n').filter(Boolean);
       const last = lines[lines.length - 1];
-      let msg = '(no output)';
+      let parsed: ClaudeDevOutput | null = null;
       if (last) {
         try {
-          const parsed = JSON.parse(last) as ClaudeDevOutput;
-          msg = parsed.message || JSON.stringify(parsed);
+          parsed = JSON.parse(last) as ClaudeDevOutput;
         } catch {
-          msg = stdout.slice(-1800);
+          /* fallthrough to raw */
         }
+      }
+
+      // 自然文での言い直し → 再検索結果が awaiting_route に戻るケース。
+      // リアクション付きで投稿し直して track-message する。
+      if (
+        parsed &&
+        parsed.stage === 'awaiting_route' &&
+        Array.isArray(parsed.options) &&
+        parsed.options.length > 0
+      ) {
+        const { messageId } = await postRouteOptions(
+          ch,
+          parsed.message || '(no message)',
+          parsed.options
+        );
+        if (messageId) {
+          await runClaudeDevSync(['track-message', messageId]).catch(() => null);
+        }
+        return;
+      }
+
+      let msg = '(no output)';
+      if (parsed) {
+        msg = parsed.message || JSON.stringify(parsed);
+      } else if (last) {
+        msg = stdout.slice(-1800);
       } else if (stderr) {
         msg = `(stderr)\n${stderr.slice(-1500)}`;
       }
