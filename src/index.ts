@@ -973,6 +973,8 @@ interface ClaudeDevOutput {
   options?: ClaudeDevRouteOption[];
   task?: string;
   route_message_id?: string;
+  auto_continue?: boolean;
+  repo?: string;
 }
 
 function runClaudeDevSync(args: string[], timeoutMs = 60_000): Promise<ClaudeDevOutput> {
@@ -1020,6 +1022,44 @@ async function postChunked(channel: any, text: string): Promise<void> {
   }
 }
 
+/**
+ * 自然文 (= 新タスク) の見た目か、それとも「選択肢への返事」かを判定。
+ * 選択肢扱いなのは:
+ *   - 数字 1-9 単独
+ *   - 単一トークンの repo 名 (英数字+ハイフン+ドット+アンダースコア)
+ *   - 肯定/否定の短い語: はい/yes/ok/y/no/いいえ/やめ
+ *   - 1-2 文字の絵文字相当 / 短い記号
+ * それ以外 (日本語混じり / 長文 / 句読点付き) は新タスクとみなす。
+ */
+function looksLikeNewTask(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  // 純粋な数字
+  if (/^[1-9]$/.test(t)) return false;
+  // 単一トークンの repo 名 (短く、英数記号のみ)
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$/.test(t)) return false;
+  // 肯定/否定の短い語
+  const shortReplies = new Set([
+    'はい',
+    'いいえ',
+    'うん',
+    'ok',
+    'yes',
+    'no',
+    'y',
+    'n',
+    '👍',
+    'go',
+    'やめ',
+    'やめる',
+  ]);
+  if (shortReplies.has(t.toLowerCase())) return false;
+  // 短い (5文字以下) かつ ASCII のみ → 選択っぽい (絵文字や略語)
+  if (t.length <= 4 && /^[\x20-\x7E]+$/.test(t)) return false;
+  // それ以外 = 自然文の新タスク
+  return true;
+}
+
 /** route 質問メッセージへリアクションを順次貼る (rate-limit 対策で逐次)。 */
 async function postRouteOptions(
   ch: any,
@@ -1049,31 +1089,174 @@ async function postRouteOptions(
 }
 
 async function dispatchClaudeDevResume(ch: any, choice: string): Promise<void> {
-  await ch.send(`🔨 確定: \`${choice}\` → 開発開始します…完了時にここへ結果を投稿します。`);
+  const headerBase =
+    choice === '__auto__' ? `🔨 開発実行中…` : `🔨 確定: \`${choice}\` → 開発開始します`;
+
+  // 進捗ライブ更新用の単一メッセージ。spawn 直後の announce を兼ねる。
+  const progressMsg: any = await ch.send(`${headerBase}\n_(待機中…)_`).catch(() => null);
 
   const proc = spawnProc('python3', [CLAUDE_DEV_SCRIPT, 'resume', choice], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
   });
-  let stdout = '';
+
+  let stdoutBuf = '';
   let stderr = '';
-  proc.stdout.on('data', (d) => (stdout += d.toString()));
+  const finalEvents: ClaudeDevOutput[] = [];
+  const stdoutRawTail: string[] = [];
+  const STDOUT_BUF_MAX_BYTES = 2 * 1024 * 1024;
+  const STDOUT_RAW_TAIL_MAX = 30;
+
+  // progress 表示状態
+  const PROGRESS_HISTORY: string[] = [];
+  const PROGRESS_HISTORY_MAX = 8;
+  const PROGRESS_DEBOUNCE_MS = 2000;
+  let pendingBody: string | null = null;
+  let lastEditAt = 0;
+  let editTimer: NodeJS.Timeout | null = null;
+  let editInFlight: Promise<void> | null = null;
+
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const readRetryAfterMs = (e: any): number => {
+    const retryAfterMs =
+      e?.retry_after_ms ??
+      e?.retryAfterMs ??
+      e?.rawError?.retry_after_ms ??
+      e?.data?.retry_after_ms;
+    if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return retryAfterMs;
+    }
+    const retryAfter =
+      e?.retry_after ?? e?.retryAfter ?? e?.rawError?.retry_after ?? e?.data?.retry_after;
+    if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter > 0) {
+      return retryAfter > 100 ? retryAfter : retryAfter * 1000;
+    }
+    return 2000;
+  };
+
+  const isRateLimited = (e: any): boolean =>
+    Number(e?.status ?? e?.httpStatus ?? e?.response?.status ?? e?.code) === 429;
+
+  const renderBody = (): string => {
+    const recent = PROGRESS_HISTORY.slice(-PROGRESS_HISTORY_MAX).join('\n');
+    return `${headerBase}\n\`\`\`\n${recent.slice(0, 1700)}\n\`\`\``;
+  };
+
+  const editProgressMessage = async (body: string): Promise<void> => {
+    try {
+      await progressMsg.edit(body);
+    } catch (e) {
+      if (!isRateLimited(e)) throw e;
+      // Discord 429s include retry_after on some error shapes; fall back to 2s once.
+      await sleep(readRetryAfterMs(e));
+      await progressMsg.edit(body);
+    }
+  };
+
+  const flushEdit = async (force = false) => {
+    editTimer = null;
+    if (!progressMsg) return;
+    if (editInFlight) {
+      // Serialize Discord edits so delayed API calls cannot overlap or reorder.
+      await editInFlight;
+      if (pendingBody == null) return;
+    }
+    if (pendingBody == null) return;
+    if (!force) {
+      const wait = Math.max(0, PROGRESS_DEBOUNCE_MS - (Date.now() - lastEditAt));
+      if (wait > 0) {
+        editTimer = setTimeout(flushEdit, wait);
+        return;
+      }
+    }
+    const body = pendingBody;
+    pendingBody = null;
+    editInFlight = (async () => {
+      try {
+        await editProgressMessage(body);
+        lastEditAt = Date.now();
+      } catch (e) {
+        console.error('[dev-izuna] progress edit error:', e);
+      } finally {
+        editInFlight = null;
+      }
+    })();
+    await editInFlight;
+  };
+
+  const scheduleEdit = () => {
+    pendingBody = renderBody();
+    if (editTimer) return;
+    const wait = Math.max(0, PROGRESS_DEBOUNCE_MS - (Date.now() - lastEditAt));
+    editTimer = setTimeout(flushEdit, wait);
+  };
+
+  const handleEvent = (evt: any) => {
+    if (!evt || typeof evt !== 'object') return;
+    if (evt.stage === 'progress') {
+      const kind = String(evt.kind || 'evt');
+      const summary = String(evt.summary || '').trim();
+      if (!summary) return;
+      const icon = kind === 'tool_use' ? '🔧' : kind === 'text' ? '💭' : '•';
+      PROGRESS_HISTORY.push(`${icon} ${summary}`);
+      scheduleEdit();
+    } else {
+      finalEvents.push(evt as ClaudeDevOutput);
+    }
+  };
+
+  const rememberRawLine = (line: string) => {
+    stdoutRawTail.push(line.slice(-2000));
+    if (stdoutRawTail.length > STDOUT_RAW_TAIL_MAX) stdoutRawTail.shift();
+  };
+
+  proc.stdout.on('data', (d) => {
+    stdoutBuf += d.toString();
+    if (Buffer.byteLength(stdoutBuf, 'utf8') > STDOUT_BUF_MAX_BYTES) {
+      // Bound memory when Python emits an unterminated or oversized JSON line.
+      handleEvent({
+        stage: 'error',
+        message: '❌ stdout buffer exceeded 2 MB; dropped partial line',
+      });
+      rememberRawLine(stdoutBuf.slice(-1800));
+      stdoutBuf = '';
+      return;
+    }
+    let idx: number;
+    while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+      const line = stdoutBuf.slice(0, idx).trim();
+      stdoutBuf = stdoutBuf.slice(idx + 1);
+      if (!line) continue;
+      rememberRawLine(line);
+      try {
+        handleEvent(JSON.parse(line));
+      } catch {
+        /* non-JSON line: keep in raw tail for final failure diagnostics */
+      }
+    }
+  });
   proc.stderr.on('data', (d) => (stderr += d.toString()));
+
   proc.on('close', async (code) => {
     try {
-      const lines = stdout.trim().split('\n').filter(Boolean);
-      const last = lines[lines.length - 1];
-      let parsed: ClaudeDevOutput | null = null;
-      if (last) {
+      const tail = stdoutBuf.trim();
+      if (tail) {
+        rememberRawLine(tail);
         try {
-          parsed = JSON.parse(last) as ClaudeDevOutput;
+          handleEvent(JSON.parse(tail));
         } catch {
-          /* fallthrough to raw */
+          /* keep malformed tail for final failure diagnostics */
         }
       }
+      if (editTimer) {
+        clearTimeout(editTimer);
+        editTimer = null;
+      }
+      await flushEdit(true);
 
-      // 自然文での言い直し → 再検索結果が awaiting_route に戻るケース。
-      // リアクション付きで投稿し直して track-message する。
+      const parsed = finalEvents.length > 0 ? finalEvents[finalEvents.length - 1] : null;
+
       if (
         parsed &&
         parsed.stage === 'awaiting_route' &&
@@ -1094,8 +1277,9 @@ async function dispatchClaudeDevResume(ch: any, choice: string): Promise<void> {
       let msg = '(no output)';
       if (parsed) {
         msg = parsed.message || JSON.stringify(parsed);
-      } else if (last) {
-        msg = stdout.slice(-1800);
+      } else if (code !== 0 && stdoutRawTail.length > 0) {
+        // Surface malformed stdout on failures instead of reporting only "(no output)".
+        msg = `(stdout tail)\n${stdoutRawTail.join('\n').slice(-1800)}`;
       } else if (stderr) {
         msg = `(stderr)\n${stderr.slice(-1500)}`;
       }
@@ -1139,11 +1323,23 @@ async function handleDevIzunaMessage(message: Message): Promise<void> {
   const stage = status.stage;
 
   if (!status.active) {
-    const r = await runClaudeDevSync(['start', raw]);
+    // 即時受付通知 (LLM ranking または auto-continue 判定に 5-15秒、無音にしない)
+    await ch
+      .send(
+        `🔍 受付: \`${raw.slice(0, 80)}${raw.length > 80 ? '…' : ''}\`\n` +
+          `_(repo 解析中・続きなら自動継続)_`
+      )
+      .catch(() => {});
+    const r = await runClaudeDevSync(['start', raw], 90_000);
+    // auto_dispatching: 即時スピナーを返したので、長時間 spawn で実際の dev を開始
+    if (r.stage === 'auto_dispatching' && r.repo) {
+      await postChunked(ch, r.message || '(no response)');
+      await dispatchClaudeDevResume(ch, '__auto__');
+      return;
+    }
     if (r.stage === 'awaiting_route' && Array.isArray(r.options) && r.options.length > 0) {
       const { messageId } = await postRouteOptions(ch, r.message || '(no response)', r.options);
       if (messageId) {
-        // claude_dev に Discord message_id を覚えさせる → リアクション handler で照合
         await runClaudeDevSync(['track-message', messageId]).catch(() => null);
       }
     } else {
@@ -1153,10 +1349,28 @@ async function handleDevIzunaMessage(message: Message): Promise<void> {
   }
 
   if (stage === 'awaiting_confirm' || stage === 'awaiting_repo' || stage === 'awaiting_route') {
-    // raw input は python 側で番号/肯定語/リポ名/route key を解釈する
     const choice = raw.trim();
     if (!choice) {
       await ch.send('⚠️ 番号 (1-3) / 👍 / はい / リポ名 のいずれかを送ってください');
+      return;
+    }
+    // 自然文 (= 数字でも単一 repo 名でも affirmative でもない) は
+    // 「stale awaiting に対する選択肢じゃない、新しいタスク投稿」として扱う。
+    // stale state を捨てて op_start し直す。
+    if (looksLikeNewTask(choice)) {
+      console.log(
+        `[dev-izuna] natural-language during ${stage} → cancel + new start: '${choice.slice(0, 60)}'`
+      );
+      await runClaudeDevSync(['cancel']);
+      const r = await runClaudeDevSync(['start', choice]);
+      if (r.stage === 'awaiting_route' && Array.isArray(r.options) && r.options.length > 0) {
+        const { messageId } = await postRouteOptions(ch, r.message || '(no response)', r.options);
+        if (messageId) {
+          await runClaudeDevSync(['track-message', messageId]).catch(() => null);
+        }
+      } else {
+        await postChunked(ch, r.message || '(no response)');
+      }
       return;
     }
     await dispatchClaudeDevResume(ch, choice);
