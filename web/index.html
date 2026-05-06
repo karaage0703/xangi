@@ -1,794 +1,2104 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>xangi</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #1a1a2e;
-      color: #e0e0e0;
-      height: 100dvh;
-      display: flex;
-      overflow: hidden;
-    }
-    /* サイドバー */
-    #sidebar {
-      width: 260px;
-      background: #12122a;
-      border-right: 1px solid #0f3460;
-      display: flex;
-      flex-direction: column;
-      flex-shrink: 0;
-      transition: transform 0.2s;
-    }
-    #sidebar .top {
-      padding: 12px;
-      border-bottom: 1px solid #0f3460;
-    }
-    #sidebar .new-btn {
-      width: 100%;
-      background: #0f3460;
-      color: #53c0f0;
-      border: 1px solid #53c0f0;
-      padding: 8px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 14px;
-      margin-bottom: 8px;
-    }
-    #sidebar .new-btn:hover { background: #1a4a7a; }
-    #sidebar input[type="text"] {
-      width: 100%;
-      background: #1a1a2e;
-      color: #e0e0e0;
-      border: 1px solid #333;
-      padding: 6px 10px;
-      border-radius: 4px;
-      font-size: 13px;
-      outline: none;
-    }
-    #session-list {
-      flex: 1;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      padding: 8px 0;
-    }
-    .date-group { padding: 4px 12px; color: #666; font-size: 11px; text-transform: uppercase; margin-top: 8px; }
-    .session-item {
-      padding: 8px 12px;
-      cursor: pointer;
-      font-size: 13px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      border-radius: 4px;
-      margin: 0 4px;
-    }
-    .session-item:hover { background: #1a1a3e; }
-    .session-item.active { background: #0f3460; color: #53c0f0; }
-    /* メインエリア */
-    #main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    header {
-      background: #16213e;
-      padding: 12px 16px;
-      border-bottom: 1px solid #0f3460;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    #menu-btn {
-      display: none;
-      background: none;
-      border: none;
-      color: #53c0f0;
-      font-size: 22px;
-      cursor: pointer;
-      padding: 4px;
-    }
-    header h1 { font-size: 16px; color: #53c0f0; white-space: nowrap; }
-    header .session-title {
-      font-size: 14px; color: #888;
-      cursor: pointer; border-bottom: 1px dashed #555;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    header .session-title:hover { color: #53c0f0; }
-    #messages {
-      flex: 1;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .msg-wrapper { display: flex; flex-direction: column; gap: 2px; }
-    .msg-wrapper.user { align-items: flex-end; }
-    .msg-wrapper.assistant, .msg-wrapper.error, .msg-wrapper.thinking { align-items: flex-start; }
-    .msg {
-      max-width: 85%;
-      padding: 10px 14px;
-      border-radius: 12px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 14px;
-    }
-    .msg.user { background: #0f3460; border-bottom-right-radius: 4px; }
-    .msg.assistant { background: #222244; border-bottom-left-radius: 4px; }
-    .msg.error { background: #442222; border-bottom-left-radius: 4px; }
-    .msg.thinking { background: #222244; color: #888; font-style: italic; }
-    .msg.assistant { font-size: 14px !important; }
-    .msg.assistant * { font-size: inherit !important; max-width: 100%; }
-    .msg.assistant a { color: #53c0f0; }
-    .msg.assistant code { background: #1a1a2e; padding: 1px 4px; border-radius: 3px; font-size: 13px !important; }
-    .msg.assistant pre { background: #1a1a2e; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 4px 0; }
-    .msg.assistant pre code { padding: 0; background: none; }
-    .msg.assistant ul, .msg.assistant ol { padding-left: 20px; margin: 4px 0; }
-    .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4, .msg.assistant h5, .msg.assistant h6 { font-size: 14px !important; font-weight: bold; margin: 6px 0 4px; }
-    .msg.assistant p { margin: 4px 0; }
-    .msg.assistant blockquote { border-left: 3px solid #53c0f0; padding-left: 8px; color: #aaa; margin: 4px 0; }
-    .msg-time { font-size: 10px; color: #555; padding: 0 4px; }
-    .msg-usage { font-size: 11px; color: #999; padding: 2px 4px; }
-    .msg-usage span { margin-right: 6px; }
-    /* 入力エリア */
-    #input-area {
-      background: #16213e;
-      padding: 10px 12px;
-      border-top: 1px solid #0f3460;
-      display: flex;
-      gap: 8px;
-      align-items: flex-end;
-    }
-    #input {
-      flex: 1;
-      background: #1a1a2e;
-      color: #e0e0e0;
-      border: 1px solid #333;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 16px;
-      outline: none;
-      resize: none;
-      max-height: 120px;
-      line-height: 1.4;
-    }
-    #input:focus { border-color: #53c0f0; }
-    #attach-btn {
-      background: none;
-      border: none;
-      color: #888;
-      font-size: 22px;
-      cursor: pointer;
-      padding: 4px 8px;
-      min-height: 44px;
-      touch-action: manipulation;
-    }
-    #attach-btn:hover { color: #53c0f0; }
-    #file-input { display: none; }
-    #attach-preview {
-      display: none;
-      padding: 4px 12px;
-      background: #12122a;
-      border-top: 1px solid #0f3460;
-      font-size: 12px;
-      color: #888;
-    }
-    #attach-preview .preview-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      background: #1a1a2e;
-      padding: 4px 8px;
-      border-radius: 4px;
-      margin-right: 4px;
-    }
-    #attach-preview .preview-item img {
-      max-height: 40px;
-      border-radius: 3px;
-    }
-    #attach-preview .remove-btn {
-      color: #e74c3c;
-      cursor: pointer;
-      font-weight: bold;
-    }
-    .msg img { max-width: 100%; border-radius: 6px; margin: 4px 0; }
-    .action-btn {
-      border: none;
-      padding: 10px 20px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 16px;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: transparent;
-      min-height: 44px;
-    }
-    #send { background: #53c0f0; color: #1a1a2e; }
-    #send:hover { background: #3aa8d8; }
-    #send:disabled { background: #444; color: #888; cursor: not-allowed; }
-    #stop { background: #e74c3c; color: #fff; display: none; }
-    #stop:hover { background: #c0392b; }
-    /* オーバーレイ（モバイルサイドバー用） */
-    #overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      z-index: 9;
-    }
-    /* モバイル */
-    @media (max-width: 768px) {
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>xangi</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <style>
+      /* Linear-inspired tokens — see knowledge/design_systems/linear.md */
+      :root {
+        color-scheme: dark;
+        --canvas: #010102;
+        --surface-1: #0f1011;
+        --surface-2: #141516;
+        --surface-3: #18191a;
+        --hairline: #23252a;
+        --hairline-strong: #34343a;
+        --primary: #5e6ad2;
+        --primary-hover: #828fff;
+        --primary-focus: #5e69d1;
+        --on-primary: #ffffff;
+        --ink: #f7f8f8;
+        --ink-muted: #d0d6e0;
+        --ink-subtle: #8a8f98;
+        --ink-tertiary: #62666d;
+        --danger: #e5484d;
+        --danger-bg: rgba(229, 72, 77, 0.12);
+        --danger-border: rgba(229, 72, 77, 0.35);
+        --focus-ring: rgba(94, 105, 210, 0.5);
+        --code-bg: rgba(255, 255, 255, 0.05);
+
+        --radius-xs: 4px;
+        --radius-sm: 6px;
+        --radius-md: 8px;
+        --radius-lg: 12px;
+        --radius-pill: 9999px;
+
+        --font-sans:
+          'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, 'Segoe UI',
+          Roboto, sans-serif;
+        --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          color-scheme: light;
+          --canvas: #ffffff;
+          --surface-1: #f7f8f9;
+          --surface-2: #eef0f2;
+          --surface-3: #e4e6e9;
+          --hairline: #e1e3e6;
+          --hairline-strong: #c2c5ca;
+          --on-primary: #ffffff;
+          --ink: #08090a;
+          --ink-muted: #2b2f36;
+          --ink-subtle: #6b7280;
+          --ink-tertiary: #9aa0a6;
+          --danger: #d92a36;
+          --danger-bg: rgba(217, 42, 54, 0.08);
+          --danger-border: rgba(217, 42, 54, 0.25);
+          --focus-ring: rgba(94, 105, 210, 0.35);
+          --code-bg: rgba(0, 0, 0, 0.05);
+        }
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.5;
+        letter-spacing: -0.05px;
+        background: var(--canvas);
+        color: var(--ink);
+        height: 100dvh;
+        display: flex;
+        overflow: hidden;
+      }
+      /* サイドバー */
       #sidebar {
+        width: 260px;
+        background: var(--surface-1);
+        border-right: 1px solid var(--hairline);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        transition: transform 0.2s ease;
+      }
+      #sidebar .top {
+        padding: 12px;
+        border-bottom: 1px solid var(--hairline);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #sidebar .new-btn {
+        width: 100%;
+        background: var(--primary);
+        color: var(--on-primary);
+        border: 1px solid transparent;
+        padding: 8px 14px;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0;
+        line-height: 1.2;
+        transition: background 0.15s ease;
+      }
+      #sidebar .new-btn:hover {
+        background: var(--primary-hover);
+      }
+      #sidebar .new-btn:active {
+        background: var(--primary-focus);
+      }
+      #sidebar .new-btn:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      #sidebar input[type='text'] {
+        width: 100%;
+        background: var(--surface-2);
+        color: var(--ink);
+        border: 1px solid var(--hairline);
+        padding: 8px 12px;
+        border-radius: var(--radius-md);
+        font-family: inherit;
+        font-size: 13px;
+        outline: none;
+        transition:
+          border-color 0.15s ease,
+          box-shadow 0.15s ease;
+      }
+      #sidebar input[type='text']::placeholder {
+        color: var(--ink-tertiary);
+      }
+      #sidebar input[type='text']:focus {
+        border-color: var(--primary-focus);
+        box-shadow: 0 0 0 2px var(--focus-ring);
+      }
+      #session-list {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 8px 4px;
+      }
+      .date-group {
+        padding: 12px 12px 4px;
+        color: var(--ink-tertiary);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+      }
+      .session-item {
+        padding: 7px 10px;
+        cursor: pointer;
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-radius: var(--radius-sm);
+        margin: 1px 4px;
+        color: var(--ink-muted);
+        transition:
+          background 0.12s ease,
+          color 0.12s ease;
+      }
+      .session-item:hover {
+        background: var(--surface-2);
+        color: var(--ink);
+      }
+      .session-item.active {
+        background: var(--surface-2);
+        color: var(--ink);
+        box-shadow: inset 2px 0 0 var(--primary);
+      }
+      /* メインエリア（ペイン群コンテナ） */
+      #main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: var(--canvas);
+      }
+      #panes-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px 6px 12px;
+        border-bottom: 1px solid var(--hairline);
+        background: var(--canvas);
+        min-height: 40px;
+      }
+      #panes-toolbar #menu-btn {
+        display: none;
+        background: none;
+        border: none;
+        color: var(--ink-subtle);
+        font-size: 20px;
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: var(--radius-sm);
+      }
+      #panes-toolbar #menu-btn:hover {
+        color: var(--ink);
+        background: var(--surface-2);
+      }
+      #panes-toolbar h1 {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: -0.2px;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      #panes-toolbar .spacer {
+        flex: 1;
+      }
+      #panes-toolbar .pane-count {
+        font-size: 12px;
+        color: var(--ink-subtle);
+      }
+      #panes-toolbar .add-pane-btn {
+        background: var(--surface-1);
+        color: var(--ink-muted);
+        border: 1px solid var(--hairline);
+        padding: 4px 10px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        transition:
+          background 0.12s ease,
+          color 0.12s ease,
+          border-color 0.12s ease;
+      }
+      #panes-toolbar .add-pane-btn:hover {
+        background: var(--surface-2);
+        color: var(--ink);
+        border-color: var(--hairline-strong);
+      }
+      #panes-toolbar .add-pane-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      #panes-toolbar a.tool-link {
+        font-size: 12px;
+        color: var(--ink-subtle);
+        text-decoration: none;
+        padding: 4px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid transparent;
+        transition:
+          background 0.12s ease,
+          color 0.12s ease,
+          border-color 0.12s ease;
+      }
+      #panes-toolbar a.tool-link:hover {
+        background: var(--surface-2);
+        color: var(--ink);
+        border-color: var(--hairline);
+      }
+      #panes-container {
+        flex: 1;
+        display: grid;
+        gap: 1px;
+        background: var(--hairline);
+        min-width: 0;
+        min-height: 0;
+      }
+      #panes-container.cols-1 {
+        grid-template-columns: 1fr;
+      }
+      #panes-container.cols-2 {
+        grid-template-columns: 1fr 1fr;
+      }
+      #panes-container.cols-3 {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+      #panes-container.cols-4 {
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+      }
+      #panes-container.rows-1 {
+        grid-template-rows: 1fr;
+      }
+      #panes-container.rows-2 {
+        grid-template-rows: 1fr 1fr;
+      }
+      /* ペイン */
+      .pane {
+        background: var(--canvas);
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        position: relative;
+        overflow: hidden;
+      }
+      .pane.active::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        box-shadow: inset 0 0 0 1px var(--primary-focus);
+        z-index: 1;
+      }
+      .pane-header {
+        background: var(--canvas);
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--hairline);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 40px;
+        flex-shrink: 0;
+      }
+      .pane-title {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: -0.1px;
+        color: var(--ink);
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        transition: background 0.12s ease;
+      }
+      .pane-title:hover {
+        background: var(--surface-2);
+      }
+      .pane-title.empty {
+        color: var(--ink-tertiary);
+        font-style: italic;
+        font-weight: 400;
+      }
+      .pane-close {
+        background: none;
+        border: none;
+        color: var(--ink-tertiary);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: var(--radius-sm);
+        line-height: 1;
+        transition:
+          color 0.12s ease,
+          background 0.12s ease;
+        flex-shrink: 0;
+      }
+      .pane-close:hover {
+        color: var(--danger);
+        background: var(--surface-2);
+      }
+      .pane-messages {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+      }
+      .msg-wrapper {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-width: 720px;
+        width: 100%;
+      }
+      .msg-wrapper.user {
+        align-self: flex-end;
+        align-items: flex-end;
+      }
+      .msg-wrapper.assistant,
+      .msg-wrapper.error,
+      .msg-wrapper.thinking {
+        align-self: flex-start;
+        align-items: flex-start;
+      }
+      .msg {
+        max-width: 100%;
+        padding: 10px 14px;
+        border-radius: var(--radius-lg);
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 14px;
+        letter-spacing: -0.05px;
+        border: 1px solid var(--hairline);
+      }
+      .msg.user {
+        background: var(--surface-2);
+        color: var(--ink);
+        border-color: var(--hairline-strong);
+      }
+      .msg.assistant {
+        background: var(--surface-1);
+        color: var(--ink);
+      }
+      .msg.error {
+        background: var(--danger-bg);
+        border-color: var(--danger-border);
+        color: var(--ink);
+      }
+      .msg.thinking {
+        background: var(--surface-1);
+        color: var(--ink-subtle);
+        font-style: italic;
+      }
+      .msg.assistant {
+        font-size: 14px !important;
+      }
+      .msg.assistant * {
+        font-size: inherit !important;
+        max-width: 100%;
+      }
+      .msg.assistant a {
+        color: var(--primary);
+        text-decoration: underline;
+        text-decoration-color: var(--hairline-strong);
+        text-underline-offset: 2px;
+      }
+      .msg.assistant a:hover {
+        text-decoration-color: var(--primary);
+      }
+      .msg.assistant code {
+        background: var(--code-bg);
+        border: 1px solid var(--hairline);
+        padding: 1px 5px;
+        border-radius: var(--radius-xs);
+        font-family: var(--font-mono);
+        font-size: 12.5px !important;
+      }
+      .msg.assistant pre {
+        background: var(--canvas);
+        border: 1px solid var(--hairline);
+        padding: 12px;
+        border-radius: var(--radius-md);
+        overflow-x: auto;
+        margin: 8px 0;
+      }
+      .msg.assistant pre code {
+        padding: 0;
+        background: none;
+        border: none;
+        font-size: 13px !important;
+      }
+      .msg.assistant ul,
+      .msg.assistant ol {
+        padding-left: 20px;
+        margin: 6px 0;
+      }
+      .msg.assistant h1,
+      .msg.assistant h2,
+      .msg.assistant h3,
+      .msg.assistant h4,
+      .msg.assistant h5,
+      .msg.assistant h6 {
+        font-size: 14px !important;
+        font-weight: 600;
+        letter-spacing: -0.2px;
+        margin: 10px 0 4px;
+      }
+      .msg.assistant p {
+        margin: 6px 0;
+      }
+      .msg.assistant blockquote {
+        border-left: 2px solid var(--primary);
+        padding-left: 10px;
+        color: var(--ink-subtle);
+        margin: 6px 0;
+      }
+      .msg-time {
+        font-size: 11px;
+        color: var(--ink-tertiary);
+        padding: 0 6px;
+      }
+      .msg-usage {
+        font-size: 11px;
+        color: var(--ink-subtle);
+        padding: 2px 6px;
+      }
+      .msg-usage span {
+        margin-right: 8px;
+      }
+      /* 入力エリア */
+      .pane-input-area {
+        background: var(--canvas);
+        padding: 10px 14px 12px;
+        border-top: 1px solid var(--hairline);
+        display: flex;
+        gap: 6px;
+        align-items: flex-end;
+        flex-shrink: 0;
+      }
+      .pane-composer {
+        flex: 1;
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        background: var(--surface-1);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-lg);
+        padding: 6px 6px 6px 8px;
+        transition:
+          border-color 0.15s ease,
+          box-shadow 0.15s ease;
+        min-width: 0;
+      }
+      .pane-composer:focus-within {
+        border-color: var(--primary-focus);
+        box-shadow: 0 0 0 2px var(--focus-ring);
+      }
+      .pane-input {
+        flex: 1;
+        background: transparent;
+        color: var(--ink);
+        border: none;
+        padding: 8px 4px;
+        font-family: inherit;
+        font-size: 14px;
+        letter-spacing: -0.05px;
+        outline: none;
+        resize: none;
+        min-height: 36px;
+        max-height: 160px;
+        line-height: 1.5;
+        min-width: 0;
+      }
+      .pane-input::placeholder {
+        color: var(--ink-tertiary);
+      }
+      .pane-attach-btn {
+        background: none;
+        border: none;
+        color: var(--ink-subtle);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 6px 8px;
+        border-radius: var(--radius-sm);
+        min-height: 32px;
+        touch-action: manipulation;
+        transition:
+          color 0.12s ease,
+          background 0.12s ease;
+        flex-shrink: 0;
+      }
+      .pane-attach-btn:hover {
+        color: var(--ink);
+        background: var(--surface-2);
+      }
+      .pane-file-input {
+        display: none;
+      }
+      .pane-attach-preview {
+        display: none;
+        padding: 6px 14px;
+        background: var(--canvas);
+        border-top: 1px solid var(--hairline);
+        font-size: 12px;
+        color: var(--ink-subtle);
+        flex-shrink: 0;
+      }
+      .pane-attach-preview .preview-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--surface-1);
+        border: 1px solid var(--hairline);
+        padding: 4px 8px;
+        border-radius: var(--radius-sm);
+        margin-right: 4px;
+        margin-bottom: 4px;
+      }
+      .pane-attach-preview .preview-item img {
+        max-height: 40px;
+        border-radius: var(--radius-xs);
+      }
+      .pane-attach-preview .remove-btn {
+        color: var(--ink-subtle);
+        cursor: pointer;
+        font-weight: 500;
+        padding: 0 2px;
+        transition: color 0.12s ease;
+      }
+      .pane-attach-preview .remove-btn:hover {
+        color: var(--danger);
+      }
+      .msg img {
+        max-width: 100%;
+        border-radius: var(--radius-md);
+        margin: 6px 0;
+        border: 1px solid var(--hairline);
+      }
+      .action-btn {
+        border: none;
+        padding: 7px 14px;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-family: inherit;
+        font-weight: 500;
+        font-size: 13px;
+        letter-spacing: 0;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+        min-height: 34px;
+        transition:
+          background 0.15s ease,
+          color 0.15s ease;
+        flex-shrink: 0;
+      }
+      .action-btn:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      .pane-send {
+        background: var(--primary);
+        color: var(--on-primary);
+      }
+      .pane-send:hover {
+        background: var(--primary-hover);
+      }
+      .pane-send:active {
+        background: var(--primary-focus);
+      }
+      .pane-send:disabled {
+        background: var(--surface-2);
+        color: var(--ink-tertiary);
+        cursor: not-allowed;
+      }
+      .pane-stop {
+        background: var(--danger);
+        color: #fff;
+        display: none;
+      }
+      .pane-stop:hover {
+        filter: brightness(1.08);
+      }
+      /* セッションリストの行内アクション */
+      .session-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 4px;
+      }
+      .session-row .label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .session-row .row-act {
+        color: var(--ink-tertiary);
+        cursor: pointer;
+        padding: 0 4px;
+        font-size: 13px;
+        flex-shrink: 0;
+        line-height: 1;
+        transition: color 0.12s ease;
+        opacity: 0;
+      }
+      .session-row:hover .row-act {
+        opacity: 1;
+      }
+      .session-row .pin-btn:hover {
+        color: var(--primary);
+      }
+      .session-row .del-btn:hover {
+        color: var(--danger);
+      }
+      .session-row .stop-btn {
+        opacity: 1;
+        color: #4ade80;
+      }
+      .session-row .stop-btn:hover {
+        color: var(--danger);
+      }
+      .session-row .autotalk-btn:hover {
+        color: var(--primary);
+      }
+      .session-row .autotalk-btn.on {
+        opacity: 1;
+        color: #f59e0b;
+        animation: autotalk-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes autotalk-pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.18);
+        }
+      }
+      /* セッション行の "🤖 自走中" インラインバッジ */
+      .session-row .autotalk-badge {
+        display: inline-block;
+        margin-right: 4px;
+        font-size: 11px;
+        padding: 1px 5px;
+        border-radius: 8px;
+        background: rgba(245, 158, 11, 0.18);
+        color: #f59e0b;
+        font-weight: 600;
+      }
+      /* 画面下に出る軽量トースト */
+      .toast {
         position: fixed;
-        left: 0; top: 0; bottom: 0;
-        z-index: 10;
-        transform: translateX(-100%);
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        padding: 10px 16px;
+        background: var(--surface-1);
+        color: var(--ink);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-md);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+        font-size: 13px;
+        z-index: 1000;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
       }
-      #sidebar.open { transform: translateX(0); }
-      #overlay.open { display: block; }
-      #menu-btn { display: block; }
-      .msg { max-width: 92%; font-size: 15px; }
-      #input { font-size: 16px; }
-    }
-  </style>
-</head>
-<body>
-  <div id="overlay" onclick="closeSidebar()"></div>
-  <div id="sidebar">
-    <div class="top">
-      <button class="new-btn" onclick="newSession()">+ New Chat</button>
-      <input type="text" placeholder="Search..." oninput="filterSessions(this.value)">
+      .toast.visible {
+        opacity: 1;
+      }
+      .toast.success {
+        border-color: #f59e0b;
+        color: #f59e0b;
+      }
+      /* Resume / Continue ボタン（read-only セッション用） */
+      .resume-btn {
+        background: var(--surface-1);
+        color: var(--ink);
+        border: 1px solid var(--hairline);
+        padding: 8px 14px;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        margin: 12px auto;
+        display: block;
+        transition:
+          background 0.15s ease,
+          border-color 0.15s ease;
+      }
+      .resume-btn:hover {
+        background: var(--surface-2);
+        border-color: var(--hairline-strong);
+      }
+      /* 空状態 */
+      .empty-state {
+        text-align: center;
+        color: var(--ink-subtle);
+        padding: 64px 20px;
+        font-size: 14px;
+        line-height: 1.7;
+      }
+      .empty-state strong {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      /* 空状態テキスト中のクリッカブル「+ New Chat」 */
+      .empty-cta {
+        background: none;
+        border: none;
+        padding: 0;
+        margin: 0;
+        font: inherit;
+        color: var(--ink);
+        font-weight: 500;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .empty-cta:hover {
+        color: var(--accent, var(--ink));
+      }
+      .empty-cta:focus-visible {
+        outline: 2px solid var(--accent, var(--hairline-strong));
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+      /* 全ペイン閉じた時の状態 */
+      .panes-empty {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink-subtle);
+        font-size: 14px;
+        text-align: center;
+        padding: 20px;
+        line-height: 1.7;
+      }
+      .panes-empty strong {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      /* ツール実行ライン */
+      .tool-line {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--ink-subtle);
+        padding: 2px 0;
+        letter-spacing: 0;
+      }
+      /* スクロールバー */
+      #session-list::-webkit-scrollbar,
+      .pane-messages::-webkit-scrollbar,
+      .pane-input::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      #session-list::-webkit-scrollbar-thumb,
+      .pane-messages::-webkit-scrollbar-thumb,
+      .pane-input::-webkit-scrollbar-thumb {
+        background: var(--hairline);
+        border-radius: var(--radius-pill);
+      }
+      #session-list::-webkit-scrollbar-thumb:hover,
+      .pane-messages::-webkit-scrollbar-thumb:hover,
+      .pane-input::-webkit-scrollbar-thumb:hover {
+        background: var(--hairline-strong);
+      }
+      #session-list::-webkit-scrollbar-track,
+      .pane-messages::-webkit-scrollbar-track,
+      .pane-input::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      /* オーバーレイ（モバイルサイドバー用） */
+      #overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 9;
+      }
+      /* ペインタブ（モバイル時のみ表示） */
+      #pane-tabs {
+        display: none;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        background: var(--surface-1);
+        border-bottom: 1px solid var(--hairline);
+        padding: 6px 8px;
+        gap: 4px;
+        flex-shrink: 0;
+        scrollbar-width: none;
+      }
+      #pane-tabs::-webkit-scrollbar {
+        display: none;
+      }
+      .pane-tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        font-size: 12px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        background: var(--surface-2);
+        color: var(--ink-muted);
+        white-space: nowrap;
+        border: 1px solid var(--hairline);
+        transition:
+          background 0.12s ease,
+          color 0.12s ease,
+          border-color 0.12s ease;
+        flex-shrink: 0;
+        max-width: 200px;
+      }
+      .pane-tab .label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 140px;
+      }
+      .pane-tab.active {
+        background: var(--primary);
+        color: var(--on-primary);
+        border-color: var(--primary);
+      }
+      .pane-tab .tab-close {
+        color: inherit;
+        opacity: 0.7;
+        font-weight: 600;
+        padding: 0 2px;
+        line-height: 1;
+      }
+      .pane-tab .tab-close:hover {
+        opacity: 1;
+      }
+      /* モバイル */
+      @media (max-width: 768px) {
+        #sidebar {
+          position: fixed;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          z-index: 10;
+          transform: translateX(-100%);
+        }
+        #sidebar.open {
+          transform: translateX(0);
+        }
+        #overlay.open {
+          display: block;
+        }
+        #panes-toolbar #menu-btn {
+          display: block;
+        }
+        /* モバイルはタブ切替式: アクティブペインのみ表示、タブで切り替え */
+        #panes-container {
+          grid-template-columns: 1fr !important;
+          grid-template-rows: 1fr !important;
+        }
+        .pane:not(.active) {
+          display: none;
+        }
+        /* モバイルのみペインヘッダーを隠す（タブで代用） */
+        .pane-header {
+          display: none;
+        }
+        #pane-tabs {
+          display: flex;
+        }
+        #panes-toolbar .pane-count {
+          display: none;
+        }
+        .pane-messages {
+          padding: 14px;
+        }
+        .pane-input-area {
+          padding: 8px 12px 12px;
+        }
+        .msg-wrapper {
+          max-width: 100%;
+        }
+        .msg {
+          font-size: 15px;
+        }
+        .pane-input {
+          font-size: 16px;
+        }
+        .session-row .row-act {
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay" onclick="closeSidebar()"></div>
+    <div id="sidebar">
+      <div class="top">
+        <button class="new-btn" onclick="newSessionInActivePane()">+ New Chat</button>
+        <input type="text" placeholder="Search..." oninput="filterSessions(this.value)" />
+      </div>
+      <div id="session-list"></div>
     </div>
-    <div id="session-list"></div>
-  </div>
-  <div id="main">
-    <header>
-      <button id="menu-btn" onclick="toggleSidebar()">&#9776;</button>
-      <h1>xangi</h1>
-      <span class="session-title" id="session-title" onclick="editTitle()" title="Click to edit title"></span>
-    </header>
-    <div id="messages"></div>
-    <div id="attach-preview"></div>
-    <div id="input-area">
-      <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach file">&#128206;</button>
-      <input type="file" id="file-input" multiple accept="image/*,.pdf,.mp3,.mp4,.wav" onchange="handleFileSelect(event)">
-      <textarea id="input" rows="1" placeholder="Message..." onkeydown="handleKey(event)"></textarea>
-      <button id="send" class="action-btn" onclick="send()">Send</button>
-      <button id="stop" class="action-btn" onclick="stopChat()">Stop</button>
+    <div id="main">
+      <div id="panes-toolbar">
+        <button id="menu-btn" onclick="toggleSidebar()">&#9776;</button>
+        <h1>xangi</h1>
+        <span class="spacer"></span>
+        <a class="tool-link" href="/inter-chat" title="inter-instance-chat 履歴ビューア">
+          🔁 inter-chat
+        </a>
+        <span class="pane-count" id="pane-count">0 panes</span>
+        <button
+          class="add-pane-btn"
+          id="add-pane-btn"
+          onclick="addEmptyPane()"
+          title="新しいペインを追加"
+        >
+          + Pane
+        </button>
+      </div>
+      <div id="pane-tabs"></div>
+      <div id="panes-container"></div>
     </div>
-  </div>
-  <script>
-    const messagesEl = document.getElementById('messages');
-    const inputEl = document.getElementById('input');
-    const sendBtn = document.getElementById('send');
-    const stopBtn = document.getElementById('stop');
-    const sessionListEl = document.getElementById('session-list');
-    const sessionTitleEl = document.getElementById('session-title');
-    const sidebar = document.getElementById('sidebar');
-    const overlay = document.getElementById('overlay');
-    let sending = false;
-    let currentSessionId = null;
-    let allSessions = [];
-    let abortController = null;
-    let pendingFiles = []; // { name, path, localUrl }
+    <script>
+      const sessionListEl = document.getElementById('session-list');
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('overlay');
+      const panesContainer = document.getElementById('panes-container');
+      const paneTabsEl = document.getElementById('pane-tabs');
+      const paneCountEl = document.getElementById('pane-count');
+      const addPaneBtn = document.getElementById('add-pane-btn');
 
-    // ─── ファイル添付 ───
-    const attachPreview = document.getElementById('attach-preview');
+      const MAX_PANES = 8;
+      let allSessions = [];
 
-    function handleFileSelect(e) {
-      for (var f of e.target.files) {
-        addPendingFile(f);
+      // ─── サイドバー ───
+      function toggleSidebar() {
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('open');
       }
-      e.target.value = '';
-    }
+      function closeSidebar() {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+      }
 
-    async function addPendingFile(file) {
-      var formData = new FormData();
-      formData.append('file', file);
-      try {
-        var res = await fetch('/api/upload', { method: 'POST', body: formData });
-        var data = await res.json();
-        if (data.files && data.files.length > 0) {
-          var f = data.files[0];
-          var localUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
-          pendingFiles.push({ name: f.name, path: f.path, localUrl: localUrl });
-          renderAttachPreview();
+      // ─── メタデータ除去 ───
+      function stripMetadata(text) {
+        if (typeof text !== 'string') return String(text);
+        return text
+          .replace(/^\[プラットフォーム: [^\]]*\]\n?/m, '')
+          .replace(/^\[チャンネル: [^\]]*\]\n?/m, '')
+          .replace(/^\[発言者: [^\]]*\]\n?/m, '')
+          .replace(/^\[現在時刻: [^\]]*\]\n?/m, '')
+          .replace(/^\[チャンネルID: [^\]]*\]\n?/m, '')
+          .trim();
+      }
+
+      function convertMediaPaths(text) {
+        var imgExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+        var audioExts = ['.mp3', '.wav', '.flac'];
+        var videoExts = ['.mp4'];
+        return text.replace(/MEDIA:([^\s\n]+)/g, function (match, path) {
+          var ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+          var url = '/api/workspace-file?path=' + encodeURIComponent(path);
+          if (imgExts.indexOf(ext) >= 0)
+            return (
+              '<img src="' +
+              url +
+              '" style="max-width:300px;border-radius:6px;margin:4px 0;cursor:pointer;" onclick="window.open(this.src)">'
+            );
+          if (audioExts.indexOf(ext) >= 0) return '<audio controls src="' + url + '"></audio>';
+          if (videoExts.indexOf(ext) >= 0)
+            return (
+              '<video controls src="' + url + '" style="max-width:100%;border-radius:6px;"></video>'
+            );
+          return '<a href="' + url + '" target="_blank">' + path.split('/').pop() + '</a>';
+        });
+      }
+
+      function renderMarkdown(text) {
+        text = convertMediaPaths(text);
+        if (typeof marked !== 'undefined' && marked.parse) {
+          try {
+            return marked.parse(text);
+          } catch (e) {}
         }
-      } catch(err) {
-        console.error('Upload failed:', err);
-      }
-    }
-
-    function removePendingFile(idx) {
-      if (pendingFiles[idx] && pendingFiles[idx].localUrl) {
-        URL.revokeObjectURL(pendingFiles[idx].localUrl);
-      }
-      pendingFiles.splice(idx, 1);
-      renderAttachPreview();
-    }
-
-    function renderAttachPreview() {
-      if (pendingFiles.length === 0) {
-        attachPreview.style.display = 'none';
-        attachPreview.innerHTML = '';
-        return;
-      }
-      attachPreview.style.display = 'block';
-      attachPreview.innerHTML = pendingFiles.map(function(f, i) {
-        var img = f.localUrl ? '<img src="' + f.localUrl + '">' : '';
-        return '<span class="preview-item">' + img + f.name + ' <span class="remove-btn" onclick="removePendingFile(' + i + ')">×</span></span>';
-      }).join('');
-    }
-
-    // ─── サイドバー ───
-    function toggleSidebar() { sidebar.classList.toggle('open'); overlay.classList.toggle('open'); }
-    function closeSidebar() { sidebar.classList.remove('open'); overlay.classList.remove('open'); }
-
-    // ─── メタデータ除去 ───
-    function stripMetadata(text) {
-      if (typeof text !== 'string') return String(text);
-      return text
-        .replace(/^\[プラットフォーム: [^\]]*\]\n?/m, '')
-        .replace(/^\[チャンネル: [^\]]*\]\n?/m, '')
-        .replace(/^\[発言者: [^\]]*\]\n?/m, '')
-        .replace(/^\[現在時刻: [^\]]*\]\n?/m, '')
-        .replace(/^\[チャンネルID: [^\]]*\]\n?/m, '')
-        .trim();
-    }
-
-    /** MEDIA:パスを画像/音声/動画タグに変換 */
-    function convertMediaPaths(text) {
-      var imgExts = ['.png','.jpg','.jpeg','.gif','.webp'];
-      var audioExts = ['.mp3','.wav','.flac'];
-      var videoExts = ['.mp4'];
-      return text.replace(/MEDIA:([^\s\n]+)/g, function(match, path) {
-        var ext = path.slice(path.lastIndexOf('.')).toLowerCase();
-        var url = '/api/workspace-file?path=' + encodeURIComponent(path);
-        if (imgExts.indexOf(ext) >= 0) return '<img src="' + url + '" style="max-width:300px;border-radius:6px;margin:4px 0;cursor:pointer;" onclick="window.open(this.src)">';
-        if (audioExts.indexOf(ext) >= 0) return '<audio controls src="' + url + '"></audio>';
-        if (videoExts.indexOf(ext) >= 0) return '<video controls src="' + url + '" style="max-width:100%;border-radius:6px;"></video>';
-        return '<a href="' + url + '" target="_blank">' + path.split('/').pop() + '</a>';
-      });
-    }
-
-    /** マークダウンレンダリング（marked.js優先、フォールバック付き） */
-    function renderMarkdown(text) {
-      // MEDIA:パスを先に変換
-      text = convertMediaPaths(text);
-      if (typeof marked !== 'undefined' && marked.parse) {
-        try { return marked.parse(text); } catch(e) {}
-      }
-      // フォールバック: 最低限のマークダウン変換
-      return text
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.+?)\*/g, '<em>$1</em>')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-        .replace(/(^|\n)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
-        .replace(/\n/g, '<br>');
-    }
-
-    function formatTime(isoStr) {
-      if (!isoStr) return '';
-      const d = new Date(isoStr);
-      const h = d.getHours().toString().padStart(2,'0');
-      const m = d.getMinutes().toString().padStart(2,'0');
-      return d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + h + ':' + m;
-    }
-
-    // ─── メッセージ表示 ───
-    function addMessage(text, role, opts) {
-      opts = opts || {};
-      const wrapper = document.createElement('div');
-      wrapper.className = 'msg-wrapper ' + role;
-
-      const div = document.createElement('div');
-      div.className = 'msg ' + role;
-      const cleaned = stripMetadata(text);
-      if (role === 'assistant') {
-        div.innerHTML = renderMarkdown(cleaned);
-        div.style.whiteSpace = 'normal';
-      } else {
-        div.textContent = cleaned;
-      }
-      wrapper.appendChild(div);
-
-      if (opts.createdAt) {
-        const t = document.createElement('div');
-        t.className = 'msg-time';
-        t.textContent = formatTime(opts.createdAt);
-        wrapper.appendChild(t);
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+          .replace(/(^|\n)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
+          .replace(/\n/g, '<br>');
       }
 
-      if (role === 'assistant' && opts.usage) {
-        var u = opts.usage;
-        var parts = [];
-        if (u.num_turns != null) parts.push('\u{1F504} ' + u.num_turns + ' turns');
-        if (u.duration_ms != null) parts.push('\u{23F1}\uFE0F ' + (u.duration_ms/1000).toFixed(1) + 's');
-        if (u.total_cost_usd != null) parts.push('\u{1F4B0} $' + u.total_cost_usd.toFixed(4));
-        if (parts.length > 0) {
-          var uel = document.createElement('div');
-          uel.className = 'msg-usage';
-          uel.innerHTML = parts.map(function(p){ return '<span>'+p+'</span>'; }).join('');
-          wrapper.appendChild(uel);
+      function formatTime(isoStr) {
+        if (!isoStr) return '';
+        const d = new Date(isoStr);
+        const h = d.getHours().toString().padStart(2, '0');
+        const m = d.getMinutes().toString().padStart(2, '0');
+        return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + h + ':' + m;
+      }
+
+      // 自走モードのプロンプト（内部リクエスト）はユーザー発言として履歴に残るが、
+      // UI には出さない。先頭マーカーで判別する。
+      const AUTOTALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
+      function filterAutoTalkInternal(m) {
+        if (!m || m.role !== 'user') return true;
+        var c = typeof m.content === 'string' ? m.content : '';
+        return !c.startsWith(AUTOTALK_SENTINEL);
+      }
+
+      // ─── Pane クラス ───
+      let _paneIdCounter = 0;
+      class Pane {
+        constructor(opts) {
+          opts = opts || {};
+          this.paneId = 'pane-' + ++_paneIdCounter;
+          this.sessionId = null;
+          this.sending = false;
+          this.abortController = null;
+          this.pendingFiles = [];
+          this.platform = 'web'; // 既定。loadSession で更新
+
+          this.el = document.createElement('div');
+          this.el.className = 'pane';
+          this.el.dataset.paneId = this.paneId;
+          this.el.addEventListener('mousedown', () => paneManager.focus(this));
+
+          this._build();
         }
-      }
 
-      messagesEl.appendChild(wrapper);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-      return div;
-    }
+        _build() {
+          // header
+          var header = document.createElement('div');
+          header.className = 'pane-header';
+          this.titleEl = document.createElement('span');
+          this.titleEl.className = 'pane-title empty';
+          this.titleEl.textContent = '(empty)';
+          this.titleEl.title = 'Click to edit title';
+          this.titleEl.addEventListener('click', () => this.editTitle());
+          var closeBtn = document.createElement('button');
+          closeBtn.className = 'pane-close';
+          closeBtn.textContent = '×';
+          closeBtn.title = 'Close pane';
+          closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            paneManager.remove(this);
+          });
+          header.appendChild(this.titleEl);
+          header.appendChild(closeBtn);
+          this.el.appendChild(header);
 
-    // ─── セッション ───
-    async function loadSessions() {
-      try {
-        var res = await fetch('/api/sessions');
-        var data = await res.json();
-        allSessions = data.sessions || [];
-        renderSessions(allSessions);
-      } catch(e) {}
-    }
+          // messages
+          this.messagesEl = document.createElement('div');
+          this.messagesEl.className = 'pane-messages';
+          this.messagesEl.innerHTML =
+            '<div class="empty-state">Select a session<br>or click <button type="button" class="empty-cta" onclick="newSessionInActivePane()">+ New Chat</button></div>';
+          this.el.appendChild(this.messagesEl);
 
-    function renderSessions(sessions) {
-      sessionListEl.innerHTML = '';
-      var lastDate = '';
-      for (var i = 0; i < sessions.length; i++) {
-        var s = sessions[i];
-        var date = (s.updatedAt || s.createdAt || '').slice(0, 10);
-        if (date !== lastDate) {
-          lastDate = date;
-          var g = document.createElement('div');
-          g.className = 'date-group';
-          g.textContent = getDateLabel(date);
-          sessionListEl.appendChild(g);
+          // attach preview
+          this.attachPreviewEl = document.createElement('div');
+          this.attachPreviewEl.className = 'pane-attach-preview';
+          this.el.appendChild(this.attachPreviewEl);
+
+          // input area
+          var inputArea = document.createElement('div');
+          inputArea.className = 'pane-input-area';
+          var composer = document.createElement('div');
+          composer.className = 'pane-composer';
+          var attachBtn = document.createElement('button');
+          attachBtn.className = 'pane-attach-btn';
+          attachBtn.title = 'Attach file';
+          attachBtn.innerHTML = '&#128206;';
+          this.fileInputEl = document.createElement('input');
+          this.fileInputEl.type = 'file';
+          this.fileInputEl.className = 'pane-file-input';
+          this.fileInputEl.multiple = true;
+          this.fileInputEl.accept = 'image/*,.pdf,.mp3,.mp4,.wav';
+          this.fileInputEl.addEventListener('change', (e) => this._handleFileSelect(e));
+          attachBtn.addEventListener('click', () => this.fileInputEl.click());
+          this.inputEl = document.createElement('textarea');
+          this.inputEl.className = 'pane-input';
+          this.inputEl.rows = 1;
+          this.inputEl.placeholder = 'Select a session or start a new chat';
+          this.inputEl.disabled = true;
+          this.inputEl.addEventListener('keydown', (e) => this._handleKey(e));
+          this.inputEl.addEventListener('input', () => {
+            this.inputEl.style.height = 'auto';
+            this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + 'px';
+          });
+          composer.appendChild(attachBtn);
+          composer.appendChild(this.fileInputEl);
+          composer.appendChild(this.inputEl);
+
+          this.sendBtn = document.createElement('button');
+          this.sendBtn.className = 'pane-send action-btn';
+          this.sendBtn.textContent = 'Send';
+          this.sendBtn.disabled = true;
+          this.sendBtn.addEventListener('click', () => this.send());
+
+          this.stopBtn = document.createElement('button');
+          this.stopBtn.className = 'pane-stop action-btn';
+          this.stopBtn.textContent = 'Stop';
+          this.stopBtn.addEventListener('click', () => this.stopChat());
+
+          inputArea.appendChild(composer);
+          inputArea.appendChild(this.sendBtn);
+          inputArea.appendChild(this.stopBtn);
+          this.el.appendChild(inputArea);
         }
-        var item = document.createElement('div');
-        item.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
-        var icon = s.platform === 'web' ? '\u{1F310}' : s.platform === 'slack' ? '\u{1F4AC}' : '\u{1F48E}';
-        var active = s.isActive ? '\u{1F7E2} ' : '';
-        item.setAttribute('data-id', s.id);
-        item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-        var label = document.createElement('span');
-        label.textContent = active + icon + ' ' + (s.title || s.id);
-        label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
-        label.onclick = function(){ var id = this.parentElement.getAttribute('data-id'); loadSession(id); closeSidebar(); };
-        item.appendChild(label);
-        var delBtn = document.createElement('span');
-        delBtn.textContent = '\u{00D7}';
-        delBtn.style.cssText = 'color:#666;cursor:pointer;padding:0 4px;font-size:16px;flex-shrink:0;';
-        delBtn.onmouseover = function(){ this.style.color='#e74c3c'; };
-        delBtn.onmouseout = function(){ this.style.color='#666'; };
-        delBtn.setAttribute('data-id', s.id);
-        delBtn.onclick = function(e){ e.stopPropagation(); deleteSessionById(this.getAttribute('data-id')); };
-        item.appendChild(delBtn);
-        sessionListEl.appendChild(item);
-      }
-    }
 
-    function getDateLabel(d) {
-      var today = new Date().toISOString().slice(0,10);
-      var y = new Date(Date.now()-86400000).toISOString().slice(0,10);
-      if (d === today) return 'Today';
-      if (d === y) return 'Yesterday';
-      return d;
-    }
-
-    function filterSessions(q) {
-      if (!q) { renderSessions(allSessions); return; }
-      q = q.toLowerCase();
-      renderSessions(allSessions.filter(function(s){ return (s.title||s.id).toLowerCase().indexOf(q) >= 0; }));
-    }
-
-    async function loadSession(id) {
-      currentSessionId = id;
-      messagesEl.innerHTML = '';
-      renderSessions(allSessions);
-      try {
-        var res = await fetch('/api/sessions/' + encodeURIComponent(id));
-        var data = await res.json();
-        sessionTitleEl.textContent = data.title || id;
-        var msgs = data.messages || [];
-        for (var i = 0; i < msgs.length; i++) {
-          var m = msgs[i];
-          if (m.role === 'error') continue;
-          var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-          addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
-        }
-        var isActiveWeb = allSessions.some(function(s){ return s.id === id && s.isActive && s.contextKey === 'web-chat'; });
-        if (isActiveWeb) {
-          inputEl.disabled = false;
-          sendBtn.disabled = false;
-          inputEl.placeholder = 'Message...';
-        } else {
-          inputEl.disabled = true;
-          sendBtn.disabled = true;
-          inputEl.placeholder = 'Read-only';
-          // Web由来のセッションのみResumeボタンを表示（Discordセッションは対象外）
-          var sessionInfo = allSessions.find(function(s){ return s.id === id; });
-          var isWebSession = !sessionInfo || sessionInfo.platform === 'web';
-          if (isWebSession) {
-            var resumeBtn = document.createElement('button');
-            resumeBtn.textContent = '\u{1F4AC} Resume this session';
-            resumeBtn.style.cssText = 'background:#0f3460;color:#53c0f0;border:1px solid #53c0f0;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;margin:8px auto;display:block;';
-            resumeBtn.onclick = function(){ resumeSession(id); };
-            messagesEl.appendChild(resumeBtn);
+        _handleKey(e) {
+          if (e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            this.send();
           }
         }
-      } catch(e) {}
-    }
 
-    // ─── 送信 ───
-    function setProcessing(on) {
-      sending = on;
-      sendBtn.style.display = on ? 'none' : '';
-      stopBtn.style.display = on ? '' : 'none';
-      inputEl.disabled = on;
-    }
+        _handleFileSelect(e) {
+          for (var f of e.target.files) {
+            this._addPendingFile(f);
+          }
+          e.target.value = '';
+        }
 
-    async function send() {
-      var msg = inputEl.value.trim();
-      if (!msg || sending) return;
+        async _addPendingFile(file) {
+          var formData = new FormData();
+          formData.append('file', file);
+          try {
+            var res = await fetch('/api/upload', { method: 'POST', body: formData });
+            var data = await res.json();
+            if (data.files && data.files.length > 0) {
+              var f = data.files[0];
+              var localUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
+              this.pendingFiles.push({ name: f.name, path: f.path, localUrl: localUrl });
+              this._renderAttachPreview();
+            }
+          } catch (err) {
+            console.error('Upload failed:', err);
+          }
+        }
 
-      // 添付ファイルがあればプロンプトに追加
-      var fullMsg = msg;
-      if (pendingFiles.length > 0) {
-        var attachments = pendingFiles.map(function(f){ return '[添付ファイル] ' + f.path; }).join('\n');
-        fullMsg = msg + '\n\n' + attachments;
-      }
+        _removePendingFile(idx) {
+          if (this.pendingFiles[idx] && this.pendingFiles[idx].localUrl) {
+            URL.revokeObjectURL(this.pendingFiles[idx].localUrl);
+          }
+          this.pendingFiles.splice(idx, 1);
+          this._renderAttachPreview();
+        }
 
-      addMessage(msg, 'user', { createdAt: new Date().toISOString() });
-      // 添付画像のプレビューもメッセージに追加
-      if (pendingFiles.length > 0) {
-        var lastWrapper = messagesEl.lastElementChild;
-        if (lastWrapper) {
-          var imgContainer = document.createElement('div');
-          imgContainer.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;padding:4px 0;';
-          pendingFiles.forEach(function(f) {
+        _renderAttachPreview() {
+          if (this.pendingFiles.length === 0) {
+            this.attachPreviewEl.style.display = 'none';
+            this.attachPreviewEl.innerHTML = '';
+            return;
+          }
+          this.attachPreviewEl.style.display = 'block';
+          this.attachPreviewEl.innerHTML = '';
+          var self = this;
+          this.pendingFiles.forEach(function (f, i) {
+            var item = document.createElement('span');
+            item.className = 'preview-item';
             if (f.localUrl) {
               var img = document.createElement('img');
               img.src = f.localUrl;
-              img.style.cssText = 'max-height:80px;border-radius:4px;';
-              imgContainer.appendChild(img);
+              item.appendChild(img);
+            }
+            item.appendChild(document.createTextNode(' ' + f.name + ' '));
+            var rm = document.createElement('span');
+            rm.className = 'remove-btn';
+            rm.textContent = '×';
+            rm.addEventListener('click', () => self._removePendingFile(i));
+            item.appendChild(rm);
+            self.attachPreviewEl.appendChild(item);
+          });
+        }
+
+        addMessage(text, role, opts) {
+          opts = opts || {};
+          var wrapper = document.createElement('div');
+          wrapper.className = 'msg-wrapper ' + role;
+          var div = document.createElement('div');
+          div.className = 'msg ' + role;
+          var cleaned = stripMetadata(text);
+          if (role === 'assistant') {
+            div.innerHTML = renderMarkdown(cleaned);
+            div.style.whiteSpace = 'normal';
+          } else {
+            div.textContent = cleaned;
+          }
+          wrapper.appendChild(div);
+
+          if (opts.createdAt) {
+            var t = document.createElement('div');
+            t.className = 'msg-time';
+            t.textContent = formatTime(opts.createdAt);
+            wrapper.appendChild(t);
+          }
+
+          if (role === 'assistant' && opts.usage) {
+            var u = opts.usage;
+            var parts = [];
+            if (u.num_turns != null) parts.push('\u{1F504} ' + u.num_turns + ' turns');
+            if (u.duration_ms != null)
+              parts.push('\u{23F1}️ ' + (u.duration_ms / 1000).toFixed(1) + 's');
+            if (u.total_cost_usd != null) parts.push('\u{1F4B0} $' + u.total_cost_usd.toFixed(4));
+            if (parts.length > 0) {
+              var uel = document.createElement('div');
+              uel.className = 'msg-usage';
+              uel.innerHTML = parts
+                .map(function (p) {
+                  return '<span>' + p + '</span>';
+                })
+                .join('');
+              wrapper.appendChild(uel);
+            }
+          }
+
+          this.messagesEl.appendChild(wrapper);
+          this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+          return div;
+        }
+
+        async refreshHistory() {
+          // 自走モード等で裏で進んだ履歴を読み直す（最後のメッセージ以降だけ追加するのではなく、シンプルに全部再描画）
+          if (!this.sessionId || this.sending) return;
+          try {
+            var res = await fetch('/api/sessions/' + encodeURIComponent(this.sessionId));
+            var data = await res.json();
+            var msgs = (data.messages || []).filter(filterAutoTalkInternal).filter(function (m) {
+              return m.role !== 'error';
+            });
+            // メッセージ数が変わってなければ何もしない
+            var existing = this.messagesEl.querySelectorAll('.msg-wrapper').length;
+            if (existing >= msgs.length) return;
+            this.messagesEl.innerHTML = '';
+            for (var i = 0; i < msgs.length; i++) {
+              var m = msgs[i];
+              var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+              this.addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
+            }
+          } catch (_) {}
+        }
+
+        async loadSession(id) {
+          if (id === this.sessionId && !this.sending) return;
+          if (this.sending && this.abortController) {
+            try {
+              this.abortController.abort();
+            } catch (_) {}
+          }
+          this.sending = false;
+          this.abortController = null;
+          this.sendBtn.style.display = '';
+          this.stopBtn.style.display = 'none';
+
+          this.sessionId = id;
+          this.messagesEl.innerHTML = '';
+          renderSessions(allSessions);
+
+          try {
+            var res = await fetch('/api/sessions/' + encodeURIComponent(id));
+            var data = await res.json();
+            this._setTitle(data.title || id);
+            var msgs = (data.messages || []).filter(filterAutoTalkInternal);
+            for (var i = 0; i < msgs.length; i++) {
+              var m = msgs[i];
+              if (m.role === 'error') continue;
+              var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+              this.addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
+            }
+            var info = allSessions.find(function (s) {
+              return s.id === id;
+            });
+            this.platform = info ? info.platform : 'web';
+            if (this.platform === 'web') {
+              this.inputEl.disabled = false;
+              this.sendBtn.disabled = false;
+              this.inputEl.placeholder = 'Message...';
+            } else {
+              this.inputEl.disabled = true;
+              this.sendBtn.disabled = true;
+              this.inputEl.placeholder = 'Read-only (Discord/Slack session)';
+              var resumeBtn = document.createElement('button');
+              resumeBtn.className = 'resume-btn';
+              resumeBtn.textContent = '\u{1F4AC} Continue here (fork as new web session)';
+              resumeBtn.addEventListener('click', () => this.resumeFromCurrent());
+              this.messagesEl.appendChild(resumeBtn);
+            }
+          } catch (e) {}
+        }
+
+        _setTitle(t) {
+          this.titleEl.textContent = t || '(untitled)';
+          this.titleEl.classList.toggle('empty', !t);
+          if (typeof paneManager !== 'undefined') paneManager._renderTabs();
+        }
+
+        _setProcessing(on) {
+          this.sending = on;
+          this.sendBtn.style.display = on ? 'none' : '';
+          this.stopBtn.style.display = on ? '' : 'none';
+          this.inputEl.disabled = on;
+        }
+
+        async send() {
+          var msg = this.inputEl.value.trim();
+          if (!msg || this.sending) return;
+          if (this.platform !== 'web' && this.sessionId) return;
+
+          var fullMsg = msg;
+          if (this.pendingFiles.length > 0) {
+            var attachments = this.pendingFiles
+              .map(function (f) {
+                return '[添付ファイル] ' + f.path;
+              })
+              .join('\n');
+            fullMsg = msg + '\n\n' + attachments;
+          }
+
+          this.addMessage(msg, 'user', { createdAt: new Date().toISOString() });
+          if (this.pendingFiles.length > 0) {
+            var lastWrapper = this.messagesEl.lastElementChild;
+            if (lastWrapper) {
+              var imgContainer = document.createElement('div');
+              imgContainer.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;padding:4px 0;';
+              this.pendingFiles.forEach(function (f) {
+                if (f.localUrl) {
+                  var img = document.createElement('img');
+                  img.src = f.localUrl;
+                  img.style.cssText = 'max-height:80px;border-radius:4px;';
+                  imgContainer.appendChild(img);
+                }
+              });
+              if (imgContainer.children.length > 0) {
+                lastWrapper.querySelector('.msg').appendChild(imgContainer);
+              }
+            }
+          }
+          this.pendingFiles = [];
+          this._renderAttachPreview();
+
+          this.inputEl.value = '';
+          this.inputEl.style.height = 'auto';
+          this._setProcessing(true);
+
+          var toolsWrapper = document.createElement('div');
+          toolsWrapper.className = 'msg-wrapper assistant';
+          var toolsDiv = document.createElement('div');
+          toolsDiv.className = 'msg thinking';
+          toolsDiv.textContent = 'Thinking...';
+          toolsWrapper.appendChild(toolsDiv);
+          this.messagesEl.appendChild(toolsWrapper);
+
+          var assistantWrapper = null;
+          var assistantDiv = null;
+          var toolHistory = [];
+
+          this.abortController = new AbortController();
+          var self = this;
+          try {
+            var res = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ appSessionId: this.sessionId || undefined, message: fullMsg }),
+              signal: this.abortController.signal,
+            });
+
+            var reader = res.body.getReader();
+            var decoder = new TextDecoder();
+            var buf = '';
+
+            while (true) {
+              var chunk = await reader.read();
+              if (chunk.done) break;
+              buf += decoder.decode(chunk.value, { stream: true });
+
+              var lines = buf.split('\n');
+              buf = lines.pop() || '';
+
+              var eventType = '';
+              for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.startsWith('event: ')) {
+                  eventType = line.slice(7);
+                } else if (line.startsWith('data: ') && eventType) {
+                  try {
+                    var d = JSON.parse(line.slice(6));
+                    if (eventType === 'text') {
+                      if (!assistantWrapper) {
+                        toolsWrapper.remove();
+                        assistantWrapper = document.createElement('div');
+                        assistantWrapper.className = 'msg-wrapper assistant';
+                        assistantDiv = document.createElement('div');
+                        assistantDiv.className = 'msg assistant';
+                        assistantWrapper.appendChild(assistantDiv);
+                        self.messagesEl.appendChild(assistantWrapper);
+                      }
+                      assistantDiv.textContent = d.fullText + ' ▌';
+                      self.messagesEl.scrollTop = self.messagesEl.scrollHeight;
+                    } else if (eventType === 'tool') {
+                      if (toolHistory.length === 0) {
+                        toolsDiv.textContent = '';
+                      }
+                      toolHistory.push(d.toolName);
+                      var toolLine = document.createElement('div');
+                      toolLine.className = 'tool-line';
+                      toolLine.textContent = '\u{1F527} ' + d.toolName + (d.inputSummary || '');
+                      toolsDiv.appendChild(toolLine);
+                      self.messagesEl.scrollTop = self.messagesEl.scrollHeight;
+                    } else if (eventType === 'done') {
+                      if (!assistantWrapper) {
+                        assistantWrapper = document.createElement('div');
+                        assistantWrapper.className = 'msg-wrapper assistant';
+                        assistantDiv = document.createElement('div');
+                        assistantDiv.className = 'msg assistant';
+                        assistantDiv.style.whiteSpace = 'normal';
+                        assistantWrapper.appendChild(assistantDiv);
+                        self.messagesEl.appendChild(assistantWrapper);
+                      }
+                      if (toolsWrapper.parentElement) toolsWrapper.remove();
+                      assistantDiv.style.whiteSpace = 'normal';
+                      assistantDiv.innerHTML = renderMarkdown(d.response || '');
+                      var t = document.createElement('div');
+                      t.className = 'msg-time';
+                      t.textContent = formatTime(new Date().toISOString());
+                      assistantWrapper.appendChild(t);
+                      if (d.usage) {
+                        var parts = [];
+                        if (d.usage.num_turns != null)
+                          parts.push('\u{1F504} ' + d.usage.num_turns + ' turns');
+                        if (d.usage.duration_ms != null)
+                          parts.push('\u{23F1}️ ' + (d.usage.duration_ms / 1000).toFixed(1) + 's');
+                        if (d.usage.total_cost_usd != null)
+                          parts.push('\u{1F4B0} $' + d.usage.total_cost_usd.toFixed(4));
+                        if (parts.length > 0) {
+                          var uel = document.createElement('div');
+                          uel.className = 'msg-usage';
+                          uel.innerHTML = parts
+                            .map(function (p) {
+                              return '<span>' + p + '</span>';
+                            })
+                            .join('');
+                          assistantWrapper.appendChild(uel);
+                        }
+                      }
+                      if (d.sessionId) self.sessionId = d.sessionId;
+                      loadSessions();
+                    } else if (eventType === 'error') {
+                      toolsWrapper.remove();
+                      self.addMessage(d.message || 'Error', 'error');
+                    }
+                  } catch (e) {}
+                  eventType = '';
+                }
+              }
+            }
+          } catch (err) {
+            if (toolsWrapper.parentElement) toolsWrapper.remove();
+            if (assistantWrapper && assistantWrapper.parentElement) assistantWrapper.remove();
+            this.addMessage(err.name === 'AbortError' ? 'Stopped' : 'Connection error', 'error');
+          } finally {
+            this._setProcessing(false);
+            this.abortController = null;
+            this.inputEl.focus();
+          }
+        }
+
+        stopChat() {
+          if (this.abortController) this.abortController.abort();
+        }
+
+        async newSession() {
+          if (this.sending && this.abortController) {
+            try {
+              this.abortController.abort();
+            } catch (_) {}
+          }
+          this.sending = false;
+          this.abortController = null;
+          this.sendBtn.style.display = '';
+          this.stopBtn.style.display = 'none';
+
+          try {
+            var res = await fetch('/api/sessions', { method: 'POST' });
+            var data = await res.json();
+            if (data.sessionId) this.sessionId = data.sessionId;
+          } catch (e) {}
+          this.platform = 'web';
+          this.messagesEl.innerHTML = '';
+          this._setTitle('');
+          this.inputEl.disabled = false;
+          this.sendBtn.disabled = false;
+          this.inputEl.placeholder = 'Message...';
+          loadSessions();
+          closeSidebar();
+          this.inputEl.focus();
+        }
+
+        async resumeFromCurrent() {
+          if (!this.sessionId) return;
+          try {
+            var res = await fetch(
+              '/api/sessions/' + encodeURIComponent(this.sessionId) + '/resume',
+              { method: 'POST' }
+            );
+            var data = await res.json();
+            if (data.ok) {
+              this.sessionId = data.sessionId || this.sessionId;
+              this.platform = 'web';
+              this.inputEl.disabled = false;
+              this.sendBtn.disabled = false;
+              this.inputEl.placeholder = 'Message...';
+              var btns = this.messagesEl.querySelectorAll('button');
+              btns.forEach(function (b) {
+                b.remove();
+              });
+              loadSessions();
+              this.inputEl.focus();
+            }
+          } catch (e) {}
+        }
+
+        async editTitle() {
+          if (!this.sessionId) return;
+          var current = this.titleEl.classList.contains('empty') ? '' : this.titleEl.textContent;
+          var t = prompt('Session title:', current);
+          if (t && t !== current) {
+            await fetch('/api/sessions/' + encodeURIComponent(this.sessionId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: t }),
+            });
+            this._setTitle(t);
+            loadSessions();
+          }
+        }
+
+        destroy() {
+          if (this.sending && this.abortController) {
+            try {
+              this.abortController.abort();
+            } catch (_) {}
+          }
+          // localUrl の解放
+          for (var i = 0; i < this.pendingFiles.length; i++) {
+            if (this.pendingFiles[i].localUrl) URL.revokeObjectURL(this.pendingFiles[i].localUrl);
+          }
+          this.el.remove();
+        }
+      }
+
+      // ─── PaneManager ───
+      class PaneManager {
+        constructor(container) {
+          this.container = container;
+          this.panes = [];
+          this.activePane = null;
+          this._renderEmpty();
+        }
+
+        _renderEmpty() {
+          if (this.panes.length === 0) {
+            this.container.innerHTML = '';
+            var empty = document.createElement('div');
+            empty.className = 'panes-empty';
+            empty.innerHTML =
+              'No panes open<br>Click <button type="button" class="empty-cta" onclick="newSessionInActivePane()">+ New Chat</button> in the sidebar, or select a session to open.';
+            this.container.appendChild(empty);
+            this.container.className = '';
+          }
+        }
+
+        _renderTabs() {
+          paneTabsEl.innerHTML = '';
+          if (this.panes.length === 0) return;
+          var self = this;
+          this.panes.forEach(function (pane, idx) {
+            var tab = document.createElement('div');
+            tab.className = 'pane-tab' + (pane === self.activePane ? ' active' : '');
+            var label = document.createElement('span');
+            label.className = 'label';
+            var titleText = pane.titleEl.classList.contains('empty')
+              ? 'Pane ' + (idx + 1)
+              : pane.titleEl.textContent;
+            label.textContent = titleText;
+            tab.appendChild(label);
+            var close = document.createElement('span');
+            close.className = 'tab-close';
+            close.textContent = '×';
+            close.addEventListener('click', function (e) {
+              e.stopPropagation();
+              self.remove(pane);
+            });
+            tab.appendChild(close);
+            tab.addEventListener('click', function () {
+              self.focus(pane);
+            });
+            paneTabsEl.appendChild(tab);
+          });
+        }
+
+        add(opts) {
+          opts = opts || {};
+          if (this.panes.length >= MAX_PANES) {
+            alert('最大 ' + MAX_PANES + ' ペインまでです。');
+            return null;
+          }
+          // 空状態の表示を消す
+          if (this.panes.length === 0) {
+            this.container.innerHTML = '';
+          }
+          var pane = new Pane();
+          this.panes.push(pane);
+          this.container.appendChild(pane.el);
+          this.layout();
+          this.focus(pane);
+          if (opts.sessionId) {
+            pane.loadSession(opts.sessionId);
+          }
+          this._updateToolbar();
+          this._renderTabs();
+          return pane;
+        }
+
+        remove(pane) {
+          var idx = this.panes.indexOf(pane);
+          if (idx < 0) return;
+          pane.destroy();
+          this.panes.splice(idx, 1);
+          if (this.activePane === pane) {
+            this.activePane = this.panes[Math.min(idx, this.panes.length - 1)] || null;
+            if (this.activePane) this.activePane.el.classList.add('active');
+          }
+          if (this.panes.length === 0) {
+            this._renderEmpty();
+          } else {
+            this.layout();
+          }
+          this._updateToolbar();
+          this._renderTabs();
+          renderSessions(allSessions);
+        }
+
+        focus(pane) {
+          if (!pane) return;
+          this.panes.forEach((p) => p.el.classList.toggle('active', p === pane));
+          this.activePane = pane;
+          this._renderTabs();
+        }
+
+        layout() {
+          var n = this.panes.length;
+          var cols, rows;
+          if (n <= 1) {
+            cols = 1;
+            rows = 1;
+          } else if (n === 2) {
+            cols = 2;
+            rows = 1;
+          } else if (n <= 4) {
+            cols = 2;
+            rows = 2;
+          } else if (n <= 6) {
+            cols = 3;
+            rows = 2;
+          } else {
+            cols = 4;
+            rows = 2;
+          }
+          this.container.className = 'cols-' + cols + ' rows-' + rows;
+        }
+
+        _updateToolbar() {
+          var n = this.panes.length;
+          paneCountEl.textContent = n + ' pane' + (n === 1 ? '' : 's');
+          addPaneBtn.disabled = n >= MAX_PANES;
+        }
+
+        // 現在開かれているセッションIDの集合（サイドバーのアクティブ表示用）
+        openSessionIds() {
+          var ids = new Set();
+          this.panes.forEach((p) => {
+            if (p.sessionId) ids.add(p.sessionId);
+          });
+          return ids;
+        }
+      }
+
+      const paneManager = new PaneManager(panesContainer);
+
+      // ─── トップレベル操作 ───
+      function openSessionInActivePane(id) {
+        // 既に開いてるペインがあればそっちにフォーカス（重複オープン禁止）
+        var existing = paneManager.panes.find(function (p) {
+          return p.sessionId === id;
+        });
+        if (existing) {
+          paneManager.focus(existing);
+          closeSidebar();
+          return;
+        }
+        var pane = paneManager.activePane;
+        if (!pane) {
+          pane = paneManager.add({ sessionId: id });
+        } else {
+          pane.loadSession(id);
+        }
+        closeSidebar();
+      }
+
+      function openSessionInNewPane(id) {
+        // 既に開いてるペインがあればそっちにフォーカス（重複オープン禁止）
+        var existing = paneManager.panes.find(function (p) {
+          return p.sessionId === id;
+        });
+        if (existing) {
+          paneManager.focus(existing);
+          closeSidebar();
+          return;
+        }
+        paneManager.add({ sessionId: id });
+        closeSidebar();
+      }
+
+      async function newSessionInActivePane() {
+        var pane = paneManager.activePane;
+        if (!pane) {
+          pane = paneManager.add({});
+        }
+        await pane.newSession();
+      }
+
+      function addEmptyPane() {
+        var pane = paneManager.add({});
+        pane.inputEl.placeholder = 'Select a session or click + New Chat';
+      }
+
+      // ─── セッション一覧 ───
+      async function loadSessions() {
+        try {
+          var res = await fetch('/api/sessions');
+          var data = await res.json();
+          allSessions = data.sessions || [];
+          renderSessions(allSessions);
+          // autoTalk=true セッションがあれば polling を起動（既存があれば no-op）
+          // 逆に OFF になったセッションは止める
+          var activeAuto = {};
+          allSessions.forEach(function (s) {
+            if (s.autoTalk) activeAuto[s.id] = true;
+          });
+          Object.keys(autoTalkPollers).forEach(function (id) {
+            if (!activeAuto[id]) stopAutoTalkPolling(id);
+          });
+          Object.keys(activeAuto).forEach(function (id) {
+            startAutoTalkPolling(id);
+          });
+        } catch (e) {}
+      }
+
+      function renderSessions(sessions) {
+        sessionListEl.innerHTML = '';
+        var openIds = paneManager.openSessionIds();
+        var lastDate = '';
+        for (var i = 0; i < sessions.length; i++) {
+          var s = sessions[i];
+          var date = (s.updatedAt || s.createdAt || '').slice(0, 10);
+          if (date !== lastDate) {
+            lastDate = date;
+            var g = document.createElement('div');
+            g.className = 'date-group';
+            g.textContent = getDateLabel(date);
+            sessionListEl.appendChild(g);
+          }
+          var item = document.createElement('div');
+          item.className = 'session-item session-row' + (openIds.has(s.id) ? ' active' : '');
+          var icon =
+            s.platform === 'web' ? '\u{1F310}' : s.platform === 'slack' ? '\u{1F4AC}' : '\u{1F48E}';
+          var active = s.isActive ? '\u{1F7E2} ' : '';
+          item.setAttribute('data-id', s.id);
+          var label = document.createElement('span');
+          label.className = 'label';
+          // 自走 ON のセッションには「🤖 自走中」バッジを行頭に追加
+          if (s.autoTalk) {
+            var atBadge = document.createElement('span');
+            atBadge.className = 'autotalk-badge';
+            atBadge.textContent = '\u{1F916} 自走中';
+            label.appendChild(atBadge);
+            label.appendChild(document.createTextNode(' '));
+          }
+          label.appendChild(document.createTextNode(active + icon + ' ' + (s.title || s.id)));
+          label.addEventListener(
+            'click',
+            (function (id) {
+              return function () {
+                openSessionInActivePane(id);
+              };
+            })(s.id)
+          );
+          item.appendChild(label);
+
+          if (s.isActive) {
+            var stopBtn = document.createElement('span');
+            stopBtn.className = 'row-act stop-btn';
+            stopBtn.textContent = '\u{23F9}';
+            stopBtn.title = 'ランナーを停止（セッションは残ります）';
+            stopBtn.addEventListener(
+              'click',
+              (function (id) {
+                return function (e) {
+                  e.stopPropagation();
+                  stopRunner(id);
+                };
+              })(s.id)
+            );
+            item.appendChild(stopBtn);
+          }
+
+          // 自走モード（auto-talk）トグル — web セッションのみ表示
+          if (s.platform === 'web') {
+            var atBtn = document.createElement('span');
+            atBtn.className = 'row-act autotalk-btn' + (s.autoTalk ? ' on' : '');
+            atBtn.textContent = '\u{1F916}';
+            atBtn.title = s.autoTalk
+              ? '自走モード ON — agent がランダム間隔で発話中（クリックで停止）'
+              : '自走モード OFF — クリックで開始（agent が一定時間ごとに勝手に発話）';
+            atBtn.addEventListener(
+              'click',
+              (function (id, on) {
+                return function (e) {
+                  e.stopPropagation();
+                  toggleAutoTalk(id, !on);
+                };
+              })(s.id, s.autoTalk)
+            );
+            item.appendChild(atBtn);
+          }
+
+          var pinBtn = document.createElement('span');
+          pinBtn.className = 'row-act pin-btn';
+          pinBtn.textContent = '\u{2197}';
+          pinBtn.title = '新しいペインで並べて開く';
+          pinBtn.addEventListener(
+            'click',
+            (function (id) {
+              return function (e) {
+                e.stopPropagation();
+                openSessionInNewPane(id);
+              };
+            })(s.id)
+          );
+          item.appendChild(pinBtn);
+
+          var delBtn = document.createElement('span');
+          delBtn.className = 'row-act del-btn';
+          delBtn.textContent = '\u{00D7}';
+          delBtn.title = 'セッションを削除';
+          delBtn.addEventListener(
+            'click',
+            (function (id) {
+              return function (e) {
+                e.stopPropagation();
+                deleteSessionById(id);
+              };
+            })(s.id)
+          );
+          item.appendChild(delBtn);
+
+          sessionListEl.appendChild(item);
+        }
+      }
+
+      function getDateLabel(d) {
+        var today = new Date().toISOString().slice(0, 10);
+        var y = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        if (d === today) return 'Today';
+        if (d === y) return 'Yesterday';
+        return d;
+      }
+
+      function filterSessions(q) {
+        if (!q) {
+          renderSessions(allSessions);
+          return;
+        }
+        q = q.toLowerCase();
+        renderSessions(
+          allSessions.filter(function (s) {
+            return (s.title || s.id).toLowerCase().indexOf(q) >= 0;
+          })
+        );
+      }
+
+      async function stopRunner(id) {
+        try {
+          await fetch('/api/sessions/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+          // 自分のペインで開いていたら、進行中の SSE を中断
+          paneManager.panes.forEach(function (p) {
+            if (p.sessionId === id && p.sending && p.abortController) {
+              try {
+                p.abortController.abort();
+              } catch (_) {}
             }
           });
-          if (imgContainer.children.length > 0) {
-            lastWrapper.querySelector('.msg').appendChild(imgContainer);
-          }
-        }
-      }
-      pendingFiles = [];
-      renderAttachPreview();
-
-      inputEl.value = '';
-      inputEl.style.height = 'auto';
-      setProcessing(true);
-
-      // ツール使用表示エリア + ストリーミングテキスト表示エリア
-      var toolsWrapper = document.createElement('div');
-      toolsWrapper.className = 'msg-wrapper assistant';
-      var toolsDiv = document.createElement('div');
-      toolsDiv.className = 'msg thinking';
-      toolsDiv.textContent = 'Thinking...';
-      toolsWrapper.appendChild(toolsDiv);
-      messagesEl.appendChild(toolsWrapper);
-
-      var assistantWrapper = null;
-      var assistantDiv = null;
-      var toolHistory = [];
-
-      abortController = new AbortController();
-      try {
-        var res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: fullMsg }),
-          signal: abortController.signal,
-        });
-
-        var reader = res.body.getReader();
-        var decoder = new TextDecoder();
-        var buf = '';
-
-        while (true) {
-          var chunk = await reader.read();
-          if (chunk.done) break;
-          buf += decoder.decode(chunk.value, { stream: true });
-
-          var lines = buf.split('\n');
-          buf = lines.pop() || '';
-
-          var eventType = '';
-          for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7);
-            } else if (line.startsWith('data: ') && eventType) {
-              try {
-                var d = JSON.parse(line.slice(6));
-                if (eventType === 'text') {
-                  // ストリーミングテキスト表示
-                  if (!assistantWrapper) {
-                    toolsWrapper.remove();
-                    assistantWrapper = document.createElement('div');
-                    assistantWrapper.className = 'msg-wrapper assistant';
-                    assistantDiv = document.createElement('div');
-                    assistantDiv.className = 'msg assistant';
-                    assistantWrapper.appendChild(assistantDiv);
-                    messagesEl.appendChild(assistantWrapper);
-                  }
-                  // ストリーミング中はプレーンテキスト（不完全なMDでmarkedが壊れるのを防ぐ）
-                  assistantDiv.textContent = d.fullText + ' \u258C';
-                  messagesEl.scrollTop = messagesEl.scrollHeight;
-                } else if (eventType === 'tool') {
-                  // 初回ツール: 「Thinking...」テキストを消す
-                  if (toolHistory.length === 0) {
-                    toolsDiv.textContent = '';
-                  }
-                  toolHistory.push(d.toolName);
-                  // 新しいツール行を追加（上書きしない）
-                  var toolLine = document.createElement('div');
-                  toolLine.style.cssText = 'font-size:12px;color:#888;padding:1px 0;';
-                  toolLine.textContent = '\u{1F527} ' + d.toolName + (d.inputSummary || '');
-                  toolsDiv.appendChild(toolLine);
-                  messagesEl.scrollTop = messagesEl.scrollHeight;
-                } else if (eventType === 'done') {
-                  // 完了: 最終テキストをレンダリング
-                  if (!assistantWrapper) {
-                    assistantWrapper = document.createElement('div');
-                    assistantWrapper.className = 'msg-wrapper assistant';
-                    assistantDiv = document.createElement('div');
-                    assistantDiv.className = 'msg assistant';
-                    assistantDiv.style.whiteSpace = 'normal';
-                    assistantWrapper.appendChild(assistantDiv);
-                    messagesEl.appendChild(assistantWrapper);
-                  }
-                  if (toolsWrapper.parentElement) toolsWrapper.remove();
-                  assistantDiv.style.whiteSpace = 'normal';
-                  assistantDiv.innerHTML = renderMarkdown(d.response || '');
-                  // 日時
-                  var t = document.createElement('div');
-                  t.className = 'msg-time';
-                  t.textContent = formatTime(new Date().toISOString());
-                  assistantWrapper.appendChild(t);
-                  // usage
-                  if (d.usage) {
-                    var parts = [];
-                    if (d.usage.num_turns != null) parts.push('\u{1F504} ' + d.usage.num_turns + ' turns');
-                    if (d.usage.duration_ms != null) parts.push('\u{23F1}\uFE0F ' + (d.usage.duration_ms/1000).toFixed(1) + 's');
-                    if (d.usage.total_cost_usd != null) parts.push('\u{1F4B0} $' + d.usage.total_cost_usd.toFixed(4));
-                    if (parts.length > 0) {
-                      var uel = document.createElement('div');
-                      uel.className = 'msg-usage';
-                      uel.innerHTML = parts.map(function(p){ return '<span>'+p+'</span>'; }).join('');
-                      assistantWrapper.appendChild(uel);
-                    }
-                  }
-                  if (d.sessionId) currentSessionId = d.sessionId;
-                  loadSessions();
-                } else if (eventType === 'error') {
-                  toolsWrapper.remove();
-                  addMessage(d.message || 'Error', 'error');
-                }
-              } catch(e) {}
-              eventType = '';
-            }
-          }
-        }
-      } catch(err) {
-        if (toolsWrapper.parentElement) toolsWrapper.remove();
-        if (assistantWrapper && assistantWrapper.parentElement) assistantWrapper.remove();
-        addMessage(err.name === 'AbortError' ? 'Stopped' : 'Connection error', 'error');
-      } finally {
-        setProcessing(false);
-        abortController = null;
-        inputEl.focus();
-      }
-    }
-
-    function stopChat() { if (abortController) abortController.abort(); }
-
-    async function newSession() {
-      try {
-        var res = await fetch('/api/sessions', { method: 'POST' });
-        var data = await res.json();
-        if (data.sessionId) currentSessionId = data.sessionId;
-      } catch(e) {}
-      messagesEl.innerHTML = '';
-      sessionTitleEl.textContent = '';
-      inputEl.disabled = false;
-      sendBtn.disabled = false;
-      inputEl.placeholder = 'Message...';
-      loadSessions();
-      closeSidebar();
-      inputEl.focus();
-    }
-
-    async function resumeSession(id) {
-      try {
-        var res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
-        var data = await res.json();
-        if (data.ok) {
-          currentSessionId = data.sessionId || id;
-          inputEl.disabled = false;
-          sendBtn.disabled = false;
-          inputEl.placeholder = 'Message...';
-          // Resumeボタンを消す
-          var btns = messagesEl.querySelectorAll('button');
-          btns.forEach(function(b){ b.remove(); });
           loadSessions();
-          inputEl.focus();
-        }
-      } catch(e) {}
-    }
-
-    async function deleteSessionById(id) {
-      if (!confirm('Delete this session?')) return;
-      try {
-        await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
-        if (currentSessionId === id) {
-          currentSessionId = null;
-          messagesEl.innerHTML = '';
-          sessionTitleEl.textContent = '';
-          inputEl.disabled = true;
-          sendBtn.disabled = true;
-          inputEl.placeholder = 'Select a session or start a new chat';
-        }
-        loadSessions();
-      } catch(e) {}
-    }
-
-    async function editTitle() {
-      if (!currentSessionId) return;
-      var current = sessionTitleEl.textContent;
-      var t = prompt('Session title:', current);
-      if (t && t !== current) {
-        await fetch('/api/sessions/' + encodeURIComponent(currentSessionId), {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: t }),
-        });
-        sessionTitleEl.textContent = t;
-        loadSessions();
+        } catch (e) {}
       }
-    }
 
-    // IME変換中のEnterを無視
-    function handleKey(e) {
-      if (e.isComposing || e.keyCode === 229) return;
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-    }
-
-    inputEl.addEventListener('input', function() {
-      inputEl.style.height = 'auto';
-      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-    });
-
-    // 初期状態: 入力無効、セッション選択またはNew Chatを促す
-    inputEl.disabled = true;
-    sendBtn.disabled = true;
-    inputEl.placeholder = 'Select a session or start a new chat';
-    messagesEl.innerHTML = '<div style="text-align:center;color:#666;padding:40px 20px;font-size:15px;">Select a session from the sidebar<br>or click <strong>+ New Chat</strong></div>';
-    // ドラッグ&ドロップ
-    document.body.addEventListener('dragover', function(e) { e.preventDefault(); });
-    document.body.addEventListener('drop', function(e) {
-      e.preventDefault();
-      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-        for (var f of e.dataTransfer.files) { addPendingFile(f); }
+      // 軽量トースト通知
+      var _toastEl = null;
+      var _toastTimer = null;
+      function showToast(msg, kind) {
+        if (!_toastEl) {
+          _toastEl = document.createElement('div');
+          _toastEl.className = 'toast';
+          document.body.appendChild(_toastEl);
+        }
+        _toastEl.textContent = msg;
+        _toastEl.className = 'toast' + (kind ? ' ' + kind : '');
+        // reflow して visible 付与
+        void _toastEl.offsetWidth;
+        _toastEl.classList.add('visible');
+        if (_toastTimer) clearTimeout(_toastTimer);
+        _toastTimer = setTimeout(function () {
+          if (_toastEl) _toastEl.classList.remove('visible');
+        }, 2400);
       }
-    });
 
-    loadSessions();
-  </script>
-</body>
+      async function toggleAutoTalk(id, enabled) {
+        try {
+          var res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/autotalk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+          });
+          if (!res.ok) {
+            var msg = '自走モード切替に失敗';
+            try {
+              var err = await res.json();
+              if (err && err.error) msg = err.error;
+            } catch (_) {}
+            showToast('⚠ ' + msg);
+            return;
+          }
+          loadSessions();
+          // 自走 ON のセッションを開いていれば、新着発話を polling で拾う
+          if (enabled) startAutoTalkPolling(id);
+          else stopAutoTalkPolling(id);
+          showToast(
+            enabled
+              ? '🤖 自走モード ON — agent がランダム間隔で発話します'
+              : '🤖 自走モード OFF',
+            enabled ? 'success' : ''
+          );
+        } catch (e) {
+          showToast('⚠ 自走モード切替に失敗: ' + (e && e.message ? e.message : e));
+        }
+      }
+
+      // 自走モードのセッションは agent が裏で発話するので、開いてるペインを定期リフレッシュ
+      var autoTalkPollers = {};
+      function startAutoTalkPolling(sessionId) {
+        if (autoTalkPollers[sessionId]) return;
+        autoTalkPollers[sessionId] = setInterval(function () {
+          paneManager.panes.forEach(function (p) {
+            if (p.sessionId === sessionId && !p.sending && typeof p.refreshHistory === 'function') {
+              p.refreshHistory();
+            }
+          });
+        }, 8000);
+      }
+      function stopAutoTalkPolling(sessionId) {
+        if (autoTalkPollers[sessionId]) {
+          clearInterval(autoTalkPollers[sessionId]);
+          delete autoTalkPollers[sessionId];
+        }
+      }
+
+      async function deleteSessionById(id) {
+        if (!confirm('Delete this session?')) return;
+        try {
+          await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+          // 開いてるペインがあれば、空状態に戻す
+          paneManager.panes.forEach(function (p) {
+            if (p.sessionId === id) {
+              p.sessionId = null;
+              p.platform = 'web';
+              p.messagesEl.innerHTML =
+                '<div class="empty-state">Session deleted.<br>Select another or click <button type="button" class="empty-cta" onclick="newSessionInActivePane()">+ New Chat</button></div>';
+              p._setTitle('');
+              p.inputEl.disabled = true;
+              p.sendBtn.disabled = true;
+              p.inputEl.placeholder = 'Select a session or start a new chat';
+            }
+          });
+          loadSessions();
+        } catch (e) {}
+      }
+
+      // ─── 初期化 ───
+      loadSessions();
+      // 起動時に空ペイン1個を用意
+      paneManager.add({});
+      // ドラッグ&ドロップ：アクティブペインに添付
+      document.body.addEventListener('dragover', function (e) {
+        e.preventDefault();
+      });
+      document.body.addEventListener('drop', function (e) {
+        e.preventDefault();
+        if (!paneManager.activePane) return;
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          for (var f of e.dataTransfer.files) {
+            paneManager.activePane._addPendingFile(f);
+          }
+        }
+      });
+    </script>
+  </body>
 </html>

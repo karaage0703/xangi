@@ -36,6 +36,8 @@ export interface SessionEntry {
   messageCount: number;
   agent?: AgentInfo;
   archived: boolean;
+  /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
+  autoTalk?: boolean;
 }
 
 interface SessionsFile {
@@ -55,6 +57,19 @@ export function initSessions(dataDir: string): void {
   currentBootId = randomUUID();
   loadSessionsFromFile();
   purgeSchedulerSessions();
+  pruneOldSessions(getRetentionDays());
+}
+
+/**
+ * 起動時のセッション保持日数を環境変数から取得。
+ * `XANGI_SESSION_RETENTION_DAYS=0` で剪定無効、未設定なら 90 日。
+ */
+function getRetentionDays(): number {
+  const raw = process.env.XANGI_SESSION_RETENTION_DAYS;
+  if (raw === undefined) return 90;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 90;
+  return n;
 }
 
 export function getBootId(): string {
@@ -165,6 +180,37 @@ function purgeSchedulerSessions(): void {
 }
 
 /**
+ * `updatedAt` が `maxAgeDays` より古いセッションを sessions.json から削除する。
+ * メッセージ本体（`logs/sessions/<id>.jsonl`）は触らない — 必要なら別途ローテすること。
+ *
+ * `maxAgeDays = 0` のとき剪定をスキップ。
+ * テスト容易性のため `now` を引数で差し替え可能。
+ */
+export function pruneOldSessions(maxAgeDays: number, now: number = Date.now()): number {
+  if (maxAgeDays <= 0) return 0;
+  const cutoff = now - maxAgeDays * 86_400_000;
+  let pruned = 0;
+  for (const [id, entry] of Object.entries(data.sessions)) {
+    const t = Date.parse(entry.updatedAt);
+    if (Number.isNaN(t) || t >= cutoff) continue;
+    delete data.sessions[id];
+    for (const [ctx, activeId] of Object.entries(data.activeByContext)) {
+      if (activeId === id) {
+        delete data.activeByContext[ctx];
+      }
+    }
+    pruned++;
+  }
+  if (pruned > 0) {
+    console.log(
+      `[xangi] Pruned ${pruned} session(s) older than ${maxAgeDays} day(s) from sessions.json`
+    );
+    saveSessionsToFile();
+  }
+  return pruned;
+}
+
+/**
  * appSessionIdを生成（ULID風の時刻ソート可能なID）
  */
 function generateAppSessionId(): string {
@@ -203,6 +249,41 @@ export function getProviderSessionId(contextKey: string): string | undefined {
  */
 export function getSession(channelId: string): string | undefined {
   return getProviderSessionId(channelId);
+}
+
+/**
+ * Web セッション用の contextKey プレフィックス
+ *
+ * 各 Web セッションは `web-chat:<appSessionId>` を contextKey として持つことで、
+ * ランナー / providerSession / activeByContext がセッション単位で独立する。
+ */
+export const WEB_CHAT_CONTEXT_PREFIX = 'web-chat:';
+
+/**
+ * Web 用のセッションを作成する。contextKey は `web-chat:<appSessionId>` で自動生成。
+ * 同時に複数の Web セッションを保持・操作できる。
+ */
+export function createWebSession(opts: { title?: string; backend?: string } = {}): string {
+  const appId = generateAppSessionId();
+  const ctxKey = `${WEB_CHAT_CONTEXT_PREFIX}${appId}`;
+  const now = new Date().toISOString();
+
+  data.sessions[appId] = {
+    id: appId,
+    title: opts.title || '',
+    platform: 'web',
+    contextKey: ctxKey,
+    scope: 'interactive',
+    bootId: currentBootId,
+    createdAt: now,
+    updatedAt: now,
+    messageCount: 0,
+    agent: opts.backend ? { backend: opts.backend } : undefined,
+    archived: false,
+  };
+  data.activeByContext[ctxKey] = appId;
+  saveSessionsToFile();
+  return appId;
 }
 
 /**
@@ -321,6 +402,25 @@ export function activateSession(contextKey: string, appSessionId: string): void 
     entry.updatedAt = new Date().toISOString();
   }
   saveSessionsToFile();
+}
+
+/**
+ * セッションの autoTalk フラグを設定
+ */
+export function setAutoTalk(appSessionId: string, enabled: boolean): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return false;
+  entry.autoTalk = enabled;
+  entry.updatedAt = new Date().toISOString();
+  saveSessionsToFile();
+  return true;
+}
+
+/**
+ * autoTalk=true の全セッション一覧
+ */
+export function listAutoTalkSessions(): SessionEntry[] {
+  return Object.values(data.sessions).filter((s) => !s.archived && s.autoTalk === true);
 }
 
 /**

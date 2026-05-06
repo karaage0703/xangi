@@ -102,7 +102,7 @@ export class LocalLlmRunner implements AgentRunner {
     const baseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
     const model = config.model || process.env.LOCAL_LLM_MODEL || '';
     const apiKey = process.env.LOCAL_LLM_API_KEY || '';
-    const thinking = process.env.LOCAL_LLM_THINKING !== 'false';
+    const thinking = process.env.LOCAL_LLM_THINKING === 'true';
     const maxTokens = process.env.LOCAL_LLM_MAX_TOKENS
       ? parseInt(process.env.LOCAL_LLM_MAX_TOKENS, 10)
       : 8192;

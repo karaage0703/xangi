@@ -14,8 +14,10 @@ import {
   ensureSession,
   getActiveSessionId,
   createSession,
+  createWebSession,
   setProviderSessionId,
   listAllSessions,
+  WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
 
 describe('sessions', () => {
@@ -226,6 +228,32 @@ describe('sessions', () => {
     });
   });
 
+  describe('createWebSession', () => {
+    it('should create a web session with web-chat:<appId> contextKey', () => {
+      initSessions(testDir);
+      const appId = createWebSession({});
+      const entry = getSessionEntry(appId);
+      expect(entry).toBeDefined();
+      expect(entry!.platform).toBe('web');
+      expect(entry!.contextKey).toBe(`${WEB_CHAT_CONTEXT_PREFIX}${appId}`);
+      expect(getActiveSessionId(entry!.contextKey)).toBe(appId);
+    });
+
+    it('should let multiple web sessions coexist (each has its own active context)', () => {
+      initSessions(testDir);
+      const a = createWebSession({});
+      const b = createWebSession({ title: 'second' });
+      expect(a).not.toBe(b);
+      const entryA = getSessionEntry(a)!;
+      const entryB = getSessionEntry(b)!;
+      // 各セッションの contextKey が独立していて、それぞれが active のまま並存する
+      expect(entryA.contextKey).not.toBe(entryB.contextKey);
+      expect(getActiveSessionId(entryA.contextKey)).toBe(a);
+      expect(getActiveSessionId(entryB.contextKey)).toBe(b);
+      expect(entryB.title).toBe('second');
+    });
+  });
+
   describe('listAllSessions', () => {
     it('should list non-archived sessions sorted by updatedAt', () => {
       initSessions(testDir);
@@ -259,6 +287,109 @@ describe('sessions', () => {
 
       expect(getSession('channel-1')).toBe('session-abc');
       expect(getSession('channel-2')).toBeUndefined();
+    });
+  });
+
+  describe('pruneOldSessions', () => {
+    it('removes sessions whose updatedAt is older than the cutoff', async () => {
+      const { pruneOldSessions } = await import('../src/sessions.js');
+      const sessionsPath = join(testDir, 'sessions.json');
+      const now = Date.parse('2026-05-04T00:00:00Z');
+      const oldEntry = {
+        id: 'old_001',
+        title: 'old',
+        platform: 'discord',
+        contextKey: 'old-ch',
+        scope: 'interactive',
+        bootId: '',
+        createdAt: '2025-01-01T00:00:00Z',
+        updatedAt: '2025-01-01T00:00:00Z',
+        messageCount: 0,
+        archived: false,
+      };
+      const recentEntry = {
+        id: 'recent_001',
+        title: 'recent',
+        platform: 'discord',
+        contextKey: 'recent-ch',
+        scope: 'interactive',
+        bootId: '',
+        createdAt: '2026-05-01T00:00:00Z',
+        updatedAt: '2026-05-01T00:00:00Z',
+        messageCount: 0,
+        archived: false,
+      };
+      const file = {
+        activeByContext: { 'old-ch': 'old_001', 'recent-ch': 'recent_001' },
+        sessions: { old_001: oldEntry, recent_001: recentEntry },
+      };
+      require('fs').writeFileSync(sessionsPath, JSON.stringify(file));
+
+      // initSessions の自動剪定は real now 基準で動くので、ここでは無効化して
+      // pruneOldSessions に固定 now を渡したテストだけを評価する。
+      const prev = process.env.XANGI_SESSION_RETENTION_DAYS;
+      process.env.XANGI_SESSION_RETENTION_DAYS = '0';
+      try {
+        initSessions(testDir);
+      } finally {
+        if (prev === undefined) delete process.env.XANGI_SESSION_RETENTION_DAYS;
+        else process.env.XANGI_SESSION_RETENTION_DAYS = prev;
+      }
+
+      const pruned = pruneOldSessions(90, now);
+
+      expect(pruned).toBe(1);
+      expect(getSessionEntry('old_001')).toBeUndefined();
+      expect(getSessionEntry('recent_001')).toBeDefined();
+      expect(getActiveSessionId('old-ch')).toBeUndefined();
+      expect(getActiveSessionId('recent-ch')).toBe('recent_001');
+
+      const persisted = JSON.parse(readFileSync(sessionsPath, 'utf-8'));
+      expect(Object.keys(persisted.sessions)).toEqual(['recent_001']);
+      expect(persisted.activeByContext).toEqual({ 'recent-ch': 'recent_001' });
+    });
+
+    it('returns 0 and skips work when maxAgeDays is 0', async () => {
+      const { pruneOldSessions } = await import('../src/sessions.js');
+      initSessions(testDir);
+      setSession('ch', 'sess');
+      const before = getSessionCount();
+
+      const pruned = pruneOldSessions(0);
+
+      expect(pruned).toBe(0);
+      expect(getSessionCount()).toBe(before);
+    });
+
+    it('runs pruning automatically on initSessions when XANGI_SESSION_RETENTION_DAYS=1', () => {
+      const sessionsPath = join(testDir, 'sessions.json');
+      const file = {
+        activeByContext: { ch: 'old_001' },
+        sessions: {
+          old_001: {
+            id: 'old_001',
+            title: 'old',
+            platform: 'discord',
+            contextKey: 'ch',
+            scope: 'interactive',
+            bootId: '',
+            createdAt: '2025-01-01T00:00:00Z',
+            updatedAt: '2025-01-01T00:00:00Z',
+            messageCount: 0,
+            archived: false,
+          },
+        },
+      };
+      require('fs').writeFileSync(sessionsPath, JSON.stringify(file));
+      const prev = process.env.XANGI_SESSION_RETENTION_DAYS;
+      process.env.XANGI_SESSION_RETENTION_DAYS = '1';
+      try {
+        initSessions(testDir);
+        expect(getSessionEntry('old_001')).toBeUndefined();
+      } finally {
+        if (prev === undefined) delete process.env.XANGI_SESSION_RETENTION_DAYS;
+        else process.env.XANGI_SESSION_RETENTION_DAYS = prev;
+      }
     });
   });
 });

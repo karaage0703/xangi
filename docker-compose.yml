@@ -18,6 +18,9 @@ x-common: &common
     - ~/.gitconfig:/home/node/.gitconfig:ro
     # GitHub App秘密鍵（オプション、設定時のみ有効）
     - ${GITHUB_APP_PRIVATE_KEY_PATH:-/dev/null}:/secrets/github-app.pem:ro
+    # インスタンス間チャット共有ディレクトリ（INTER_INSTANCE_CHAT_ENABLED=true 時に使用）
+    # ホスト直/コンテナ混在運用のため、ホストとコンテナで同パスにする
+    - ${INTER_INSTANCE_CHAT_DIR:-/tmp/xangi-chat}:/tmp/xangi-chat:rw
   environment: &common-env
     # env_fileから読み込まれない固定値のみここに記述
     - NODE_ENV=production

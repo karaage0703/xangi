@@ -75,7 +75,7 @@ export class LLMClient {
     private readonly baseUrl: string,
     private readonly model: string,
     private readonly apiKey: string = '',
-    private readonly thinking: boolean = true,
+    private readonly thinking: boolean = false,
     private readonly defaultMaxTokens: number = 8192,
     private readonly numCtx?: number
   ) {

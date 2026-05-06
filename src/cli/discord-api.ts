@@ -65,14 +65,18 @@ interface DiscordCommandContext {
 
 // ─── Commands ───────────────────────────────────────────────────────
 
-function resolveHistoryChannelId(
+export function resolveHistoryChannelId(
   flags: Record<string, string>,
   context?: DiscordCommandContext
 ): string {
   const explicitChannelId = flags['channel'];
   if (explicitChannelId) return explicitChannelId;
 
-  const currentChannelId = context?.channelId ?? process.env.XANGI_CHANNEL_ID;
+  // context が渡されている = xangi 内部 (tool-server 経由) の呼び出し。
+  // env をフォールバックすると親プロセスの XANGI_CHANNEL_ID が leak して
+  // 別チャンネルに誤投稿する事故の元なので、context.channelId のみ参照する。
+  // context が渡されていない場合のみ CLI 単体実行とみなして env を参照。
+  const currentChannelId = context !== undefined ? context.channelId : process.env.XANGI_CHANNEL_ID;
   if (currentChannelId) return currentChannelId;
 
   throw new ValidationError(

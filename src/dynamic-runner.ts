@@ -187,6 +187,14 @@ export class DynamicRunnerManager implements AgentRunner {
   }
 
   /**
+   * 指定チャンネルのランナーがプールに存在するか
+   */
+  hasRunner(channelId: string): boolean {
+    if (this.channelRunners.has(channelId)) return true;
+    return this.defaultRunner.hasRunner?.(channelId) ?? false;
+  }
+
+  /**
    * バックエンド切り替え
    * セッション削除とランナー破棄を行い、次回リクエスト時に新しいランナーが作成される
    */

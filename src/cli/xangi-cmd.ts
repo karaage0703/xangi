@@ -30,6 +30,7 @@ import { fileURLToPath } from 'url';
 import { discordApi } from './discord-api.js';
 import { scheduleCmd } from './schedule-cmd.js';
 import { systemCmd } from './system-cmd.js';
+import { interChatCmd } from './inter-chat-cmd.js';
 
 // .env を自動読み込み（DISCORD_TOKEN等のシークレットを取得）
 function loadEnvFile(): void {
@@ -107,6 +108,13 @@ Discord操作:
   schedule_remove   削除
   schedule_toggle   有効/無効切替
 
+インスタンス間チャット:
+  inter_chat_send    --text <text> [--from-label <label>] [--origin-chain a,b]
+  inter_chat_tail    [--limit <n>] [--ttl <sec>]
+  inter_chat_clear   自分のjsonlをTTLで物理削除
+  inter_chat_list    共有ディレクトリのインスタンス一覧
+  inter_chat_config  解決済み設定を表示
+
 その他:
   media_send        ファイル送信
   system_restart    再起動
@@ -125,6 +133,8 @@ Discord操作:
       result = await discordApi(command, flags);
     } else if (command.startsWith('system_')) {
       result = await systemCmd(command, flags);
+    } else if (command.startsWith('inter_chat_')) {
+      result = await interChatCmd(command, flags);
     } else {
       console.error(`Unknown command: ${command}`);
       process.exit(1);
