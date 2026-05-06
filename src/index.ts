@@ -29,7 +29,7 @@ import {
   buildPromptWithAttachments,
 } from './file-utils.js';
 import { initSettings, loadSettings, formatSettings } from './settings.js';
-import { readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH, STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import {
   Scheduler,
@@ -47,10 +47,16 @@ import {
   ensureSession,
   incrementMessageCount,
   getActiveSessionId,
+  getSessionEntry,
+  updateSessionTitle,
 } from './sessions.js';
+import { stripPromptMetadata } from './session-title.js';
 import { join } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { startWebChat } from './web-chat.js';
+import { getEventsConfig, threadIdFor, turnIdFor } from './events-emitter.js';
+import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
 dotenvConfig({ override: true });
 
 /** メッセージを指定文字数で分割（カスタムセパレータ対応、デフォルトは行単位） */
@@ -172,6 +178,35 @@ function formatToolInput(toolName: string, input: Record<string, unknown>): stri
 }
 
 /**
+ * 既存の xangi.pid ファイルが生きているプロセスを指していたら警告する。
+ * 同じ dataDir を複数の xangi インスタンスで共有すると sessions.json を
+ * 取り合って書き潰し合う。DATA_DIR を分離するか、片方を停止すべき。
+ */
+function warnIfDataDirInUse(pidFilePath: string, dataDir: string): void {
+  if (!existsSync(pidFilePath)) return;
+  let raw: string;
+  try {
+    raw = readFileSync(pidFilePath, 'utf-8').trim();
+  } catch {
+    return;
+  }
+  const otherPid = Number.parseInt(raw, 10);
+  if (!Number.isFinite(otherPid) || otherPid <= 0 || otherPid === process.pid) return;
+  // kill -0: シグナルを送らずに生存だけ確認
+  try {
+    process.kill(otherPid, 0);
+  } catch {
+    return; // 相手はもう死んでる、stale な PID ファイル
+  }
+  console.warn(
+    `[xangi] ⚠️  Another xangi process (pid=${otherPid}) is using the same dataDir: ${dataDir}`
+  );
+  console.warn(
+    `[xangi] ⚠️  Sessions and settings will be overwritten unpredictably. Set DATA_DIR to a separate path for this instance.`
+  );
+}
+
+/**
  * Discord用のツール承認コールバックを作成
  */
 async function main() {
@@ -222,17 +257,25 @@ async function main() {
   let skills: Skill[] = loadSkills(workdir);
   console.log(`[xangi] Loaded ${skills.length} skills from ${workdir}`);
 
-  // 設定を初期化
-  initSettings(workdir);
+  // dataDir（永続データの保存先）を決定
+  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
+
+  // 既存の xangi.pid が生きているプロセスを指していたら警告
+  // 同じ dataDir を複数の xangi インスタンスで共有すると sessions.json の
+  // 取り合いが起き、在庫が消える事故になる（過去事例: dev/borot 同時稼働で
+  // 新規 web セッションが古い in-memory state で上書き消去）。
+  const pidFilePath = join(dataDir, 'xangi.pid');
+  warnIfDataDirInUse(pidFilePath, dataDir);
+
+  // 設定を初期化（dataDir 配下の settings.json を使用）
+  initSettings(dataDir);
   const initialSettings = loadSettings();
   console.log(`[xangi] Settings loaded: autoRestart=${initialSettings.autoRestart}`);
 
   // スケジューラを初期化（ワークスペースの .xangi を使用）
-  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const scheduler = new Scheduler(dataDir);
 
   // PIDファイル書き出し（xangi-cmd system_restart からシグナルで再起動するため）
-  const pidFilePath = join(dataDir, 'xangi.pid');
   try {
     writeFileSync(pidFilePath, String(process.pid));
   } catch (err) {
@@ -242,9 +285,29 @@ async function main() {
   // セッション永続化を初期化
   initSessions(dataDir);
 
+  // 外部イベントストリーム (pull 型 SSE) の設定をログ出力。
+  // 実際の購読 URL は web-chat 起動時に Tailscale 解決込みで `[xangi-events (SSE)]
+  // Access URLs:` として表示される。
+  const eventsCfg = getEventsConfig();
+  if (eventsCfg.enabled) {
+    const note =
+      eventsCfg.instanceIdSource === 'auto'
+        ? 'auto-generated; set XANGI_INSTANCE_ID to override'
+        : 'from XANGI_INSTANCE_ID';
+    console.log(
+      `[xangi-events] enabled, mode=pull (SSE via web-chat), instance_id=${eventsCfg.instanceId} (${note})`
+    );
+  }
+
   // WebチャットUI起動
   if (process.env.WEB_CHAT_ENABLED === 'true') {
     startWebChat({ agentRunner });
+  }
+
+  // インスタンス間チャット起動 (INTER_INSTANCE_CHAT_ENABLED=true のときのみ実体起動)
+  const interChatCfg = getInterChatConfig();
+  if (interChatCfg.enabled) {
+    startInterInstanceChat();
   }
 
   // GitHub認証を初期化（秘密鍵をメモリに読み込む）
@@ -1361,10 +1424,20 @@ async function processPrompt(
   let replyMessage: Message | null = null;
   const toolHistory: string[] = []; // ツール実行履歴（stop時にも参照するため関数スコープ）
   let lastStreamedText = ''; // エラー時に途中テキストを残すため関数スコープ
+  // xangi-events 用 ID（fire-and-forget なのでエラーで本業を止めない）
+  const threadId = threadIdFor('discord', channelId);
+  const turnId = turnIdFor('discord', message.id);
+  const channelName = 'name' in message.channel ? (message.channel as { name: string }).name : null;
+  const threadLabel = channelName ? `#${channelName}` : 'DM';
+  const eventCtx = {
+    threadId,
+    turnId,
+    threadLabel,
+    platform: 'discord' as const,
+    userText: message.content || undefined,
+  };
   try {
     // チャンネル・ユーザー情報をプロンプトに付与
-    const channelName =
-      'name' in message.channel ? (message.channel as { name: string }).name : null;
     const userInfo = `[発言者: ${message.author.displayName ?? message.author.username} (ID: ${message.author.id})]`;
     if (channelName) {
       prompt = `[プラットフォーム: Discord]\n[チャンネル: #${channelName} (ID: ${channelId})]\n${userInfo}\n${prompt}`;
@@ -1420,8 +1493,10 @@ async function processPrompt(
 
       let streamResult: { result: string; sessionId: string };
       try {
-        streamResult = await agentRunner.runStream(
+        streamResult = await runWithBubbleEvents(
+          agentRunner,
           prompt,
+          eventCtx,
           {
             onText: (_chunk, fullText) => {
               lastStreamedText = fullText;
@@ -1481,12 +1556,18 @@ async function processPrompt(
       }, 1000);
 
       try {
-        const runResult = await runner.run(prompt, {
-          skipPermissions,
-          sessionId,
-          channelId,
-          appSessionId,
-        });
+        const runResult = await runWithBubbleEvents(
+          runner,
+          prompt,
+          eventCtx,
+          {},
+          {
+            skipPermissions,
+            sessionId,
+            channelId,
+            appSessionId,
+          }
+        );
         result = runResult.result;
         newSessionId = runResult.sessionId;
       } finally {
@@ -1496,9 +1577,13 @@ async function processPrompt(
 
     setSession(channelId, newSessionId);
     incrementMessageCount(appSessionId);
-    // 最初のメッセージでタイトル自動設定
-    if (!prompt.startsWith('[プラットフォーム:')) {
-      // メタデータ付きプロンプトからユーザーメッセージ部分を抽出
+    // 最初のメッセージでタイトル自動設定（既にタイトル付き or 抽出できなければ何もしない）
+    const existingEntry = getSessionEntry(appSessionId);
+    if (existingEntry && !existingEntry.title) {
+      const titleCandidate = stripPromptMetadata(prompt).slice(0, 50);
+      if (titleCandidate) {
+        updateSessionTitle(appSessionId, titleCandidate);
+      }
     }
     console.log(
       `[xangi] Response length: ${result.length}, session: ${newSessionId.slice(0, 8)}...`

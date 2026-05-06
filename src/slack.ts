@@ -13,6 +13,8 @@ import {
 } from './file-utils.js';
 import { loadSettings, formatSettings } from './settings.js';
 import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
+import { threadIdFor, turnIdFor } from './events-emitter.js';
+import { runWithBubbleEvents } from './bubble-events-runner.js';
 import type { KnownBlock } from '@slack/types';
 
 /** Slack Block Kit: Stopボタン */
@@ -642,6 +644,28 @@ async function processMessage(
   // プラットフォーム情報をプロンプトに注入
   prompt = `[プラットフォーム: Slack]\n[チャンネル: ${channelId}]\n${prompt}`;
 
+  // xangi-events 用 ID とラベル（fire-and-forget）
+  const threadId = threadIdFor('slack', channelId);
+  const turnId = turnIdFor('slack', originalTs);
+  // チャンネル名は conversations.info で取得 (失敗時は undefined)
+  let threadLabel: string | undefined;
+  try {
+    const info = await client.conversations.info({ channel: channelId });
+    if (info.channel) {
+      const ch = info.channel as { name?: string; is_im?: boolean };
+      threadLabel = ch.is_im ? 'Slack DM' : ch.name ? `#${ch.name}` : undefined;
+    }
+  } catch {
+    // 取得失敗時はラベルなしで続行
+  }
+  const eventCtx = {
+    threadId,
+    turnId,
+    threadLabel,
+    platform: 'slack' as const,
+    userText: text,
+  };
+
   let messageTs = '';
   try {
     console.log(`[slack] Processing message in channel ${channelId}`);
@@ -705,8 +729,10 @@ async function processMessage(
 
       let streamResult: { result: string; sessionId: string };
       try {
-        streamResult = await agentRunner.runStream(
+        streamResult = await runWithBubbleEvents(
+          agentRunner,
           prompt,
+          eventCtx,
           {
             onText: (_chunk, fullText) => {
               if (!firstTextReceived) {
@@ -771,7 +797,13 @@ async function processMessage(
       }, 1000);
 
       try {
-        const runResult = await agentRunner.run(prompt, { skipPermissions, sessionId, channelId });
+        const runResult = await runWithBubbleEvents(
+          agentRunner,
+          prompt,
+          eventCtx,
+          {},
+          { skipPermissions, sessionId, channelId }
+        );
         result = runResult.result;
         newSessionId = runResult.sessionId;
       } finally {

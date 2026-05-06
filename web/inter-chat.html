@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>xangi inter-chat 履歴ビューア</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #111;
+        --muted: #777;
+        --border: #e0e0e0;
+        --bubble-self: #d6e8ff;
+        --bubble-other: #f4f4f4;
+        --bubble-system: #fff5d1;
+        --accent: #2462f5;
+        --danger: #d92a36;
+        --danger-bg: rgba(217, 42, 54, 0.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14171a;
+          --fg: #e8e8e8;
+          --muted: #888;
+          --border: #2d3136;
+          --bubble-self: #1e3a6e;
+          --bubble-other: #1e2126;
+          --bubble-system: #3a3220;
+          --accent: #4a8cff;
+          --danger: #e5484d;
+          --danger-bg: rgba(229, 72, 77, 0.15);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 600;
+      }
+      header .meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      header .meta strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      header .status {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: var(--bubble-other);
+      }
+      header .status.connected {
+        background: #d6f5d6;
+        color: #185b18;
+      }
+      header .status.disconnected {
+        background: #fbd6d6;
+        color: #5b1818;
+      }
+      header .spacer {
+        flex: 1;
+      }
+      header a.back-link {
+        font-size: 12px;
+        color: var(--accent);
+        text-decoration: none;
+      }
+      header a.back-link:hover {
+        text-decoration: underline;
+      }
+      button.clear-all {
+        padding: 4px 10px;
+        font-size: 12px;
+        background: var(--danger-bg);
+        color: var(--danger);
+        border: 1px solid var(--danger);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      button.clear-all:hover {
+        background: var(--danger);
+        color: #fff;
+      }
+      button.clear-all:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      #messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .msg {
+        max-width: 80%;
+        padding: 8px 12px;
+        border-radius: 10px;
+        background: var(--bubble-other);
+        font-size: 14px;
+        line-height: 1.5;
+        word-wrap: break-word;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+        position: relative;
+      }
+      .msg.self {
+        align-self: flex-end;
+        background: var(--bubble-self);
+      }
+      .msg.system {
+        align-self: center;
+        background: var(--bubble-system);
+        max-width: 90%;
+        font-size: 12px;
+        color: var(--muted);
+        font-style: italic;
+      }
+      .msg .head {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .msg .head .from {
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .msg .head .chain {
+        font-family: ui-monospace, monospace;
+        font-size: 10px;
+      }
+      .msg .head .spacer {
+        flex: 1;
+      }
+      .msg .head button.delete {
+        font-size: 11px;
+        padding: 1px 6px;
+        background: transparent;
+        color: var(--danger);
+        border: 1px solid transparent;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .msg .head button.delete:hover {
+        background: var(--danger-bg);
+        border-color: var(--danger);
+      }
+      .empty {
+        color: var(--muted);
+        text-align: center;
+        font-size: 13px;
+        padding: 20px 0;
+      }
+      .footnote {
+        font-size: 11px;
+        color: var(--muted);
+        text-align: center;
+        padding: 8px 16px;
+        border-top: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🔁 inter-chat 履歴ビューア</h1>
+      <span class="meta">
+        instance: <strong id="self-id">-</strong> /
+        TTL: <span id="ttl-sec">-</span>s
+      </span>
+      <span class="status" id="status">connecting...</span>
+      <span class="spacer"></span>
+      <a class="back-link" href="/">← / に戻る</a>
+      <button class="clear-all" id="clear-all" type="button" disabled>自分の全消去</button>
+    </header>
+    <div id="messages">
+      <div class="empty" id="empty-msg">読み込み中...</div>
+    </div>
+    <div class="footnote">
+      自分のメッセージのみ削除・全消去できます（他インスタンスの jsonl は単一 writer 原則のため触れません）
+    </div>
+    <script>
+      const API_BASE = '/api/inter-chat';
+      const messagesEl = document.getElementById('messages');
+      const emptyEl = document.getElementById('empty-msg');
+      const statusEl = document.getElementById('status');
+      const selfIdEl = document.getElementById('self-id');
+      const ttlSecEl = document.getElementById('ttl-sec');
+      const clearAllBtn = document.getElementById('clear-all');
+
+      let selfId = '';
+      let renderedIds = new Set();
+      let evtSource = null;
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = 'status ' + (cls || '');
+      }
+
+      function fmtTs(ts) {
+        const d = new Date(ts * 1000);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+
+      async function deleteMessage(msgId, el) {
+        if (!confirm('このメッセージを削除しますか？')) return;
+        try {
+          const res = await fetch(API_BASE + '/messages/' + encodeURIComponent(msgId), {
+            method: 'DELETE',
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('削除失敗: ' + (err.error || res.status));
+            return;
+          }
+          renderedIds.delete(msgId);
+          el.remove();
+          if (messagesEl.querySelectorAll('.msg').length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.id = 'empty-msg';
+            empty.textContent = 'メッセージはまだありません。';
+            messagesEl.appendChild(empty);
+          }
+        } catch (e) {
+          alert('削除エラー: ' + e.message);
+        }
+      }
+
+      function renderMessage(msg) {
+        if (renderedIds.has(msg.msg_id)) return;
+        renderedIds.add(msg.msg_id);
+        const empty = document.getElementById('empty-msg');
+        if (empty) empty.remove();
+        const el = document.createElement('div');
+        const isSelf = msg.from === selfId;
+        el.className = 'msg' + (isSelf ? ' self' : '');
+        el.dataset.msgId = msg.msg_id;
+
+        const head = document.createElement('div');
+        head.className = 'head';
+        const fromEl = document.createElement('span');
+        fromEl.className = 'from';
+        fromEl.textContent = msg.from_label || msg.from;
+        const tsEl = document.createElement('span');
+        tsEl.textContent = fmtTs(msg.ts);
+        head.appendChild(fromEl);
+        head.appendChild(tsEl);
+        if (msg.origin_chain && msg.origin_chain.length > 0) {
+          const chainEl = document.createElement('span');
+          chainEl.className = 'chain';
+          chainEl.textContent = '⛓ ' + msg.origin_chain.join('→');
+          head.appendChild(chainEl);
+        }
+        const spacer = document.createElement('span');
+        spacer.className = 'spacer';
+        head.appendChild(spacer);
+        if (isSelf) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'delete';
+          delBtn.type = 'button';
+          delBtn.textContent = '🗑 削除';
+          delBtn.title = 'この行を自分の jsonl から削除';
+          delBtn.addEventListener('click', () => deleteMessage(msg.msg_id, el));
+          head.appendChild(delBtn);
+        }
+        const body = document.createElement('div');
+        body.textContent = msg.text;
+        el.appendChild(head);
+        el.appendChild(body);
+        messagesEl.appendChild(el);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      async function clearAll() {
+        if (
+          !confirm(
+            '自分の jsonl を全消去しますか？（他インスタンスのメッセージは残ります）\nこの操作は取り消せません。'
+          )
+        ) {
+          return;
+        }
+        clearAllBtn.disabled = true;
+        try {
+          const res = await fetch(API_BASE + '/messages?scope=self', { method: 'DELETE' });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('全消去失敗: ' + (err.error || res.status));
+            return;
+          }
+          const data = await res.json();
+          // 自分のメッセージだけ DOM から消す
+          const selfMsgs = messagesEl.querySelectorAll('.msg.self');
+          selfMsgs.forEach((el) => {
+            const id = el.dataset.msgId;
+            if (id) renderedIds.delete(id);
+            el.remove();
+          });
+          alert(`${data.removed} 件削除しました`);
+          if (messagesEl.querySelectorAll('.msg').length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.id = 'empty-msg';
+            empty.textContent = 'メッセージはまだありません。';
+            messagesEl.appendChild(empty);
+          }
+        } catch (e) {
+          alert('全消去エラー: ' + e.message);
+        } finally {
+          clearAllBtn.disabled = false;
+        }
+      }
+
+      async function loadInitial() {
+        try {
+          const cfgRes = await fetch(API_BASE + '/config');
+          if (!cfgRes.ok) {
+            const err = await cfgRes.json().catch(() => ({}));
+            setStatus('disabled', 'disconnected');
+            emptyEl.textContent =
+              err.error || 'inter-instance-chat is disabled';
+            if (err.hint) {
+              const hintEl = document.createElement('div');
+              hintEl.style.fontSize = '11px';
+              hintEl.style.marginTop = '8px';
+              hintEl.textContent = err.hint;
+              emptyEl.appendChild(hintEl);
+            }
+            return;
+          }
+          const cfg = await cfgRes.json();
+          selfId = cfg.selfInstanceId;
+          selfIdEl.textContent = cfg.selfLabel || cfg.selfInstanceId;
+          ttlSecEl.textContent = cfg.ttlSec;
+          clearAllBtn.disabled = false;
+
+          const res = await fetch(API_BASE + '/messages');
+          const data = await res.json();
+          if (!data.messages || data.messages.length === 0) {
+            emptyEl.textContent = 'メッセージはまだありません。';
+          } else {
+            for (const m of data.messages) renderMessage(m);
+          }
+          startStream();
+        } catch (e) {
+          setStatus('error: ' + e.message, 'disconnected');
+        }
+      }
+
+      function startStream() {
+        try {
+          evtSource = new EventSource(API_BASE + '/stream');
+          evtSource.onopen = () => setStatus('connected', 'connected');
+          evtSource.onerror = () => setStatus('reconnecting...', 'disconnected');
+          evtSource.addEventListener('message', (e) => {
+            try {
+              const msg = JSON.parse(e.data);
+              renderMessage(msg);
+            } catch (err) {
+              console.error('parse failed', err);
+            }
+          });
+        } catch (e) {
+          setStatus('SSE failed: ' + e.message, 'disconnected');
+        }
+      }
+
+      clearAllBtn.addEventListener('click', clearAll);
+      loadInitial();
+    </script>
+  </body>
+</html>

@@ -14,10 +14,11 @@ let cachedSettings: Settings | null = null;
 
 /**
  * settings.json のパスを初期化する
- * workdir（WORKSPACE_PATH）配下に保存
+ * dataDir（DATA_DIR or WORKSPACE_PATH/.xangi）配下に保存。
+ * sessions.json などの他の永続データと同じディレクトリに揃える。
  */
-export function initSettings(workdir: string): void {
-  settingsPath = join(workdir, 'settings.json');
+export function initSettings(dataDir: string): void {
+  settingsPath = join(dataDir, 'settings.json');
 }
 
 /**
@@ -25,7 +26,7 @@ export function initSettings(workdir: string): void {
  */
 export function getSettingsPath(): string {
   if (!settingsPath) {
-    throw new Error('Settings not initialized. Call initSettings(workdir) first.');
+    throw new Error('Settings not initialized. Call initSettings(dataDir) first.');
   }
   return settingsPath;
 }

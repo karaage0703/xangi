@@ -35,6 +35,8 @@ export interface AgentRunner {
   cancel?(channelId?: string): boolean;
   /** 指定チャンネルのランナーを完全に破棄（/new用） */
   destroy?(channelId: string): boolean;
+  /** 指定チャンネルのランナーがプール上に存在するか */
+  hasRunner?(channelId: string): boolean;
 }
 
 /**

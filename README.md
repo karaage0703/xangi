@@ -144,10 +144,11 @@ xangi を使ったAIアシスタント構築のノウハウをまとめた書籍
 
 ## ドキュメント
 
-- [使い方ガイド](docs/usage.md) - Docker実行・環境変数・Local LLM・トラブルシューティング
+- [使い方ガイド](docs/usage.md) - Docker実行・環境変数・Local LLM・複数インスタンスの運用・セッションの保持期間・トラブルシューティング
 - [Discord セットアップ](docs/discord-setup.md) - Bot作成・ID確認方法
 - [Slack セットアップ](docs/slack-setup.md) - Slack連携
 - [設計ドキュメント](docs/design.md) - アーキテクチャ・設計思想・データフロー
+- [外部イベントストリーム](docs/events.md) - 応答ライフサイクルのイベント配信仕様
 
 ## Acknowledgments
 

@@ -137,6 +137,10 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     const childEnv: NodeJS.ProcessEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
     if (this.channelId) {
       childEnv.XANGI_CHANNEL_ID = this.channelId;
+    } else {
+      // 親プロセスの XANGI_CHANNEL_ID が getSafeEnv 経由で leak しないよう明示的に削除
+      // （channelId 未バインドの runner が他チャンネル context を継承する事故を防ぐ）
+      delete childEnv.XANGI_CHANNEL_ID;
     }
     this.process = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],

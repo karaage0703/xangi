@@ -71,8 +71,11 @@ export class RunnerManager implements AgentRunner {
     }
 
     // 新しい PersistentRunner を作成
-    // web-chatチャンネルはWeb用のシステムプロンプトを使用
-    const runnerPlatform = channelId === 'web-chat' ? ('web' as const) : this.platform;
+    // web-chat 系（'web-chat' 互換 / 'web-chat:<appSessionId>' 個別）は Web 用システムプロンプトを使用
+    const runnerPlatform =
+      channelId === 'web-chat' || channelId.startsWith('web-chat:')
+        ? ('web' as const)
+        : this.platform;
     const runner = new PersistentRunner({
       ...this.agentConfig,
       channelId,
@@ -205,6 +208,13 @@ export class RunnerManager implements AgentRunner {
       }
     }
     return false;
+  }
+
+  /**
+   * 指定チャンネルのランナーがプール上に存在するか
+   */
+  hasRunner(channelId: string): boolean {
+    return this.pool.has(channelId);
   }
 
   /**

@@ -184,6 +184,19 @@ describe('RunnerManager', () => {
     expect(cancelled).toBe(false);
   });
 
+  it('should report hasRunner correctly before/after destroy', async () => {
+    manager = new RunnerManager({ workdir: '/test' }, { maxProcesses: 3 });
+
+    expect(manager.hasRunner('ch1')).toBe(false);
+
+    await manager.run('msg1', { channelId: 'ch1' });
+    expect(manager.hasRunner('ch1')).toBe(true);
+    expect(manager.hasRunner('ch2')).toBe(false);
+
+    manager.destroy('ch1');
+    expect(manager.hasRunner('ch1')).toBe(false);
+  });
+
   it('should shutdown all runners', async () => {
     manager = new RunnerManager({ workdir: '/test' }, { maxProcesses: 3 });
 
