@@ -4,6 +4,7 @@ import { CodexRunner } from './codex-cli.js';
 import { GeminiRunner } from './gemini-cli.js';
 import { LocalLlmRunner } from './local-llm/runner.js';
 import { RunnerManager } from './runner-manager.js';
+export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
 
 export interface RunOptions {
   skipPermissions?: boolean;

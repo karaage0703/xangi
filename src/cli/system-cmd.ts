@@ -1,7 +1,8 @@
 /**
  * システムコマンドCLIモジュール
  *
- * 設定変更はファイル経由、再起動は xangi本体プロセスへSIGTERM送信で行う。
+ * tool-server (xangi 本体プロセス) 内で実行される前提。
+ * 再起動は自プロセスへ SIGTERM を送って pm2 / Docker の auto-restart に任せる。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -41,40 +42,22 @@ function saveSettings(settings: Settings): void {
   writeFileSync(filePath, JSON.stringify(settings, null, 2));
 }
 
+/**
+ * 自プロセスに SIGTERM を送って再起動を依頼する。
+ *
+ * 前提: tool-server 経由で xangi 本体プロセス内から呼ばれる。
+ * レスポンスを先に返してから kill するため、kill は次の tick (100ms 後) に遅延させる。
+ * pm2 / Docker の auto-restart 設定で復活する想定。
+ */
 async function systemRestart(): Promise<string> {
   const settings = loadSettings();
   if (!settings.autoRestart) {
     return '⚠️ 自動再起動が無効です。先に system_settings --key autoRestart --value true で有効にしてください。';
   }
 
-  // PIDファイルを読んで xangi 本体プロセスに SIGTERM を送る
-  // SIGTERM ハンドラ内で graceful shutdown → process.exit(0) → pm2/Docker 等が再起動
-  const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
-  const pidFilePath = join(dataDir, 'xangi.pid');
-
-  if (!existsSync(pidFilePath)) {
-    return `⚠️ PIDファイルが見つかりません (${pidFilePath})。xangi本体が起動しているか確認してください。`;
-  }
-
-  const pidStr = readFileSync(pidFilePath, 'utf-8').trim();
-  const pid = parseInt(pidStr, 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return `⚠️ PIDファイルの内容が不正です: "${pidStr}"`;
-  }
-
-  // process.kill(pid, 0) はシグナルを送らずに対象プロセスの存在のみ確認
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return `⚠️ PID ${pid} のプロセスが存在しません（stale PIDファイル）。xangi本体を起動してください。`;
-  }
-
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch (err) {
-    return `⚠️ PID ${pid} へのSIGTERM送信に失敗しました: ${err instanceof Error ? err.message : String(err)}`;
-  }
+  setTimeout(() => {
+    process.kill(process.pid, 'SIGTERM');
+  }, 100);
 
   return '🔄 再起動をリクエストしました';
 }

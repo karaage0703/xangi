@@ -3,6 +3,7 @@ import { processManager } from './process-manager.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { getSafeEnv, buildSystemPrompt } from './base-runner.js';
+import { prependRuntimeContext } from './runtime-context.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { getGitHubEnv } from './github-auth.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
@@ -81,7 +82,10 @@ export class GeminiRunner implements AgentRunner {
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
     const systemPrompt = buildSystemPrompt();
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+    const promptWithRuntime = prependRuntimeContext(prompt);
+    const fullPrompt = systemPrompt
+      ? `${systemPrompt}\n\n---\n\n${promptWithRuntime}`
+      : promptWithRuntime;
     const args = [
       ...this.buildBaseArgs(options),
       '--prompt',
@@ -234,7 +238,10 @@ export class GeminiRunner implements AgentRunner {
     options?: RunOptions
   ): Promise<RunResult> {
     const systemPrompt = buildSystemPrompt();
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+    const promptWithRuntime = prependRuntimeContext(prompt);
+    const fullPrompt = systemPrompt
+      ? `${systemPrompt}\n\n---\n\n${promptWithRuntime}`
+      : promptWithRuntime;
     const args = [
       ...this.buildBaseArgs(options),
       '--prompt',

@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import type { RunOptions, RunResult, StreamCallbacks, AgentRunner } from './agent-runner.js';
-import { mergeTexts, sanitizeSurrogates } from './agent-runner.js';
+import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { getSafeEnv } from './base-runner.js';
 import { buildPersistentSystemPrompt } from './base-runner.js';
@@ -381,11 +381,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     const proc = this.ensureProcess();
 
     // セッション継続のためのオプションを追加
+    // runtime context (cwd/repo/container) を毎ターン prompt 先頭に prepend：
+    // 常駐プロセスの --append-system-prompt は起動時固定なので、ここで注入する
     const message = {
       type: 'user',
       message: {
         role: 'user',
-        content: sanitizeSurrogates(this.currentItem.prompt),
+        content: prependRuntimeContext(sanitizeSurrogates(this.currentItem.prompt)),
       },
     };
 

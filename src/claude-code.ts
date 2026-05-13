@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { processManager } from './process-manager.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
-import { mergeTexts, sanitizeSurrogates } from './agent-runner.js';
+import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { getSafeEnv } from './base-runner.js';
 import { getGitHubEnv } from './github-auth.js';
@@ -49,7 +49,7 @@ export class ClaudeCodeRunner {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    const prompt = sanitizeSurrogates(rawPrompt);
+    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt));
     const args: string[] = ['-p', '--output-format', 'json'];
 
     const skip = options?.skipPermissions ?? this.skipPermissions;
@@ -180,7 +180,7 @@ export class ClaudeCodeRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const prompt = sanitizeSurrogates(rawPrompt);
+    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt));
     const args: string[] = ['-p', '--output-format', 'stream-json', '--verbose'];
 
     const skip = options?.skipPermissions ?? this.skipPermissions;

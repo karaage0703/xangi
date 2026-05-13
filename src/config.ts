@@ -113,7 +113,7 @@ export function loadConfig(): Config {
     model: process.env.AGENT_MODEL || undefined,
     timeoutMs: process.env.TIMEOUT_MS ? parseInt(process.env.TIMEOUT_MS, 10) : DEFAULT_TIMEOUT_MS,
     workdir: process.env.WORKSPACE_PATH || undefined,
-    skipPermissions: process.env.SKIP_PERMISSIONS === 'true',
+    skipPermissions: process.env.SKIP_PERMISSIONS !== 'false', // デフォルトで有効（Discord/Slack/Web 連携の非対話実行で permission プロンプト待ちを避けるため）
     persistent: process.env.PERSISTENT_MODE !== 'false', // デフォルトで有効
     maxProcesses: process.env.MAX_PROCESSES ? parseInt(process.env.MAX_PROCESSES, 10) : 10,
     idleTimeoutMs: process.env.IDLE_TIMEOUT_MS

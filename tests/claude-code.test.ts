@@ -137,12 +137,14 @@ describe('ClaudeCodeRunner args', () => {
     expect(args).toContain('--append-system-prompt');
   });
 
-  it('should place prompt as the last argument', async () => {
+  it('should place prompt as the last argument (with runtime context prepended)', async () => {
     const runner = new ClaudeCodeRunner({});
     const { args } = await getSpawnArgs(runner, 'test prompt');
 
     const lastArg = args[args.length - 1];
-    expect(lastArg).toBe('test prompt');
+    // runtime context が先頭に付き、ユーザープロンプト本文が末尾に来る
+    expect(lastArg.endsWith('test prompt')).toBe(true);
+    expect(lastArg).toMatch(/^\[runtime\] /);
   });
 
   it('should use workdir as cwd in spawn options', async () => {
@@ -164,8 +166,10 @@ describe('ClaudeCodeRunner args', () => {
     expect(args[1]).toBe('--output-format');
     expect(args[2]).toBe('json');
 
-    // prompt は最後
-    expect(args[args.length - 1]).toBe('do stuff');
+    // prompt は最後（runtime context が先頭に付くため、本文は末尾に来る）
+    const lastArg = args[args.length - 1];
+    expect(lastArg.endsWith('do stuff')).toBe(true);
+    expect(lastArg).toMatch(/^\[runtime\] /);
 
     // 各オプションが含まれている
     expect(args).toContain('--dangerously-skip-permissions');

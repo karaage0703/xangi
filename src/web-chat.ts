@@ -24,7 +24,11 @@ import {
   setAutoTalk,
   WEB_CHAT_CONTEXT_PREFIX,
 } from './sessions.js';
-import { readSessionMessages } from './transcript-logger.js';
+import {
+  readSessionMessages,
+  updateMessageContent,
+  deleteMessage as deleteTranscriptMessage,
+} from './transcript-logger.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { deriveTitleFromFirstMessage, stripPromptMetadata } from './session-title.js';
@@ -65,6 +69,17 @@ export function startWebChat(options: WebChatOptions): void {
   const { agentRunner } = options;
   const port = options.port || parseInt(process.env.WEB_CHAT_PORT || String(DEFAULT_PORT), 10);
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
+
+  // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
+  // バックエンドでも .ext 部分を抽出して拡張子検証する。MIME パターン (image/* など) は
+  // フロント側のヒントとしてのみ機能し、サーバ側検証では使われない。
+  const uploadAccept = (process.env.WEB_CHAT_UPLOAD_ACCEPT || '').trim();
+  const uploadAllowedExts = uploadAccept
+    ? uploadAccept
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.startsWith('.'))
+    : [];
 
   // 自走モード（auto-talk）の準備。inter-chat 有効時のみ実体起動。
   const autoTalkHandle = getInterChatConfig().enabled ? setupAutoTalk({ agentRunner }) : null;
@@ -132,6 +147,13 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', port }));
+      return;
+    }
+
+    // GET /api/config — フロント向け実行時設定
+    if (url === '/api/config' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ uploadAccept: uploadAccept || null }));
       return;
     }
 
@@ -206,6 +228,8 @@ export function startWebChat(options: WebChatOptions): void {
           role: m.role,
           content: isObj ? (obj.result ?? JSON.stringify(m.content)) : m.content,
           createdAt: m.createdAt,
+          edited: m.edited,
+          editedAt: m.editedAt,
           usage: isObj
             ? {
                 num_turns: obj.num_turns,
@@ -233,8 +257,45 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    // PATCH /api/sessions/:sid/messages/:mid — 既存メッセージの編集
+    const editMsgMatch = url.match(/^\/api\/sessions\/([^/]+)\/messages\/([^/]+)$/);
+    if (editMsgMatch && req.method === 'PATCH') {
+      const appSessionId = decodeURIComponent(editMsgMatch[1]);
+      const messageId = decodeURIComponent(editMsgMatch[2]);
+      const body = await readBody(req);
+      if (typeof body.content !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'content (string) required' }));
+        return;
+      }
+      const updated = updateMessageContent(workdir, appSessionId, messageId, body.content);
+      if (!updated) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Message not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: updated }));
+      return;
+    }
+
+    // DELETE /api/sessions/:sid/messages/:mid — メッセージ削除
+    if (editMsgMatch && req.method === 'DELETE') {
+      const appSessionId = decodeURIComponent(editMsgMatch[1]);
+      const messageId = decodeURIComponent(editMsgMatch[2]);
+      const ok = deleteTranscriptMessage(workdir, appSessionId, messageId);
+      if (!ok) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Message not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
     // PATCH /api/sessions/:id — タイトル変更
-    if (url.startsWith('/api/sessions/') && req.method === 'PATCH') {
+    if (url.startsWith('/api/sessions/') && !url.includes('/messages/') && req.method === 'PATCH') {
       const appSessionId = decodeURIComponent(url.replace('/api/sessions/', ''));
       const body = await readBody(req);
       if (body.title) {
@@ -352,6 +413,7 @@ export function startWebChat(options: WebChatOptions): void {
       !url.includes('/resume') &&
       !url.includes('/stop') &&
       !url.includes('/autotalk') &&
+      !url.includes('/messages/') &&
       req.method === 'DELETE'
     ) {
       const targetId = decodeURIComponent(url.replace('/api/sessions/', ''));
@@ -399,6 +461,7 @@ export function startWebChat(options: WebChatOptions): void {
         const parts = body.toString('binary').split(boundary);
 
         const files: { name: string; path: string }[] = [];
+        const rejected: { name: string; reason: string }[] = [];
         for (const part of parts) {
           const headerEnd = part.indexOf('\r\n\r\n');
           if (headerEnd === -1) continue;
@@ -406,8 +469,19 @@ export function startWebChat(options: WebChatOptions): void {
           const filenameMatch = headers.match(/filename="([^"]+)"/);
           if (!filenameMatch) continue;
 
-          const filename = filenameMatch[1];
+          // filename はここまで body.toString('binary') の 1 バイト=1 文字
+          // 表現になっているので、UTF-8 として再デコードしないと日本語名が化ける。
+          const filename = Buffer.from(filenameMatch[1], 'binary').toString('utf8');
           const ext = extname(filename).toLowerCase();
+
+          if (uploadAllowedExts.length > 0 && !uploadAllowedExts.includes(ext)) {
+            rejected.push({
+              name: filename,
+              reason: `Extension ${ext || '(none)'} not in WEB_CHAT_UPLOAD_ACCEPT allowlist`,
+            });
+            continue;
+          }
+
           const safeName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
           const filePath = join(uploadDir, safeName);
 
@@ -419,8 +493,14 @@ export function startWebChat(options: WebChatOptions): void {
           files.push({ name: filename, path: filePath });
         }
 
+        if (files.length === 0 && rejected.length > 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'All files rejected', rejected }));
+          return;
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ files }));
+        res.end(JSON.stringify({ files, rejected }));
       } catch (err) {
         console.error('[web-chat] Upload error:', err);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -448,6 +528,9 @@ export function startWebChat(options: WebChatOptions): void {
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
         '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
+        '.ogg': 'audio/ogg',
+        '.flac': 'audio/flac',
       };
       res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
       res.end(readFileSync(filePath));
@@ -478,6 +561,9 @@ export function startWebChat(options: WebChatOptions): void {
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
         '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
+        '.ogg': 'audio/ogg',
+        '.flac': 'audio/flac',
       };
       res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
       res.end(readFileSync(filePath));
@@ -628,7 +714,9 @@ export function startWebChat(options: WebChatOptions): void {
             );
 
             const msgs = readSessionMessages(workdir, appSessionId);
-            const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant');
+            const reversed = [...msgs].reverse();
+            const lastAssistant = reversed.find((m) => m.role === 'assistant');
+            const lastUser = reversed.find((m) => m.role === 'user');
             const usageObj =
               lastAssistant && typeof lastAssistant.content === 'object'
                 ? (lastAssistant.content as Record<string, unknown>)
@@ -643,6 +731,8 @@ export function startWebChat(options: WebChatOptions): void {
               response: result.result,
               sessionId: appSessionId,
               usage,
+              userMessageId: lastUser?.id,
+              assistantMessageId: lastAssistant?.id,
             });
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);

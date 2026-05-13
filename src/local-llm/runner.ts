@@ -18,6 +18,7 @@ import { checkApprovalServer } from '../approval-server.js';
 import { logPrompt, logResponse, logError } from '../transcript-logger.js';
 import { loadTriggers, triggersToToolHandlers, type Trigger } from './triggers.js';
 import { getAllXangiTools } from './xangi-tools.js';
+import { prependRuntimeContext } from '../runtime-context.js';
 
 const MAX_TOOL_ROUNDS = 10;
 const MAX_SESSION_MESSAGES = 50;
@@ -115,7 +116,7 @@ export class LocalLlmRunner implements AgentRunner {
     const modeDefaults = {
       agent: { tools: true, skills: true, xangiCommands: true, triggers: false },
       chat: { tools: false, skills: false, xangiCommands: false, triggers: false },
-      lite: { tools: true, skills: false, xangiCommands: false, triggers: true },
+      lite: { tools: true, skills: false, xangiCommands: true, triggers: true },
     };
     const defaults = modeDefaults[modeEnv as keyof typeof modeDefaults] || modeDefaults.agent;
 
@@ -181,7 +182,7 @@ export class LocalLlmRunner implements AgentRunner {
     );
   }
 
-  async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+  async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
     const sessionId = options?.sessionId || crypto.randomUUID();
     this.cleanupSessions();
 
@@ -189,6 +190,9 @@ export class LocalLlmRunner implements AgentRunner {
     const systemPrompt = this.buildSystemPrompt();
     const tools = this.enableTools ? getAllTools() : [];
     const llmTools = this.enableTools ? toLLMTools(tools) : [];
+
+    // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
+    const prompt = prependRuntimeContext(rawPrompt);
 
     // ユーザーメッセージ追加（画像添付があればマルチモーダルメッセージにする）
     const userMsg = this.buildUserMessage(prompt);
@@ -281,7 +285,7 @@ export class LocalLlmRunner implements AgentRunner {
   }
 
   async runStream(
-    prompt: string,
+    rawPrompt: string,
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
@@ -292,6 +296,9 @@ export class LocalLlmRunner implements AgentRunner {
     const systemPrompt = this.buildSystemPrompt();
     const tools = this.enableTools ? getAllTools() : [];
     const llmTools = this.enableTools ? toLLMTools(tools) : [];
+
+    // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
+    const prompt = prependRuntimeContext(rawPrompt);
 
     const userMsg = this.buildUserMessage(prompt);
     session.messages.push(userMsg);

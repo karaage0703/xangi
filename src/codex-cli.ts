@@ -3,6 +3,7 @@ import { processManager } from './process-manager.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildSystemPrompt, getSafeEnv } from './base-runner.js';
+import { prependRuntimeContext } from './runtime-context.js';
 import { getGitHubEnv } from './github-auth.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
 
@@ -126,7 +127,8 @@ export class CodexRunner implements AgentRunner {
     return null;
   }
 
-  async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+  async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
+    const prompt = prependRuntimeContext(rawPrompt);
     const args = this.buildArgs(prompt, options);
 
     const sessionInfo = options?.sessionId
@@ -249,10 +251,11 @@ export class CodexRunner implements AgentRunner {
    * ストリーミング実行
    */
   async runStream(
-    prompt: string,
+    rawPrompt: string,
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const prompt = prependRuntimeContext(rawPrompt);
     const args = this.buildArgs(prompt, options);
 
     const sessionInfo = options?.sessionId

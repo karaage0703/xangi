@@ -15,10 +15,20 @@ describe('config', () => {
   it('should throw error when no tokens are set', async () => {
     delete process.env.DISCORD_TOKEN;
     delete process.env.SLACK_BOT_TOKEN;
+    delete process.env.WEB_CHAT_ENABLED;
 
     // キャッシュをクリアして再インポート
     const { loadConfig } = await import('../src/config.js');
     expect(() => loadConfig()).toThrow('DISCORD_TOKEN');
+  });
+
+  it('should not throw when only WebChat is explicitly enabled', async () => {
+    delete process.env.DISCORD_TOKEN;
+    delete process.env.SLACK_BOT_TOKEN;
+    process.env.WEB_CHAT_ENABLED = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(() => loadConfig()).not.toThrow();
   });
 
   it('should load Discord config when DISCORD_TOKEN is set', async () => {
@@ -113,5 +123,35 @@ describe('config', () => {
     const config = loadConfig();
 
     expect(config.discord.allowAutoreplyCommand).toBe(false);
+  });
+
+  it('should enable skipPermissions by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.SKIP_PERMISSIONS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.skipPermissions).toBe(true);
+  });
+
+  it('should enable skipPermissions when SKIP_PERMISSIONS=true', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SKIP_PERMISSIONS = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.skipPermissions).toBe(true);
+  });
+
+  it('should disable skipPermissions when SKIP_PERMISSIONS=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SKIP_PERMISSIONS = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.skipPermissions).toBe(false);
   });
 });

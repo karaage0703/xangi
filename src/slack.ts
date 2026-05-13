@@ -15,6 +15,13 @@ import { loadSettings, formatSettings } from './settings.js';
 import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { ensureSession, getActiveSessionId } from './sessions.js';
+import {
+  attachPlatformMessageIdToLast,
+  findEntryByPlatformMessageId,
+  updateMessageContent as updateTranscriptContent,
+  deleteMessage as deleteTranscriptMessage,
+} from './transcript-logger.js';
 import type { KnownBlock } from '@slack/types';
 
 /** Slack Block Kit: Stopボタン */
@@ -368,6 +375,50 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
   // DMの処理 + autoReplyChannels
   app.event('message', async ({ event, say, client }) => {
+    // ── Slack message_changed / message_deleted を transcript jsonl に反映 ──
+    // bot 自身の chat.update 由来は subtype='message_changed' でも飛ばない
+    // (Slack API 仕様)。ここに来るのはユーザが自分の投稿を編集 / 削除した時。
+    const subtype = (event as { subtype?: string }).subtype;
+    if (subtype === 'message_changed') {
+      try {
+        const channelId = (event as { channel: string }).channel;
+        const inner = (event as { message?: { ts?: string; text?: string; user?: string } })
+          .message;
+        if (!inner?.ts || !channelId) return;
+        const appSessionId = getActiveSessionId(channelId);
+        if (!appSessionId) return;
+        const workdir = config.agent.config.workdir || process.cwd();
+        const entry = findEntryByPlatformMessageId(workdir, appSessionId, inner.ts);
+        if (!entry) return;
+        updateTranscriptContent(workdir, appSessionId, entry.id, inner.text ?? '');
+        console.log(
+          `[slack] Synced edit (${inner.ts}) → transcript ${entry.id} in session ${appSessionId}`
+        );
+      } catch (err) {
+        console.warn('[slack] Failed to sync edit:', err);
+      }
+      return;
+    }
+    if (subtype === 'message_deleted') {
+      try {
+        const channelId = (event as { channel: string }).channel;
+        const deletedTs = (event as { deleted_ts?: string }).deleted_ts;
+        if (!deletedTs || !channelId) return;
+        const appSessionId = getActiveSessionId(channelId);
+        if (!appSessionId) return;
+        const workdir = config.agent.config.workdir || process.cwd();
+        const entry = findEntryByPlatformMessageId(workdir, appSessionId, deletedTs);
+        if (!entry) return;
+        deleteTranscriptMessage(workdir, appSessionId, entry.id);
+        console.log(
+          `[slack] Synced delete (${deletedTs}) → transcript ${entry.id} in session ${appSessionId}`
+        );
+      } catch (err) {
+        console.warn('[slack] Failed to sync delete:', err);
+      }
+      return;
+    }
+
     // botのメッセージは無視
     if ('bot_id' in event || !('user' in event)) return;
 
@@ -667,6 +718,10 @@ async function processMessage(
   };
 
   let messageTs = '';
+  // appSessionId は xangi 内部 (sessions.json) のセッション ID。
+  // transcript-logger / 編集・削除同期で必要。
+  const appSessionId = ensureSession(channelId, { platform: 'slack' });
+  const tWorkdir = config.agent.config.workdir || process.cwd();
   try {
     console.log(`[slack] Processing message in channel ${channelId}`);
 
@@ -766,7 +821,7 @@ async function processMessage(
               }
             },
           },
-          { skipPermissions, sessionId, channelId }
+          { skipPermissions, sessionId, channelId, appSessionId }
         );
       } finally {
         clearInterval(thinkingInterval);
@@ -802,7 +857,7 @@ async function processMessage(
           prompt,
           eventCtx,
           {},
-          { skipPermissions, sessionId, channelId }
+          { skipPermissions, sessionId, channelId, appSessionId }
         );
         result = runResult.result;
         newSessionId = runResult.sessionId;
@@ -812,6 +867,16 @@ async function processMessage(
     }
 
     sessions.set(channelId, newSessionId);
+    // transcript の最後の user / assistant エントリに Slack の messageTs を
+    // 紐付ける (PR ③、Discord と同じ post-hoc attach 戦略)。
+    try {
+      attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', originalTs);
+      if (messageTs) {
+        attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'assistant', messageTs);
+      }
+    } catch (err) {
+      console.warn('[slack] Failed to attach platform message ids:', err);
+    }
     console.log(`[slack] Final result length: ${result.length}`);
 
     // ファイルパスを抽出して添付送信

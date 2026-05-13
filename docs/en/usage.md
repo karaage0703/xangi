@@ -12,12 +12,14 @@ Detailed usage guide for xangi.
 - [Session Management](#session-management)
 - [Scheduler](#scheduler)
 - [Discord Operations (xangi-cmd)](#discord-operations-xangi-cmd)
-- [Skipping Permission Confirmations](#skipping-permission-confirmations)
 - [Runtime Settings](#runtime-settings)
 - [Autonomous AI Operations](#autonomous-ai-operations)
 - [Standalone Mode](#standalone-mode)
 - [Docker Deployment](#docker-deployment)
 - [Local LLM (Ollama)](#local-llm-ollama)
+- [Running Multiple Instances](#running-multiple-instances)
+- [Session Retention](#session-retention)
+- [Options](#options)
 - [Troubleshooting](#troubleshooting)
 
 ## Basic Usage
@@ -77,72 +79,19 @@ Buttons are displayed on response messages.
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
-### Dangerous Command Approval
-
-When the agent attempts to execute a dangerous command, a confirmation message with buttons appears in Discord.
-
-- Auto-denied after 2 minutes with no response
-- Works with both Claude Code and Local LLM backends
-- Managed by approval server (`localhost:18181`)
-
-**Detected patterns:**
-
-| Category | Pattern | Description |
-|----------|---------|-------------|
-| File deletion | `rm -r`, `rm -f` | Recursive/forced deletion |
-| Git | `git push` | Push to remote |
-| Git | `git reset --hard` | Discard changes |
-| Git | `git clean -f` | Remove untracked files |
-| Git | `git branch -D` | Force delete branch |
-| Permissions | `chmod 777` | Grant full permissions |
-| Permissions | `chown -R` | Recursive ownership change |
-| System | `shutdown`, `reboot` | System halt/restart |
-| System | `kill -9`, `killall` | Force kill processes |
-| Remote exec | `curl \| sh`, `wget \| bash` | Remote script execution |
-| DB | `DROP TABLE`, `TRUNCATE` | Database deletion |
-| Secrets | `cat .env`, `cat *.pem` | Read credentials |
-| Secrets | Write/Edit `.env`, `.pem`, `credentials` | Modify credentials |
-
-**Claude Code backend setup:**
-
-Add a PreToolUse hook to `.claude/settings.json` in your workspace:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "http",
-            "url": "http://127.0.0.1:18181/hooks/pre-tool-use",
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-**Local LLM backend:** No setup needed. Automatically queries the approval server.
+> 💡 An optional approval flow can prompt for confirmation before dangerous commands run (disabled by default). See [Options > Dangerous Command Approval](#dangerous-command-approval).
 
 ## Scheduler
 
-Set up periodic tasks and reminders. The AI interprets natural language and automatically executes `!schedule` commands.
+Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi-cmd schedule_add` etc. on your behalf.
 
-### Command List
+### How to Operate
 
-| Command | Description |
+| Entry point | Description |
 | --- | --- |
-| `/schedule` | Schedule operations via slash command |
-| `!schedule <time> <message>` | Add a schedule |
-| `!schedule list` / `!schedule` | Show all schedules (all channels) |
-| `!schedule remove <number>` | Remove (multiple OK: `remove 1 2 3`) |
-| `!schedule toggle <number>` | Enable/disable toggle |
-
-> The `/schedule` slash command provides the same functionality.
+| `/schedule` (Discord slash) | Add / list / remove / toggle schedules via GUI |
+| `xangi-cmd schedule_*` | Operate from AI or CLI (see below) |
+| Natural language | Say e.g. "remind me at 9am every day" and the AI registers it |
 
 ### Time Specification Formats
 
@@ -182,23 +131,29 @@ For more fine-grained control, cron expressions are also supported:
 | Month | 1-12 | |
 | Day of Week | 0-6 | 0=Sunday, 1=Monday, ... |
 
-### CLI (Command Line)
+### `xangi-cmd schedule_*`
+
+Operate schedules directly from the AI or shell. When invoked by the AI inside xangi, `--channel` can be omitted (the current channel ID is used).
 
 ```bash
-# Add a schedule
-npx tsx src/schedule-cli.ts add --channel <channelId> "Every day 9:00 good morning"
+# Add a schedule (natural language)
+xangi-cmd schedule_add --input "Every day 9:00 good morning"
+xangi-cmd schedule_add --input "30 minutes later, meeting"
+xangi-cmd schedule_add --input "15:00 review"
+xangi-cmd schedule_add --input "Every Monday 10:00 weekly MTG"
+xangi-cmd schedule_add --input "cron 0 9 * * * good morning"
+
+# Send to another channel
+xangi-cmd schedule_add --input "Every day 9:00 good morning" --channel <channelId>
 
 # List schedules
-npx tsx src/schedule-cli.ts list
+xangi-cmd schedule_list
 
-# Remove by number
-npx tsx src/schedule-cli.ts remove --channel <channelId> 1
-
-# Remove multiple
-npx tsx src/schedule-cli.ts remove --channel <channelId> 1 2 3
+# Remove by ID
+xangi-cmd schedule_remove --id <scheduleId>
 
 # Enable/disable toggle
-npx tsx src/schedule-cli.ts toggle --channel <channelId> 1
+xangi-cmd schedule_toggle --id <scheduleId>
 ```
 
 ### Data Storage
@@ -256,29 +211,6 @@ xangi-cmd discord_delete --channel 1234567890 --message-id 111222333
 - xangi injects `XANGI_TOOL_SERVER` into child processes at startup
 - `xangi-cmd` uses `XANGI_TOOL_SERVER` to resolve the connection endpoint
 - Runtime context such as the current channel ID is passed to the tool-server as `context`
-
-## Skipping Permission Confirmations
-
-By default, the AI asks for permission when creating files or executing commands.
-Use the `!skip` prefix or `/skip` slash command to skip permission confirmations.
-
-Setting the environment variable `SKIP_PERMISSIONS=true` makes all messages run in skip mode by default.
-
-### `!skip` Prefix
-
-Adding `!skip` at the beginning of a message runs only that message in skip mode.
-
-### `/skip` Slash Command
-
-`/skip message` executes the message with permission confirmations skipped. Same behavior as the `!skip` prefix.
-
-### Examples
-
-```
-@xangi !skip gh pr list
-!skip build it                       # No mention needed in dedicated channels
-/skip build it                       # Slash command version
-```
 
 ## Runtime Settings
 
@@ -560,9 +492,9 @@ LOCAL_LLM_TRIGGERS=true
 | `LOCAL_LLM_TRIGGERS` | Triggers (!commands) | `false` |
 
 `LOCAL_LLM_MODE` presets are also available (individual settings take priority):
-- `agent` (default) — all on
-- `chat` — all off
-- `lite` — triggers=true, rest off
+- `agent` (default) — tools / skills / xangi_commands ON, triggers OFF
+- `chat` — all off (pure chitchat bot)
+- `lite` — tools / xangi_commands / triggers ON, skills OFF (chatty bot that can still operate Discord/Slack)
 
 Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
 
@@ -715,7 +647,7 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `AGENT_MODEL` | Model to use | - |
 | `WORKSPACE_PATH` | Working directory (local execution) | `./workspace` |
 | `XANGI_WORKSPACE` | Host-side workspace path (Docker execution) | `./workspace` |
-| `SKIP_PERMISSIONS` | Skip permissions by default | `false` |
+| `SKIP_PERMISSIONS` | Skip permissions by default (avoids deadlocks for non-interactive chat platforms) | `true` |
 | `TIMEOUT_MS` | Timeout (milliseconds) | `300000` |
 | `ALLOWED_BACKENDS` | Allowed backends for `/backend` switching (comma-separated) | - |
 | `ALLOWED_MODELS` | Allowed models for `/backend` switching (comma-separated) | - |
@@ -737,8 +669,9 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `WEB_CHAT_ENABLED` | Enable Web Chat UI | `false` |
+| `WEB_CHAT_ENABLED` | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>` | `false` |
 | `WEB_CHAT_PORT` | Web Chat UI port | `18888` |
+| `WEB_CHAT_UPLOAD_ACCEPT` | Upload allowlist (HTML `accept` syntax). Empty = allow all. `.ext` entries are also enforced server-side | (unset / allow all) |
 
 ### Scheduler
 
@@ -796,6 +729,132 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 | `SLACK_ALLOWED_USER` | Allowed user ID |
 | `SLACK_AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention |
 | `SLACK_REPLY_IN_THREAD` | Reply in threads (default: `true`) |
+
+## Running Multiple Instances
+
+If you run multiple xangi instances on the same machine (e.g. one for production and one for development), **always give each instance its own `DATA_DIR`**. The default is `${WORKSPACE_PATH}/.xangi/`; sharing this between instances causes `sessions.json` to be overwritten back and forth, which can silently wipe out newly created sessions (because a long-running process keeps the stale in-memory list and writes it back).
+
+### Recommended layout
+
+```bash
+# Production (borot)
+WORKSPACE_PATH=/home/user/borot
+# DATA_DIR omitted → /home/user/borot/.xangi/
+
+# Development (xangi-dev)
+WORKSPACE_PATH=/home/user/borot
+DATA_DIR=/home/user/xangi-dev/.xangi   # ← isolated explicitly
+```
+
+Sharing `WORKSPACE_PATH` itself is fine (you may want skills/memory in one place). **Separating only `DATA_DIR`** is enough to avoid collisions.
+
+### Startup warning
+
+At startup, xangi acquires an exclusive `proper-lockfile` lock on `DATA_DIR`. If another xangi process is already holding the same `DATA_DIR`, a warning is printed:
+
+```
+[xangi] ⚠️  Another xangi process is using the same dataDir: /path/to/.xangi
+[xangi] ⚠️  Sessions and settings will be overwritten unpredictably. Set DATA_DIR to a separate path for this instance.
+```
+
+When you see this message, stop one of the instances or separate `DATA_DIR` and restart.
+
+The lock heartbeat updates the mtime every 30 seconds. Locks that haven't been updated for 60 seconds are treated as stale and the next startup forcibly takes them over, so locks left behind by crashes or SIGKILL are auto-reclaimed — no manual cleanup is required.
+
+## Session Retention
+
+To prevent `sessions.json` from growing unbounded, **stale sessions are automatically pruned at startup**.
+
+- Default retention: **90 days** (based on `updatedAt`)
+- Configurable via the `XANGI_SESSION_RETENTION_DAYS` environment variable
+- Set to `0` to disable pruning
+
+```bash
+XANGI_SESSION_RETENTION_DAYS=180   # keep half a year
+XANGI_SESSION_RETENTION_DAYS=0     # never prune
+```
+
+## Options
+
+Settings you usually don't need to touch. Use them when you want stricter trust boundaries or tighter permission control.
+
+### Dangerous Command Approval
+
+Set `APPROVAL_ENABLED=true` to make the agent ask for confirmation via Discord/Slack buttons before running dangerous commands. **Disabled by default.**
+
+```
+⚠️ Dangerous command detected
+git push origin main
+Git push
+
+[Allow] [Deny]
+```
+
+- Auto-denied after 2 minutes with no response
+- Works with both Claude Code and Local LLM backends
+- Managed by the approval server (`localhost:18181`, change with `APPROVAL_SERVER_PORT`)
+
+**Detected patterns:**
+
+| Category | Pattern | Description |
+|----------|---------|-------------|
+| File deletion | `rm -r`, `rm -f` | Recursive/forced deletion |
+| Git | `git push` | Push to remote |
+| Git | `git reset --hard` | Discard changes |
+| Git | `git clean -f` | Remove untracked files |
+| Git | `git branch -D` | Force delete branch |
+| Permissions | `chmod 777` | Grant full permissions |
+| Permissions | `chown -R` | Recursive ownership change |
+| System | `shutdown`, `reboot` | System halt/restart |
+| System | `kill -9`, `killall` | Force kill processes |
+| Remote exec | `curl \| sh`, `wget \| bash` | Remote script execution |
+| DB | `DROP TABLE`, `TRUNCATE` | Database deletion |
+| Secrets | `cat .env`, `cat *.pem` | Read credentials |
+| Secrets | Write/Edit `.env`, `.pem`, `credentials` | Modify credentials |
+
+**Claude Code backend setup:**
+
+Add a PreToolUse hook to `.claude/settings.json` in your workspace:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:18181/hooks/pre-tool-use",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Local LLM backend:** No setup needed. Automatically queries the approval server.
+
+### Per-message Permission Skip
+
+xangi **skips permission confirmations by default** (`SKIP_PERMISSIONS=true`). Because Discord/Slack/Web chat invocations are non-interactive, there's no human to answer permission prompts; tasks would hang otherwise.
+
+If you explicitly set `SKIP_PERMISSIONS=false` to re-enable permission prompts, you can still skip per-message via:
+
+| Entry point | Description |
+| --- | --- |
+| `!skip <message>` | Run that single message in skip mode |
+| `/skip <message>` | Slash command equivalent of `!skip` |
+
+```
+@xangi !skip gh pr list
+!skip build it                       # No mention needed in dedicated channels
+/skip build it                       # Slash command version
+```
+
+> **⚠️ Security note:** In untrusted workspaces or multi-user environments, set `SKIP_PERMISSIONS=false` and combine with the [Dangerous Command Approval](#dangerous-command-approval) flow above.
 
 ## Troubleshooting
 

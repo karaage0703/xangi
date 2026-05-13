@@ -55,6 +55,10 @@ RUN npm ci --omit=dev --ignore-scripts
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy xangi-cmd wrapper (tool-server CLI client)
+COPY bin/ ./bin/
+RUN chmod +x /app/bin/xangi-cmd
+
 # Install Codex CLI globally (as root)
 RUN npm install -g @openai/codex
 
@@ -73,8 +77,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN uv tool install yt-dlp && \
     uv tool install youtube-transcript-api
 
-# Add Claude, Codex, uv tools, and GPU venv to PATH
-ENV PATH="/home/ubuntu/.local/bin:/opt/gpu-env/.venv/bin:${PATH}"
+# Add Claude, Codex, uv tools, GPU venv, and xangi-cmd to PATH
+ENV PATH="/home/ubuntu/.local/bin:/opt/gpu-env/.venv/bin:/app/bin:${PATH}"
 
 # Make CUDA libraries visible
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"

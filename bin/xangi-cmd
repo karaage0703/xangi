@@ -38,6 +38,9 @@ Discord操作:
   discord_delete    メッセージ削除
   media_send        ファイル送信
 
+Web Chat操作:
+  web_history       現ペインの会話履歴を取得
+
 スケジュール:
   schedule_list     一覧表示
   schedule_add      追加

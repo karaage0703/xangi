@@ -33,6 +33,10 @@ RUN npm ci --omit=dev --ignore-scripts
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy xangi-cmd wrapper (tool-server CLI client)
+COPY bin/ ./bin/
+RUN chmod +x /app/bin/xangi-cmd
+
 # Install Codex CLI globally (as root)
 RUN npm install -g @openai/codex
 
@@ -45,8 +49,8 @@ USER node
 # Install Claude Code CLI as node user
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Add Claude and Codex to PATH
-ENV PATH="/home/node/.local/bin:${PATH}"
+# Add Claude, Codex, and xangi-cmd to PATH
+ENV PATH="/home/node/.local/bin:/app/bin:${PATH}"
 
 # Default command
 CMD ["node", "dist/index.js"]

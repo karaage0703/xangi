@@ -4,14 +4,14 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord / Slack から利用できる AI アシスタント。Discord 推奨。
+Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord / Slack / ブラウザから利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
 
 ## Features
 
 - マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
 - `/backend` コマンドでチャンネルごとにバックエンド・モデル・effortを動的切り替え
 - Local LLM対応（Ollama/vLLM等、エージェントモード/チャットモード切替可能）
-- Discord / Slack / Web UI 対応
+- Discord / Slack / Web Chat UI 対応
 - Docker対応
 - スキルシステム
 - スケジューラー（cron / 単発 / 起動時タスク）
@@ -21,7 +21,7 @@ Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord 
 
 ```mermaid
 graph LR
-    User --> |メッセージ| Chat[Chat Platform<br/>Discord / Slack]
+    User --> |メッセージ| Chat[Chat<br/>Discord / Slack / Web]
     Chat --> |プロンプト| xangi
     xangi --> |実行| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
     CLI --> |ファイル操作| WS[Workspace<br/>skills / AGENTS.md]
@@ -48,7 +48,7 @@ DISCORD_ALLOWED_USER=123456789012345678
 
 > 💡 作業ディレクトリはデフォルトで `./workspace` を使用。変更する場合は `WORKSPACE_PATH` を設定。
 
-> 💡 Discord Bot の作成方法・IDの調べ方は [Discord セットアップ](docs/discord-setup.md) を参照
+> 💡 Discord Bot の作成方法・ID の調べ方は [Discord セットアップ](docs/discord-setup.md) を参照。
 
 ### 2. ビルド・起動
 
@@ -70,6 +70,25 @@ npm run dev
 ### 3. 動作確認
 
 Discord で bot にメンションして話しかけてください。
+
+### Discord/Slack の代わりにブラウザで使う
+
+トークンを用意したくない・LAN 内のブラウザだけで使いたい場合は、Web Chat UI 単独でも起動できます。
+
+`.env` に以下を追加：
+
+```bash
+WEB_CHAT_ENABLED=true
+```
+
+```bash
+npm start
+```
+
+ブラウザで `http://localhost:18888` にアクセスして会話を開始。
+
+> 💡 ポート競合を避けるため Web Chat UI は明示的に `WEB_CHAT_ENABLED=true` した時だけ起動します。ポート変更は `WEB_CHAT_PORT` で。
+> 💡 Slack を使う場合は [Slack セットアップ](docs/slack-setup.md) を参照。
 
 ### 自動再起動（pm2）
 
@@ -121,12 +140,14 @@ docker compose up xangi-gpu -d --build
 
 ## 環境変数
 
-### 必須
+### 必須（Discord 利用時）
 
 | 変数 | 説明 |
 |------|------|
 | `DISCORD_TOKEN` | Discord Bot Token |
 | `DISCORD_ALLOWED_USER` | 許可ユーザーID（カンマ区切りで複数可、`*`で全員許可） |
+
+ブラウザ単独で使う場合は `WEB_CHAT_ENABLED=true` のみで起動可能（トークン不要）。
 
 全ての環境変数（オプション含む）は [使い方ガイド](docs/usage.md#環境変数一覧) を参照してください。
 

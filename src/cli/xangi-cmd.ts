@@ -16,6 +16,7 @@
  *   node xangi-cmd.js discord_search --channel <id> --keyword <text>
  *   node xangi-cmd.js discord_edit --channel <id> --message-id <id> --content <text>
  *   node xangi-cmd.js discord_delete --channel <id> --message-id <id>
+ *   node xangi-cmd.js web_history [--count <n>] [--previous]
  *   node xangi-cmd.js schedule_list
  *   node xangi-cmd.js schedule_add --input <text> --channel <id> --platform <discord|slack>
  *   node xangi-cmd.js schedule_remove --id <id>
@@ -31,6 +32,7 @@ import { discordApi } from './discord-api.js';
 import { scheduleCmd } from './schedule-cmd.js';
 import { systemCmd } from './system-cmd.js';
 import { interChatCmd } from './inter-chat-cmd.js';
+import { webHistoryCmd } from './web-history-cmd.js';
 
 // .env を自動読み込み（DISCORD_TOKEN等のシークレットを取得）
 function loadEnvFile(): void {
@@ -74,6 +76,34 @@ function loadEnvFile(): void {
 
 loadEnvFile();
 
+/**
+ * tool-server (xangi 本体プロセス内) に command を委譲する。
+ *
+ * system_restart のように「実行と同じプロセスで副作用を起こしたい」コマンドは
+ * CLI 自プロセスではなく xangi 本体プロセス内で動かす必要があるため、
+ * XANGI_TOOL_SERVER で晒された HTTP API 経由で実行する。
+ */
+async function requestToolServer(command: string, flags: Record<string, string>): Promise<string> {
+  const serverUrl = process.env.XANGI_TOOL_SERVER;
+  if (!serverUrl) {
+    throw new Error(
+      `XANGI_TOOL_SERVER is not set. "${command}" は xangi 本体プロセス経由で実行する必要があります。AI エージェント (Bash/exec) からの呼び出しでのみ動作します。`
+    );
+  }
+
+  const res = await fetch(`${serverUrl}/api/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, flags }),
+  });
+
+  const body = (await res.json()) as { ok: boolean; result?: string; error?: string };
+  if (!body.ok) {
+    throw new Error(body.error || `tool-server returned status ${res.status}`);
+  }
+  return body.result ?? '';
+}
+
 function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
   const command = argv[2] || '';
   const flags: Record<string, string> = {};
@@ -101,6 +131,9 @@ Discord操作:
   discord_search    メッセージ検索
   discord_edit      メッセージ編集
   discord_delete    メッセージ削除
+
+Web Chat操作:
+  web_history       Web Chat の現セッション履歴取得
 
 スケジュール:
   schedule_list     一覧表示
@@ -131,10 +164,15 @@ Discord操作:
       result = await scheduleCmd(command, flags);
     } else if (command === 'media_send') {
       result = await discordApi(command, flags);
+    } else if (command === 'system_restart') {
+      // 自プロセスではなく xangi 本体プロセスを再起動する必要があるため tool-server に委譲
+      result = await requestToolServer(command, flags);
     } else if (command.startsWith('system_')) {
       result = await systemCmd(command, flags);
     } else if (command.startsWith('inter_chat_')) {
       result = await interChatCmd(command, flags);
+    } else if (command === 'web_history') {
+      result = webHistoryCmd(flags);
     } else {
       console.error(`Unknown command: ${command}`);
       process.exit(1);

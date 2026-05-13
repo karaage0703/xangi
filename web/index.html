@@ -653,9 +653,83 @@
         background: var(--danger);
         color: #fff;
         display: none;
+        font-size: 16px;
+        line-height: 1;
+        padding: 7px 12px;
       }
       .pane-stop:hover {
         filter: brightness(1.08);
+      }
+      /* メッセージのホバー時に出る ⋯ アクションメニュー (Discord 風) */
+      .msg-wrapper {
+        position: relative;
+      }
+      .msg-actions {
+        position: absolute;
+        top: -10px;
+        right: 0;
+        display: none;
+        background: var(--surface-1);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-md);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+        z-index: 2;
+        overflow: hidden;
+      }
+      .msg-wrapper.user .msg-actions {
+        right: 0;
+        left: auto;
+      }
+      .msg-wrapper.assistant .msg-actions {
+        left: 0;
+        right: auto;
+      }
+      .msg-wrapper:hover .msg-actions {
+        display: flex;
+      }
+      .msg-actions.open {
+        display: flex;
+      }
+      .msg-action-btn {
+        background: transparent;
+        border: none;
+        padding: 6px 10px;
+        font-size: 13px;
+        cursor: pointer;
+        color: var(--ink);
+        font-family: inherit;
+        line-height: 1;
+      }
+      .msg-action-btn:hover {
+        background: var(--surface-2);
+      }
+      .msg-action-btn.danger {
+        color: var(--danger);
+      }
+      /* インライン編集 textarea */
+      .msg-edit {
+        width: 100%;
+        min-height: 60px;
+        font-family: inherit;
+        font-size: 14px;
+        padding: 8px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--hairline);
+        background: var(--surface-1);
+        color: var(--ink);
+        resize: vertical;
+        box-sizing: border-box;
+      }
+      .msg-edit-actions {
+        display: flex;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .msg-edited-label {
+        font-size: 10px;
+        color: var(--ink-subtle);
+        font-style: italic;
+        padding: 0 6px;
       }
       /* セッションリストの行内アクション */
       .session-row {
@@ -1141,6 +1215,17 @@
             '<div class="empty-state">Select a session<br>or click <button type="button" class="empty-cta" onclick="newSessionInActivePane()">+ New Chat</button></div>';
           this.el.appendChild(this.messagesEl);
 
+          // 自動追従スクロール (ChatGPT 風):
+          // ユーザが下端付近にいるときだけ AI の更新で自動スクロール、
+          // 上にスクロール中は固定 (勝手に下に飛ばない)。
+          this.followBottom = true;
+          this.messagesEl.addEventListener('scroll', () => {
+            var el = this.messagesEl;
+            // 下端から 80px 以内なら "下端付近にいる" とみなす
+            var distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            this.followBottom = distFromBottom < 80;
+          });
+
           // attach preview
           this.attachPreviewEl = document.createElement('div');
           this.attachPreviewEl.className = 'pane-attach-preview';
@@ -1159,7 +1244,9 @@
           this.fileInputEl.type = 'file';
           this.fileInputEl.className = 'pane-file-input';
           this.fileInputEl.multiple = true;
-          this.fileInputEl.accept = 'image/*,.pdf,.mp3,.mp4,.wav';
+          if (window._uploadAccept) {
+            this.fileInputEl.accept = window._uploadAccept;
+          }
           this.fileInputEl.addEventListener('change', (e) => this._handleFileSelect(e));
           attachBtn.addEventListener('click', () => this.fileInputEl.click());
           this.inputEl = document.createElement('textarea');
@@ -1184,7 +1271,8 @@
 
           this.stopBtn = document.createElement('button');
           this.stopBtn.className = 'pane-stop action-btn';
-          this.stopBtn.textContent = 'Stop';
+          this.stopBtn.textContent = '\u{23F9}';
+          this.stopBtn.title = '応答を中断';
           this.stopBtn.addEventListener('click', () => this.stopChat());
 
           inputArea.appendChild(composer);
@@ -1214,6 +1302,17 @@
           try {
             var res = await fetch('/api/upload', { method: 'POST', body: formData });
             var data = await res.json();
+            if (!res.ok) {
+              var reason =
+                (data.rejected && data.rejected[0] && data.rejected[0].reason) ||
+                data.error ||
+                'Upload failed';
+              alert(file.name + ': ' + reason);
+              return;
+            }
+            if (data.rejected && data.rejected.length > 0) {
+              alert(data.rejected.map((r) => r.name + ': ' + r.reason).join('\n'));
+            }
             if (data.files && data.files.length > 0) {
               var f = data.files[0];
               var localUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
@@ -1264,6 +1363,9 @@
           opts = opts || {};
           var wrapper = document.createElement('div');
           wrapper.className = 'msg-wrapper ' + role;
+          if (opts.id) {
+            wrapper.dataset.msgId = opts.id;
+          }
           var div = document.createElement('div');
           div.className = 'msg ' + role;
           var cleaned = stripMetadata(text);
@@ -1275,11 +1377,23 @@
           }
           wrapper.appendChild(div);
 
+          // Discord 風 ⋯ アクションメニュー
+          if (opts.id && (role === 'user' || role === 'assistant')) {
+            wrapper.appendChild(this._buildMsgActions(wrapper, role, div));
+          }
+
           if (opts.createdAt) {
             var t = document.createElement('div');
             t.className = 'msg-time';
-            t.textContent = formatTime(opts.createdAt);
+            var timeText = formatTime(opts.createdAt);
+            if (opts.edited) timeText += ' (編集済み)';
+            t.textContent = timeText;
             wrapper.appendChild(t);
+          } else if (opts.edited) {
+            var lbl = document.createElement('div');
+            lbl.className = 'msg-edited-label';
+            lbl.textContent = '(編集済み)';
+            wrapper.appendChild(lbl);
           }
 
           if (role === 'assistant' && opts.usage) {
@@ -1302,8 +1416,160 @@
           }
 
           this.messagesEl.appendChild(wrapper);
-          this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+          // 自分のメッセージ (user) 送信時は強制で下に追従させる
+          // (followBottom フラグを true に戻して以降の AI 更新も追従)
+          if (role === 'user') {
+            this.followBottom = true;
+          }
+          this._autoScroll();
           return div;
+        }
+
+        /** followBottom が true のときだけ末尾に追従。
+         *  ユーザが上にスクロールしているときは何もしない。 */
+        _autoScroll() {
+          if (this.followBottom) {
+            this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+          }
+        }
+
+        _buildMsgActions(wrapper, role, contentDiv) {
+          var self = this;
+          var actions = document.createElement('div');
+          actions.className = 'msg-actions';
+
+          var copyBtn = document.createElement('button');
+          copyBtn.className = 'msg-action-btn';
+          copyBtn.textContent = 'Copy';
+          copyBtn.title = 'コピー';
+          copyBtn.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var txt = contentDiv.innerText || contentDiv.textContent || '';
+            try {
+              navigator.clipboard.writeText(txt);
+            } catch (_) {}
+          });
+          actions.appendChild(copyBtn);
+
+          if (role === 'user') {
+            var editBtn = document.createElement('button');
+            editBtn.className = 'msg-action-btn';
+            editBtn.textContent = 'Edit';
+            editBtn.title = '編集';
+            editBtn.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              self._beginEdit(wrapper, contentDiv);
+            });
+            actions.appendChild(editBtn);
+          }
+
+          var delBtn = document.createElement('button');
+          delBtn.className = 'msg-action-btn danger';
+          delBtn.textContent = 'Delete';
+          delBtn.title = '削除';
+          delBtn.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            self._deleteMessage(wrapper);
+          });
+          actions.appendChild(delBtn);
+
+          return actions;
+        }
+
+        _beginEdit(wrapper, contentDiv) {
+          var self = this;
+          var messageId = wrapper.dataset.msgId;
+          if (!messageId) return;
+          var originalText = contentDiv.textContent || '';
+
+          var ta = document.createElement('textarea');
+          ta.className = 'msg-edit';
+          ta.value = originalText;
+
+          var actionsRow = document.createElement('div');
+          actionsRow.className = 'msg-edit-actions';
+          var saveBtn = document.createElement('button');
+          saveBtn.className = 'msg-action-btn';
+          saveBtn.textContent = 'Save';
+          var cancelBtn = document.createElement('button');
+          cancelBtn.className = 'msg-action-btn';
+          cancelBtn.textContent = 'Cancel';
+          actionsRow.appendChild(saveBtn);
+          actionsRow.appendChild(cancelBtn);
+
+          contentDiv.style.display = 'none';
+          wrapper.insertBefore(ta, contentDiv.nextSibling);
+          wrapper.insertBefore(actionsRow, ta.nextSibling);
+          ta.focus();
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+
+          var cleanup = function () {
+            ta.remove();
+            actionsRow.remove();
+            contentDiv.style.display = '';
+          };
+
+          cancelBtn.addEventListener('click', cleanup);
+          saveBtn.addEventListener('click', async function () {
+            var newText = ta.value;
+            if (newText === originalText) {
+              cleanup();
+              return;
+            }
+            saveBtn.disabled = true;
+            cancelBtn.disabled = true;
+            try {
+              var res = await fetch(
+                '/api/sessions/' +
+                  encodeURIComponent(self.sessionId) +
+                  '/messages/' +
+                  encodeURIComponent(messageId),
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content: newText }),
+                }
+              );
+              if (!res.ok) throw new Error('edit failed: ' + res.status);
+              contentDiv.textContent = newText;
+              // (編集済み) ラベルを付ける (もし無ければ)
+              var timeEl = wrapper.querySelector('.msg-time');
+              if (timeEl) {
+                if (!/編集済み/.test(timeEl.textContent)) {
+                  timeEl.textContent += ' (編集済み)';
+                }
+              } else if (!wrapper.querySelector('.msg-edited-label')) {
+                var lbl = document.createElement('div');
+                lbl.className = 'msg-edited-label';
+                lbl.textContent = '(編集済み)';
+                wrapper.appendChild(lbl);
+              }
+              cleanup();
+            } catch (err) {
+              alert('編集に失敗しました: ' + err.message);
+              saveBtn.disabled = false;
+              cancelBtn.disabled = false;
+            }
+          });
+        }
+
+        async _deleteMessage(wrapper) {
+          var messageId = wrapper.dataset.msgId;
+          if (!messageId) return;
+          if (!confirm('このメッセージを削除しますか？ (jsonl も書き換わります)')) return;
+          try {
+            var res = await fetch(
+              '/api/sessions/' +
+                encodeURIComponent(this.sessionId) +
+                '/messages/' +
+                encodeURIComponent(messageId),
+              { method: 'DELETE' }
+            );
+            if (!res.ok) throw new Error('delete failed: ' + res.status);
+            wrapper.remove();
+          } catch (err) {
+            alert('削除に失敗しました: ' + err.message);
+          }
         }
 
         async refreshHistory() {
@@ -1322,7 +1588,12 @@
             for (var i = 0; i < msgs.length; i++) {
               var m = msgs[i];
               var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-              this.addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
+              this.addMessage(content, m.role, {
+                id: m.id,
+                createdAt: m.createdAt,
+                usage: m.usage,
+                edited: m.edited,
+              });
             }
           } catch (_) {}
         }
@@ -1352,7 +1623,12 @@
               var m = msgs[i];
               if (m.role === 'error') continue;
               var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-              this.addMessage(content, m.role, { createdAt: m.createdAt, usage: m.usage });
+              this.addMessage(content, m.role, {
+                id: m.id,
+                createdAt: m.createdAt,
+                usage: m.usage,
+                edited: m.edited,
+              });
             }
             var info = allSessions.find(function (s) {
               return s.id === id;
@@ -1384,7 +1660,7 @@
         _setProcessing(on) {
           this.sending = on;
           this.sendBtn.style.display = on ? 'none' : '';
-          this.stopBtn.style.display = on ? '' : 'none';
+          this.stopBtn.style.display = on ? 'inline-block' : 'none';
           this.inputEl.disabled = on;
         }
 
@@ -1404,6 +1680,7 @@
           }
 
           this.addMessage(msg, 'user', { createdAt: new Date().toISOString() });
+          var userWrapper = this.messagesEl.lastElementChild;
           if (this.pendingFiles.length > 0) {
             var lastWrapper = this.messagesEl.lastElementChild;
             if (lastWrapper) {
@@ -1436,6 +1713,9 @@
           toolsDiv.textContent = 'Thinking...';
           toolsWrapper.appendChild(toolsDiv);
           this.messagesEl.appendChild(toolsWrapper);
+          // Thinking バブルが入力欄の裏に隠れる問題対策:
+          // append 後にスクロール末尾追従させる。
+          this._autoScroll();
 
           var assistantWrapper = null;
           var assistantDiv = null;
@@ -1482,7 +1762,7 @@
                         self.messagesEl.appendChild(assistantWrapper);
                       }
                       assistantDiv.textContent = d.fullText + ' ▌';
-                      self.messagesEl.scrollTop = self.messagesEl.scrollHeight;
+                      self._autoScroll();
                     } else if (eventType === 'tool') {
                       if (toolHistory.length === 0) {
                         toolsDiv.textContent = '';
@@ -1492,7 +1772,7 @@
                       toolLine.className = 'tool-line';
                       toolLine.textContent = '\u{1F527} ' + d.toolName + (d.inputSummary || '');
                       toolsDiv.appendChild(toolLine);
-                      self.messagesEl.scrollTop = self.messagesEl.scrollHeight;
+                      self._autoScroll();
                     } else if (eventType === 'done') {
                       if (!assistantWrapper) {
                         assistantWrapper = document.createElement('div');
@@ -1530,6 +1810,25 @@
                         }
                       }
                       if (d.sessionId) self.sessionId = d.sessionId;
+                      // user / assistant の transcript ID を bubble に紐付ける
+                      // (ストリーミング後の編集・削除を有効にするため)
+                      if (d.userMessageId && userWrapper) {
+                        userWrapper.dataset.msgId = d.userMessageId;
+                        var userMsgDiv = userWrapper.querySelector('.msg');
+                        if (userMsgDiv && !userWrapper.querySelector('.msg-actions')) {
+                          userWrapper.appendChild(
+                            self._buildMsgActions(userWrapper, 'user', userMsgDiv)
+                          );
+                        }
+                      }
+                      if (d.assistantMessageId && assistantWrapper) {
+                        assistantWrapper.dataset.msgId = d.assistantMessageId;
+                        if (!assistantWrapper.querySelector('.msg-actions')) {
+                          assistantWrapper.appendChild(
+                            self._buildMsgActions(assistantWrapper, 'assistant', assistantDiv)
+                          );
+                        }
+                      }
                       loadSessions();
                     } else if (eventType === 'error') {
                       toolsWrapper.remove();
@@ -1551,8 +1850,24 @@
           }
         }
 
-        stopChat() {
-          if (this.abortController) this.abortController.abort();
+        async stopChat() {
+          // クライアント側 SSE 切断 (ストリーミング描画停止)
+          if (this.abortController) {
+            try {
+              this.abortController.abort();
+            } catch (_) {}
+          }
+          // サーバ側 runner / LLM 子プロセスを実際に止める。
+          // 旧実装は abort のみで、Claude プロセスが裏で走り続けて
+          // 実質「途中で止められない」状態だった。
+          if (this.sessionId) {
+            try {
+              await fetch('/api/sessions/' + encodeURIComponent(this.sessionId) + '/stop', {
+                method: 'POST',
+              });
+            } catch (_) {}
+          }
+          this._setProcessing(false);
         }
 
         async newSession() {
@@ -2083,9 +2398,19 @@
       }
 
       // ─── 初期化 ───
-      loadSessions();
-      // 起動時に空ペイン1個を用意
-      paneManager.add({});
+      window._uploadAccept = '';
+      (async function init() {
+        try {
+          var res = await fetch('/api/config');
+          var cfg = await res.json();
+          window._uploadAccept = cfg.uploadAccept || '';
+        } catch (e) {
+          /* 失敗時はフィルタ無し (全許可) のまま */
+        }
+        loadSessions();
+        // 起動時に空ペイン1個を用意
+        paneManager.add({});
+      })();
       // ドラッグ&ドロップ：アクティブペインに添付
       document.body.addEventListener('dragover', function (e) {
         e.preventDefault();

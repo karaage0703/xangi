@@ -4,14 +4,14 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-An AI assistant for Discord / Slack, powered by Claude Code / Codex / Gemini CLI / Local LLM backends. Discord recommended.
+An AI assistant for Discord / Slack / browser, powered by Claude Code / Codex / Gemini CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
 
 ## Features
 
 - Multi-backend support (Claude Code / Codex / Gemini CLI / Local LLM)
 - `/backend` command for dynamic per-channel backend/model/effort switching
 - Local LLM support (Ollama/vLLM, etc., with agent mode / chat mode toggle)
-- Discord / Slack / Web UI support
+- Discord / Slack / Web Chat UI support
 - Docker support
 - Skill system
 - Scheduler (cron / one-shot / startup tasks)
@@ -21,7 +21,7 @@ An AI assistant for Discord / Slack, powered by Claude Code / Codex / Gemini CLI
 
 ```mermaid
 graph LR
-    User --> |Message| Chat[Chat Platform<br/>Discord / Slack]
+    User --> |Message| Chat[Chat<br/>Discord / Slack / Web]
     Chat --> |Prompt| xangi
     xangi --> |Execute| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
     CLI --> |File ops| WS[Workspace<br/>skills / AGENTS.md]
@@ -48,7 +48,7 @@ DISCORD_ALLOWED_USER=123456789012345678
 
 > 💡 The working directory defaults to `./workspace`. Set `WORKSPACE_PATH` to change it.
 
-> 💡 See [Discord Setup](docs/discord-setup.md) for how to create a Bot and find IDs.
+> 💡 See [Discord Setup](docs/en/discord-setup.md) for how to create a Bot and find IDs.
 
 ### 2. Build & Run
 
@@ -70,6 +70,25 @@ npm run dev
 ### 3. Verify
 
 Mention the bot in Discord to start a conversation.
+
+### Browser-only (no Discord/Slack)
+
+If you don't want to set up tokens or just want to use it via a local browser, the Web Chat UI can run standalone.
+
+Add to `.env`:
+
+```bash
+WEB_CHAT_ENABLED=true
+```
+
+```bash
+npm start
+```
+
+Open `http://localhost:18888` in your browser.
+
+> 💡 The Web Chat UI is opt-in (`WEB_CHAT_ENABLED=true`) to avoid surprise port conflicts. Change the port with `WEB_CHAT_PORT`.
+> 💡 See [Slack Setup](docs/en/slack-setup.md) for Slack integration.
 
 ### Auto-restart (pm2)
 
@@ -121,14 +140,16 @@ See [Usage Guide: Docker](docs/usage.md#docker実行) for details.
 
 ## Environment Variables
 
-### Required
+### Required (when using Discord)
 
 | Variable | Description |
 |----------|-------------|
 | `DISCORD_TOKEN` | Discord Bot Token |
 | `DISCORD_ALLOWED_USER` | Allowed user IDs (comma-separated, `*` for all) |
 
-See [Usage Guide](docs/usage.md#環境変数一覧) for all environment variables.
+For browser-only operation, just set `WEB_CHAT_ENABLED=true` (no Discord token required).
+
+See [Usage Guide](docs/en/usage.md#environment-variables) for all environment variables.
 
 ## Workspace
 

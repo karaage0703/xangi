@@ -13,11 +13,12 @@ RUN npm run build
 # Stage 2: Production (Full version with uv + Python)
 FROM node:22-slim
 
-# Install dependencies for Claude Code CLI, GitHub CLI, and Python
+# Install dependencies for Claude Code CLI, GitHub CLI, Python, and xangi-cmd (jq)
 RUN apt-get update && apt-get install -y \
     curl \
     git \
     ca-certificates \
+    jq \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
@@ -39,6 +40,10 @@ RUN npm ci --omit=dev --ignore-scripts
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy xangi-cmd wrapper (tool-server CLI client)
+COPY bin/ ./bin/
+RUN chmod +x /app/bin/xangi-cmd
+
 # Install Codex CLI globally (as root)
 RUN npm install -g @openai/codex
 
@@ -51,8 +56,8 @@ USER node
 # Install Claude Code CLI as node user
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Add Claude, Codex, and uv to PATH
-ENV PATH="/home/node/.local/bin:/root/.local/bin:${PATH}"
+# Add Claude, Codex, uv, and xangi-cmd to PATH
+ENV PATH="/home/node/.local/bin:/root/.local/bin:/app/bin:${PATH}"
 
 # Default command
 CMD ["node", "dist/index.js"]

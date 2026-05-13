@@ -123,6 +123,8 @@ describe('LocalLlmRunner liteMode', () => {
     process.env.LOCAL_LLM_MODE = 'lite';
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
     expect(runner.enableTools).toBe(true);
+    expect(runner.enableSkills).toBe(false);
+    expect(runner.enableXangiCommands).toBe(true);
     expect(runner.enableTriggers).toBe(true);
   });
 
