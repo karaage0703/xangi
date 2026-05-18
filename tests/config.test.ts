@@ -125,6 +125,116 @@ describe('config', () => {
     expect(config.discord.allowAutoreplyCommand).toBe(false);
   });
 
+  it('should default respondToBots to empty array', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.RESPOND_TO_BOTS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBots).toEqual([]);
+  });
+
+  it('should parse RESPOND_TO_BOTS as comma-separated list', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS = '111,222 , 333';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBots).toEqual(['111', '222', '333']);
+  });
+
+  it('should parse RESPOND_TO_BOTS=* as wildcard', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS = '*';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBots).toEqual(['*']);
+  });
+
+  it('should default respondToBotsEnabled to false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.RESPOND_TO_BOTS_ENABLED;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsEnabled).toBe(false);
+  });
+
+  it('should set respondToBotsEnabled=true when RESPOND_TO_BOTS_ENABLED=true', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS_ENABLED = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsEnabled).toBe(true);
+  });
+
+  it('should keep respondToBotsEnabled=false when RESPOND_TO_BOTS_ENABLED=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS_ENABLED = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsEnabled).toBe(false);
+  });
+
+  it('should default respondToBotsMaxConsecutive to 3', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.RESPOND_TO_BOTS_MAX_CONSECUTIVE;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsMaxConsecutive).toBe(3);
+  });
+
+  it('should parse RESPOND_TO_BOTS_MAX_CONSECUTIVE as integer', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS_MAX_CONSECUTIVE = '10';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsMaxConsecutive).toBe(10);
+  });
+
+  it('should allow respondToBotsMaxConsecutive=0 for unlimited', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.RESPOND_TO_BOTS_MAX_CONSECUTIVE = '0';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.respondToBotsMaxConsecutive).toBe(0);
+  });
+
+  it('should enable allowRespondToBotsCommand by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.ALLOW_RESPOND_TO_BOTS_COMMAND;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowRespondToBotsCommand).toBe(true);
+  });
+
+  it('should disable allowRespondToBotsCommand when ALLOW_RESPOND_TO_BOTS_COMMAND=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.ALLOW_RESPOND_TO_BOTS_COMMAND = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowRespondToBotsCommand).toBe(false);
+  });
+
   it('should enable skipPermissions by default', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.SKIP_PERMISSIONS;

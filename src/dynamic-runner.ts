@@ -1,4 +1,12 @@
-import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import { EventEmitter } from 'events';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+  TimeoutState,
+  ExtendTimeoutResult,
+} from './agent-runner.js';
 import { createAgentRunner, getBackendDisplayName } from './agent-runner.js';
 import type { AgentConfig, Config } from './config.js';
 import { BackendResolver, type ResolvedBackend } from './backend-resolver.js';
@@ -16,7 +24,7 @@ import type { ChatPlatform } from './prompts/index.js';
  * - claude-code (non-persistent): 共有 ClaudeCodeRunner
  * - codex / gemini / local-llm: バックエンド種別ごとの共有インスタンス
  */
-export class DynamicRunnerManager implements AgentRunner {
+export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private resolver: BackendResolver;
   private config: Config;
   private platform?: ChatPlatform;
@@ -28,6 +36,7 @@ export class DynamicRunnerManager implements AgentRunner {
   private channelRunners = new Map<string, { runner: AgentRunner; key: string }>();
 
   constructor(config: Config, resolver: BackendResolver) {
+    super();
     this.config = config;
     this.resolver = resolver;
     this.platform = config.agent.platform;
@@ -36,10 +45,26 @@ export class DynamicRunnerManager implements AgentRunner {
     this.defaultRunner = createAgentRunner(config.agent.backend, config.agent.config, {
       platform: this.platform,
     });
+    this.attachTimeoutBubble(this.defaultRunner);
 
     console.log(
       `[dynamic-runner] Initialized with default backend: ${getBackendDisplayName(config.agent.backend)}`
     );
+  }
+
+  /**
+   * 内部 runner が EventEmitter なら timeout-* を上位 (= web-chat の SSE) に bubble する。
+   * 既に attach 済みかどうかは listener 名で判別不能なので、attach は 1 runner 1 回が前提。
+   * (defaultRunner は constructor で、channelRunner は createRunnerFor 直後で attach する)
+   */
+  private attachTimeoutBubble(runner: AgentRunner): void {
+    const emitter = runner as unknown as {
+      on?: (e: string, l: (p: unknown) => void) => void;
+    };
+    if (typeof emitter.on !== 'function') return;
+    for (const evt of ['timeout-started', 'timeout-extended', 'timeout-cleared'] as const) {
+      emitter.on(evt, (payload: unknown) => this.emit(evt, payload));
+    }
   }
 
   /**
@@ -70,6 +95,7 @@ export class DynamicRunnerManager implements AgentRunner {
 
     // 新しいランナーを作成
     const runner = this.createRunnerFor(resolved, channelId);
+    this.attachTimeoutBubble(runner);
     this.channelRunners.set(channelId, {
       runner,
       key: resolverKey + (resolved.effort ?? ''),
@@ -136,8 +162,8 @@ export class DynamicRunnerManager implements AgentRunner {
     const resolved = this.resolver.resolve(channelId);
     const runner = this.getRunner(channelId, resolved);
 
-    // effort をオプションに注入（per-request型のclaude-codeで使用）
-    const runOptions = resolved.effort ? { ...options, effort: resolved.effort } : options;
+    // effort / localLlmMode をオプションに注入（resolved 由来）
+    const runOptions = this.injectResolvedFields(options, resolved);
 
     return runner.run(prompt, runOptions);
   }
@@ -154,9 +180,28 @@ export class DynamicRunnerManager implements AgentRunner {
     const resolved = this.resolver.resolve(channelId);
     const runner = this.getRunner(channelId, resolved);
 
-    const runOptions = resolved.effort ? { ...options, effort: resolved.effort } : options;
+    const runOptions = this.injectResolvedFields(options, resolved);
 
     return runner.runStream(prompt, callbacks, runOptions);
+  }
+
+  /**
+   * resolved の effort / localLlmMode を RunOptions にマージする
+   * - 既存 options に明示的に指定があればそれを優先
+   * - resolved.localLlmMode は Local LLM 以外のバックエンドでは無視されるが、害はない
+   */
+  private injectResolvedFields(
+    options: RunOptions | undefined,
+    resolved: ResolvedBackend
+  ): RunOptions | undefined {
+    const hasEffort = resolved.effort && (!options || options.effort === undefined);
+    const hasMode = resolved.localLlmMode && (!options || options.localLlmMode === undefined);
+    if (!hasEffort && !hasMode) return options;
+    return {
+      ...options,
+      ...(hasEffort && { effort: resolved.effort }),
+      ...(hasMode && { localLlmMode: resolved.localLlmMode }),
+    };
   }
 
   /**
@@ -192,6 +237,34 @@ export class DynamicRunnerManager implements AgentRunner {
   hasRunner(channelId: string): boolean {
     if (this.channelRunners.has(channelId)) return true;
     return this.defaultRunner.hasRunner?.(channelId) ?? false;
+  }
+
+  /**
+   * 指定チャンネルの現在のタイムアウト状態を取得（内部 runner にパススルー）
+   */
+  getTimeoutState(channelId: string): TimeoutState {
+    const channelEntry = this.channelRunners.get(channelId);
+    if (channelEntry?.runner.getTimeoutState) {
+      return channelEntry.runner.getTimeoutState(channelId);
+    }
+    return this.defaultRunner.getTimeoutState?.(channelId) ?? { active: false };
+  }
+
+  /**
+   * 指定チャンネルのタイムアウトを延長（内部 runner にパススルー）。
+   * `additionalMs` 省略時は残り時間を加算 (内部 runner 側で remainingMs を採用)。
+   */
+  extendTimeout(channelId: string, additionalMs?: number): ExtendTimeoutResult {
+    const channelEntry = this.channelRunners.get(channelId);
+    if (channelEntry?.runner.extendTimeout) {
+      return channelEntry.runner.extendTimeout(channelId, additionalMs);
+    }
+    return (
+      this.defaultRunner.extendTimeout?.(channelId, additionalMs) ?? {
+        ok: false,
+        reason: 'unsupported',
+      }
+    );
   }
 
   /**

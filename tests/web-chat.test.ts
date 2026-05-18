@@ -383,6 +383,25 @@ describe('web-chat HTTP API', () => {
     expect(found?.contextKey).toBe(channelId);
   });
 
+  it('GET /api/sessions/:id/timeout is routed to timeout handler, not to session detail', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/no-such-session/timeout`);
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+    expect(body).toEqual({ active: false });
+    expect(body).not.toHaveProperty('messages');
+  });
+
+  it('POST /api/sessions/:id/timeout/extend returns 404 for unknown session', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/no-such-session/timeout/extend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('session not found');
+  });
+
   it('DELETE /api/sessions/:id destroys the corresponding runner', async () => {
     const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;

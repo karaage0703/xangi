@@ -1,8 +1,15 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import type { RunOptions, RunResult, StreamCallbacks, AgentRunner } from './agent-runner.js';
+import type {
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+  AgentRunner,
+  TimeoutState,
+  ExtendTimeoutResult,
+} from './agent-runner.js';
 import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
-import { DEFAULT_TIMEOUT_MS } from './constants.js';
+import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { getSafeEnv } from './base-runner.js';
 import { buildPersistentSystemPrompt } from './base-runner.js';
 import type { ChatPlatform } from './prompts/index.js';
@@ -44,6 +51,15 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
   private model?: string;
   private timeoutMs: number;
+  /** 動的延長の絶対上限 (リクエスト開始時刻 + maxTimeoutMs)。constants.MAX_TIMEOUT_MS で固定 */
+  private readonly maxTimeoutMs: number;
+  /** 現在のリクエスト用のタイムアウト状態 (currentItem が null のときは未設定) */
+  private currentTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private currentRequestStartedAt = 0;
+  private currentTimeoutAt = 0;
+  private currentMaxTimeoutAt = 0;
+  /** 累積タイムアウト幅 (初期は timeoutMs、extendTimeout で増える) */
+  private currentTimeoutMs = 0;
   private workdir?: string;
   private skipPermissions: boolean;
   private systemPrompt: string;
@@ -64,6 +80,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     super();
     this.model = options?.model;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxTimeoutMs = MAX_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
     this.systemPrompt = buildPersistentSystemPrompt(options?.platform);
@@ -404,12 +421,52 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     proc.stdin?.write(JSON.stringify(message) + '\n');
 
     // タイムアウト設定: タイムアウト時はプロセスをkillして状態をクリーンに
-    const timeout = setTimeout(() => {
+    // timeoutAt / maxTimeoutAt をリソース化し、延長 API から張り替えできるようにする
+    const now = Date.now();
+    this.currentRequestStartedAt = now;
+    this.currentTimeoutMs = this.timeoutMs;
+    this.currentTimeoutAt = now + this.timeoutMs;
+    this.currentMaxTimeoutAt = now + this.maxTimeoutMs;
+    this.scheduleTimeout(this.timeoutMs);
+    // 起動時イベント: web-chat や consumer 側 (xangi-pets 等) が「残り時間表示」を
+    // 立てられるよう、channelId と timeoutAt をセットで知らせる
+    this.emit('timeout-started', {
+      channelId: this.channelId,
+      timeoutAt: this.currentTimeoutAt,
+      maxTimeoutAt: this.currentMaxTimeoutAt,
+      timeoutMs: this.currentTimeoutMs,
+    });
+
+    // タイムアウトをクリアするためにresolve/rejectをラップ
+    const originalResolve = this.currentItem.resolve;
+    const originalReject = this.currentItem.reject;
+
+    this.currentItem.resolve = (result) => {
+      this.clearCurrentTimeout('completed');
+      originalResolve(result);
+    };
+
+    this.currentItem.reject = (error) => {
+      this.clearCurrentTimeout('rejected');
+      originalReject(error);
+    };
+  }
+
+  /**
+   * 残り ms 後にタイムアウトを発火する setTimeout を張る。
+   * 既存ハンドラがあれば必ず先に clearTimeout する。
+   */
+  private scheduleTimeout(remainingMs: number): void {
+    if (this.currentTimeoutHandle) {
+      clearTimeout(this.currentTimeoutHandle);
+    }
+    this.currentTimeoutHandle = setTimeout(() => {
+      this.currentTimeoutHandle = null;
       if (this.currentItem) {
         console.warn(
-          `[persistent-runner] Request timed out after ${this.timeoutMs}ms. Killing process.`
+          `[persistent-runner] Request timed out after ${this.currentTimeoutMs}ms. Killing process.`
         );
-        const error = new Error(`Request timed out after ${this.timeoutMs}ms`);
+        const error = new Error(`Request timed out after ${this.currentTimeoutMs}ms`);
         this.currentItem.callbacks?.onError?.(error);
         this.currentItem.reject(error);
         this.currentItem = null;
@@ -423,22 +480,113 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
           this.buffer = '';
         }
 
+        this.emit('timeout-cleared', { channelId: this.channelId, reason: 'timeout' });
+        this.resetTimeoutState();
         this.processNext();
       }
-    }, this.timeoutMs);
+    }, remainingMs);
+  }
 
-    // タイムアウトをクリアするためにresolve/rejectをラップ
-    const originalResolve = this.currentItem.resolve;
-    const originalReject = this.currentItem.reject;
+  /**
+   * タイムアウト状態をリセット (timeoutAt 等を 0 に)。
+   * scheduleTimeout を呼び直す前にも使うので emit はしない。
+   */
+  private resetTimeoutState(): void {
+    if (this.currentTimeoutHandle) {
+      clearTimeout(this.currentTimeoutHandle);
+      this.currentTimeoutHandle = null;
+    }
+    this.currentRequestStartedAt = 0;
+    this.currentTimeoutAt = 0;
+    this.currentMaxTimeoutAt = 0;
+    this.currentTimeoutMs = 0;
+  }
 
-    this.currentItem.resolve = (result) => {
-      clearTimeout(timeout);
-      originalResolve(result);
+  /**
+   * リクエスト完了/失敗時にタイムアウトをクリアし、`timeout-cleared` イベントを 1 回だけ emit する。
+   * resolve/reject 両方から呼ばれるので、既に clear 済みなら no-op。
+   */
+  private clearCurrentTimeout(reason: 'completed' | 'rejected' | 'cancelled'): void {
+    if (this.currentTimeoutHandle || this.currentTimeoutAt) {
+      this.emit('timeout-cleared', { channelId: this.channelId, reason });
+    }
+    this.resetTimeoutState();
+  }
+
+  /**
+   * 現在のタイムアウト状態を返す (UI 表示用)。
+   * currentItem が null のときは active=false。
+   *
+   * AgentRunner interface との整合性のため channelId 引数を受けるが、
+   * PersistentRunner は 1 ランナー = 1 チャンネル束縛なので参照しない。
+   */
+  getTimeoutState(_channelId?: string): TimeoutState {
+    if (!this.currentItem || this.currentTimeoutAt === 0) {
+      return { active: false };
+    }
+    return {
+      active: true,
+      timeoutAt: this.currentTimeoutAt,
+      maxTimeoutAt: this.currentMaxTimeoutAt,
+      remainingMs: Math.max(0, this.currentTimeoutAt - Date.now()),
+      timeoutMs: this.currentTimeoutMs,
     };
+  }
 
-    this.currentItem.reject = (error) => {
-      clearTimeout(timeout);
-      originalReject(error);
+  /**
+   * 現在のリクエストのタイムアウトを延長する。
+   * 上限 (currentMaxTimeoutAt) を超える指定は 'max_timeout_exceeded' で拒否し、
+   * 上限超過は起こらないので timeoutAt は上限まで切り詰めない (UI は 409 を見て disabled にする)。
+   *
+   * AgentRunner interface との整合性のため channelId 引数を受けるが、
+   * PersistentRunner は 1 ランナー = 1 チャンネル束縛なので参照しない。
+   */
+  extendTimeout(_channelId: string | undefined, additionalMs?: number): ExtendTimeoutResult {
+    if (!TIMEOUT_EXTEND_ENABLED) {
+      return { ok: false, reason: 'unsupported' };
+    }
+    if (!this.currentItem || this.currentTimeoutAt === 0) {
+      return { ok: false, reason: 'no_active_request' };
+    }
+    const currentRemaining = Math.max(0, this.currentTimeoutAt - Date.now());
+    // additionalMs 省略時は残り時間を加算 → 結果として残り時間が 2 倍 (residual * 2)
+    const ms = additionalMs ?? currentRemaining;
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return { ok: false, reason: 'no_active_request' };
+    }
+    const requested = this.currentTimeoutAt + ms;
+    if (requested > this.currentMaxTimeoutAt) {
+      return {
+        ok: false,
+        reason: 'max_timeout_exceeded',
+        maxTimeoutAt: this.currentMaxTimeoutAt,
+      };
+    }
+
+    this.currentTimeoutAt = requested;
+    this.currentTimeoutMs += ms;
+    const remainingMs = Math.max(0, this.currentTimeoutAt - Date.now());
+    this.scheduleTimeout(remainingMs);
+
+    console.log(
+      `[persistent-runner] Timeout extended by ${ms}ms ` +
+        `(timeoutAt=${new Date(this.currentTimeoutAt).toISOString()}, remaining=${remainingMs}ms)`
+    );
+
+    this.emit('timeout-extended', {
+      channelId: this.channelId,
+      timeoutAt: this.currentTimeoutAt,
+      maxTimeoutAt: this.currentMaxTimeoutAt,
+      timeoutMs: this.currentTimeoutMs,
+      remainingMs,
+    });
+
+    return {
+      ok: true,
+      timeoutAt: this.currentTimeoutAt,
+      remainingMs,
+      timeoutMs: this.currentTimeoutMs,
+      maxTimeoutAt: this.currentMaxTimeoutAt,
     };
   }
 

@@ -16,7 +16,7 @@ Detailed usage guide for xangi.
 - [Autonomous AI Operations](#autonomous-ai-operations)
 - [Standalone Mode](#standalone-mode)
 - [Docker Deployment](#docker-deployment)
-- [Local LLM (Ollama)](#local-llm-ollama)
+- [Local LLM](#local-llm)
 - [Running Multiple Instances](#running-multiple-instances)
 - [Session Retention](#session-retention)
 - [Options](#options)
@@ -74,10 +74,42 @@ Injection format: `[Current time: 2026/3/8 12:34:56]`
 
 Buttons are displayed on response messages.
 
-- **During processing**: `Stop` button — equivalent to `/stop`. Interrupts the task
+- **During processing**: `Stop` / `延長` (Extend) / `⏱ MM:SS` buttons
+  - `Stop` — equivalent to `/stop`. Interrupts the task
+  - `延長` (Extend) — **doubles the remaining time** (adds residual to the deadline, capped at `TIMEOUT_MAX_MS`)
+  - `⏱ MM:SS` — remaining time badge (click does nothing, turns red under 30s)
 - **After completion**: `New` button — equivalent to `/new`. Resets the session
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
+
+### Dynamic Timeout Extension
+
+Long-running tasks (code generation, deep research, etc.) can be extended via
+the `延長` button before the initial timeout (`TIMEOUT_MS`, default 5 minutes)
+fires. The button **doubles the remaining time** at the moment of the click.
+
+- Initial timeout: `TIMEOUT_MS` (default 5 minutes)
+- Extension behavior: adds the current remaining time to the deadline → remaining time becomes **2x**
+  - e.g. 3 min remaining → click → 6 min remaining
+  - e.g. 30 sec remaining → click → 1 min remaining (last-resort recovery)
+- Absolute cap: `TIMEOUT_MAX_MS` (default 3600000ms = 1 hour)
+  - Increase it (e.g. `TIMEOUT_MAX_MS=21600000` = 6h) for jobs that need to run for hours
+- On/off: `TIMEOUT_EXTEND_ENABLED` (default `true`)
+  - When `false`, the `延長` button is hidden and `extendTimeout` API returns `unsupported`
+- UI:
+  - Web Chat — `[延長][⏱ MM:SS]` shown next to the `⏹` button in the composer (only while sending)
+  - Discord — `[Stop][延長][⏱ MM:SS]` row on the "Thinking…" message
+  - Slack — same buttons in the Block Kit actions block
+- Display turns red + pulses when under 30 seconds remain
+- `延長` is disabled / hidden once the cap is reached
+
+Supported backends: Claude Code (persistent-runner), Codex CLI, Gemini CLI,
+Local LLM, Dynamic Runner (forwards to inner runner).
+
+Programmatic API:
+
+- `GET /api/sessions/:id/timeout` — current state `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
+- `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`, defaults to 5 minutes
 
 > 💡 An optional approval flow can prompt for confirmation before dangerous commands run (disabled by default). See [Options > Dangerous Command Approval](#dangerous-command-approval).
 
@@ -170,6 +202,8 @@ The AI performs Discord operations via the `xangi-cmd` CLI tool. Because it rout
 | Command | Description |
 | --- | --- |
 | `xangi-cmd discord_history --channel <ID> [--count N] [--offset M]` | Get channel history |
+| `xangi-cmd web_history [--session <id>] [--count N]` | Web Chat current pane history (auto-resolves from `XANGI_CHANNEL_ID=web-chat:<id>`) |
+| `xangi-cmd slack_history [--channel <id>] [--count N]` | Slack current channel history (auto-resolves from `XANGI_CHANNEL_ID=<channel>`) |
 | `xangi-cmd discord_send --channel <ID> --message "text"` | Send a message |
 | `xangi-cmd discord_channels --guild <ID>` | List channels |
 | `xangi-cmd discord_search --channel <ID> --keyword "text"` | Search messages |
@@ -233,6 +267,8 @@ Runtime settings are saved in `${WORKSPACE_PATH}/settings.json`.
 | `/settings` | Show current settings |
 | `/restart` | Restart the bot |
 | `/autoreply` | Toggle mention-free auto-reply for this channel (no restart needed) |
+| `/respondtobots` | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env) |
+| `/llmmode <agent\|lite\|chat\|default\|show>` | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`) |
 
 ### Backend Dynamic Switching
 
@@ -285,6 +321,37 @@ The AI can edit the `.env` file to change settings:
 
 You can also use the `/autoreply` command to toggle mention-free auto-reply per channel (no restart needed, persisted to `.env`).
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
+
+### Responding to Other Bots (A/B Comparison)
+
+By default, messages from other bots are ignored. Set the whitelist in `RESPOND_TO_BOTS` and toggle the feature with `RESPOND_TO_BOTS_ENABLED` or the `/respondtobots` command.
+
+```
+# Whitelist (preset)
+RESPOND_TO_BOTS=*                       # all bots
+RESPOND_TO_BOTS=1469919453155164160     # specific bot only
+
+# Feature ON/OFF
+RESPOND_TO_BOTS_ENABLED=true            # ON
+RESPOND_TO_BOTS_ENABLED=false           # OFF (default)
+
+# Consecutive-reply cap (default 3, 0 to disable)
+RESPOND_TO_BOTS_MAX_CONSECUTIVE=3
+```
+
+The bot's own ID is always excluded (infinite-loop prevention). Messages from allowed bots bypass the `DISCORD_ALLOWED_USER` check.
+
+Consecutive replies to the same bot are capped at `RESPOND_TO_BOTS_MAX_CONSECUTIVE` (default 3). The counter resets when a human or a different bot posts. This is a safety net against runaway bot-to-bot loops.
+
+`/respondtobots` toggles the feature ON/OFF dynamically and persists to `.env`. To disable this command, set `ALLOW_RESPOND_TO_BOTS_COMMAND=false` in `.env` (default: enabled).
+
+Use case: run multiple xangi instances (e.g. xangi-borot=Claude / xangi-dev=Local LLM) in the same channel and compare their responses to the same prompt side-by-side.
+
+#### Constraints / Known Limitations
+
+- Responding to bot messages still requires the normal gate: **mention / DM / channel listed in `AUTO_REPLY_CHANNELS`**. Whitelisting a bot via `RESPOND_TO_BOTS` does not make it reply across all channels. To test bot-to-bot replies, add the test channel to `AUTO_REPLY_CHANNELS`.
+- `xangi-cmd discord_send` always sends with `allowed_mentions: { parse: [] }` to suppress notifications. As a result, mentions (`<@user_id>` / `<@&role_id>` / `@everyone`) embedded in messages sent via `xangi-cmd` are *not* parsed into `message.mentions` on the receiving side (Discord-spec behaviour). Mention-based triggers from another bot using `xangi-cmd discord_send` will therefore not fire.
+- Lifting that mention suppression would require an opt-in flag on `xangi-cmd discord_send` (out of scope of this feature).
 
 ### Message Split Separator
 
@@ -445,9 +512,9 @@ XANGI_WORKSPACE=/home/user/my-workspace
 - The Ollama container is isolated within the same docker network
 - Environment variables passed to the AI agent are restricted via a whitelist (e.g. `DISCORD_TOKEN` is not accessible)
 
-## Local LLM (Ollama)
+## Local LLM
 
-xangi's Local LLM backend uses the OpenAI-compatible API (`/v1/chat/completions`).
+xangi's Local LLM backend uses the OpenAI-compatible API (`/v1/chat/completions`). It supports Ollama, vLLM, and other OpenAI-compatible servers (LM Studio, llama.cpp, etc.).
 
 ### Local Execution (Ollama)
 
@@ -459,6 +526,60 @@ LOCAL_LLM_MODEL=gpt-oss:20b
 ```
 
 Works as-is if Ollama is running.
+
+### vLLM (OpenAI-compatible High-Performance Server)
+
+vLLM is a high-performance inference server that provides an OpenAI-compatible API. It's well-suited for serious deployments — large models, long contexts, and MTP (Multi-Token Prediction) drafters — that go beyond what Ollama covers.
+
+#### Launch Example (Gemma 4 26B-A4B-NVFP4 + MTP)
+
+```bash
+vllm serve nvidia/Gemma-4-26B-A4B-NVFP4 \
+  --host 0.0.0.0 --port 8001 \
+  --served-model-name gemma-4-26b-a4b \
+  --max-num-batched-tokens 131072 \
+  --max-model-len 131072 \
+  --gpu-memory-utilization 0.85 \
+  --kv-cache-dtype fp8 \
+  --enable-auto-tool-choice --tool-call-parser gemma4 \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":2,"model":"google/gemma-4-26B-A4B-it-assistant"}'
+```
+
+#### Connection Settings (.env)
+
+```bash
+AGENT_BACKEND=local-llm
+LOCAL_LLM_BASE_URL=http://localhost:8001
+# From Docker: http://host.docker.internal:8001
+LOCAL_LLM_MODEL=gemma-4-26b-a4b
+LOCAL_LLM_NUM_CTX=131072  # Match vLLM's --max-model-len
+```
+
+#### Tuning Guide
+
+| Option | Recommended | Notes |
+|--------|-------------|-------|
+| `--max-model-len` | `131072` | Stable handling of long prompts such as full arxiv papers (~70k tokens) or site-patrol. 65536 isn't enough to fit a full paper |
+| `--kv-cache-dtype` | `fp8` | Context-wide expansion enlarges the KV cache; fp8 compression absorbs this. Plenty of headroom on a GB10 80GiB-class GPU |
+| `--gpu-memory-utilization` | `0.85` | 0.6 starves the KV cache; 0.85 is stable |
+| `--max-num-batched-tokens` | Same as `--max-model-len` | Batching cap |
+| `--enable-auto-tool-choice` `--tool-call-parser <model>` | Model-dependent | Enables tool calling. Gemma 4 uses the `gemma4` parser |
+| `--speculative-config` (MTP) | Model-dependent | Specify when using an MTP drafter. Improves response latency |
+
+`LOCAL_LLM_NUM_CTX` is the client-side cap on the xangi side. If it doesn't match vLLM's `--max-model-len`, xangi will truncate the prompt first and you'll lose the benefit of the wider window.
+
+#### Verifying
+
+```bash
+# Model list (vLLM)
+curl -s http://localhost:8001/v1/models | jq '.data[] | {id, max_model_len}'
+
+# From Discord
+/backend list  # Shows the model list on the server side (supports both Ollama and vLLM)
+/backend show  # Shows detailed Local LLM settings for the current channel
+```
+
+### Logs
 
 All backends save per-session transcript logs (`logs/sessions/<appSessionId>.jsonl`). Prompts, responses, and errors are recorded in per-session JSONL files.
 
@@ -636,6 +757,11 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `DISCORD_SHOW_THINKING` | Show thinking process | `true` |
 | `DISCORD_SHOW_BUTTONS` | Show Stop/New Session buttons | `true` |
 | `ALLOW_AUTOREPLY_COMMAND` | Enable `/autoreply` command | `true` |
+| `RESPOND_TO_BOTS` | Whitelist of bot IDs to respond to (`*` for all bots) | - |
+| `RESPOND_TO_BOTS_ENABLED` | Toggle bot-to-bot reply ON/OFF (`/respondtobots` switches at runtime) | `false` |
+| `RESPOND_TO_BOTS_MAX_CONSECUTIVE` | Max consecutive replies to the same bot (0 = unlimited) | `3` |
+| `ALLOW_RESPOND_TO_BOTS_COMMAND` | Enable `/respondtobots` command | `true` |
+| `ALLOW_LLM_MODE_COMMAND` | Enable `/llmmode` command (Local LLM mode switcher) | `true` |
 | `INJECT_CHANNEL_TOPIC` | Inject channel topic into prompt | `true` |
 | `INJECT_TIMESTAMP` | Inject current time into prompt | `true` |
 
@@ -648,7 +774,9 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `WORKSPACE_PATH` | Working directory (local execution) | `./workspace` |
 | `XANGI_WORKSPACE` | Host-side workspace path (Docker execution) | `./workspace` |
 | `SKIP_PERMISSIONS` | Skip permissions by default (avoids deadlocks for non-interactive chat platforms) | `true` |
-| `TIMEOUT_MS` | Timeout (milliseconds) | `300000` |
+| `TIMEOUT_MS` | Initial request timeout (milliseconds) | `300000` |
+| `TIMEOUT_MAX_MS` | Absolute upper limit for timeout extension (milliseconds) | `3600000` |
+| `TIMEOUT_EXTEND_ENABLED` | Enable / disable the `延長` button | `true` |
 | `ALLOWED_BACKENDS` | Allowed backends for `/backend` switching (comma-separated) | - |
 | `ALLOWED_MODELS` | Allowed models for `/backend` switching (comma-separated) | - |
 | `CHANNEL_OVERRIDES` | Per-channel backend settings (JSON) | - |
@@ -672,6 +800,7 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `WEB_CHAT_ENABLED` | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>` | `false` |
 | `WEB_CHAT_PORT` | Web Chat UI port | `18888` |
 | `WEB_CHAT_UPLOAD_ACCEPT` | Upload allowlist (HTML `accept` syntax). Empty = allow all. `.ext` entries are also enforced server-side | (unset / allow all) |
+| `WEB_CHAT_DOWNLOAD_ACCEPT` | Download allowlist of extensions (e.g. `.html,.txt,.md`). Empty = allow all. Known extensions are served inline with proper Content-Type; unknown ones fall back to `Content-Disposition: attachment` | (unset / allow all) |
 
 ### Scheduler
 
@@ -712,8 +841,19 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 | `LOCAL_LLM_MODEL` | Model name | - |
 | `LOCAL_LLM_API_KEY` | API key (if required by vLLM, etc.) | - |
 | `LOCAL_LLM_THINKING` | Enable thinking model reasoning | `true` |
-| `LOCAL_LLM_MAX_TOKENS` | Maximum tokens | `8192` |
-| `LOCAL_LLM_NUM_CTX` | Context window size (for Ollama) | Model default |
+| `LOCAL_LLM_MAX_TOKENS` | Maximum tokens (per-request `max_tokens`) | `8192` |
+| `LOCAL_LLM_NUM_CTX` | Context window size (Ollama; also used as the basis for context budget calculation) | Model default |
+| `LOCAL_LLM_TEMPERATURE` | Sampling temperature (0 for deterministic; useful to suppress agent-mode format drift) | Model default |
+| `LOCAL_LLM_CONTEXT_MAX_CHARS` | Maximum history characters (explicit; auto-derived from `LOCAL_LLM_NUM_CTX` if unset) | Auto-derived |
+| `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt (used in derivation) | `8000` |
+| `LOCAL_LLM_OUTPUT_BUDGET_TOKENS` | Tokens reserved for one response (used in derivation) | `4096` |
+| `LOCAL_LLM_SAFETY_MARGIN_TOKENS` | Safety margin tokens (used in derivation) | `1000` |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST` | Most recent N messages are never trimmed | `10` |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS` | Max chars for in-context tool results (head/tail trim) | `4000` |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES` | Maximum number of messages kept per session | `50` |
+| `LOCAL_LLM_TOOL_SEARCH_ENABLED` | Enable tool deferred loading (`tool_search`) | `true` |
+| `LOCAL_LLM_TOOL_SEARCH_LIMIT` | Max tools returned per `tool_search` call | `8` |
+| `LOCAL_LLM_ALWAYS_LOADED_TOOLS` | Always-loaded tool names (comma-separated). Tools not listed are deferred | `read,write,edit,exec,glob,grep,send_file,web_fetch,tool_search` |
 | `EXEC_TIMEOUT_MS` | Exec tool timeout (milliseconds) | `120000` |
 | `WEB_FETCH_TIMEOUT_MS` | web_fetch tool timeout (milliseconds) | `15000` |
 | `LOCAL_LLM_READ_MAX_BYTES` | read tool file size limit (bytes) | `524288` (512KB) |

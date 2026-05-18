@@ -33,6 +33,7 @@ import { scheduleCmd } from './schedule-cmd.js';
 import { systemCmd } from './system-cmd.js';
 import { interChatCmd } from './inter-chat-cmd.js';
 import { webHistoryCmd } from './web-history-cmd.js';
+import { slackHistoryCmd } from './slack-history-cmd.js';
 
 // .env を自動読み込み（DISCORD_TOKEN等のシークレットを取得）
 function loadEnvFile(): void {
@@ -134,6 +135,7 @@ Discord操作:
 
 Web Chat操作:
   web_history       Web Chat の現セッション履歴取得
+  slack_history     Slack の現チャンネル履歴取得
 
 スケジュール:
   schedule_list     一覧表示
@@ -173,6 +175,8 @@ Web Chat操作:
       result = await interChatCmd(command, flags);
     } else if (command === 'web_history') {
       result = webHistoryCmd(flags);
+    } else if (command === 'slack_history') {
+      result = slackHistoryCmd(flags);
     } else {
       console.error(`Unknown command: ${command}`);
       process.exit(1);

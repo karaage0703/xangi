@@ -3,6 +3,88 @@
  */
 import type { LLMMessage, LLMToolCall, LLMChatOptions, LLMChatResponse } from './types.js';
 
+/**
+ * OpenAI 形式 (chat completions / streaming 共通) の tools / tool_choice を
+ * リクエスト body に注入する。chatOpenAI / chatStream の両方で共通利用。
+ *
+ * - tools 未指定 or 空配列 → 何もしない
+ * - tools 指定あり → body.tools にスキーマ展開
+ * - toolChoice 明示 → body.tool_choice 反映（'auto' / 'none' / 'required' / function 指定）
+ */
+function applyOpenAITools(body: Record<string, unknown>, options?: LLMChatOptions): void {
+  if (!options?.tools || options.tools.length === 0) return;
+  body.tools = options.tools.map((t) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+  if (options.toolChoice !== undefined) {
+    body.tool_choice = options.toolChoice;
+  }
+}
+
+/**
+ * Ollama ネイティブ API (/api/chat、chat / streaming 共通) の tools を
+ * リクエスト body に注入する。chatOllamaNative / chatStreamOllamaNative の両方で共通利用。
+ *
+ * 注意: Ollama ネイティブ API は OpenAI の `tool_choice` パラメータを公式サポート
+ * していない（無視される）。そのため `toolChoice='none'` は **tools 自体を渡さない**
+ * ことでエミュレートする（tools が無ければ LLM は tool 呼べないので text 応答強制と
+ * 同等の効果）。`toolChoice='required'` 等は Ollama 側では効かないため、ベスト
+ * エフォート（tools は渡すが強制はされない）。
+ */
+function applyOllamaTools(body: Record<string, unknown>, options?: LLMChatOptions): void {
+  if (!options?.tools || options.tools.length === 0) return;
+  // tool_choice='none' は tools を渡さないことで text 応答を強制
+  if (options.toolChoice === 'none') return;
+  body.tools = options.tools.map((t) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
+/**
+ * LLMMessage[] を Ollama ネイティブ API (/api/chat) 形式に変換する。
+ * chatOllamaNative / chatStreamOllamaNative の両方で共通利用。
+ *
+ * Ollama 固有の扱い:
+ * - images は `images: string[]` (base64 のみ、data URI prefix 無し)
+ * - assistant の tool_calls は OpenAI とほぼ同じ形式 (id 不要、tool_name は function.name に)
+ * - tool ロールは `tool_name` フィールドで呼び出し元 assistant の tool_call と関連付ける
+ *   (OpenAI の `tool_call_id` ではなく tool 名で紐付け)
+ */
+function toOllamaMessages(messages: LLMMessage[]): Array<Record<string, unknown>> {
+  const toolCallNameById = new Map<string, string>();
+
+  return messages.map((msg) => {
+    const m: Record<string, unknown> = {
+      role: msg.role,
+      content: msg.content,
+    };
+    if (msg.images && msg.images.length > 0) {
+      m.images = msg.images.map((img) => img.base64);
+    }
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      m.tool_calls = msg.toolCalls.map((tc) => {
+        toolCallNameById.set(tc.id, tc.name);
+        return {
+          type: 'function',
+          function: { name: tc.name, arguments: tc.arguments },
+        };
+      });
+    }
+    if (msg.role === 'tool' && msg.toolCallId) {
+      const toolName = toolCallNameById.get(msg.toolCallId);
+      if (toolName) {
+        m.tool_name = toolName;
+      }
+    }
+    return m;
+  });
+}
+
+/** test 用 export (実プロダクションコードからは export しない) */
+export const __testables = { applyOpenAITools, applyOllamaTools, toOllamaMessages };
+
 type OpenAIContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };
@@ -77,9 +159,15 @@ export class LLMClient {
     private readonly apiKey: string = '',
     private readonly thinking: boolean = false,
     private readonly defaultMaxTokens: number = 8192,
-    private readonly numCtx?: number
+    private readonly numCtx?: number,
+    private readonly defaultTemperature?: number
   ) {
     this.timeoutMs = parseInt(process.env.TIMEOUT_MS || '300000', 10);
+  }
+
+  /** options.temperature が明示なら優先、なければ defaultTemperature を返す */
+  private resolveTemperature(optTemp?: number): number | undefined {
+    return optTemp !== undefined ? optTemp : this.defaultTemperature;
   }
 
   async chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMChatResponse> {
@@ -97,40 +185,7 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): Promise<LLMChatResponse> {
-    // toolCallId → tool name の逆引きマップ（Ollamaはtool_nameで関連付ける）
-    const toolCallNameById = new Map<string, string>();
-
-    const ollamaMessages = messages.map((msg) => {
-      const m: Record<string, unknown> = {
-        role: msg.role,
-        content: msg.content,
-      };
-      // Ollama形式: images フィールドにbase64画像を配列で渡す
-      if (msg.images && msg.images.length > 0) {
-        m.images = msg.images.map((img) => img.base64);
-      }
-      // assistant メッセージ: tool_calls を渡す
-      if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
-        m.tool_calls = msg.toolCalls.map((tc) => {
-          toolCallNameById.set(tc.id, tc.name);
-          return {
-            type: 'function',
-            function: {
-              name: tc.name,
-              arguments: tc.arguments,
-            },
-          };
-        });
-      }
-      // tool メッセージ: tool_name で呼び出し元を関連付ける
-      if (msg.role === 'tool' && msg.toolCallId) {
-        const toolName = toolCallNameById.get(msg.toolCallId);
-        if (toolName) {
-          m.tool_name = toolName;
-        }
-      }
-      return m;
-    });
+    const ollamaMessages = toOllamaMessages(messages);
 
     if (options?.systemPrompt) {
       ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -143,18 +198,16 @@ export class LLMClient {
       think: false,
     };
 
-    if (options?.tools && options.tools.length > 0) {
-      body.tools = options.tools.map((t) => ({
-        type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
-    }
+    applyOllamaTools(body, options);
 
-    body.options = {
-      num_predict: options?.maxTokens ?? this.defaultMaxTokens,
-      ...(this.numCtx && { num_ctx: this.numCtx }),
-      ...(options?.temperature !== undefined && { temperature: options.temperature }),
-    };
+    {
+      const t = this.resolveTemperature(options?.temperature);
+      body.options = {
+        num_predict: options?.maxTokens ?? this.defaultMaxTokens,
+        ...(this.numCtx && { num_ctx: this.numCtx }),
+        ...(t !== undefined && { temperature: t }),
+      };
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -227,15 +280,11 @@ export class LLMClient {
       max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
     };
 
-    if (options?.tools && options.tools.length > 0) {
-      body.tools = options.tools.map((t) => ({
-        type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
-    }
+    applyOpenAITools(body, options);
 
-    if (options?.temperature !== undefined) {
-      body.temperature = options.temperature;
+    {
+      const t = this.resolveTemperature(options?.temperature);
+      if (t !== undefined) body.temperature = t;
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -321,7 +370,16 @@ export class LLMClient {
       max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
     };
 
-    if (options?.temperature !== undefined) body.temperature = options.temperature;
+    // tools / tool_choice — chatOpenAI と同等。streaming でも tool calling 機構を有効にする。
+    // tools 未指定の streaming だと、LLM が tool 呼びたい場面で擬似 tool_call 文字列を
+    // テキストで吐く format drift が発生する（Gemma 4 等の OpenAI 互換モデルで実測）。
+    // 最終応答用には toolChoice='none' を呼び出し側で指定して text 応答を強制する。
+    applyOpenAITools(body, options);
+
+    {
+      const t = this.resolveTemperature(options?.temperature);
+      if (t !== undefined) body.temperature = t;
+    }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -385,21 +443,17 @@ export class LLMClient {
 
   /**
    * Ollama ネイティブ API (/api/chat) でストリーミング（think:false対応）
+   *
+   * tools / tool_choice / tool 履歴 (tool_calls / tool_name) の扱いは
+   * chatOllamaNative と完全に同じ（共通ヘルパ経由）。streaming 経路で
+   * tools が body から欠落していると、最終応答で擬似 tool_call 文字列を
+   * テキストで吐く format drift が起きるため、全 4 経路で対称に扱う必要がある。
    */
   private async *chatStreamOllamaNative(
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): AsyncGenerator<string> {
-    const ollamaMessages = messages.map((msg) => {
-      const m: { role: string; content: string; images?: string[] } = {
-        role: msg.role,
-        content: msg.content,
-      };
-      if (msg.images && msg.images.length > 0) {
-        m.images = msg.images.map((img) => img.base64);
-      }
-      return m;
-    });
+    const ollamaMessages = toOllamaMessages(messages);
 
     if (options?.systemPrompt) {
       ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -412,11 +466,16 @@ export class LLMClient {
       think: false,
     };
 
-    body.options = {
-      num_predict: options?.maxTokens ?? this.defaultMaxTokens,
-      ...(this.numCtx && { num_ctx: this.numCtx }),
-      ...(options?.temperature !== undefined && { temperature: options.temperature }),
-    };
+    applyOllamaTools(body, options);
+
+    {
+      const t = this.resolveTemperature(options?.temperature);
+      body.options = {
+        num_predict: options?.maxTokens ?? this.defaultMaxTokens,
+        ...(this.numCtx && { num_ctx: this.numCtx }),
+        ...(t !== undefined && { temperature: t }),
+      };
+    }
 
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',

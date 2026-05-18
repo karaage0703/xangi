@@ -660,6 +660,40 @@
       .pane-stop:hover {
         filter: brightness(1.08);
       }
+      .pane-extend {
+        background: rgba(99, 102, 241, 0.18);
+        color: var(--primary, #818cf8);
+        display: none;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        padding: 7px 10px;
+        margin-left: 4px;
+      }
+      .pane-extend:hover {
+        background: rgba(99, 102, 241, 0.28);
+      }
+      .pane-extend:disabled {
+        background: rgba(156, 163, 175, 0.1);
+        color: var(--muted, #9ca3af);
+        cursor: not-allowed;
+      }
+      .pane-timeout {
+        display: none;
+        align-self: center;
+        margin-left: 6px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted, #9ca3af);
+        padding: 4px 8px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .pane-timeout.warn {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.12);
+        animation: timeout-pulse 1s ease-in-out infinite;
+      }
       /* メッセージのホバー時に出る ⋯ アクションメニュー (Discord 風) */
       .msg-wrapper {
         position: relative;
@@ -786,6 +820,59 @@
         50% {
           transform: scale(1.18);
         }
+      }
+      /* タイムアウト残り時間表示 (アクティブセッションのみ) */
+      .session-row .timeout-display {
+        display: inline-block;
+        margin-right: 6px;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        color: var(--muted, #9ca3af);
+        padding: 1px 6px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        /* .row-act は hover 時しか opacity:1 にならないが、これは常時表示 */
+        opacity: 1;
+      }
+      .session-row .timeout-display.warn {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.12);
+        animation: timeout-pulse 1s ease-in-out infinite;
+      }
+      @keyframes timeout-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.55;
+        }
+      }
+      /* +5m 延長ボタン */
+      .session-row .extend-btn {
+        cursor: pointer;
+        opacity: 0.85;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 1px 6px;
+        margin-right: 4px;
+        border-radius: 8px;
+        background: rgba(99, 102, 241, 0.18);
+        color: var(--primary, #818cf8);
+        user-select: none;
+      }
+      .session-row .extend-btn:hover {
+        opacity: 1;
+        background: rgba(99, 102, 241, 0.28);
+      }
+      .session-row .extend-btn.disabled {
+        cursor: not-allowed;
+        opacity: 0.35;
+        background: rgba(156, 163, 175, 0.1);
+        color: var(--muted, #9ca3af);
+      }
+      .session-row .extend-btn.disabled:hover {
+        background: rgba(156, 163, 175, 0.1);
       }
       /* セッション行の "🤖 自走中" インラインバッジ */
       .session-row .autotalk-badge {
@@ -1086,6 +1173,136 @@
       const MAX_PANES = 8;
       let allSessions = [];
 
+      // ─── タイムアウト管理 ───
+      // sessionId → { timeoutAt, maxTimeoutAt, timeoutMs }
+      // chat SSE / /api/sessions / extend API レスポンスから受け取って保持し、
+      // 1 秒ごとの tick で renderTimeoutDisplays が読み出す。
+      const sessionTimeouts = {};
+
+      function setSessionTimeout(sessionId, state) {
+        if (!sessionId) return;
+        if (!state || state.active === false || !state.timeoutAt) {
+          delete sessionTimeouts[sessionId];
+          return;
+        }
+        sessionTimeouts[sessionId] = {
+          timeoutAt: Number(state.timeoutAt),
+          maxTimeoutAt: Number(state.maxTimeoutAt) || 0,
+          timeoutMs: Number(state.timeoutMs) || 0,
+        };
+      }
+
+      function clearSessionTimeout(sessionId) {
+        if (!sessionId) return;
+        delete sessionTimeouts[sessionId];
+      }
+
+      function formatRemaining(ms) {
+        if (ms < 0) ms = 0;
+        var totalSec = Math.floor(ms / 1000);
+        var m = Math.floor(totalSec / 60);
+        var s = totalSec % 60;
+        return (
+          (m < 10 ? '0' + m : '' + m) + ':' + (s < 10 ? '0' + s : '' + s)
+        );
+      }
+
+      // 1 秒ごとに session-row の timeout-display / extend-btn と、
+      // 各 pane の処理中タイムアウト UI を更新
+      function tickTimeoutDisplays() {
+        var now = Date.now();
+        var rows = document.querySelectorAll('.session-row');
+        rows.forEach(function (row) {
+          var sid = row.getAttribute('data-id');
+          if (!sid) return;
+          var state = sessionTimeouts[sid];
+          var display = row.querySelector('.timeout-display');
+          var extendBtn = row.querySelector('.extend-btn');
+          if (!state) {
+            if (display) display.remove();
+            if (extendBtn) extendBtn.remove();
+            return;
+          }
+          var remaining = state.timeoutAt - now;
+          if (display) {
+            display.textContent = '残り ' + formatRemaining(remaining);
+            if (remaining <= 30_000) display.classList.add('warn');
+            else display.classList.remove('warn');
+          }
+          // 上限到達 (残り時間を 2 倍にしたら max を越える) で disabled に切り替え
+          if (extendBtn && state.maxTimeoutAt) {
+            var pendingRem = Math.max(0, state.timeoutAt - now);
+            var wouldExceed = state.timeoutAt + pendingRem > state.maxTimeoutAt;
+            if (wouldExceed) extendBtn.classList.add('disabled');
+            else extendBtn.classList.remove('disabled');
+          }
+        });
+
+        // 各 pane の入力エリアにある [+5m][⏱ MM:SS] を、
+        // pane の sessionId 対応で更新
+        if (typeof paneManager !== 'undefined' && paneManager.panes) {
+          paneManager.panes.forEach(function (pane) {
+            if (!pane || !pane.sessionId || !pane.timeoutDisplay) return;
+            var st = sessionTimeouts[pane.sessionId];
+            if (!st || !pane.sending) {
+              pane.timeoutDisplay.style.display = 'none';
+              if (pane.extendBtn) pane.extendBtn.style.display = 'none';
+              return;
+            }
+            var rem = st.timeoutAt - now;
+            pane.timeoutDisplay.textContent = '⏱ ' + formatRemaining(rem);
+            pane.timeoutDisplay.style.display = 'inline-block';
+            if (rem <= 30_000) pane.timeoutDisplay.classList.add('warn');
+            else pane.timeoutDisplay.classList.remove('warn');
+            if (pane.extendBtn) {
+              // 残り時間を 2 倍にすると max を越えるなら disabled
+              var pwouldExceed = st.maxTimeoutAt && st.timeoutAt + rem > st.maxTimeoutAt;
+              if (timeoutExtendEnabled && !pwouldExceed) {
+                pane.extendBtn.style.display = 'inline-block';
+                pane.extendBtn.disabled = false;
+              } else {
+                pane.extendBtn.style.display = 'none';
+              }
+            }
+          });
+        }
+      }
+      setInterval(tickTimeoutDisplays, 1000);
+
+      async function extendSessionTimeout(sessionId, btn) {
+        if (!sessionId) return;
+        if (btn && btn.classList.contains('disabled')) return;
+        try {
+          var res = await fetch(
+            '/api/sessions/' + encodeURIComponent(sessionId) + '/timeout/extend',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            }
+          );
+          if (res.ok) {
+            var data = await res.json();
+            setSessionTimeout(sessionId, {
+              active: true,
+              timeoutAt: data.timeoutAt,
+              maxTimeoutAt: data.maxTimeoutAt,
+              timeoutMs: data.timeoutMs,
+            });
+            tickTimeoutDisplays();
+          } else if (res.status === 409) {
+            // 上限到達 → disabled
+            if (btn) btn.classList.add('disabled');
+          } else if (res.status === 404 || res.status === 501) {
+            // 進行中リクエスト無し or 未サポート → 表示を消す
+            clearSessionTimeout(sessionId);
+            tickTimeoutDisplays();
+          }
+        } catch (e) {
+          /* ネットワークエラー無視 (次の tick で再評価) */
+        }
+      }
+
       // ─── サイドバー ───
       function toggleSidebar() {
         sidebar.classList.toggle('open');
@@ -1275,9 +1492,24 @@
           this.stopBtn.title = '応答を中断';
           this.stopBtn.addEventListener('click', () => this.stopChat());
 
+          // 処理中タイムアウト UI: [延長] [⏱ MM:SS]
+          // _setProcessing(on=true) でのみ display 切替、stopBtn と同列に並べる
+          this.extendBtn = document.createElement('button');
+          this.extendBtn.className = 'pane-extend action-btn';
+          this.extendBtn.textContent = '延長';
+          this.extendBtn.title = '残り時間を 2 倍にする (上限まで)';
+          this.extendBtn.style.display = 'none';
+          this.extendBtn.addEventListener('click', () => this.extendTimeout());
+
+          this.timeoutDisplay = document.createElement('span');
+          this.timeoutDisplay.className = 'pane-timeout';
+          this.timeoutDisplay.style.display = 'none';
+
           inputArea.appendChild(composer);
           inputArea.appendChild(this.sendBtn);
           inputArea.appendChild(this.stopBtn);
+          inputArea.appendChild(this.extendBtn);
+          inputArea.appendChild(this.timeoutDisplay);
           this.el.appendChild(inputArea);
         }
 
@@ -1662,6 +1894,15 @@
           this.sendBtn.style.display = on ? 'none' : '';
           this.stopBtn.style.display = on ? 'inline-block' : 'none';
           this.inputEl.disabled = on;
+          // 処理 OFF になったら timeout UI も即剥がす (tick が走るまで待たない)
+          if (!on) {
+            if (this.timeoutDisplay) this.timeoutDisplay.style.display = 'none';
+            if (this.extendBtn) this.extendBtn.style.display = 'none';
+          }
+        }
+
+        extendTimeout() {
+          extendSessionTimeout(this.sessionId, this.extendBtn);
         }
 
         async send() {
@@ -1830,6 +2071,31 @@
                         }
                       }
                       loadSessions();
+                    } else if (eventType === 'timeout') {
+                      // バックエンドから timeoutAt が届いたら sessionTimeouts に保存して
+                      // 即座にカウントダウンを描画 (次の tick / renderSessions で反映)
+                      var tsid = d.sessionId || self.sessionId;
+                      if (tsid) {
+                        // 初回 (まだ追跡されていない) のみ loadSessions で session-row を refresh。
+                        // 連続する timeout-extended の度に DOM 全消去 / 再構築すると重い。
+                        var alreadyTracked = !!sessionTimeouts[tsid];
+                        setSessionTimeout(tsid, {
+                          active: true,
+                          timeoutAt: d.timeoutAt,
+                          maxTimeoutAt: d.maxTimeoutAt,
+                          timeoutMs: d.timeoutMs,
+                        });
+                        if (!alreadyTracked) loadSessions();
+                        tickTimeoutDisplays();
+                      }
+                    } else if (eventType === 'timeout_cleared') {
+                      var csid = d.sessionId || self.sessionId;
+                      if (csid) {
+                        // active=false に伴って sessionTimeouts も剥がす。loadSessions は
+                        // 'done' イベント側で呼ばれるので、ここで二度叩かない。
+                        clearSessionTimeout(csid);
+                        tickTimeoutDisplays();
+                      }
                     } else if (eventType === 'error') {
                       toolsWrapper.remove();
                       self.addMessage(d.message || 'Error', 'error');
@@ -2200,6 +2466,18 @@
           item.appendChild(label);
 
           if (s.isActive) {
+            // タイムアウト UI は pane 内 (Stop ボタン右) に表示する。
+            // サイドバーには [残り MM:SS]/[+5m] を出さない方針 (からあげ指示, 5/17)。
+            // sessionTimeouts には pane の tick 用に同期だけしておく。
+            if (s.timeoutAt) {
+              setSessionTimeout(s.id, {
+                active: true,
+                timeoutAt: s.timeoutAt,
+                maxTimeoutAt: s.maxTimeoutAt,
+                timeoutMs: s.timeoutMs,
+              });
+            }
+
             var stopBtn = document.createElement('span');
             stopBtn.className = 'row-act stop-btn';
             stopBtn.textContent = '\u{23F9}';
@@ -2399,11 +2677,15 @@
 
       // ─── 初期化 ───
       window._uploadAccept = '';
+      var timeoutExtendEnabled = true;
       (async function init() {
         try {
           var res = await fetch('/api/config');
           var cfg = await res.json();
           window._uploadAccept = cfg.uploadAccept || '';
+          if (typeof cfg.timeoutExtendEnabled === 'boolean') {
+            timeoutExtendEnabled = cfg.timeoutExtendEnabled;
+          }
         } catch (e) {
           /* 失敗時はフィルタ無し (全許可) のまま */
         }

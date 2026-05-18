@@ -5,9 +5,10 @@ import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, readdirSy
 import { promises as fsp } from 'fs';
 import { resolve, join, dirname, relative, sep } from 'path';
 import { promisify } from 'util';
-import type { LLMTool, ToolContext, ToolResult, ToolHandler } from './types.js';
+import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
 import { getSafeEnv } from '../safe-env.js';
 import { getGitHubEnv } from '../github-auth.js';
+import { loadSkills, type Skill } from '../skills.js';
 
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
 async function shellExec(
@@ -567,6 +568,142 @@ const sendFileToolHandler: ToolHandler = {
   },
 };
 
+// --- tool_search (Codex/Claude Code 流の遅延ロード) ---
+
+const TOOL_SEARCH_DEFAULT_LIMIT = parseInt(process.env.LOCAL_LLM_TOOL_SEARCH_LIMIT ?? '8', 10);
+
+/**
+ * クエリに対する tool のマッチスコア計算
+ * - name 完全一致: 100
+ * - name 部分一致: 50
+ * - description 部分一致: 各 token ごとに 10
+ */
+function scoreToolMatch(query: string, tool: { name: string; description: string }): number {
+  const q = query.toLowerCase().trim();
+  if (!q) return 0;
+  const name = tool.name.toLowerCase();
+  const desc = tool.description.toLowerCase();
+
+  if (name === q) return 100;
+  let score = 0;
+  if (name.includes(q)) score += 50;
+
+  // クエリを空白/カンマで分割して各 token で部分一致を加算
+  const tokens = q.split(/[\s,]+/).filter(Boolean);
+  for (const token of tokens) {
+    if (token.length < 2) continue;
+    if (name.includes(token)) score += 20;
+    if (desc.includes(token)) score += 10;
+  }
+  return score;
+}
+
+/** スキルのマッチスコア計算 (tool と同じロジック、対象だけ name/description が違う) */
+function scoreSkillMatch(query: string, skill: Skill): number {
+  return scoreToolMatch(query, { name: skill.name, description: skill.description });
+}
+
+/**
+ * tool_search ツール: deferred tool と skills の中から query に関連するものを検索する。
+ * - tool 一致: アクティブ化して次ターンから callable に
+ * - skill 一致: SKILL.md パスを返して「read で読み込め」と案内 (skill は tool じゃないので自動アクティブ化はしない)
+ */
+const toolSearchToolHandler: ToolHandler = {
+  name: 'tool_search',
+  description:
+    'Search for and activate tools or skills by keyword. Tool matches become callable on the next turn. Skill matches are returned with their SKILL.md path — use the `read` tool to load the skill instructions.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'Keyword(s) to search for tools and skills (matches name and description)',
+      },
+      limit: {
+        type: 'number',
+        description: `Max results per category (default ${TOOL_SEARCH_DEFAULT_LIMIT})`,
+      },
+    },
+    required: ['query'],
+  },
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const query = String(args.query ?? '').trim();
+    if (!query) {
+      return { success: false, output: '', error: 'query must be a non-empty string' };
+    }
+    const limit =
+      typeof args.limit === 'number' && args.limit > 0
+        ? Math.floor(args.limit)
+        : TOOL_SEARCH_DEFAULT_LIMIT;
+
+    // tools 検索
+    const allTools = getAllTools();
+    const toolsMatched = allTools
+      .map((t) => ({ tool: t, score: scoreToolMatch(query, t) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    // skills 検索 (workspace 指定がなければスキップ)
+    let skillsMatched: Array<{ skill: Skill; score: number }> = [];
+    if (context.workspace) {
+      try {
+        const skills = loadSkills(context.workspace);
+        skillsMatched = skills
+          .map((s) => ({ skill: s, score: scoreSkillMatch(query, s) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit);
+      } catch (err) {
+        console.warn(
+          `[local-llm] tool_search: loadSkills failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    if (toolsMatched.length === 0 && skillsMatched.length === 0) {
+      return {
+        success: true,
+        output: `No tools or skills matched "${query}".
+
+Next steps you can try:
+- Search with different keywords (e.g., synonyms, broader terms, English/Japanese)
+- If you already know which skill applies, use the \`read\` tool directly: read("skills/<skill-name>/SKILL.md")
+- If no tool fits the task, respond to the user in plain text explaining what you can and can't do — don't call tool_search again with the same query.`,
+      };
+    }
+
+    const sections: string[] = [];
+
+    if (toolsMatched.length > 0) {
+      // tool だけアクティブ化（skill は read で読み込んでもらう）
+      const names = toolsMatched.map((x) => x.tool.name);
+      context.activateTools?.(names);
+      const lines = toolsMatched.map(
+        (x) => `- ${x.tool.name}: ${x.tool.description.slice(0, 200)}`
+      );
+      sections.push(
+        `Activated ${toolsMatched.length} tool(s) for query "${query}":\n${lines.join('\n')}\n\nThese tools are now callable. Invoke them in the next message.`
+      );
+    }
+
+    if (skillsMatched.length > 0) {
+      const lines = skillsMatched.map(
+        (x) =>
+          `- ${x.skill.name}: ${x.skill.description.slice(0, 200)}\n  read("${x.skill.path}") to load instructions`
+      );
+      sections.push(
+        `Found ${skillsMatched.length} skill(s) for query "${query}":\n${lines.join('\n')}\n\nSkills aren't tools — use the \`read\` tool to load each SKILL.md, then follow its workflow.`
+      );
+    }
+
+    return {
+      success: true,
+      output: sections.join('\n\n'),
+    };
+  },
+};
+
 // --- Registry ---
 
 const ALL_TOOLS: ToolHandler[] = [
@@ -578,6 +715,7 @@ const ALL_TOOLS: ToolHandler[] = [
   grepToolHandler,
   sendFileToolHandler,
   webFetchToolHandler,
+  toolSearchToolHandler,
 ];
 
 // 動的に追加されたツール（トリガー由来等）
@@ -607,6 +745,56 @@ export function toLLMTools(handlers: ToolHandler[]): LLMTool[] {
     description: h.description,
     parameters: h.parameters,
   }));
+}
+
+/**
+ * デフォの常駐 tool 名（builtin core + tool_search）。
+ * xangi-tools と triggers 系は deferred（tool_search 経由で呼び出す）。
+ */
+const DEFAULT_ALWAYS_LOADED_TOOLS = [
+  'read',
+  'write',
+  'edit',
+  'exec',
+  'glob',
+  'grep',
+  'send_file',
+  'web_fetch',
+  'tool_search',
+];
+
+/**
+ * env LOCAL_LLM_ALWAYS_LOADED_TOOLS から常駐 tool 名のセットを得る。
+ * 未指定時は DEFAULT_ALWAYS_LOADED_TOOLS。
+ */
+export function loadAlwaysLoadedToolNames(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const raw = env.LOCAL_LLM_ALWAYS_LOADED_TOOLS;
+  if (!raw) return new Set(DEFAULT_ALWAYS_LOADED_TOOLS);
+  const names = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // tool_search は必ず含める（deferred tool アクティブ化の入口）
+  if (!names.includes('tool_search')) names.push('tool_search');
+  return new Set(names);
+}
+
+/**
+ * 全 tool から「常駐セットに含まれない」もの（= deferred tool）をカタログ化。
+ * system prompt に表示するための name + description のみ。
+ */
+export function getDeferredToolCatalog(activeNames: Set<string>): ToolCatalogEntry[] {
+  return getAllTools()
+    .filter((t) => !activeNames.has(t.name))
+    .map((t) => ({ name: t.name, description: t.description }));
+}
+
+/**
+ * tool_search が deferred tool を有効化するかチェック判定で使う：
+ * 「アクティブセットでフィルタした tool ハンドラ群」を返す。
+ */
+export function getActiveTools(activeNames: Set<string>): ToolHandler[] {
+  return getAllTools().filter((t) => activeNames.has(t.name));
 }
 
 export async function executeTool(

@@ -30,6 +30,30 @@ export interface Config {
     injectTimestamp?: boolean;
     showButtons?: boolean;
     allowAutoreplyCommand?: boolean;
+    /**
+     * 反応する他 bot の ID ホワイトリスト (設定値、事前に env で指定)。
+     * - 空配列 (default) = 他 bot のメッセージには反応しない
+     * - ['*'] = 全 bot のメッセージに反応
+     * - ['<bot_id_1>', '<bot_id_2>'] = 指定 bot のみ反応
+     * 自分自身の bot ID は常に除外される (無限ループ防止)。
+     * 実際の有効/無効は `respondToBotsEnabled` で制御。
+     */
+    respondToBots?: string[];
+    /**
+     * bot メッセージ応答機能を有効化するか (default: false)。
+     * `/respondtobots` slash command でトグル可能。
+     */
+    respondToBotsEnabled?: boolean;
+    /**
+     * 同じ bot からの連続返信に対する応答回数の上限 (default: 3)。
+     * 0 以下を指定すると制限無効 (無限ループ事故のリスクあるので注意)。
+     * 別 bot や人間のメッセージが入ったら連鎖はリセットされる。
+     */
+    respondToBotsMaxConsecutive?: number;
+    /** /respondtobots slash command を有効化するか (default: true) */
+    allowRespondToBotsCommand?: boolean;
+    /** /llmmode slash command を有効化するか (default: true)。Local LLM 動作モードを per-channel 切替 */
+    allowLlmModeCommand?: boolean;
   };
   slack: {
     enabled: boolean;
@@ -153,6 +177,16 @@ export function loadConfig(): Config {
       injectTimestamp: process.env.INJECT_TIMESTAMP !== 'false', // デフォルトON
       showButtons: process.env.DISCORD_SHOW_BUTTONS !== 'false', // デフォルトON
       allowAutoreplyCommand: process.env.ALLOW_AUTOREPLY_COMMAND !== 'false', // デフォルトON
+      respondToBots:
+        process.env.RESPOND_TO_BOTS?.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean) || [],
+      respondToBotsEnabled: process.env.RESPOND_TO_BOTS_ENABLED === 'true', // デフォルトOFF
+      respondToBotsMaxConsecutive: process.env.RESPOND_TO_BOTS_MAX_CONSECUTIVE
+        ? parseInt(process.env.RESPOND_TO_BOTS_MAX_CONSECUTIVE, 10)
+        : 3, // デフォルト3回
+      allowRespondToBotsCommand: process.env.ALLOW_RESPOND_TO_BOTS_COMMAND !== 'false', // デフォルトON
+      allowLlmModeCommand: process.env.ALLOW_LLM_MODE_COMMAND !== 'false', // デフォルトON
     },
     slack: {
       enabled: !!slackBotToken && !!slackAppToken,

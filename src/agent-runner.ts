@@ -1,4 +1,5 @@
 import type { AgentBackend, AgentConfig, EffortLevel } from './config.js';
+import type { LocalLlmMode } from './backend-resolver.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
 import { GeminiRunner } from './gemini-cli.js';
@@ -12,11 +13,41 @@ export interface RunOptions {
   channelId?: string; // プロセス管理用
   appSessionId?: string; // xangi側セッションID（ログ用）
   effort?: EffortLevel; // Claude Code の --effort オプション
+  /** Local LLM の動作モード override（per-channel override 由来）。Local LLM 以外では無視される */
+  localLlmMode?: LocalLlmMode;
 }
 
 export interface RunResult {
   result: string;
   sessionId: string;
+}
+
+/** 現在処理中リクエストのタイムアウト状態 */
+export interface TimeoutState {
+  /** 現在進行中のリクエストがあるか */
+  active: boolean;
+  /** タイムアウト発火予定 (epoch ms)。active=true のときのみ意味あり */
+  timeoutAt?: number;
+  /** これ以上は延長できない上限 (epoch ms、リクエスト開始時刻 + MAX_TIMEOUT_MS) */
+  maxTimeoutAt?: number;
+  /** timeoutAt - Date.now() (UI 表示の参考用) */
+  remainingMs?: number;
+  /** 現在のタイムアウト幅 (初期 = DEFAULT_TIMEOUT_MS、延長で増える) */
+  timeoutMs?: number;
+}
+
+export interface ExtendTimeoutResult {
+  ok: boolean;
+  /** ok=true 時: 新しい timeoutAt */
+  timeoutAt?: number;
+  /** ok=true 時: 新しい remainingMs */
+  remainingMs?: number;
+  /** ok=true 時: 新しい timeoutMs (積算) */
+  timeoutMs?: number;
+  /** ok=true / ok=false (max_timeout_exceeded) どちらでも返る absolute 上限 (epoch ms) */
+  maxTimeoutAt?: number;
+  /** ok=false 時: 失敗理由 */
+  reason?: 'no_active_request' | 'max_timeout_exceeded' | 'unsupported';
 }
 
 export interface StreamCallbacks {
@@ -38,6 +69,20 @@ export interface AgentRunner {
   destroy?(channelId: string): boolean;
   /** 指定チャンネルのランナーがプール上に存在するか */
   hasRunner?(channelId: string): boolean;
+  /**
+   * 指定チャンネルの現在のタイムアウト状態を取得。
+   * Web UI のサイドバーに「残り時間」を表示するために使う。
+   */
+  getTimeoutState?(channelId: string): TimeoutState;
+  /**
+   * 指定チャンネルの現在のリクエストのタイムアウトを延長する。
+   * - `additionalMs` 省略時は現在の残り時間を加算 (= 残り時間を 2 倍にする)
+   * - 進行中リクエストが無いとき: { ok: false, reason: 'no_active_request' }
+   * - 上限超過: { ok: false, reason: 'max_timeout_exceeded', maxTimeoutAt }
+   * - サポート外 (TIMEOUT_EXTEND_ENABLED=false など): { ok: false, reason: 'unsupported' }
+   * - 成功: { ok: true, timeoutAt, remainingMs, timeoutMs }
+   */
+  extendTimeout?(channelId: string, additionalMs?: number): ExtendTimeoutResult;
 }
 
 /**

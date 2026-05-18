@@ -1,11 +1,20 @@
+import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
 import { processManager } from './process-manager.js';
-import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+  TimeoutState,
+  ExtendTimeoutResult,
+} from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { buildSystemPrompt, getSafeEnv } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
 import { getGitHubEnv } from './github-auth.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
+import { TimeoutController } from './timeout-controller.js';
 
 export interface CodexOptions {
   model?: string;
@@ -39,20 +48,29 @@ interface CodexEvent {
 /**
  * Codex CLI を実行するランナー（0.98.0 対応）
  */
-export class CodexRunner implements AgentRunner {
+export class CodexRunner extends EventEmitter implements AgentRunner {
   private model?: string;
   private timeoutMs: number;
   private workdir?: string;
   private skipPermissions: boolean;
   private systemPrompt: string;
   private currentProcess: ChildProcess | null = null;
+  /** チャンネル別タイムアウト管理（UI の +5m / 残り表示 / 自動 kill 連動） */
+  private readonly timeoutController: TimeoutController;
+  /** 同時実行されている子プロセスを channelId で索く（並列セッション対応） */
+  private readonly activeProcesses = new Map<string, ChildProcess>();
 
   constructor(options?: CodexOptions) {
+    super();
     this.model = options?.model;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
     this.systemPrompt = buildSystemPrompt();
+    this.timeoutController = new TimeoutController({ baseTimeoutMs: this.timeoutMs });
+    for (const evt of ['timeout-started', 'timeout-extended', 'timeout-cleared'] as const) {
+      this.timeoutController.on(evt, (payload) => this.emit(evt, payload));
+    }
   }
 
   /**
@@ -168,9 +186,18 @@ export class CodexRunner implements AgentRunner {
         env: childEnv,
       });
       this.currentProcess = proc;
+      if (channelId) this.activeProcesses.set(channelId, proc);
 
       if (channelId) {
         processManager.register(channelId, proc);
+      }
+      // タイムアウト発火時はその時点で activeProcesses に登録されている proc を kill
+      // (channelId が無い直接呼び出し時は管理しない)
+      if (channelId) {
+        this.timeoutController.start(channelId, () => {
+          const p = this.activeProcesses.get(channelId);
+          if (p) p.kill();
+        });
       }
 
       let stdout = '';
@@ -198,15 +225,12 @@ export class CodexRunner implements AgentRunner {
         stderr += data.toString();
       });
 
-      const timeout = setTimeout(() => {
-        proc.kill();
-        this.currentProcess = null;
-        reject(new Error(`Codex CLI timed out after ${this.timeoutMs}ms`));
-      }, this.timeoutMs);
-
       proc.on('close', (code) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, code === 0 ? 'completed' : 'error');
+        }
 
         if (code !== 0) {
           reject(new Error(`Codex CLI exited with code ${code}: ${stderr}`));
@@ -217,8 +241,11 @@ export class CodexRunner implements AgentRunner {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, 'error');
+        }
         reject(new Error(`Failed to spawn Codex CLI: ${err.message}`));
       });
     });
@@ -289,9 +316,16 @@ export class CodexRunner implements AgentRunner {
         env: childEnv,
       });
       this.currentProcess = proc;
+      if (channelId) this.activeProcesses.set(channelId, proc);
 
       if (channelId) {
         processManager.register(channelId, proc);
+      }
+      if (channelId) {
+        this.timeoutController.start(channelId, () => {
+          const p = this.activeProcesses.get(channelId);
+          if (p) p.kill();
+        });
       }
 
       let fullText = '';
@@ -335,17 +369,12 @@ export class CodexRunner implements AgentRunner {
         console.error('[codex] stderr:', data.toString());
       });
 
-      const timeout = setTimeout(() => {
-        proc.kill();
-        this.currentProcess = null;
-        const error = new Error(`Codex CLI timed out after ${this.timeoutMs}ms`);
-        callbacks.onError?.(error);
-        reject(error);
-      }, this.timeoutMs);
-
       proc.on('close', (code) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, code === 0 ? 'completed' : 'error');
+        }
 
         // 残りのバッファを処理
         if (buffer.trim()) {
@@ -381,8 +410,11 @@ export class CodexRunner implements AgentRunner {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, 'error');
+        }
         const error = new Error(`Failed to spawn Codex CLI: ${err.message}`);
         callbacks.onError?.(error);
         reject(error);
@@ -393,14 +425,38 @@ export class CodexRunner implements AgentRunner {
   /**
    * 現在処理中のリクエストをキャンセル
    */
-  cancel(): boolean {
+  cancel(channelId?: string): boolean {
+    if (channelId) {
+      const proc = this.activeProcesses.get(channelId);
+      if (proc) {
+        console.log(`[codex] Cancelling request for channel ${channelId}`);
+        proc.kill();
+        this.activeProcesses.delete(channelId);
+        this.timeoutController.clear(channelId, 'error');
+        return true;
+      }
+      return false;
+    }
     if (!this.currentProcess) {
       return false;
     }
-
     console.log('[codex] Cancelling current request');
     this.currentProcess.kill();
     this.currentProcess = null;
     return true;
+  }
+
+  hasRunner(channelId: string): boolean {
+    return this.activeProcesses.has(channelId);
+  }
+
+  getTimeoutState(channelId?: string): TimeoutState {
+    if (!channelId) return { active: false };
+    return this.timeoutController.getState(channelId);
+  }
+
+  extendTimeout(channelId: string | undefined, additionalMs?: number): ExtendTimeoutResult {
+    if (!channelId) return { ok: false, reason: 'no_active_request' };
+    return this.timeoutController.extend(channelId, additionalMs);
   }
 }

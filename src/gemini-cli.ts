@@ -1,12 +1,21 @@
+import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
 import { processManager } from './process-manager.js';
-import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+  TimeoutState,
+  ExtendTimeoutResult,
+} from './agent-runner.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { getSafeEnv, buildSystemPrompt } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { getGitHubEnv } from './github-auth.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
+import { TimeoutController } from './timeout-controller.js';
 
 /**
  * Gemini CLI の JSON 出力形式
@@ -43,18 +52,25 @@ interface GeminiStreamEvent {
 /**
  * Gemini CLI を実行するランナー
  */
-export class GeminiRunner implements AgentRunner {
+export class GeminiRunner extends EventEmitter implements AgentRunner {
   private model?: string;
   private timeoutMs: number;
   private workdir?: string;
   private skipPermissions: boolean;
   private currentProcess: ChildProcess | null = null;
+  private readonly timeoutController: TimeoutController;
+  private readonly activeProcesses = new Map<string, ChildProcess>();
 
   constructor(options?: BaseRunnerOptions) {
+    super();
     this.model = options?.model;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
+    this.timeoutController = new TimeoutController({ baseTimeoutMs: this.timeoutMs });
+    for (const evt of ['timeout-started', 'timeout-extended', 'timeout-cleared'] as const) {
+      this.timeoutController.on(evt, (payload) => this.emit(evt, payload));
+    }
   }
 
   /**
@@ -167,9 +183,14 @@ export class GeminiRunner implements AgentRunner {
         env: childEnv,
       });
       this.currentProcess = proc;
+      if (channelId) this.activeProcesses.set(channelId, proc);
 
       if (channelId) {
         processManager.register(channelId, proc);
+        this.timeoutController.start(channelId, () => {
+          const p = this.activeProcesses.get(channelId);
+          if (p) p.kill();
+        });
       }
 
       let stdout = '';
@@ -184,15 +205,12 @@ export class GeminiRunner implements AgentRunner {
         stderr += data.toString();
       });
 
-      const timeout = setTimeout(() => {
-        proc.kill();
-        this.currentProcess = null;
-        reject(new Error(`Gemini CLI timed out after ${this.timeoutMs}ms`));
-      }, this.timeoutMs);
-
       proc.on('close', (code) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, code === 0 ? 'completed' : 'error');
+        }
 
         if (code !== 0) {
           reject(new Error(`Gemini CLI exited with code ${code}: ${stderr}`));
@@ -211,8 +229,11 @@ export class GeminiRunner implements AgentRunner {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, 'error');
+        }
         reject(new Error(`Failed to spawn Gemini CLI: ${err.message}`));
       });
     });
@@ -297,9 +318,14 @@ export class GeminiRunner implements AgentRunner {
         env: childEnv,
       });
       this.currentProcess = proc;
+      if (channelId) this.activeProcesses.set(channelId, proc);
 
       if (channelId) {
         processManager.register(channelId, proc);
+        this.timeoutController.start(channelId, () => {
+          const p = this.activeProcesses.get(channelId);
+          if (p) p.kill();
+        });
       }
 
       let fullText = '';
@@ -355,17 +381,12 @@ export class GeminiRunner implements AgentRunner {
         console.error('[gemini] stderr:', data.toString());
       });
 
-      const timeout = setTimeout(() => {
-        proc.kill();
-        this.currentProcess = null;
-        const error = new Error(`Gemini CLI timed out after ${this.timeoutMs}ms`);
-        callbacks.onError?.(error);
-        reject(error);
-      }, this.timeoutMs);
-
       proc.on('close', (code) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, code === 0 ? 'completed' : 'error');
+        }
 
         // 残りのバッファを処理
         if (buffer.trim()) {
@@ -404,8 +425,11 @@ export class GeminiRunner implements AgentRunner {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
         this.currentProcess = null;
+        if (channelId) {
+          this.activeProcesses.delete(channelId);
+          this.timeoutController.clear(channelId, 'error');
+        }
         const error = new Error(`Failed to spawn Gemini CLI: ${err.message}`);
         callbacks.onError?.(error);
         reject(error);
@@ -416,14 +440,38 @@ export class GeminiRunner implements AgentRunner {
   /**
    * 現在処理中のリクエストをキャンセル
    */
-  cancel(): boolean {
+  cancel(channelId?: string): boolean {
+    if (channelId) {
+      const proc = this.activeProcesses.get(channelId);
+      if (proc) {
+        console.log(`[gemini] Cancelling request for channel ${channelId}`);
+        proc.kill();
+        this.activeProcesses.delete(channelId);
+        this.timeoutController.clear(channelId, 'error');
+        return true;
+      }
+      return false;
+    }
     if (!this.currentProcess) {
       return false;
     }
-
     console.log('[gemini] Cancelling current request');
     this.currentProcess.kill();
     this.currentProcess = null;
     return true;
+  }
+
+  hasRunner(channelId: string): boolean {
+    return this.activeProcesses.has(channelId);
+  }
+
+  getTimeoutState(channelId?: string): TimeoutState {
+    if (!channelId) return { active: false };
+    return this.timeoutController.getState(channelId);
+  }
+
+  extendTimeout(channelId: string | undefined, additionalMs?: number): ExtendTimeoutResult {
+    if (!channelId) return { ok: false, reason: 'no_active_request' };
+    return this.timeoutController.extend(channelId, additionalMs);
   }
 }

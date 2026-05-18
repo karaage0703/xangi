@@ -90,6 +90,18 @@ export type TurnAbortedOpts = CommonOpts;
 export interface AgentErrorOpts extends CommonOpts {
   message: string;
 }
+export interface TimeoutStartedOpts extends CommonOpts {
+  timeoutAt: number;
+  maxTimeoutAt: number;
+  timeoutMs: number;
+}
+export interface TimeoutExtendedOpts extends CommonOpts {
+  timeoutAt: number;
+  maxTimeoutAt: number;
+  timeoutMs: number;
+  remainingMs: number;
+}
+export type TimeoutClearedOpts = CommonOpts;
 
 interface BaseBody {
   thread_id: string;
@@ -104,7 +116,21 @@ type EventBody =
   | ({ type: 'message.delta'; text: string; full_text: string } & BaseBody)
   | ({ type: 'turn.complete'; text?: string } & BaseBody)
   | ({ type: 'turn.aborted' } & BaseBody)
-  | ({ type: 'agent.error'; message: string } & BaseBody);
+  | ({ type: 'agent.error'; message: string } & BaseBody)
+  | ({
+      type: 'timeout.started';
+      timeout_at: number;
+      max_timeout_at: number;
+      timeout_ms: number;
+    } & BaseBody)
+  | ({
+      type: 'timeout.extended';
+      timeout_at: number;
+      max_timeout_at: number;
+      timeout_ms: number;
+      remaining_ms: number;
+    } & BaseBody)
+  | ({ type: 'timeout.cleared' } & BaseBody);
 
 /** Subscriber が受け取る最終ペイロード (instance_id / host_hint 付き)。 */
 export type PublishedEvent = EventBody & {
@@ -198,5 +224,27 @@ export const events = {
   },
   agentError(opts: AgentErrorOpts): void {
     publish({ type: 'agent.error', ...baseFields(opts), message: opts.message });
+  },
+  timeoutStarted(opts: TimeoutStartedOpts): void {
+    publish({
+      type: 'timeout.started',
+      ...baseFields(opts),
+      timeout_at: opts.timeoutAt,
+      max_timeout_at: opts.maxTimeoutAt,
+      timeout_ms: opts.timeoutMs,
+    });
+  },
+  timeoutExtended(opts: TimeoutExtendedOpts): void {
+    publish({
+      type: 'timeout.extended',
+      ...baseFields(opts),
+      timeout_at: opts.timeoutAt,
+      max_timeout_at: opts.maxTimeoutAt,
+      timeout_ms: opts.timeoutMs,
+      remaining_ms: opts.remainingMs,
+    });
+  },
+  timeoutCleared(opts: TimeoutClearedOpts): void {
+    publish({ type: 'timeout.cleared', ...baseFields(opts) });
   },
 };

@@ -8,6 +8,9 @@ vi.mock('../src/persistent-runner.js', () => {
   class MockPersistentRunner extends EventEmitter {
     private alive = true;
     private currentPrompt: string | null = null;
+    private mockTimeoutAt = 0;
+    private mockMaxTimeoutAt = 0;
+    private mockTimeoutMs = 0;
 
     constructor() {
       super();
@@ -15,6 +18,9 @@ vi.mock('../src/persistent-runner.js', () => {
 
     async run(prompt: string) {
       this.currentPrompt = prompt;
+      this.mockTimeoutAt = Date.now() + 5 * 60_000;
+      this.mockMaxTimeoutAt = Date.now() + 60 * 60_000;
+      this.mockTimeoutMs = 5 * 60_000;
       return { result: `response for: ${prompt}`, sessionId: 'session-123' };
     }
 
@@ -43,6 +49,42 @@ vi.mock('../src/persistent-runner.js', () => {
 
     getQueueLength() {
       return 0;
+    }
+
+    getTimeoutState() {
+      if (!this.currentPrompt || !this.mockTimeoutAt) {
+        return { active: false };
+      }
+      return {
+        active: true,
+        timeoutAt: this.mockTimeoutAt,
+        maxTimeoutAt: this.mockMaxTimeoutAt,
+        timeoutMs: this.mockTimeoutMs,
+        remainingMs: this.mockTimeoutAt - Date.now(),
+      };
+    }
+
+    extendTimeout(_channelId: string | undefined, additionalMs: number) {
+      if (!this.currentPrompt || !this.mockTimeoutAt) {
+        return { ok: false, reason: 'no_active_request' as const };
+      }
+      const next = this.mockTimeoutAt + additionalMs;
+      if (next > this.mockMaxTimeoutAt) {
+        return {
+          ok: false,
+          reason: 'max_timeout_exceeded' as const,
+          maxTimeoutAt: this.mockMaxTimeoutAt,
+        };
+      }
+      this.mockTimeoutAt = next;
+      this.mockTimeoutMs += additionalMs;
+      return {
+        ok: true,
+        timeoutAt: this.mockTimeoutAt,
+        remainingMs: this.mockTimeoutAt - Date.now(),
+        timeoutMs: this.mockTimeoutMs,
+        maxTimeoutAt: this.mockMaxTimeoutAt,
+      };
     }
   }
 
@@ -215,6 +257,68 @@ describe('RunnerManager', () => {
 
     const status = manager.getStatus();
     expect(status.maxProcesses).toBe(10);
+  });
+
+  // ─── Timeout extend (Issue #235) ───
+
+  it('getTimeoutState returns active=false for unknown channel', () => {
+    manager = new RunnerManager({ workdir: '/test' });
+    const state = manager.getTimeoutState('unknown-channel');
+    expect(state.active).toBe(false);
+  });
+
+  it('extendTimeout returns no_active_request for unknown channel', () => {
+    manager = new RunnerManager({ workdir: '/test' });
+    const result = manager.extendTimeout('unknown-channel', 5 * 60_000);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('no_active_request');
+  });
+
+  it('extendTimeout delegates to underlying runner for known channel', async () => {
+    manager = new RunnerManager({ workdir: '/test' });
+    await manager.run('msg', { channelId: 'ch1' });
+
+    const state = manager.getTimeoutState('ch1');
+    expect(state.active).toBe(true);
+    expect(state.timeoutAt).toBeGreaterThan(Date.now());
+
+    const result = manager.extendTimeout('ch1', 5 * 60_000);
+    expect(result.ok).toBe(true);
+    expect(result.timeoutMs).toBe(10 * 60_000);
+  });
+
+  it('bubbles up timeout-started / timeout-extended / timeout-cleared from runners', async () => {
+    manager = new RunnerManager({ workdir: '/test' });
+    await manager.run('msg', { channelId: 'ch1' });
+
+    const events: Array<{ name: string; payload: unknown }> = [];
+    manager.on('timeout-started', (p) => events.push({ name: 'timeout-started', payload: p }));
+    manager.on('timeout-extended', (p) => events.push({ name: 'timeout-extended', payload: p }));
+    manager.on('timeout-cleared', (p) => events.push({ name: 'timeout-cleared', payload: p }));
+
+    // pool に居る MockPersistentRunner を取り出して直接 emit させる
+    const status = manager.getStatus();
+    expect(status.channels.length).toBe(1);
+    // Mock 側を直叩きでテストする経路は internal だが、bubble の wiring を確認する目的では十分。
+    // (実際の PersistentRunner では scheduleTimeout / extendTimeout が emit する)
+    interface BubbleablePool {
+      pool: Map<
+        string,
+        { runner: { emit: (event: string, payload: unknown) => void } }
+      >;
+    }
+    const entry = (
+      manager as unknown as BubbleablePool
+    ).pool.get('ch1');
+    entry!.runner.emit('timeout-started', { channelId: 'ch1', timeoutAt: 1 });
+    entry!.runner.emit('timeout-extended', { channelId: 'ch1', timeoutAt: 2 });
+    entry!.runner.emit('timeout-cleared', { channelId: 'ch1', reason: 'completed' });
+
+    expect(events.map((e) => e.name)).toEqual([
+      'timeout-started',
+      'timeout-extended',
+      'timeout-cleared',
+    ]);
   });
 
   it('should report status correctly', async () => {

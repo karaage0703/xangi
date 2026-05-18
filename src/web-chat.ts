@@ -6,7 +6,7 @@
  */
 import { createServer } from 'http';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
-import { join, dirname, extname } from 'path';
+import { join, dirname, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
 import {
@@ -29,7 +29,8 @@ import {
   updateMessageContent,
   deleteMessage as deleteTranscriptMessage,
 } from './transcript-logger.js';
-import { threadIdFor, turnIdFor } from './events-emitter.js';
+import { threadIdFor, turnIdFor, events } from './events-emitter.js';
+import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { deriveTitleFromFirstMessage, stripPromptMetadata } from './session-title.js';
 import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
@@ -76,6 +77,18 @@ export function startWebChat(options: WebChatOptions): void {
   const uploadAccept = (process.env.WEB_CHAT_UPLOAD_ACCEPT || '').trim();
   const uploadAllowedExts = uploadAccept
     ? uploadAccept
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.startsWith('.'))
+    : [];
+
+  // WEB_CHAT_DOWNLOAD_ACCEPT: 未設定なら全許可 (任意の拡張子はファイル名付き Content-Disposition
+  // attachment でダウンロード)。設定時は許可拡張子を絞り、リスト外は 403 を返す。
+  // UPLOAD_ACCEPT と同じ書式 (例: "image/*,.pdf,.mp3,.html")。
+  // 拡張子部分 (`.html` 等) のみサーバ側検証で使われる。
+  const downloadAccept = (process.env.WEB_CHAT_DOWNLOAD_ACCEPT || '').trim();
+  const downloadAllowedExts = downloadAccept
+    ? downloadAccept
         .split(',')
         .map((s) => s.trim().toLowerCase())
         .filter((s) => s.startsWith('.'))
@@ -153,7 +166,12 @@ export function startWebChat(options: WebChatOptions): void {
     // GET /api/config — フロント向け実行時設定
     if (url === '/api/config' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ uploadAccept: uploadAccept || null }));
+      res.end(
+        JSON.stringify({
+          uploadAccept: uploadAccept || null,
+          timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
+        })
+      );
       return;
     }
 
@@ -162,22 +180,31 @@ export function startWebChat(options: WebChatOptions): void {
       // managed: sessions.json に登録された非アーカイブセッション。
       // タイトルが空なら最初のユーザーメッセージから導出し、それも無ければ
       // contextKey をそのまま見せる（Discord/Slack はチャンネル ID、Web は web-chat:<id>）。
-      const managed = listAllSessions().map((s) => ({
-        id: s.id,
-        title: s.title || deriveTitleFromFirstMessage(workdir, s.id) || s.contextKey,
-        platform: s.platform,
-        contextKey: s.contextKey,
-        createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
-        messageCount: s.messageCount,
+      const managed = listAllSessions().map((s) => {
+        const isActive =
+          Boolean(s.contextKey && agentRunner.hasRunner?.(s.contextKey)) &&
+          (s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id);
         // 🟢 = サーバ側で runner プロセスが pool に居る + そのセッションが
         // contextKey の current（Web は contextKey が appSessionId 個別なので常に current）
-        isActive:
-          Boolean(s.contextKey && agentRunner.hasRunner?.(s.contextKey)) &&
-          (s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id),
-        autoTalk: s.autoTalk === true,
-        autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
-      }));
+        // 進行中リクエストがあれば timeoutAt / maxTimeoutAt を載せる (UI のカウントダウン用)
+        const timeoutState =
+          isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
+        return {
+          id: s.id,
+          title: s.title || deriveTitleFromFirstMessage(workdir, s.id) || s.contextKey,
+          platform: s.platform,
+          contextKey: s.contextKey,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount,
+          isActive,
+          autoTalk: s.autoTalk === true,
+          autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
+          timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
+          maxTimeoutAt: timeoutState?.active ? timeoutState.maxTimeoutAt : undefined,
+          timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
+        };
+      });
       const managedIds = new Set(managed.map((s) => s.id));
 
       // logs/sessions/ ディレクトリにしか痕跡が無いセッション（移行・剪定済み）も拾う。
@@ -204,6 +231,9 @@ export function startWebChat(options: WebChatOptions): void {
             isActive: false,
             autoTalk: false,
             autoTalkActive: false,
+            timeoutAt: undefined,
+            maxTimeoutAt: undefined,
+            timeoutMs: undefined,
           });
         }
       }
@@ -217,7 +247,12 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     // GET /api/sessions/:id — セッション詳細
-    if (url.startsWith('/api/sessions/') && !url.includes('/resume') && req.method === 'GET') {
+    if (
+      url.startsWith('/api/sessions/') &&
+      !url.includes('/resume') &&
+      !url.includes('/timeout') &&
+      req.method === 'GET'
+    ) {
       const appSessionId = decodeURIComponent(url.replace('/api/sessions/', ''));
       const entry = getSessionEntry(appSessionId);
       const messages = readSessionMessages(workdir, appSessionId).map((m) => {
@@ -335,6 +370,100 @@ export function startWebChat(options: WebChatOptions): void {
       console.log(`[web-chat] Resumed session ${sourceId} into new web session ${newAppId}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, sessionId: newAppId, sourceId }));
+      return;
+    }
+
+    // GET /api/sessions/:id/timeout — 現在のタイムアウト状態を取得
+    // UI のサイドバー初期表示で polling せずに済むよう公開する。レスポンスは
+    // {active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs} (TimeoutState 準拠)。
+    if (url.match(/^\/api\/sessions\/[^/]+\/timeout$/) && req.method === 'GET') {
+      const targetId = decodeURIComponent(
+        url.replace('/api/sessions/', '').replace('/timeout', '')
+      );
+      const entry = getSessionEntry(targetId);
+      if (!entry?.contextKey || !agentRunner.getTimeoutState) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ active: false }));
+        return;
+      }
+      const state = agentRunner.getTimeoutState(entry.contextKey);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(state));
+      return;
+    }
+
+    // POST /api/sessions/:id/timeout/extend — 現在のリクエストのタイムアウトを延長
+    // body: { additionalMs?: number }
+    //   - 省略時は **残り時間を加算** (= 結果として残り時間が 2 倍になる)
+    //   - 数値を渡せばそのミリ秒分加算 (上限内で)
+    // 成功時 200, 進行中リクエスト無し 404, 上限超過 409, ランナー未サポート 501。
+    if (url.match(/^\/api\/sessions\/[^/]+\/timeout\/extend$/) && req.method === 'POST') {
+      const targetId = decodeURIComponent(
+        url.replace('/api/sessions/', '').replace('/timeout/extend', '')
+      );
+      const entry = getSessionEntry(targetId);
+      if (!entry?.contextKey) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      if (!agentRunner.extendTimeout) {
+        res.writeHead(501, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unsupported', reason: 'runner does not support extend' }));
+        return;
+      }
+      const body = await readBody(req);
+      const rawAdditional = Number(body.additionalMs);
+      // additionalMs が正の数なら指定値、そうでなければ undefined を渡して
+      // runner 側の「残り時間を加算 = 2 倍」のデフォルト挙動に任せる
+      const additionalMs =
+        Number.isFinite(rawAdditional) && rawAdditional > 0 ? rawAdditional : undefined;
+      const result = agentRunner.extendTimeout(entry.contextKey, additionalMs);
+      if (result.ok) {
+        // events-emitter に extended を流す (xangi-pets 等の consumer が拾えるよう)
+        const platform =
+          entry.platform === 'web' || entry.platform === 'discord' || entry.platform === 'slack'
+            ? entry.platform
+            : 'web';
+        events.timeoutExtended({
+          threadId: threadIdFor(platform, targetId),
+          turnId: turnIdFor(platform, `extend-${Date.now()}`),
+          threadLabel: entry.title || targetId,
+          platform,
+          timeoutAt: result.timeoutAt!,
+          maxTimeoutAt: result.maxTimeoutAt!,
+          timeoutMs: result.timeoutMs!,
+          remainingMs: result.remainingMs!,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sessionId: targetId,
+            timeoutAt: result.timeoutAt,
+            remainingMs: result.remainingMs,
+            timeoutMs: result.timeoutMs,
+            maxTimeoutAt: result.maxTimeoutAt,
+          })
+        );
+        console.log(
+          `[web-chat] Timeout extended by ${additionalMs}ms for session ${targetId} ` +
+            `(platform=${entry.platform}, timeoutAt=${new Date(result.timeoutAt!).toISOString()})`
+        );
+        return;
+      }
+      if (result.reason === 'max_timeout_exceeded') {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'max_timeout_exceeded',
+            maxTimeoutAt: result.maxTimeoutAt,
+          })
+        );
+        return;
+      }
+      // no_active_request その他
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: result.reason || 'no_active_request' }));
       return;
     }
 
@@ -524,6 +653,7 @@ export function startWebChat(options: WebChatOptions): void {
         '.jpeg': 'image/jpeg',
         '.gif': 'image/gif',
         '.webp': 'image/webp',
+        '.svg': 'image/svg+xml',
         '.pdf': 'application/pdf',
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
@@ -531,8 +661,31 @@ export function startWebChat(options: WebChatOptions): void {
         '.m4a': 'audio/mp4',
         '.ogg': 'audio/ogg',
         '.flac': 'audio/flac',
+        '.html': 'text/html; charset=utf-8',
+        '.htm': 'text/html; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.mjs': 'application/javascript; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.txt': 'text/plain; charset=utf-8',
+        '.md': 'text/markdown; charset=utf-8',
+        '.csv': 'text/csv; charset=utf-8',
+        '.xml': 'application/xml; charset=utf-8',
+        '.yaml': 'application/x-yaml; charset=utf-8',
+        '.yml': 'application/x-yaml; charset=utf-8',
+        '.zip': 'application/zip',
       };
-      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+      // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
+      // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
+      const mappedMime = mimeTypes[ext];
+      const headers: Record<string, string> = {
+        'Content-Type': mappedMime || 'application/octet-stream',
+      };
+      if (!mappedMime) {
+        const filename = basename(filePath);
+        headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
+      }
+      res.writeHead(200, headers);
       res.end(readFileSync(filePath));
       return;
     }
@@ -551,12 +704,24 @@ export function startWebChat(options: WebChatOptions): void {
         return;
       }
       const ext = extname(filePath).toLowerCase();
+      // WEB_CHAT_DOWNLOAD_ACCEPT で許可拡張子が絞られているならチェック
+      if (downloadAllowedExts.length > 0 && !downloadAllowedExts.includes(ext)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'Forbidden',
+            reason: `Extension ${ext || '(none)'} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
+          })
+        );
+        return;
+      }
       const mimeTypes: Record<string, string> = {
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
         '.gif': 'image/gif',
         '.webp': 'image/webp',
+        '.svg': 'image/svg+xml',
         '.pdf': 'application/pdf',
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
@@ -564,8 +729,31 @@ export function startWebChat(options: WebChatOptions): void {
         '.m4a': 'audio/mp4',
         '.ogg': 'audio/ogg',
         '.flac': 'audio/flac',
+        '.html': 'text/html; charset=utf-8',
+        '.htm': 'text/html; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.mjs': 'application/javascript; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.txt': 'text/plain; charset=utf-8',
+        '.md': 'text/markdown; charset=utf-8',
+        '.csv': 'text/csv; charset=utf-8',
+        '.xml': 'application/xml; charset=utf-8',
+        '.yaml': 'application/x-yaml; charset=utf-8',
+        '.yml': 'application/x-yaml; charset=utf-8',
+        '.zip': 'application/zip',
       };
-      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+      // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
+      // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
+      const mappedMime = mimeTypes[ext];
+      const headers: Record<string, string> = {
+        'Content-Type': mappedMime || 'application/octet-stream',
+      };
+      if (!mappedMime) {
+        const filename = basename(filePath);
+        headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
+      }
+      res.writeHead(200, headers);
       res.end(readFileSync(filePath));
       return;
     }
@@ -673,6 +861,54 @@ export function startWebChat(options: WebChatOptions): void {
             res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           };
 
+          // ランナーから timeout 状態を chat SSE に流す。
+          // PersistentRunner / RunnerManager は EventEmitter で
+          // timeout-started / timeout-extended / timeout-cleared を emit するので、
+          // ctxKey (= channelId) で filter してフロントに渡す。
+          // Local LLM 等の非 EventEmitter ランナーは on が無いので no-op。
+          const runnerEmitter =
+            typeof (agentRunner as unknown as { on?: unknown }).on === 'function'
+              ? (agentRunner as unknown as {
+                  on: (e: string, l: (p: unknown) => void) => void;
+                  off: (e: string, l: (p: unknown) => void) => void;
+                })
+              : null;
+          const timeoutListeners: Array<{ event: string; handler: (p: unknown) => void }> = [];
+          if (runnerEmitter) {
+            const makeHandler = (sseEvent: 'timeout' | 'timeout_cleared') => (payload: unknown) => {
+              const p = payload as {
+                channelId?: string;
+                timeoutAt?: number;
+                maxTimeoutAt?: number;
+                timeoutMs?: number;
+                remainingMs?: number;
+              };
+              if (p.channelId !== ctxKey) return;
+              if (sseEvent === 'timeout_cleared') {
+                sendSSE('timeout_cleared', { sessionId: appSessionId });
+              } else {
+                sendSSE('timeout', {
+                  sessionId: appSessionId,
+                  timeoutAt: p.timeoutAt,
+                  maxTimeoutAt: p.maxTimeoutAt,
+                  timeoutMs: p.timeoutMs,
+                  remainingMs: p.remainingMs,
+                });
+              }
+            };
+            const startedHandler = makeHandler('timeout');
+            const extendedHandler = makeHandler('timeout');
+            const clearedHandler = makeHandler('timeout_cleared');
+            runnerEmitter.on('timeout-started', startedHandler);
+            runnerEmitter.on('timeout-extended', extendedHandler);
+            runnerEmitter.on('timeout-cleared', clearedHandler);
+            timeoutListeners.push(
+              { event: 'timeout-started', handler: startedHandler },
+              { event: 'timeout-extended', handler: extendedHandler },
+              { event: 'timeout-cleared', handler: clearedHandler }
+            );
+          }
+
           try {
             const result = await runWithBubbleEvents(
               agentRunner,
@@ -737,6 +973,13 @@ export function startWebChat(options: WebChatOptions): void {
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             sendSSE('error', { message: errorMsg });
+          } finally {
+            // timeout listener を必ず解除 (res.end 前のリーク防止)
+            if (runnerEmitter) {
+              for (const l of timeoutListeners) {
+                runnerEmitter.off(l.event, l.handler);
+              }
+            }
           }
           res.end();
         } finally {

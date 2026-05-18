@@ -32,7 +32,12 @@ import {
 import { initSettings, loadSettings, formatSettings } from './settings.js';
 import { readFileSync, writeFileSync } from 'fs';
 import lockfile from 'proper-lockfile';
-import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH, STREAM_UPDATE_INTERVAL_MS } from './constants.js';
+import {
+  DISCORD_MAX_LENGTH,
+  DISCORD_SAFE_LENGTH,
+  STREAM_UPDATE_INTERVAL_MS,
+  TIMEOUT_EXTEND_ENABLED,
+} from './constants.js';
 import {
   Scheduler,
   parseScheduleInput,
@@ -123,11 +128,69 @@ function getTypeLabel(
   }
 }
 
-/** 処理中に表示するStopボタン */
-function createStopButton(): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+/** 残り時間を mm:ss でフォーマット */
+function formatRemaining(remainingMs: number): string {
+  const sec = Math.max(0, Math.floor(remainingMs / 1000));
+  const mm = Math.floor(sec / 60);
+  const ss = sec % 60;
+  return `${mm}:${String(ss).padStart(2, '0')}`;
+}
+
+/** 処理中に表示するボタン群 (Stop / 延長 / 残り MM:SS の順) */
+function createProcessingButtons(timeout?: {
+  remainingMs: number;
+  canExtend: boolean;
+  extendEnabled: boolean;
+}): ActionRowBuilder<ButtonBuilder> {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  row.addComponents(
     new ButtonBuilder().setCustomId('xangi_stop').setLabel('Stop').setStyle(ButtonStyle.Secondary)
   );
+  if (timeout) {
+    const isWarn = timeout.remainingMs <= 30_000;
+    if (timeout.extendEnabled) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId('xangi_extend')
+          .setLabel('延長')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(!timeout.canExtend)
+      );
+    }
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId('xangi_timeout_display')
+        .setLabel(`⏱ ${formatRemaining(timeout.remainingMs)}`)
+        .setStyle(isWarn ? ButtonStyle.Danger : ButtonStyle.Secondary)
+        .setDisabled(true)
+    );
+  }
+  return row;
+}
+
+/**
+ * 処理中の Discord 返信メッセージ管理 (タイムアウト UI 更新用)
+ * channelId -> { message, intervalId }。runner の timeout-* イベントで
+ * 残り時間ボタンと +5m ボタンを含むコンポーネント行を 10 秒間隔で edit する。
+ *
+ * processPrompt() (module-level) と main() 内の runner listener 双方からアクセスするため、
+ * モジュール最上位に置く (xangi は 1 process = 1 Discord client なので共有しても安全)。
+ */
+type DiscordProcessingEntry = { message: Message; intervalId?: NodeJS.Timeout };
+const discordProcessingMessages = new Map<string, DiscordProcessingEntry>();
+
+/** チャンネルの現在のタイムアウト状態から Discord UI 用に整形 (top-level 版) */
+function getDiscordTimeoutInfoFor(
+  agentRunner: AgentRunner,
+  channelId: string
+): { remainingMs: number; canExtend: boolean; extendEnabled: boolean } | undefined {
+  const state = agentRunner.getTimeoutState?.(channelId);
+  if (!state?.active || state.timeoutAt == null) return undefined;
+  const remainingMs = Math.max(0, state.timeoutAt - Date.now());
+  // 「延長 = 残り時間を 2 倍」なので、残り時間を一度加算しても max を越えないか判定
+  const canExtend =
+    state.maxTimeoutAt != null && state.timeoutAt + remainingMs <= state.maxTimeoutAt;
+  return { remainingMs, canExtend, extendEnabled: TIMEOUT_EXTEND_ENABLED };
 }
 
 /** 完了後に表示するNew Sessionボタン */
@@ -272,6 +335,63 @@ async function main() {
   console.log(
     `[xangi] Using ${backendName} as agent backend (platform: ${config.agent.platform ?? 'all'})`
   );
+
+  /** チャンネルの現在のタイムアウト状態から UI 用に整形 (main スコープのラッパー) */
+  const getDiscordTimeoutInfo = (channelId: string) =>
+    getDiscordTimeoutInfoFor(agentRunner, channelId);
+
+  /** 処理中メッセージの components を最新のタイムアウト状態に合わせて edit */
+  const refreshDiscordProcessingButtons = (channelId: string): void => {
+    const entry = discordProcessingMessages.get(channelId);
+    if (!entry) return;
+    const info = getDiscordTimeoutInfo(channelId);
+    if (!info) return; // active でなければ何もしない (timeout-cleared で別途片付ける)
+    entry.message
+      .edit({ components: [createProcessingButtons(info)] })
+      .catch((e) => console.warn('[xangi] Failed to refresh processing buttons:', e?.message));
+  };
+
+  // runner の timeout-* イベントを Discord メッセージ更新に紐付け
+  const runnerEmitter = agentRunner as unknown as {
+    on?: (e: string, l: (p: unknown) => void) => void;
+  };
+  if (typeof runnerEmitter.on === 'function') {
+    runnerEmitter.on('timeout-started', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      const entry = discordProcessingMessages.get(p.channelId);
+      if (!entry) return; // Discord 経由でなければ無視 (web/slack 等は別経路)
+      // 初回描画
+      refreshDiscordProcessingButtons(p.channelId);
+      // 10 秒ごとの補完用 dedicated interval。
+      // 通常は processPrompt の thinking/stream interval が毎秒 message.edit するときに
+      // 一緒に components (Stop/延長/⏱) を最新化するので、追加 API call なしで 1 秒粒度更新が成立する。
+      // ここはストリーミングが止まったまま長引いた場合や、tool 連続呼び出しで edit が
+      // 走らない隙間に残り時間が遅れないようにする補完。
+      if (entry.intervalId) clearInterval(entry.intervalId);
+      entry.intervalId = setInterval(() => {
+        const info = getDiscordTimeoutInfo(p.channelId!);
+        if (!info) {
+          if (entry.intervalId) clearInterval(entry.intervalId);
+          return;
+        }
+        refreshDiscordProcessingButtons(p.channelId!);
+      }, 10_000);
+    });
+    runnerEmitter.on('timeout-extended', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      refreshDiscordProcessingButtons(p.channelId);
+    });
+    runnerEmitter.on('timeout-cleared', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      const entry = discordProcessingMessages.get(p.channelId);
+      if (!entry) return;
+      if (entry.intervalId) clearInterval(entry.intervalId);
+      discordProcessingMessages.delete(p.channelId);
+    });
+  }
 
   // スキルを読み込み
   const workdir = config.agent.config.workdir || process.cwd();
@@ -440,6 +560,43 @@ async function main() {
     );
   }
 
+  // ALLOW_RESPOND_TO_BOTS_COMMAND=true の場合のみコマンドを登録
+  if (config.discord.allowRespondToBotsCommand) {
+    commands.push(
+      new SlashCommandBuilder()
+        .setName('respondtobots')
+        .setDescription(
+          'bot メッセージへの応答を ON/OFF 切替 (反応対象は RESPOND_TO_BOTS 環境変数)'
+        )
+        .toJSON()
+    );
+  }
+
+  // ALLOW_LLM_MODE_COMMAND=true の場合のみコマンドを登録（Local LLM 動作モード切替）
+  if (config.discord.allowLlmModeCommand) {
+    commands.push(
+      new SlashCommandBuilder()
+        .setName('llmmode')
+        .setDescription(
+          'このチャンネルの Local LLM 動作モードを切替 (agent/lite/chat/default/show)'
+        )
+        .addStringOption((option) =>
+          option
+            .setName('mode')
+            .setDescription('モード')
+            .setRequired(true)
+            .addChoices(
+              { name: 'agent (全機能ON、複雑タスク向け)', value: 'agent' },
+              { name: 'lite (skills OFF、軽量、Discord 操作向け)', value: 'lite' },
+              { name: 'chat (全機能OFF、純粋会話)', value: 'chat' },
+              { name: 'default (チャンネル override 削除、起動時値に戻す)', value: 'default' },
+              { name: 'show (現在の設定を表示)', value: 'show' }
+            )
+        )
+        .toJSON()
+    );
+  }
+
   // 各スキルを個別のスラッシュコマンドとして追加
   for (const skill of skills) {
     // Discordコマンド名は小文字英数字とハイフンのみ（最大32文字）
@@ -514,6 +671,16 @@ async function main() {
       console.log(`[xangi] Found ${guilds.size} guilds`);
 
       for (const [guildId, guild] of guilds) {
+        // 起動時に全 channel を fetch して cache を確実に更新。
+        // 起動後に作成された channel が gateway 経由の MessageCreate event を
+        // 受け取れない症状 (キャッシュ不整合) を防ぐ。
+        try {
+          const chs = await guild.channels.fetch();
+          console.log(`[xangi] Refreshed channel cache for ${guild.name}: ${chs.size} channels`);
+        } catch (e) {
+          console.warn(`[xangi] Failed to refresh channels for ${guild.name}:`, e);
+        }
+
         await rest.put(Routes.applicationGuildCommands(c.user.id, guildId), {
           body: commands,
         });
@@ -557,6 +724,33 @@ async function main() {
             ephemeral: true,
           });
         }
+        return;
+      }
+
+      if (interaction.customId === 'xangi_extend') {
+        // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
+        const result = agentRunner.extendTimeout?.(channelId) ?? {
+          ok: false,
+          reason: 'unsupported' as const,
+        };
+        if (result.ok) {
+          await interaction.deferUpdate().catch(() => {});
+          // メッセージ自体は timeout-extended イベントで refresh される
+        } else {
+          const text =
+            result.reason === 'max_timeout_exceeded'
+              ? '⏱ 上限に達したため延長できません'
+              : result.reason === 'no_active_request'
+                ? '⏱ 処理中のリクエストがありません'
+                : '⏱ このバックエンドでは延長できません';
+          await interaction.reply({ content: text, ephemeral: true }).catch(() => {});
+        }
+        return;
+      }
+
+      // 表示専用ボタン (残り時間バッジ) — クリックされても何もしない
+      if (interaction.customId === 'xangi_timeout_display') {
+        await interaction.deferUpdate().catch(() => {});
         return;
       }
 
@@ -648,6 +842,27 @@ async function main() {
         } else {
           lines.push(`- ソース: デフォルト (.env)`);
         }
+
+        // Local LLM のとき詳細情報を併記
+        if (resolved.backend === 'local-llm') {
+          const llmBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
+          const llmModelEnv = process.env.LOCAL_LLM_MODEL;
+          const llmMode = process.env.LOCAL_LLM_MODE ?? 'agent (default)';
+          const numCtx = process.env.LOCAL_LLM_NUM_CTX ?? '(モデルデフォルト)';
+          const temperature = process.env.LOCAL_LLM_TEMPERATURE ?? '(モデルデフォルト = 1.0)';
+          const maxTokens = process.env.LOCAL_LLM_MAX_TOKENS ?? '8192 (default)';
+          const thinking = process.env.LOCAL_LLM_THINKING ?? 'false (default)';
+
+          lines.push('', '**Local LLM 詳細:**');
+          lines.push(`- base_url: \`${llmBase}\``);
+          if (!resolved.model && llmModelEnv) lines.push(`- model (env): \`${llmModelEnv}\``);
+          lines.push(`- mode: \`${llmMode}\``);
+          lines.push(`- num_ctx: \`${numCtx}\``);
+          lines.push(`- temperature: \`${temperature}\``);
+          lines.push(`- max_tokens: \`${maxTokens}\``);
+          lines.push(`- thinking: \`${thinking}\``);
+        }
+
         lines.push(
           ``,
           `**デフォルト:** ${getBackendDisplayName(defaultRes.backend)}${defaultRes.model ? ` (${defaultRes.model})` : ''}`
@@ -777,11 +992,15 @@ async function main() {
           }
         }
 
-        // Ollamaモデル一覧を取得（Local LLMが許可されている場合）
+        // Local LLM モデル一覧を取得（許可されている場合）
+        // Ollama (`/api/tags`) と vLLM / OpenAI 互換 (`/v1/models`) の両方に対応
         if (allowed.includes('local-llm')) {
+          const llmBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
+          let modelsShown = false;
+
+          // Ollama 経路
           try {
-            const ollamaBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
-            const res = await fetch(`${ollamaBase}/api/tags`, {
+            const res = await fetch(`${llmBase}/api/tags`, {
               signal: AbortSignal.timeout(3000),
             });
             if (res.ok) {
@@ -794,10 +1013,45 @@ async function main() {
                   const sizeGB = (m.size / 1e9).toFixed(1);
                   lines.push(`- \`${m.name}\` (${sizeGB}GB)`);
                 }
+                modelsShown = true;
               }
             }
           } catch {
-            // Ollama接続失敗は無視
+            // Ollama 未起動・別サーバーの可能性 → fallback へ
+          }
+
+          // vLLM / OpenAI 互換経路 (Ollama で取れなかった場合のフォールバック)
+          if (!modelsShown) {
+            try {
+              const res = await fetch(`${llmBase}/v1/models`, {
+                signal: AbortSignal.timeout(3000),
+              });
+              if (res.ok) {
+                const data = (await res.json()) as {
+                  data?: Array<{ id: string; max_model_len?: number; owned_by?: string }>;
+                };
+                if (data.data && data.data.length > 0) {
+                  lines.push('', '**Local LLM モデル（OpenAI互換API）:**');
+                  for (const m of data.data) {
+                    const ctx = m.max_model_len
+                      ? ` (max_model_len: ${m.max_model_len.toLocaleString()})`
+                      : '';
+                    const owner = m.owned_by ? ` [${m.owned_by}]` : '';
+                    lines.push(`- \`${m.id}\`${ctx}${owner}`);
+                  }
+                  modelsShown = true;
+                }
+              }
+            } catch {
+              // 両方失敗 → 警告表示
+            }
+          }
+
+          if (!modelsShown) {
+            lines.push(
+              '',
+              `⚠️ Local LLM サーバー (\`${llmBase}\`) からモデル一覧を取得できませんでした。Ollama (\`/api/tags\`) も OpenAI互換 (\`/v1/models\`) も応答なし。`
+            );
           }
         }
 
@@ -912,6 +1166,105 @@ async function main() {
 
       const status = isCurrentlyOn ? '❌ OFF' : '✅ ON';
       await interaction.reply(`メンションなし応答: ${status} (<#${chId}>)`);
+      return;
+    }
+
+    if (interaction.commandName === 'respondtobots') {
+      if (!config.discord.allowRespondToBotsCommand) {
+        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+        return;
+      }
+      const wasEnabled = config.discord.respondToBotsEnabled ?? false;
+      const nextEnabled = !wasEnabled;
+      config.discord.respondToBotsEnabled = nextEnabled;
+
+      // .env に永続化
+      try {
+        const envPath = join(process.cwd(), '.env');
+        const envContent = readFileSync(envPath, 'utf-8');
+        const line = `RESPOND_TO_BOTS_ENABLED=${nextEnabled ? 'true' : 'false'}`;
+        const updated = envContent.includes('RESPOND_TO_BOTS_ENABLED=')
+          ? envContent.replace(/^RESPOND_TO_BOTS_ENABLED=.*$/m, line)
+          : envContent.trimEnd() + '\n' + line + '\n';
+        writeFileSync(envPath, updated, 'utf-8');
+      } catch (e) {
+        console.error('[xangi] Failed to persist RESPOND_TO_BOTS_ENABLED to .env:', e);
+      }
+
+      const whitelist = config.discord.respondToBots ?? [];
+      const target =
+        whitelist.length === 0
+          ? '(RESPOND_TO_BOTS 未設定)'
+          : whitelist.includes('*')
+            ? '全 bot'
+            : whitelist.join(', ');
+      const status = nextEnabled ? '✅ ON' : '❌ OFF';
+      await interaction.reply(`bot メッセージへの応答: ${status} / 反応対象: ${target}`);
+      return;
+    }
+
+    if (interaction.commandName === 'llmmode') {
+      if (!config.discord.allowLlmModeCommand) {
+        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+        return;
+      }
+      const chId = interaction.channelId;
+      const mode = interaction.options.getString('mode', true) as
+        | 'agent'
+        | 'lite'
+        | 'chat'
+        | 'default'
+        | 'show';
+
+      // show: 現在の設定を表示するだけ
+      if (mode === 'show') {
+        const current = resolver.getChannelOverride(chId);
+        const resolved = resolver.resolve(chId);
+
+        // 起動時 env LOCAL_LLM_MODE（未指定なら 'agent' default）
+        const envMode = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
+        const startupMode =
+          envMode === 'agent' || envMode === 'lite' || envMode === 'chat' ? envMode : 'agent';
+
+        // 実際に適用される mode（チャンネル override 優先、無ければ起動時 env）
+        const appliedMode = resolved.localLlmMode ?? startupMode;
+        const source = resolved.localLlmMode
+          ? 'チャンネル個別 override (CHANNEL_OVERRIDES)'
+          : envMode
+            ? `起動時 env LOCAL_LLM_MODE=${envMode}`
+            : `起動時 default (LOCAL_LLM_MODE 未指定 → agent)`;
+
+        const lines: string[] = [
+          `📍 <#${chId}> の Local LLM 設定`,
+          ``,
+          `**適用中のモード:** \`${appliedMode}\``,
+          `**由来:** ${source}`,
+          ``,
+          `### 設定の内訳`,
+          `- backend: \`${resolved.backend}\``,
+          `- model: ${resolved.model ? `\`${resolved.model}\`` : '(env デフォルト)'}`,
+          `- 起動時 env \`LOCAL_LLM_MODE\`: \`${envMode || '(未指定 → agent)'}\``,
+          `- チャンネル override (\`localLlmMode\`): ${current?.localLlmMode ? `\`${current.localLlmMode}\`` : 'なし'}`,
+          ``,
+          `### モード別の機能`,
+          `- \`agent\`: tools / skills / xangi-commands ON、triggers OFF`,
+          `- \`lite\`: tools / xangi-commands / triggers ON、skills OFF`,
+          `- \`chat\`: 全機能 OFF（純粋会話）`,
+        ];
+        await interaction.reply(lines.join('\n'));
+        return;
+      }
+
+      // default: override 削除（その他のフィールドは保持）
+      if (mode === 'default') {
+        resolver.setChannelLocalLlmMode(chId, null);
+        await interaction.reply(`✅ <#${chId}> の Local LLM mode override を削除しました`);
+        return;
+      }
+
+      // agent / lite / chat: 設定
+      resolver.setChannelLocalLlmMode(chId, mode);
+      await interaction.reply(`✅ <#${chId}> の Local LLM mode を \`${mode}\` に設定しました`);
       return;
     }
 
@@ -1079,6 +1432,10 @@ async function main() {
   // チャンネル単位の処理中ロック
   const processingChannels = new Set<string>();
 
+  // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
+  // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
+  const consecutiveBotResponses = new Map<string, { lastBotId: string; count: number }>();
+
   // Discord でユーザがメッセージを編集 → transcript jsonl にも反映する。
   // 対象は active session の jsonl のみ。古いセッションの履歴は対象外
   // (パフォーマンスとマルチセッション衝突回避のため、active のみ)。
@@ -1134,7 +1491,42 @@ async function main() {
 
   // メッセージ処理
   client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot) return;
+    let isFromAllowedBot = false;
+    if (message.author.bot) {
+      // 自分自身のメッセージには絶対に反応しない (無限ループ防止)
+      if (message.author.id === client.user?.id) return;
+      // 機能が OFF なら他 bot メッセージは無視 (既存動作)
+      if (!config.discord.respondToBotsEnabled) return;
+      // ホワイトリスト判定 (RESPOND_TO_BOTS env / `*` で全許可)
+      const allowedBots = config.discord.respondToBots ?? [];
+      const allowAll = allowedBots.includes('*');
+      const isAllowed = allowAll || allowedBots.includes(message.author.id);
+      if (!isAllowed) return;
+      // 連続返信制限チェック (default 3 回、0 以下は無制限)
+      const maxConsec = config.discord.respondToBotsMaxConsecutive ?? 3;
+      if (maxConsec > 0) {
+        const counter = consecutiveBotResponses.get(message.channel.id);
+        if (counter && counter.lastBotId === message.author.id) {
+          if (counter.count >= maxConsec) {
+            console.log(
+              `[xangi] Consecutive bot response limit reached (${maxConsec}) for bot ${message.author.id} in channel ${message.channel.id}, skipping`
+            );
+            return;
+          }
+          counter.count += 1;
+        } else {
+          consecutiveBotResponses.set(message.channel.id, {
+            lastBotId: message.author.id,
+            count: 1,
+          });
+        }
+      }
+      // bot メッセージだが許可された相手 → 続行 (allowedUsers チェックはバイパス)
+      isFromAllowedBot = true;
+    } else {
+      // 人間のメッセージが入ったら、そのチャンネルの連鎖カウンタをリセット
+      consecutiveBotResponses.delete(message.channel.id);
+    }
 
     const isMentioned = message.mentions.has(client.user!);
     const isDM = !message.guild;
@@ -1150,6 +1542,7 @@ async function main() {
     }
 
     if (
+      !isFromAllowedBot &&
       !config.discord.allowedUsers?.includes('*') &&
       !config.discord.allowedUsers?.includes(message.author.id)
     ) {
@@ -1537,8 +1930,15 @@ async function processPrompt(
     const showButtons = config.discord.showButtons ?? true;
     replyMessage = await message.reply({
       content: '🤔 考え中.',
-      ...(showButtons && { components: [createStopButton()] }),
+      ...(showButtons && { components: [createProcessingButtons()] }),
     });
+
+    // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で edit される)
+    // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
+    // 別個に作った ClaudeCodeRunner には timeout イベントが流れないのでスキップ
+    if (showButtons && !needsSkipRunner) {
+      discordProcessingMessages.set(channelId, { message: replyMessage });
+    }
 
     let result: string;
     let newSessionId: string;
@@ -1550,13 +1950,23 @@ async function processPrompt(
       let firstTextReceived = false;
 
       // 最初のテキストが届くまで考え中アニメーション
+      // テキスト編集と同時に [Stop][延長][⏱ MM:SS] を再生成して残り時間を反映する
+      // (Discord edit は components 省略で既存維持だが、ラベル更新したいので毎回付ける)
       let dotCount = 1;
       const thinkingInterval = setInterval(() => {
         if (firstTextReceived) return;
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
         const toolDisplay = toolHistory.length > 0 ? '\n' + toolHistory.join('\n') : '';
-        replyMessage!.edit(`🤔 考え中${dots}${toolDisplay}`).catch(() => {});
+        const editPayload: { content: string; components?: ActionRowBuilder<ButtonBuilder>[] } = {
+          content: `🤔 考え中${dots}${toolDisplay}`,
+        };
+        if (showButtons && !needsSkipRunner) {
+          editPayload.components = [
+            createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+          ];
+        }
+        replyMessage!.edit(editPayload).catch(() => {});
       }, 1000);
 
       let streamResult: { result: string; sessionId: string };
@@ -1576,8 +1986,17 @@ async function processPrompt(
               if (now - lastUpdateTime >= STREAM_UPDATE_INTERVAL_MS && !pendingUpdate) {
                 pendingUpdate = true;
                 lastUpdateTime = now;
+                const streamPayload: {
+                  content: string;
+                  components?: ActionRowBuilder<ButtonBuilder>[];
+                } = { content: (fullText + ' ▌').slice(0, DISCORD_MAX_LENGTH) };
+                if (showButtons && !needsSkipRunner) {
+                  streamPayload.components = [
+                    createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+                  ];
+                }
                 replyMessage!
-                  .edit((fullText + ' ▌').slice(0, DISCORD_MAX_LENGTH))
+                  .edit(streamPayload)
                   .catch((err) => {
                     console.error('[xangi] Failed to edit message:', err.message);
                   })
@@ -1591,15 +2010,20 @@ async function processPrompt(
               const inputSummary = formatToolInput(toolName, toolInput);
               toolHistory.push(`🔧 ${toolName}${inputSummary}`);
               const toolDisplay = toolHistory.join('\n');
-              if (!firstTextReceived) {
-                replyMessage!.edit(`🤔 考え中...\n${toolDisplay}`).catch(() => {});
-              } else {
-                // テキストストリーミング中でもツール表示を更新
-                const currentText = lastStreamedText || '';
-                replyMessage!
-                  .edit(`${currentText}\n\n${toolDisplay} ▌`.slice(0, DISCORD_MAX_LENGTH))
-                  .catch(() => {});
+              const toolPayload: {
+                content: string;
+                components?: ActionRowBuilder<ButtonBuilder>[];
+              } = {
+                content: firstTextReceived
+                  ? `${lastStreamedText || ''}\n\n${toolDisplay} ▌`.slice(0, DISCORD_MAX_LENGTH)
+                  : `🤔 考え中...\n${toolDisplay}`,
+              };
+              if (showButtons && !needsSkipRunner) {
+                toolPayload.components = [
+                  createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+                ];
               }
+              replyMessage!.edit(toolPayload).catch(() => {});
             },
           },
           {
@@ -1620,7 +2044,15 @@ async function processPrompt(
       const thinkingInterval = setInterval(() => {
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
-        replyMessage!.edit(`🤔 考え中${dots}`).catch(() => {});
+        const editPayload: { content: string; components?: ActionRowBuilder<ButtonBuilder>[] } = {
+          content: `🤔 考え中${dots}`,
+        };
+        if (showButtons && !needsSkipRunner) {
+          editPayload.components = [
+            createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+          ];
+        }
+        replyMessage!.edit(editPayload).catch(() => {});
       }, 1000);
 
       try {

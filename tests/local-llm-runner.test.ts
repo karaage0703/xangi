@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { isSessionRelatedError, formatLlmError, LocalLlmRunner } from '../src/local-llm/runner.js';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import {
+  isSessionRelatedError,
+  formatLlmError,
+  LocalLlmRunner,
+  loadMessagesFromTranscript,
+} from '../src/local-llm/runner.js';
+import type { TranscriptEntry } from '../src/transcript-logger.js';
 
 describe('isSessionRelatedError', () => {
   it('should return true for "context length exceeded"', () => {
@@ -143,5 +152,103 @@ describe('LocalLlmRunner liteMode', () => {
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
     expect(runner.enableTools).toBe(true);
     expect(runner.enableSkills).toBe(false);
+  });
+});
+
+describe('loadMessagesFromTranscript', () => {
+  let workdir: string;
+
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), 'xangi-test-'));
+    mkdirSync(join(workdir, 'logs', 'sessions'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  function writeJsonl(appSessionId: string, entries: TranscriptEntry[]): void {
+    const path = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
+    const lines = entries.map((e) => JSON.stringify(e)).join('\n');
+    writeFileSync(path, entries.length > 0 ? lines + '\n' : '');
+  }
+
+  it('returns empty array when no jsonl exists', () => {
+    expect(loadMessagesFromTranscript(workdir, 'nonexistent')).toEqual([]);
+  });
+
+  it('restores user and assistant messages preserving order', () => {
+    writeJsonl('sess1', [
+      { id: 'm1', role: 'user', content: 'こんにちは', createdAt: '2026-05-17T15:21:00Z' },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: { result: 'やあ', sessionId: 'abc' },
+        createdAt: '2026-05-17T15:21:01Z',
+      },
+      { id: 'm3', role: 'user', content: 'YouTubeまとめて', createdAt: '2026-05-17T15:22:00Z' },
+    ]);
+
+    const restored = loadMessagesFromTranscript(workdir, 'sess1');
+    expect(restored).toEqual([
+      { role: 'user', content: 'こんにちは' },
+      { role: 'assistant', content: 'やあ' },
+      { role: 'user', content: 'YouTubeまとめて' },
+    ]);
+  });
+
+  it('skips error entries', () => {
+    writeJsonl('sess2', [
+      { id: 'm1', role: 'user', content: 'q1', createdAt: '2026-05-17T15:00:00Z' },
+      { id: 'm2', role: 'error', content: 'LLM failed', createdAt: '2026-05-17T15:00:01Z' },
+      {
+        id: 'm3',
+        role: 'assistant',
+        content: { result: 'a1', sessionId: 'x' },
+        createdAt: '2026-05-17T15:00:02Z',
+      },
+    ]);
+
+    const restored = loadMessagesFromTranscript(workdir, 'sess2');
+    expect(restored.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('accepts assistant content as plain string', () => {
+    writeJsonl('sess3', [
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'plain text response',
+        createdAt: '2026-05-17T15:00:00Z',
+      },
+    ]);
+
+    const restored = loadMessagesFromTranscript(workdir, 'sess3');
+    expect(restored).toEqual([{ role: 'assistant', content: 'plain text response' }]);
+  });
+
+  it('skips entries with empty content', () => {
+    writeJsonl('sess4', [
+      { id: 'm1', role: 'user', content: '', createdAt: '2026-05-17T15:00:00Z' },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: { sessionId: 'x' },
+        createdAt: '2026-05-17T15:00:01Z',
+      },
+      { id: 'm3', role: 'user', content: 'real', createdAt: '2026-05-17T15:00:02Z' },
+    ]);
+
+    const restored = loadMessagesFromTranscript(workdir, 'sess4');
+    expect(restored).toEqual([{ role: 'user', content: 'real' }]);
+  });
+
+  it('does not include tool_calls or images in restored messages', () => {
+    writeJsonl('sess5', [
+      { id: 'm1', role: 'user', content: 'hi', createdAt: '2026-05-17T15:00:00Z' },
+    ]);
+    const restored = loadMessagesFromTranscript(workdir, 'sess5');
+    expect(restored[0].toolCalls).toBeUndefined();
+    expect(restored[0].images).toBeUndefined();
   });
 });

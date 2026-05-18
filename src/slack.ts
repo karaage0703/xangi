@@ -12,7 +12,7 @@ import {
   buildPromptWithAttachments,
 } from './file-utils.js';
 import { loadSettings, formatSettings } from './settings.js';
-import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
+import { STREAM_UPDATE_INTERVAL_MS, TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { ensureSession, getActiveSessionId } from './sessions.js';
@@ -24,21 +24,70 @@ import {
 } from './transcript-logger.js';
 import type { KnownBlock } from '@slack/types';
 
-/** Slack Block Kit: Stopボタン */
-function createSlackStopBlocks(): KnownBlock[] {
-  return [
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Stop' },
-          action_id: 'xangi_stop',
-          style: 'danger',
-        },
-      ],
-    },
-  ];
+/** 残り時間を mm:ss でフォーマット */
+function formatRemaining(remainingMs: number): string {
+  const sec = Math.max(0, Math.floor(remainingMs / 1000));
+  const mm = Math.floor(sec / 60);
+  const ss = sec % 60;
+  return `${mm}:${String(ss).padStart(2, '0')}`;
+}
+
+/**
+ * Slack Block Kit: 処理中ボタン (Stop / 延長 / 残り MM:SS の順)
+ *
+ * timeout 未指定なら従来通り Stop のみ。
+ * extendEnabled=false (TIMEOUT_EXTEND_ENABLED=false) や canExtend=false (上限到達) なら
+ * 延長ボタンを出さない。
+ */
+function createSlackProcessingBlocks(timeout?: {
+  remainingMs: number;
+  canExtend: boolean;
+  extendEnabled: boolean;
+}): KnownBlock[] {
+  const elements: Array<{
+    type: 'button';
+    text: { type: 'plain_text'; text: string };
+    action_id: string;
+    style?: 'primary' | 'danger';
+  }> = [];
+  elements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: 'Stop' },
+    action_id: 'xangi_stop',
+    style: 'danger',
+  });
+  if (timeout) {
+    if (timeout.extendEnabled && timeout.canExtend) {
+      elements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '延長' },
+        action_id: 'xangi_extend',
+        style: 'primary',
+      });
+    }
+    const isWarn = timeout.remainingMs <= 30_000;
+    elements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: `⏱ ${formatRemaining(timeout.remainingMs)}` },
+      action_id: 'xangi_timeout_display',
+      ...(isWarn && { style: 'danger' as const }),
+    });
+  }
+  return [{ type: 'actions', elements }];
+}
+
+/** チャンネルの現在のタイムアウト状態から UI 用に整形 (top-level 版) */
+function getSlackTimeoutInfoFor(
+  agentRunner: AgentRunner,
+  channelId: string
+): { remainingMs: number; canExtend: boolean; extendEnabled: boolean } | undefined {
+  const state = agentRunner.getTimeoutState?.(channelId);
+  if (!state?.active || state.timeoutAt == null) return undefined;
+  const remainingMs = Math.max(0, state.timeoutAt - Date.now());
+  // 延長 = 残り時間を 2 倍。残り時間を一度加算しても max を越えないか判定
+  const canExtend =
+    state.maxTimeoutAt != null && state.timeoutAt + remainingMs <= state.maxTimeoutAt;
+  return { remainingMs, canExtend, extendEnabled: TIMEOUT_EXTEND_ENABLED };
 }
 
 /** Slack Block Kit: New Sessionボタン */
@@ -62,6 +111,21 @@ const sessions = new Map<string, string>();
 
 // 最後のBotメッセージ（チャンネルID → メッセージts）
 const lastBotMessages = new Map<string, string>();
+
+/**
+ * 処理中の Slack メッセージ管理 (タイムアウト UI 更新用)
+ * channelId -> { messageTs, threadTs, intervalId }。
+ * runner の timeout-* イベントで残り時間 / +5m ブロックを 10 秒間隔で chat.update する。
+ */
+type SlackProcessingEntry = {
+  messageTs: string;
+  threadTs?: string;
+  currentText: string;
+  intervalId?: NodeJS.Timeout;
+  /** タイムアウト UI が表示開始された時刻 (最小表示時間判定用) */
+  startedAt?: number;
+};
+const slackProcessingMessages = new Map<string, SlackProcessingEntry>();
 
 // Slack メッセージバイト数制限（chat.updateはバイト数で制限される）
 const SLACK_MAX_TEXT_BYTES = 3900;
@@ -259,6 +323,43 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (!stopped) {
       console.log(`[slack] No running task to stop for channel ${channelId}`);
     }
+  });
+
+  // ボタンアクション: タイムアウト延長 (残り時間を 2 倍にする)
+  app.action('xangi_extend', async ({ ack, body, client: actionClient }) => {
+    await ack();
+    const channelId = body.channel?.id;
+    if (!channelId) return;
+    const userId = body.user?.id;
+    if (
+      !config.slack.allowedUsers?.includes('*') &&
+      userId &&
+      !config.slack.allowedUsers?.includes(userId)
+    ) {
+      return;
+    }
+    // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
+    const result = agentRunner.extendTimeout?.(channelId) ?? {
+      ok: false,
+      reason: 'unsupported' as const,
+    };
+    if (!result.ok) {
+      const text =
+        result.reason === 'max_timeout_exceeded'
+          ? '⏱ 上限に達したため延長できません'
+          : result.reason === 'no_active_request'
+            ? '⏱ 処理中のリクエストがありません'
+            : '⏱ このバックエンドでは延長できません';
+      await actionClient.chat
+        .postEphemeral({ channel: channelId, user: userId || '', text })
+        .catch(() => {});
+    }
+    // 成功時はメッセージ自体は timeout-extended イベント listener で update される
+  });
+
+  // 表示専用ボタン (残り時間バッジ): クリック無視
+  app.action('xangi_timeout_display', async ({ ack }) => {
+    await ack();
   });
 
   // ボタンアクション: New Session
@@ -664,6 +765,78 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   await app.start();
   console.log('[slack] ⚡️ Slack bot is running!');
 
+  // runner の timeout-* イベントを Slack メッセージ更新に紐付け
+  const getSlackTimeoutInfo = (
+    channelId: string
+  ): { remainingMs: number; canExtend: boolean; extendEnabled: boolean } | undefined => {
+    return getSlackTimeoutInfoFor(agentRunner, channelId);
+  };
+
+  const refreshSlackProcessingBlocks = async (channelId: string): Promise<void> => {
+    const entry = slackProcessingMessages.get(channelId);
+    if (!entry) return;
+    const info = getSlackTimeoutInfo(channelId);
+    if (!info) return;
+    try {
+      await app.client.chat.update({
+        channel: channelId,
+        ts: entry.messageTs,
+        text: entry.currentText,
+        blocks: [
+          {
+            type: 'section' as const,
+            text: { type: 'mrkdwn' as const, text: entry.currentText },
+          },
+          ...createSlackProcessingBlocks(info),
+        ],
+      });
+    } catch (e: unknown) {
+      console.warn(
+        '[slack] Failed to refresh processing blocks:',
+        e instanceof Error ? e.message : String(e)
+      );
+    }
+  };
+
+  const runnerEmitter = agentRunner as unknown as {
+    on?: (e: string, l: (p: unknown) => void) => void;
+  };
+  if (typeof runnerEmitter.on === 'function') {
+    runnerEmitter.on('timeout-started', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      const entry = slackProcessingMessages.get(p.channelId);
+      if (!entry) return; // Slack 経由でなければ無視
+      void refreshSlackProcessingBlocks(p.channelId);
+      // 10 秒ごとに残り時間を chat.update。
+      // Slack API レート (Tier 3 ≈ 50/min) を考慮、複数チャンネル並列起動時にも
+      // 余裕を持たせるため。thinking/stream interval も毎秒 update するが
+      // そちらは getSlackTimeoutInfoFor 経由で最新の timeout 情報を載せている。
+      if (entry.intervalId) clearInterval(entry.intervalId);
+      entry.intervalId = setInterval(() => {
+        const info = getSlackTimeoutInfo(p.channelId!);
+        if (!info) {
+          if (entry.intervalId) clearInterval(entry.intervalId);
+          return;
+        }
+        void refreshSlackProcessingBlocks(p.channelId!);
+      }, 10_000);
+    });
+    runnerEmitter.on('timeout-extended', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      void refreshSlackProcessingBlocks(p.channelId);
+    });
+    runnerEmitter.on('timeout-cleared', (payload: unknown) => {
+      const p = payload as { channelId?: string };
+      if (!p.channelId) return;
+      const entry = slackProcessingMessages.get(p.channelId);
+      if (!entry) return;
+      if (entry.intervalId) clearInterval(entry.intervalId);
+      slackProcessingMessages.delete(p.channelId);
+    });
+  }
+
   // スケジューラにSlack送信関数を登録
   if (options.scheduler) {
     options.scheduler.registerSender('slack', async (channelId, msg) => {
@@ -738,7 +911,7 @@ async function processMessage(
       ...(showButtons && {
         blocks: [
           { type: 'section' as const, text: { type: 'mrkdwn' as const, text: '🤔 考え中.' } },
-          ...createSlackStopBlocks(),
+          ...createSlackProcessingBlocks(),
         ],
       }),
     });
@@ -750,6 +923,16 @@ async function processMessage(
 
     // 最後のBotメッセージを保存
     lastBotMessages.set(channelId, messageTs);
+
+    // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で update される)
+    if (showButtons) {
+      slackProcessingMessages.set(channelId, {
+        messageTs,
+        threadTs,
+        currentText: '🤔 考え中.',
+        startedAt: Date.now(),
+      });
+    }
 
     let result: string;
     let newSessionId: string;
@@ -767,6 +950,9 @@ async function processMessage(
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
         const thinkingText = `🤔 考え中${dots}`;
+        // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、
+        // 最新の timeout 状態を渡して blocks を再生成する。
+        const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, channelId);
         client.chat
           .update({
             channel: channelId,
@@ -775,7 +961,7 @@ async function processMessage(
             ...(showButtons && {
               blocks: [
                 { type: 'section' as const, text: { type: 'mrkdwn' as const, text: thinkingText } },
-                ...createSlackStopBlocks(),
+                ...createSlackProcessingBlocks(timeoutInfo),
               ],
             }),
           })
@@ -803,11 +989,23 @@ async function processMessage(
                 console.log(
                   `[slack] stream update: chars=${streamText.length}, bytes=${streamBytes}`
                 );
+                // text のみ送ると Slack 側で blocks が消える挙動になるため、
+                // stream update でも timeout 情報付き blocks を維持する
+                const streamTimeoutInfo = getSlackTimeoutInfoFor(agentRunner, channelId);
                 client.chat
                   .update({
                     channel: channelId,
                     ts: messageTs,
                     text: streamText,
+                    ...(showButtons && {
+                      blocks: [
+                        {
+                          type: 'section' as const,
+                          text: { type: 'mrkdwn' as const, text: streamText },
+                        },
+                        ...createSlackProcessingBlocks(streamTimeoutInfo),
+                      ],
+                    }),
                   })
                   .catch((err) => {
                     console.error(
@@ -836,6 +1034,7 @@ async function processMessage(
         dotCount = (dotCount % 3) + 1;
         const dots = '.'.repeat(dotCount);
         const thinkingText = `🤔 考え中${dots}`;
+        const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, channelId);
         client.chat
           .update({
             channel: channelId,
@@ -844,7 +1043,7 @@ async function processMessage(
             ...(showButtons && {
               blocks: [
                 { type: 'section' as const, text: { type: 'mrkdwn' as const, text: thinkingText } },
-                ...createSlackStopBlocks(),
+                ...createSlackProcessingBlocks(timeoutInfo),
               ],
             }),
           })
@@ -887,7 +1086,16 @@ async function processMessage(
     await sendSlackResult(client, channelId, messageTs, threadTs, displayText || '✅');
 
     // 完了後: StopボタンをNewボタンに切り替え
+    // ただしタイムアウト UI ([+5m][⏱ MM:SS]) が表示された直後だと一瞬で
+    // 上書きされて視認できない。最低 2.5 秒は表示を残してから完了表示に切り替える。
     if (showButtons) {
+      const entry = slackProcessingMessages.get(channelId);
+      const MIN_TIMEOUT_DISPLAY_MS = 2500;
+      if (entry?.startedAt) {
+        const elapsed = Date.now() - entry.startedAt;
+        const wait = Math.max(0, MIN_TIMEOUT_DISPLAY_MS - elapsed);
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      }
       await client.chat
         .update({
           channel: channelId,

@@ -30,8 +30,22 @@ export interface LLMTool {
   };
 }
 
+/**
+ * OpenAI 互換 API の tool_choice。
+ * - 'auto' (default): tool を呼ぶかは LLM が判断
+ * - 'none': tool 呼ばずテキストで応答（最終応答などで指定）
+ * - 'required': 必ず tool を呼ぶ
+ * - { type: 'function', function: { name } }: 特定 tool を強制
+ */
+export type LLMToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
+
 export interface LLMChatOptions {
   tools?: LLMTool[];
+  toolChoice?: LLMToolChoice;
   temperature?: number;
   maxTokens?: number;
   systemPrompt?: string;
@@ -48,6 +62,17 @@ export interface ToolContext {
   workspace: string;
   userId?: string;
   channelId?: string;
+  /**
+   * tool_search 経由で deferred tool をアクティブ化するためのコールバック。
+   * 呼ぶと指定 tool の schema が次ターン以降の LLM リクエストに含まれる。
+   */
+  activateTools?: (names: string[]) => void;
+}
+
+/** tool_search 用カタログエントリ（name + description のみ、schema は含まない） */
+export interface ToolCatalogEntry {
+  name: string;
+  description: string;
 }
 
 export interface ToolResult {

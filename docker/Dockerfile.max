@@ -8,6 +8,7 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src/ ./src/
+COPY web/ ./web/
 RUN npm run build
 
 # Stage 2: Production (Full version with uv + Python)
@@ -39,6 +40,7 @@ RUN npm ci --omit=dev --ignore-scripts
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/web ./web
 
 # Copy xangi-cmd wrapper (tool-server CLI client)
 COPY bin/ ./bin/

@@ -54,8 +54,39 @@ An interface that abstracts AI CLIs:
 interface AgentRunner {
   run(prompt: string, options?: RunOptions): Promise<RunResult>;
   runStream(prompt: string, callbacks: StreamCallbacks, options?: RunOptions): Promise<RunResult>;
+  cancel?(channelId?: string): boolean;
+  destroy?(channelId: string): boolean;
+  hasRunner?(channelId: string): boolean;
+  /** Returns the active request's timeout state for UI countdown */
+  getTimeoutState?(channelId: string): TimeoutState;
+  /** Called by the +5m button to extend the active request's timeout */
+  extendTimeout?(channelId: string, additionalMs: number): ExtendTimeoutResult;
 }
 ```
+
+Every Runner implementation (Claude Code / Codex / Gemini / Local LLM / Dynamic) is also
+an `EventEmitter` and emits `timeout-started` / `timeout-extended` / `timeout-cleared`
+events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI.
+
+### Timeout Controller (timeout-controller.ts)
+
+A shared helper that centralizes per-channel timeout state for every runner:
+
+```typescript
+class TimeoutController extends EventEmitter {
+  start(channelId, onTimeout): void;       // start request + emit 'timeout-started'
+  clear(channelId, reason): void;          // completed / error + emit 'timeout-cleared'
+  extend(channelId, additionalMs): ExtendTimeoutResult; // extend + emit 'timeout-extended'
+  getState(channelId): TimeoutState;       // UI consumption
+  clearAll(reason): void;                  // shutdown cleanup
+}
+```
+
+- `start()` schedules `setTimeout(onTimeout, baseTimeoutMs)`
+- `extend()` reschedules the timer and rejects with `max_timeout_exceeded` if the new
+  deadline would exceed `maxTimeoutAt` (request start time + 1 hour)
+- `onTimeout` looks up the *current* AbortController / child process so that retries
+  swapping out the underlying resource still get killed on timeout
 
 ### Dynamic Runner Manager (dynamic-runner.ts)
 
@@ -135,15 +166,181 @@ The LLM client has two API paths: Ollama native API and OpenAI-compatible API. N
 |------|----------------------|-------------------|
 | Assistant tool calls | Identified by `tool_calls[].id` | Identified by `tool_calls[].function` |
 | Tool message association | `tool_call_id` (by ID) | `tool_name` (by name) |
-| Conversion function | `toOpenAIMessages()` | Inline conversion in `chatOllamaNative()` |
+| Conversion function | `toOpenAIMessages()` | `toOllamaMessages()` |
 
-In the Ollama native path, a reverse lookup map from `toolCallId` to `tool_name` is used for association.
+In the Ollama native path, a reverse lookup map from `toolCallId` to `tool_name` is used for association. `toOllamaMessages()` is shared by both `chatOllamaNative` and `chatStreamOllamaNative` so tool history is never dropped on the streaming path.
+
+**`chatStream` with tools / tool_choice (OpenAI-compatible streaming path):**
+
+`chatStream` carries `tools` / `tool_choice` in the payload, same as `chatOpenAI`. Without `tools` on the streaming path, when the LLM decides a tool call is needed it falls back to emitting a pseudo tool_call string as plain text (e.g. `<|tool_call>call:fn{args}<tool_call|>`) — a format drift observed in practice with Gemma 4 26B-A4B-NVFP4 on vLLM.
+
+`LLMChatOptions.toolChoice`:
+
+| Value | Purpose |
+|---|---|
+| `'auto'` | LLM decides (OpenAI default) |
+| `'none'` | Forces text-only reply (used for the final answer) |
+| `'required'` | Forces a tool call |
+| `{ type: 'function', function: { name } }` | Forces a specific tool |
+
+`executeStreamLoop` sets `toolChoice='none'` on the final chatStream call so the model cannot try to call another tool — preventing the pseudo tool_call text leak after the tool loop has completed. Codex CLI's Responses API sends streaming and tools/tool_choice as a single integrated request (`codex-rs/core/src/client.rs`); xangi-dev stays on Chat Completions but achieves the equivalent effect via `tool_choice='none'`.
+
+**Ollama native path: tools / tool_choice:**
+
+The Ollama native API (`/api/chat`) also carries `tools` in the payload in both `chatOllamaNative` and `chatStreamOllamaNative`. When `LOCAL_LLM_THINKING=false` and the URL contains `11434` / `ollama` (the `isOllamaUrl()` check), `chatStream` dispatches to `chatStreamOllamaNative`. If `tools` were missing on this path, the same format drift seen on the Gemma 4 / vLLM path (pseudo tool_call strings leaking as text in the final answer; the actual reply body not being generated) would occur for Ollama-hosted models like Qwen3.6 as well.
+
+The Ollama native API does not officially support the OpenAI `tool_choice` parameter (it is silently ignored). Therefore `toolChoice='none'` is **emulated by not sending `tools` at all** — with no tools available, the LLM cannot call one, which is equivalent to forcing a text reply. `toolChoice='auto'` / `'required'` keeps `tools` in the body but omits `tool_choice` itself (best-effort; Ollama ignores it).
+
+**Shared helpers (4-path consistency guarantee):**
+
+To ensure the four paths (`chat` / `chatStream` × OpenAI / Ollama) inject tools and convert messages identically with no drift, the following helpers are consolidated at the top of `src/local-llm/llm-client.ts`:
+
+| Helper | Purpose | Callers |
+|---|---|---|
+| `applyOpenAITools(body, options)` | Inject OpenAI-style tools/tool_choice | `chatOpenAI`, `chatStream` (OpenAI branch) |
+| `applyOllamaTools(body, options)` | Inject Ollama-style tools + emulate `tool_choice='none'` | `chatOllamaNative`, `chatStreamOllamaNative` |
+| `toOllamaMessages(messages)` | Convert LLMMessage → Ollama format (images / tool_calls / tool_name) | `chatOllamaNative`, `chatStreamOllamaNative` |
+
+Adding new behavior (extra tool_choice values, new message fields, new providers) only requires touching one helper to reflect across all four paths. The test suite (`tests/local-llm-client-ollama-tools.test.ts`) covers both the helper units and the Ollama payload at the integration level.
 
 **Error Handling Design:**
 
 - `isSessionRelatedError()` — Lowercases the Error instance message and checks if it matches known patterns caused by session history. Always returns false for non-Error objects
 - `formatLlmError()` — Converts connection errors, timeouts, authentication errors, rate limits, and server errors into clear user-friendly messages. Returns a default message for non-Error objects
-- Context trimming (`trimSession()`) — Executes tool result truncation, message count limiting (MAX_SESSION_MESSAGES), and total character limiting (CONTEXT_MAX_CHARS) with recent message protection
+- Context trimming (`trimSession()`) — Executes tool result truncation, message count limiting, and total character limiting with recent message protection (limits are computed dynamically; see the Context Budget section below)
+
+**Context Budget Dynamic Calculation (runner.ts: `loadContextBudget`):**
+
+To align xangi's session limit with the LLM's `--max-model-len` (vLLM) or `num_ctx` (Ollama), trimming thresholds are derived from env vars. The hardcoded `CONTEXT_MAX_CHARS=120000` is removed.
+
+Priority:
+
+1. If `LOCAL_LLM_CONTEXT_MAX_CHARS` is set explicitly → use it (highest priority)
+2. Otherwise, derive from `LOCAL_LLM_NUM_CTX` (default 32768):
+
+```
+historyTokens   = NUM_CTX - SYSTEM_PROMPT_BUDGET - OUTPUT_BUDGET - SAFETY_MARGIN
+contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≈ 3 chars (conservative for JA-mixed)
+```
+
+Example: with `NUM_CTX=32768` → `(32768 - 8000 - 4096 - 1000) * 3 = 59016 chars`.
+
+| env | Role | Default |
+|---|---|---|
+| `LOCAL_LLM_CONTEXT_MAX_CHARS` | Explicit override (skip derivation) | Auto-derived |
+| `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt | `8000` |
+| `LOCAL_LLM_OUTPUT_BUDGET_TOKENS` | Max output tokens per request | `4096` |
+| `LOCAL_LLM_SAFETY_MARGIN_TOKENS` | Safety margin | `1000` |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST` | Most recent N messages are never trimmed | `10` |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS` | Tool result truncation | `4000` |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES` | Max messages per session | `50` |
+
+The `ContextBudget` value includes derivation details (`source: 'explicit' | 'derived'`, per-token budgets) and is logged at startup for tuning/debugging traceability.
+
+**Per-channel LocalLlmMode Override (backend-resolver.ts):**
+
+`ChannelOverride.localLlmMode?: 'agent' | 'lite' | 'chat'` sits alongside `backend / model / effort`, allowing per-channel Local LLM mode via `CHANNEL_OVERRIDES` JSON.
+
+```json
+{
+  "ch_id": {
+    "backend": "local-llm",
+    "model": "gemma4-26b-a4b-nvfp4",
+    "localLlmMode": "agent"
+  }
+}
+```
+
+`MODE_DEFAULTS` (runner.ts):
+
+| mode | tools | skills | xangiCommands | triggers |
+|---|---|---|---|---|
+| `agent` | ✅ | ✅ | ✅ | – |
+| `lite`  | ✅ | – | ✅ | ✅ |
+| `chat`  | – | – | – | – |
+
+**Per-call application flow:**
+
+```
+RunOptions.localLlmMode (DynamicAgentRunner injects resolved.localLlmMode)
+   ↓
+runner.run() / runStream() calls resolveCallModeFlags(callMode) → ModeFlags
+   ↓
+buildSystemPrompt(flags) and llmTools = callFlags.tools ? getAllTools() : []
+are recomputed per-call
+```
+
+Note: individual env vars at startup (e.g. `LOCAL_LLM_TOOLS=false`) are **ignored** when a per-call override is supplied — `MODE_DEFAULTS` are applied directly.
+
+**`/llmmode` slash command (index.ts):**
+
+`/llmmode <agent|lite|chat|default|show>` flips the per-channel mode interactively. `agent/lite/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `show` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
+
+**Tool Deferred Loading (`tool_search`, Codex / Claude Code style):**
+
+Passing every tool schema on every turn pressures the context and triggers format drift / mis-selection on Local LLMs. Inspired by Codex CLI's `tool_search` (stable=true, `TOOL_SEARCH_DEFAULT_LIMIT=8`) and Claude Code's `ToolSearch`, we activate tool schemas on demand.
+
+Design pillars:
+
+1. **Always-loaded set (per-process default)**: `loadAlwaysLoadedToolNames(env)` reads `LOCAL_LLM_ALWAYS_LOADED_TOOLS` at startup. If unset, the default is `read,write,edit,exec,glob,grep,send_file,web_fetch,tool_search`. `tool_search` is always included unconditionally (it is the entry point to call deferred tools)
+2. **Active set (per-session)**: `Session.activeToolNames: Set<string>` is initialised from the always-loaded set and is dynamically extended by `tool_search` results
+3. **Recomputed each iteration**: At the top of each `executeAgentLoop` / `executeStreamLoop` iteration, `getActiveTools(session.activeToolNames)` rebuilds the schema list passed to `body.tools`. Newly activated tools become callable **on the next turn**
+4. **Deferred catalog rendering**: `buildSystemPrompt` adds a "Deferred Tools (load on demand via tool_search)" section listing the names + descriptions of deferred tools (no schemas — token-saving)
+
+`tool_search` scoring (`scoreToolMatch`):
+
+| Match type | Score |
+|---|---|
+| Exact name match | 100 |
+| Substring of name | 50 |
+| Query token in name | +20 / token |
+| Query token in description | +10 / token |
+
+Top N results (`LOCAL_LLM_TOOL_SEARCH_LIMIT`, default 8) are sorted by descending score and added to the session via the `context.activateTools(names)` callback.
+
+**Tool activation callback (types.ts: `ToolContext.activateTools`):**
+
+```ts
+interface ToolContext {
+  workspace: string;
+  channelId?: string;
+  activateTools?: (names: string[]) => void;  // invoked from tool_search
+}
+```
+
+`runner.executeAgentLoop` injects `(names) => session.activeToolNames.add(...names)` into the context when calling executeTool. This completes the loop: `tool_search` → search → expand active set → next iteration's reasoning can call the targeted tool.
+
+env summary:
+
+| env | Role | Default |
+|---|---|---|
+| `LOCAL_LLM_TOOL_SEARCH_ENABLED` | Enable deferred loading | `true` |
+| `LOCAL_LLM_TOOL_SEARCH_LIMIT` | Max hits per search | `8` |
+| `LOCAL_LLM_ALWAYS_LOADED_TOOLS` | Always-loaded tool names (CSV); `tool_search` is always added | builtin core + tool_search |
+
+To revert to the legacy behaviour (all tools always loaded), set `LOCAL_LLM_TOOL_SEARCH_ENABLED=false`.
+
+Trade-off: a deferred tool's first call requires a `tool_search` round-trip → +1 turn. Description quality directly affects search accuracy.
+
+**Tool failure → LLM self-correction recovery loop (Step A–D):**
+
+Some local LLMs loop on the same `tool_search` query up to `MAX_TOOL_ROUNDS` when no useful results come back, then hallucinate pseudo tool_call text (`<|channel>thought\ncall:fn{args}<channel|>` / bare `call:fn{args}`) in the final chatStream — leaking drift into the final response. A naive post-process strip would just hide the symptom; the LLM never learns it produced invalid output and re-emits the same drift next turn. Instead we **feed the failure back to the LLM and let it self-correct**.
+
+| Step | Trigger | Behaviour |
+|---|---|---|
+| **A** (`tools.ts: toolSearchToolHandler`) | `tool_search` executes | Match against **skills** in addition to tools. When a skill matches, return `read("skills/<name>/SKILL.md")` as next-step guidance. On no matches, return guidance: don't repeat the same query, load the skill directly via `read`, or respond to the user in plain text. |
+| **B** (`runner.ts: recordToolCallAndCheckLoop`) | Same `(name, args)` tool_call repeated 3 times consecutively | Skip `executeTool` and return a synthetic error result (`Tool '...' has been called 3 times consecutively...`) instructing the LLM to try different args, a different tool, or plain-text response. |
+| **C** (`runner.ts` final chatStream + `pseudo-toolcall.ts: containsPseudoToolCall`) | Final chatStream output contains **strict drift** (`call:fn{}` / `<\|channel\|>...<\|channel\|>` / `<\|tool_call\|>...<\|tool_call\|>`) | Push raw drift back as an assistant message, append a system message (`PSEUDO_TOOLCALL_FEEDBACK_PROMPT`) telling the LLM to call a real tool via the proper structure or respond in plain text, and re-run chatStream once. |
+| **D** (`runner.ts` output replacement + `FRIENDLY_FALLBACK_MESSAGE`) | Step C retry still produced strict drift | Replace output with a friendly fallback ("ごめん、うまく応答を組み立てられなかった…"). Raw content is preserved via `console.warn` for debugging. |
+
+Drift classification:
+
+- **Strict drift** (`STRICT_DRIFT_PATTERNS`): structurally suggests the real response is missing or replaced → triggers Step C feedback.
+- **Cosmetic leak** (`COSMETIC_LEAK_PATTERNS`): bare leading/trailing `thought\n` etc., the body itself is fine but a marker leaked → silent strip via `stripPseudoToolCalls`, no retry.
+
+The session tracks `recentToolCallSigs: string[]` (capped at 8, FIFO). `toolCallSignature(name, args)` normalises with sorted JSON keys to make the signature order-independent. `REPEATED_TOOL_CALL_THRESHOLD=3` triggers the loop detection.
+
+Design rationale: Step A's skill hinting is usually decisive — by surfacing "what to do next" in the `tool_search` result, the LLM is routed into the canonical path (`read SKILL.md` → run the script described in the skill). B / C / D act as fail-safes layered behind A, rather than a single mechanism trying to handle every failure mode.
 
 ### Scheduler (scheduler.ts)
 
@@ -337,6 +534,7 @@ Detects and automatically executes special commands output by the AI:
 | Text parsing | `MEDIA:/path/to/file` | File sending |
 | Text parsing | `\n===\n` | Message splitting |
 | Slash command | `/autoreply` | Toggle mention-free auto-reply per channel |
+| Slash command | `/respondtobots` | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`) |
 
 CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
@@ -451,6 +649,7 @@ src/
 ├── file-utils.ts       # File operation utilities
 ├── process-manager.ts  # Process management
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)
+├── timeout-controller.ts # Shared per-channel timeout state (start/clear/extend)
 └── transcript-logger.ts # Per-session transcript logging
 ```
 

@@ -445,4 +445,123 @@ describe('PersistentRunner', () => {
     const spawnOptions = callArgs[2] as { env: Record<string, string | undefined> };
     expect(spawnOptions.env.XANGI_CHANNEL_ID).toBeUndefined();
   });
+
+  // ─── Timeout extend (Issue #235) ───
+
+  it('getTimeoutState returns active=false before any request', () => {
+    const state = runner.getTimeoutState();
+    expect(state.active).toBe(false);
+  });
+
+  it('extendTimeout returns no_active_request before any request', () => {
+    const result = runner.extendTimeout(undefined, 5 * 60_000);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('no_active_request');
+  });
+
+  it('getTimeoutState returns active=true with timeoutAt during a running request', async () => {
+    runner.run('test prompt').catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const state = runner.getTimeoutState();
+    expect(state.active).toBe(true);
+    expect(state.timeoutAt).toBeGreaterThan(Date.now());
+    expect(state.maxTimeoutAt).toBeGreaterThan(state.timeoutAt!);
+    // 初期 timeoutMs = DEFAULT_TIMEOUT_MS (5 分)
+    expect(state.timeoutMs).toBe(5 * 60_000);
+    expect(state.remainingMs).toBeGreaterThan(0);
+  });
+
+  it('extendTimeout extends timeoutAt by additionalMs during a running request', async () => {
+    runner.run('test prompt').catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const before = runner.getTimeoutState();
+    const beforeTimeoutAt = before.timeoutAt!;
+    const result = runner.extendTimeout(undefined, 5 * 60_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.timeoutAt).toBe(beforeTimeoutAt + 5 * 60_000);
+    expect(result.timeoutMs).toBe(10 * 60_000); // 5 + 5 分
+    expect(result.remainingMs).toBeGreaterThan(0);
+
+    const after = runner.getTimeoutState();
+    expect(after.timeoutAt).toBe(beforeTimeoutAt + 5 * 60_000);
+  });
+
+  it('extendTimeout fails with max_timeout_exceeded when exceeding 1h cap', async () => {
+    runner.run('test prompt').catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 1 時間を超える延長を要求 → 拒否
+    const result = runner.extendTimeout(undefined, 60 * 60_000);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('max_timeout_exceeded');
+    expect(result.maxTimeoutAt).toBeGreaterThan(Date.now());
+
+    // 元の timeoutAt は変わっていないこと
+    const state = runner.getTimeoutState();
+    expect(state.timeoutMs).toBe(5 * 60_000);
+  });
+
+  it('extendTimeout can be called multiple times until reaching cap', async () => {
+    runner.run('test prompt').catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 5 分初期 + 11 回延長 = 60 分 (上限ぴったり手前)、12 回目で超える
+    for (let i = 0; i < 11; i++) {
+      const r = runner.extendTimeout(undefined, 5 * 60_000);
+      expect(r.ok).toBe(true);
+    }
+    const final = runner.getTimeoutState();
+    expect(final.timeoutMs).toBe(60 * 60_000);
+
+    const overflow = runner.extendTimeout(undefined, 5 * 60_000);
+    expect(overflow.ok).toBe(false);
+    expect(overflow.reason).toBe('max_timeout_exceeded');
+  });
+
+  it('emits timeout-started on request start and timeout-cleared on completion', async () => {
+    const { getMockProcess } = await import('child_process');
+    const startedSpy = vi.fn();
+    const clearedSpy = vi.fn();
+    runner.on('timeout-started', startedSpy);
+    runner.on('timeout-cleared', clearedSpy);
+
+    const promise = runner.run('test prompt');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(startedSpy).toHaveBeenCalledTimes(1);
+    const startedPayload = startedSpy.mock.calls[0][0];
+    expect(startedPayload.timeoutAt).toBeGreaterThan(Date.now());
+    expect(startedPayload.maxTimeoutAt).toBeGreaterThan(startedPayload.timeoutAt);
+
+    const mockProcess = getMockProcess();
+    mockProcess.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'result',
+        result: 'done',
+        session_id: 'test-session-123',
+        is_error: false,
+      }) + '\n'
+    );
+    await promise;
+    expect(clearedSpy).toHaveBeenCalledTimes(1);
+    expect(clearedSpy.mock.calls[0][0].reason).toBe('completed');
+  });
+
+  it('emits timeout-extended when extendTimeout succeeds', async () => {
+    const extendedSpy = vi.fn();
+    runner.on('timeout-extended', extendedSpy);
+
+    runner.run('test prompt').catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    runner.extendTimeout(undefined, 5 * 60_000);
+    expect(extendedSpy).toHaveBeenCalledTimes(1);
+    const payload = extendedSpy.mock.calls[0][0];
+    expect(payload.timeoutAt).toBeGreaterThan(Date.now());
+    expect(payload.timeoutMs).toBe(10 * 60_000);
+    expect(payload.remainingMs).toBeGreaterThan(0);
+  });
 });

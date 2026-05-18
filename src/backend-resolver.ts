@@ -4,12 +4,22 @@ import type { AgentBackend, Config, EffortLevel } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
 
 /**
+ * Local LLM の動作モード
+ * - agent: 全機能ON（tools/skills/xangi-commands、triggers OFF）
+ * - lite: tools/xangi-commands/triggers ON、skills OFF（軽量、Discord 操作向け）
+ * - chat: 全機能 OFF（純粋な会話）
+ */
+export type LocalLlmMode = 'agent' | 'lite' | 'chat';
+
+/**
  * チャンネルごとのオーバーライド設定
  */
 export interface ChannelOverride {
   backend?: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  /** Local LLM のみ有効。バックエンドが local-llm の時に動作モードを切替 */
+  localLlmMode?: LocalLlmMode;
 }
 
 /**
@@ -19,6 +29,8 @@ export interface ResolvedBackend {
   backend: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  /** Local LLM mode override（local-llm backend の時のみ意味あり） */
+  localLlmMode?: LocalLlmMode;
 }
 
 /**
@@ -102,6 +114,7 @@ export class BackendResolver {
       backend: override.backend ?? this.defaultBackend,
       model: override.model ?? (override.backend ? undefined : this.defaultModel),
       effort: override.effort,
+      localLlmMode: override.localLlmMode,
     };
   }
 
@@ -114,8 +127,29 @@ export class BackendResolver {
     console.log(
       `[backend-resolver] Set override for ${channelId}: ${getBackendDisplayName(override.backend ?? this.defaultBackend)}` +
         (override.model ? ` (${override.model})` : '') +
-        (override.effort ? ` effort=${override.effort}` : '')
+        (override.effort ? ` effort=${override.effort}` : '') +
+        (override.localLlmMode ? ` mode=${override.localLlmMode}` : '')
     );
+  }
+
+  /**
+   * チャンネルの localLlmMode のみを更新（既存の backend/model/effort は保持）
+   */
+  setChannelLocalLlmMode(channelId: string, mode: LocalLlmMode | null): void {
+    const existing = this.channelOverrides.get(channelId) ?? {};
+    if (mode === null) {
+      delete existing.localLlmMode;
+    } else {
+      existing.localLlmMode = mode;
+    }
+    // 全フィールドが空ならエントリ削除、そうでなければ更新
+    if (!existing.backend && !existing.model && !existing.effort && !existing.localLlmMode) {
+      this.channelOverrides.delete(channelId);
+    } else {
+      this.channelOverrides.set(channelId, existing);
+    }
+    this.persistToEnv();
+    console.log(`[backend-resolver] Set localLlmMode for ${channelId}: ${mode ?? '(cleared)'}`);
   }
 
   /**

@@ -1,5 +1,13 @@
+import { EventEmitter } from 'events';
 import { PersistentRunner } from './persistent-runner.js';
-import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+  TimeoutState,
+  ExtendTimeoutResult,
+} from './agent-runner.js';
 import type { AgentConfig } from './config.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { deleteSession } from './sessions.js';
@@ -18,7 +26,7 @@ interface PoolEntry {
  * チャンネルごとに独立した PersistentRunner を管理し、
  * LRU eviction とアイドルタイムアウトでリソースを制御する。
  */
-export class RunnerManager implements AgentRunner {
+export class RunnerManager extends EventEmitter implements AgentRunner {
   private pool = new Map<string, PoolEntry>();
   private maxProcesses: number;
   private idleTimeoutMs: number;
@@ -41,6 +49,7 @@ export class RunnerManager implements AgentRunner {
       effort?: string;
     }
   ) {
+    super();
     this.agentConfig = agentConfig;
     this.platform = options?.platform;
     this.effort = options?.effort;
@@ -92,6 +101,14 @@ export class RunnerManager implements AgentRunner {
         );
       }
     });
+
+    // タイムアウト状態の変化を上位に bubble up
+    // (web-chat から events-emitter (SSE) や UI へ伝えるため)
+    for (const evt of ['timeout-started', 'timeout-extended', 'timeout-cleared'] as const) {
+      runner.on(evt, (payload: unknown) => {
+        this.emit(evt, payload);
+      });
+    }
 
     this.pool.set(channelId, {
       runner,
@@ -231,6 +248,30 @@ export class RunnerManager implements AgentRunner {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 指定チャンネルの現在のタイムアウト状態を取得 (UI 表示用)。
+   * ランナー未起動 / 進行中リクエスト無しの場合は active=false。
+   */
+  getTimeoutState(channelId: string): TimeoutState {
+    const entry = this.pool.get(channelId);
+    if (!entry) {
+      return { active: false };
+    }
+    return entry.runner.getTimeoutState(channelId);
+  }
+
+  /**
+   * 指定チャンネルの現在のリクエストのタイムアウトを延長する。
+   * ランナー未起動 / 進行中リクエスト無しの場合は 'no_active_request'。
+   */
+  extendTimeout(channelId: string, additionalMs: number): ExtendTimeoutResult {
+    const entry = this.pool.get(channelId);
+    if (!entry) {
+      return { ok: false, reason: 'no_active_request' };
+    }
+    return entry.runner.extendTimeout(channelId, additionalMs);
   }
 
   /**

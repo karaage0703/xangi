@@ -316,6 +316,59 @@ const systemSettingsHandler: ToolHandler = {
   },
 };
 
+// ─── History Tools ──────────────────────────────────────────────────
+
+/**
+ * web_history: 現在の Web Chat ペインの履歴を取得する。
+ * Web 経由で runner が起動された時、XANGI_CHANNEL_ID=web-chat:<appSessionId> が
+ * セットされているのを web-history-cmd が拾う。
+ */
+const webHistoryHandler: ToolHandler = {
+  name: 'web_history',
+  description:
+    '現在のWeb Chatペインの会話履歴を取得する。Web経由のセッションでのみ動作。結果はWebに送信されず、コンテキストに返る。',
+  parameters: {
+    type: 'object',
+    properties: {
+      count: { type: 'string', description: '取得件数（デフォルト10）' },
+      session: { type: 'string', description: 'セッションID（省略時は現在のペイン）' },
+      'max-chars': { type: 'string', description: '1メッセージあたり最大文字数（デフォルト500）' },
+    },
+  },
+  async execute(args, context): Promise<ToolResult> {
+    const flags: Record<string, string> = {};
+    if (args.count) flags.count = String(args.count);
+    if (args.session) flags.session = String(args.session);
+    if (args['max-chars']) flags['max-chars'] = String(args['max-chars']);
+    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
+    return runXangiCmd(['web_history', ...flagsToArgs(flags)], env);
+  },
+};
+
+/**
+ * slack_history: 現在の Slack チャンネルの履歴を取得する。
+ * Slack 経由で runner が起動された時、XANGI_CHANNEL_ID=<channelId> がセットされる。
+ */
+const slackHistoryHandler: ToolHandler = {
+  name: 'slack_history',
+  description:
+    '現在のSlackチャンネルの会話履歴を取得する。Slack経由のセッションでのみ動作。結果はSlackに送信されず、コンテキストに返る。',
+  parameters: {
+    type: 'object',
+    properties: {
+      channel: { type: 'string', description: 'チャンネルID（省略時は現在のチャンネル）' },
+      count: { type: 'string', description: '取得件数（デフォルト10、最大100）' },
+    },
+  },
+  async execute(args, context): Promise<ToolResult> {
+    const flags: Record<string, string> = {};
+    if (args.channel) flags.channel = String(args.channel);
+    if (args.count) flags.count = String(args.count);
+    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
+    return runXangiCmd(['slack_history', ...flagsToArgs(flags)], env);
+  },
+};
+
 // ─── Export ─────────────────────────────────────────────────────────
 
 /** Discord接続時に追加するツール */
@@ -341,7 +394,12 @@ export function getSystemTools(): ToolHandler[] {
   return [systemRestartHandler, systemSettingsHandler];
 }
 
+/** 履歴取得ツール (web_history / slack_history)。プラットフォームに応じてランナーが呼ぶ */
+export function getHistoryTools(): ToolHandler[] {
+  return [webHistoryHandler, slackHistoryHandler];
+}
+
 /** 全xangiツール（プラットフォーム問わず） */
 export function getAllXangiTools(): ToolHandler[] {
-  return [...getDiscordTools(), ...getScheduleTools(), ...getSystemTools()];
+  return [...getDiscordTools(), ...getScheduleTools(), ...getSystemTools(), ...getHistoryTools()];
 }
