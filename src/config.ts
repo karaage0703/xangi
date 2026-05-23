@@ -186,7 +186,7 @@ export function loadConfig(): Config {
 
   // プラットフォーム自動検出
   // 単独運用なら専用 prompt を注入、複数同時運用なら undefined (全コマンド注入経路)。
-  // LINE 単独運用 (lemon-ai 等) の場合は XANGI_COMMANDS_LINE で Markdown 禁止
+  // LINE 単独運用の場合は XANGI_COMMANDS_LINE で Markdown 禁止
   // 等の LINE 固有ルールを注入する。
   const discordEnabled = !!discordToken;
   const slackEnabled = !!slackBotToken && !!slackAppToken;
