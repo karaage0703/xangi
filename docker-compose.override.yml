@@ -1,4 +1,0 @@
-services:
-  xangi-max:
-    ports:
-      - "18889:18889"

@@ -23,7 +23,8 @@ import {
   getDeferredToolCatalog,
 } from './tools.js';
 import { loadSkills } from '../skills.js';
-import { CHAT_SYSTEM_PROMPT_PERSISTENT, XANGI_COMMANDS } from '../base-runner.js';
+import { CHAT_SYSTEM_PROMPT_PERSISTENT, buildXangiCommands } from '../base-runner.js';
+import type { ChatPlatform } from '../prompts/index.js';
 import { TOOLS_USAGE_PROMPT } from '../prompts/index.js';
 import { checkApprovalServer } from '../approval-server.js';
 import {
@@ -633,9 +634,16 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   private readonly defaultActiveToolNames: Set<string>;
   /** チャンネル別タイムアウト管理（UI の +5m / 残り表示 / 自動 abort 連動） */
   private readonly timeoutController: TimeoutController;
+  /**
+   * 単独運用プラットフォーム ('discord' / 'slack' / 'web' / 'line')。
+   * undefined なら Discord + Slack 両方のコマンドを注入する従来挙動。
+   * `buildXangiCommands(this.platform)` で system prompt を組み立てる際に使う。
+   */
+  private readonly platform?: ChatPlatform;
 
-  constructor(config: AgentConfig) {
+  constructor(config: AgentConfig & { platform?: ChatPlatform }) {
     super();
+    this.platform = config.platform;
     const baseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
     const model = config.model || process.env.LOCAL_LLM_MODEL || '';
     const apiKey = process.env.LOCAL_LLM_API_KEY || '';
@@ -1642,9 +1650,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const f = flags ?? this.startupFlags;
     const parts: string[] = [];
 
-    // XANGI_COMMANDS注入
+    // XANGI_COMMANDS注入 (platform 別に Markdown 抑制等のルールが切り替わる)
     if (f.xangiCommands) {
-      parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + XANGI_COMMANDS);
+      const commands = buildXangiCommands(this.platform);
+      parts.push(CHAT_SYSTEM_PROMPT_PERSISTENT + '\n\n## XANGI_COMMANDS.md\n\n' + commands);
     }
 
     // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）— 常に注入

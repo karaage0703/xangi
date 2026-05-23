@@ -110,7 +110,7 @@ export function createAgentRunner(
     case 'gemini':
       return new GeminiRunner(config);
     case 'local-llm':
-      return new LocalLlmRunner(config);
+      return new LocalLlmRunner({ ...config, platform: options?.platform });
     default:
       throw new Error(`Unknown agent backend: ${backend}`);
   }

@@ -28,3 +28,6 @@ workspace/*
 ai-assistant-workspace/
 .xangi/
 models/
+
+# Local dev overrides (Compose 標準, per-developer)
+docker-compose.override.yml

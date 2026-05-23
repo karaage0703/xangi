@@ -67,6 +67,7 @@ import {
 import { join } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { startWebChat } from './web-chat.js';
+import { startLineBot } from './line.js';
 import { getEventsConfig, threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
@@ -295,6 +296,7 @@ async function main() {
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
   const discordAllowed = config.discord.allowedUsers || [];
   const slackAllowed = config.slack.allowedUsers || [];
+  const lineAllowed = config.line.allowedUsers || [];
 
   if (config.discord.enabled && discordAllowed.length === 0) {
     console.error('[xangi] Error: DISCORD_ALLOWED_USER must be set (use "*" to allow everyone)');
@@ -302,6 +304,10 @@ async function main() {
   }
   if (config.slack.enabled && slackAllowed.length === 0) {
     console.error('[xangi] Error: SLACK_ALLOWED_USER must be set (use "*" to allow everyone)');
+    process.exit(1);
+  }
+  if (config.line.enabled && lineAllowed.length === 0) {
+    console.error('[xangi] Error: LINE_ALLOWED_USER must be set (use "*" to allow everyone)');
     process.exit(1);
   }
 
@@ -314,6 +320,11 @@ async function main() {
     console.log('[xangi] Slack: All users are allowed');
   } else if (slackAllowed.length > 0) {
     console.log(`[xangi] Slack: Allowed users: ${slackAllowed.join(', ')}`);
+  }
+  if (lineAllowed.includes('*')) {
+    console.log('[xangi] LINE: All users are allowed');
+  } else if (lineAllowed.length > 0) {
+    console.log(`[xangi] LINE: Allowed users: ${lineAllowed.join(', ')}`);
   }
 
   const client = new Client({
@@ -435,6 +446,25 @@ async function main() {
   // WebチャットUI起動
   if (process.env.WEB_CHAT_ENABLED === 'true') {
     startWebChat({ agentRunner });
+  }
+
+  // LINE Bot 起動 (Tailscale Funnel 等で外部公開して webhook を受ける想定)
+  if (config.line.enabled) {
+    startLineBot({
+      agentRunner,
+      channelSecret: config.line.channelSecret!,
+      channelAccessToken: config.line.channelAccessToken!,
+      allowedUsers: lineAllowed,
+      port: config.line.webhookPort,
+      path: config.line.webhookPath,
+      loadingAnimationEnabled: config.line.loadingAnimationEnabled,
+      loadingAnimationSeconds: config.line.loadingAnimationSeconds,
+      slowResponseEnabled: config.line.slowResponseEnabled,
+      slowResponseThresholdMs: config.line.slowResponseThresholdMs,
+      idleResetEnabled: config.line.idleResetEnabled,
+      idleResetHours: config.line.idleResetHours,
+      resetTextPatterns: config.line.resetTextPatterns,
+    });
   }
 
   // インスタンス間チャット起動 (INTER_INSTANCE_CHAT_ENABLED=true のときのみ実体起動)
@@ -1746,9 +1776,9 @@ async function main() {
   }
 
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
-  if (!config.discord.enabled && !config.slack.enabled && !webChatEnabled) {
+  if (!config.discord.enabled && !config.slack.enabled && !webChatEnabled && !config.line.enabled) {
     console.error(
-      '[xangi] No chat platform enabled. Set DISCORD_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, or WEB_CHAT_ENABLED=true'
+      '[xangi] No chat platform enabled. Set DISCORD_TOKEN, SLACK_BOT_TOKEN/SLACK_APP_TOKEN, WEB_CHAT_ENABLED=true, or LINE_CHANNEL_ACCESS_TOKEN+LINE_CHANNEL_SECRET'
     );
     process.exit(1);
   }

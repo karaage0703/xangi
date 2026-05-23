@@ -55,7 +55,7 @@ function resolveConfig(): ResolvedConfig {
   return cachedConfig;
 }
 
-export type Platform = 'discord' | 'slack' | 'web';
+export type Platform = 'discord' | 'slack' | 'web' | 'line';
 
 /** プラットフォーム不問の thread_id を組み立てる。例: discord:123, slack:C012, web:session-abc */
 export function threadIdFor(platform: Platform, id: string): string {

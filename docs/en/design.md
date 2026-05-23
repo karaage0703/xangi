@@ -40,11 +40,48 @@ graph LR
 
 The main orchestrator. Integrates the following:
 
-- Discord/Slack client initialization
+- Discord / Slack / Web Chat / LINE client initialization
 - Message reception and routing
 - AI CLI invocation
 - Scheduler management
 - Command handling (via `xangi-cmd` CLI tool + text parsing)
+
+### LINE Bot Integration (line.ts)
+
+1:1 chat via LINE Messaging API. Design:
+
+- `http.createServer`-based (matches `web-chat.ts`, avoids the Express dependency)
+- Uses `@line/bot-sdk`'s `validateSignature` for raw-body + `X-Line-Signature` HMAC-SHA256 verification
+- Passes text messages through `runWithBubbleEvents` to the Runner, then replies via `LineBotClient.replyMessage`
+- Per-userId session isolation (`contextKey = line:<userId>`)
+- `LINE_ALLOWED_USER` whitelist (`*` allows all, empty causes a startup error)
+- Acks the webhook immediately (LINE expects HTTP 200 within 30 s; the rest is async)
+
+#### Two-stage responsiveness defense (loading animation + reply→push auto-switch)
+
+LINE has no thread or "new chat" UI boundary like Slack or Discord, and reply tokens expire 60 s after the inbound event. Long thinking time or local-LLM tool loops can easily turn into "ghosted" experiences. Two layered defenses cover this:
+
+1. **Instant ACK — Loading animation API**: Right after the allowlist check (before the runner starts), `handleEvent` calls `client.showLoadingAnimation({ chatId, loadingSeconds })` which hits LINE's official `POST /v2/bot/chat/loading/start`. The "typing…" indicator appears in the chat immediately and disappears when the bot sends its next message. Failure is non-fatal (`console.warn` only). DM-only feature (groups are ignored by LINE, but the API call still succeeds). Duration is controlled by `LINE_LOADING_ANIMATION_SECONDS` (default 60; `snapLoadingSeconds` snaps to one of 5/10/15/20/25/30/40/50/60). Disable with `LINE_LOADING_ANIMATION_ENABLED=false`.
+
+2. **Reply→Push auto-switch — Slow response fallback**: A `setTimeout` armed with `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45000 ms). When it fires, the reply token is consumed by sending `🤔 ちょっと待ってね、考えてる…` (the `slowFiredRef` flag is set). After the runner finishes, the send path is chosen from `slowFiredRef.value` and `elapsedMs`:
+   - `slowFiredRef.value === true` → reply token consumed; must use Push API
+   - `slowFiredRef.value === false` and `elapsedMs < threshold` → reply token still valid → use reply
+   - Otherwise → safe fallback to Push
+
+   If reply fails afterwards, push is retried as a secondary fallback (both failures are logged via `console.error`). Set `LINE_SLOW_RESPONSE_ENABLED=false` to disable, but responses over 60 s would then be lost entirely (not recommended).
+
+   The Push API is free for the first 200 messages/month on personal Official Accounts; usage beyond is billed. If slow responses are frequent on a local LLM (Gemma, etc.), increase the threshold or use a faster inference backend.
+
+#### Session boundaries (idle reset + reset command)
+
+LINE has no explicit conversation boundary UI like Slack's threads or Discord's "new chat" button. xangi switches sessions using a two-layer time-based + command-based approach:
+
+1. **Reset-command detection**: In `handleEvent`, right after the allowlist check and before the loading animation or runner, `isResetCommand(text, patterns)` checks for an exact match (case-insensitive, whitespace stripped). On match, the active session is archived via `archiveSession()`, a new one is created via `ensureSession()`, "最初からお話するね！何かあった？" is sent via `replyMessage`, and the function returns without invoking the runner. Default patterns are limited to three unambiguous slash commands: `/reset` `/new` `/clear`. The idle reset (time-based) is the primary boundary; commands serve as a manual escape hatch. Japanese natural-language phrases have fuzzy boundaries against neighboring phrases ("リセットってどういう意味？", "最初からお話したい"), so they are excluded from defaults and must be added explicitly via `LINE_RESET_TEXT_PATTERNS` (CSV) if needed.
+2. **Idle session reset**: For non-reset messages, if the current session's `updatedAt` is older than `LINE_IDLE_RESET_HOURS` (default 4 h), `hasSessionGoneIdle()` returns true → `archiveSession()` is called, then `ensureSession()` creates a new session. Children's conversations cluster naturally around school / sleep / meal patterns, so 4 h is a good cut. The `logs/sessions/*.jsonl` files are kept after archiving, so history is preserved.
+
+Both features can be disabled independently (`LINE_IDLE_RESET_ENABLED=false`, `LINE_RESET_TEXT_PATTERNS=`). Combined with Rich Menu button bindings ("Start over" → sends `リセット` → reset-command detection path), this gives a clean integrated experience.
+
+The public endpoint is provided externally (Tailscale Funnel / Cloudflare Tunnel). See [`docs/en/line-setup.md`](line-setup.md).
 
 ### Agent Runner (agent-runner.ts)
 
@@ -782,10 +819,12 @@ For details (environment variable reference, Docker operation methods, etc.), se
 
 ### Adding a New Chat Platform
 
-1. Add client initialization code
-2. Implement the message handler
-3. Register the send function via `scheduler.registerSender()`
-4. Register the AI execution function via `scheduler.registerAgentRunner()`
+1. Add client initialization code (see `src/line.ts` for a minimal `http.createServer`-based webhook implementation)
+2. Implement the message handler (use `ensureSession` + `runWithBubbleEvents` to connect to the existing Runner)
+3. Extend the `Platform` type (`events-emitter.ts`) and `ChatPlatform` type (`prompts/index.ts`) with the new platform name
+4. Add platform settings (`enabled` / token / allowed users / etc.) to `config.ts`
+5. Add the startup branch in `main()` inside `index.ts`
+6. If needed, register the send/AI execution callbacks via `scheduler.registerSender()` / `scheduler.registerAgentRunner()`
 
 ### Adding a New AI CLI
 

@@ -4,14 +4,14 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord / Slack / ブラウザから利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
+Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord / Slack / ブラウザ / LINE から利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
 
 ## Features
 
 - マルチバックエンド対応（Claude Code / Codex / Gemini CLI / Local LLM）
 - `/backend` コマンドでチャンネルごとにバックエンド・モデル・effortを動的切り替え
 - Local LLM対応（Ollama/vLLM等、エージェントモード/チャットモード切替可能）
-- Discord / Slack / Web Chat UI 対応
+- Discord / Slack / Web Chat UI / LINE 対応
 - Docker対応
 - スキルシステム
 - スケジューラー（cron / 単発 / 起動時タスク）
@@ -168,6 +168,7 @@ xangi を使ったAIアシスタント構築のノウハウをまとめた書籍
 - [使い方ガイド](docs/usage.md) - Docker実行・環境変数・Local LLM・複数インスタンスの運用・セッションの保持期間・トラブルシューティング
 - [Discord セットアップ](docs/discord-setup.md) - Bot作成・ID確認方法
 - [Slack セットアップ](docs/slack-setup.md) - Slack連携
+- [LINE セットアップ](docs/line-setup.md) - LINE Messaging API 連携 (Tailscale Funnel での外部公開含む)
 - [設計ドキュメント](docs/design.md) - アーキテクチャ・設計思想・データフロー
 - [外部イベントストリーム](docs/events.md) - 応答ライフサイクルのイベント配信仕様
 

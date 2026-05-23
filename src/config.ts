@@ -65,6 +65,58 @@ export interface Config {
     streaming?: boolean;
     showThinking?: boolean;
   };
+  line: {
+    enabled: boolean;
+    channelSecret?: string;
+    channelAccessToken?: string;
+    allowedUsers?: string[];
+    webhookPort?: number;
+    webhookPath?: string;
+    /**
+     * Loading animation API (POST /v2/bot/chat/loading/start) を使って
+     * webhook 受信直後に「入力中…」を表示するか (default: true)。
+     * 1:1 DM のみ。グループ・トークルームでは LINE 側で無視される。
+     */
+    loadingAnimationEnabled?: boolean;
+    /**
+     * Loading animation の表示秒数 (5/10/15/20/25/30/40/50/60、default: 60)。
+     * 5 の倍数で 60 を超えない値にスナップされる。Bot から新メッセージを
+     * 送ると自動消滅する。
+     */
+    loadingAnimationSeconds?: number;
+    /**
+     * 応答に時間がかかった時の reply→push 自動切替を有効にするか (default: true)。
+     * 無効にすると reply token のみ使用、60s 超で返信不可になる。
+     */
+    slowResponseEnabled?: boolean;
+    /**
+     * Slow response 閾値 ms (default: 45000 = 45秒)。
+     * これを超えた時点で「考え中」テンプレを reply token で送り、本回答は
+     * Push API で後追い送信する。LINE reply token は 60s で失効するため
+     * 安全マージンを取って 45s に設定。
+     */
+    slowResponseThresholdMs?: number;
+    /**
+     * Idle session reset を有効にするか (default: true)。
+     * LINE は Slack スレッド / Discord New ボタンのような UI 境界が無いため、
+     * 一定時間黙ったら次の発話で session を自動切替する仕組み。
+     */
+    idleResetEnabled?: boolean;
+    /**
+     * Idle reset の閾値時間 (default: 4 時間)。
+     * 直前の発話から N 時間以上経過していたら、新メッセージ到着時に既存 session を
+     * archive して新規発番する (会話履歴は logs/sessions/*.jsonl に残る)。
+     * 子どもの会話パターン (学校・就寝・食事クラスタ) を自然に分けるため 4h を default に。
+     */
+    idleResetHours?: number;
+    /**
+     * Reset コマンドのテキストパターン (default: 子ども向け含む規定セット)。
+     * ユーザがこれらのフレーズを送ると session を archive + 新規発番し、
+     * Runner は起動せず「最初からお話するね」と即返す。
+     * env では CSV で指定 (`LINE_RESET_TEXT_PATTERNS=リセット,/reset,...`)。
+     */
+    resetTextPatterns?: string[];
+  };
   agent: {
     backend: AgentBackend;
     config: AgentConfig;
@@ -86,17 +138,21 @@ export function loadConfig(): Config {
   const discordToken = process.env.DISCORD_TOKEN;
   const slackBotToken = process.env.SLACK_BOT_TOKEN;
   const slackAppToken = process.env.SLACK_APP_TOKEN;
+  const lineChannelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  const lineChannelSecret = process.env.LINE_CHANNEL_SECRET;
+  const lineEnabled = !!lineChannelAccessToken && !!lineChannelSecret;
 
-  // 少なくともどちらかが有効である必要がある（WebChatのみでもOK）
+  // 少なくともどれかが有効である必要がある（WebChat / LINE 単独運用も可）
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
-  if (!discordToken && !slackBotToken && !webChatEnabled) {
+  if (!discordToken && !slackBotToken && !webChatEnabled && !lineEnabled) {
     throw new Error(
-      'DISCORD_TOKEN, SLACK_BOT_TOKEN, or WEB_CHAT_ENABLED=true environment variable is required'
+      'DISCORD_TOKEN, SLACK_BOT_TOKEN, LINE_CHANNEL_ACCESS_TOKEN+LINE_CHANNEL_SECRET, or WEB_CHAT_ENABLED=true environment variable is required'
     );
   }
 
   const discordAllowedUser = process.env.DISCORD_ALLOWED_USER;
   const slackAllowedUser = process.env.SLACK_ALLOWED_USER;
+  const lineAllowedUser = process.env.LINE_ALLOWED_USER;
   const discordAllowedUsers = discordAllowedUser
     ? discordAllowedUser
         .split(',')
@@ -105,6 +161,12 @@ export function loadConfig(): Config {
     : [];
   const slackAllowedUsers = slackAllowedUser
     ? slackAllowedUser
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const lineAllowedUsers = lineAllowedUser
+    ? lineAllowedUser
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean)
@@ -123,15 +185,21 @@ export function loadConfig(): Config {
   }
 
   // プラットフォーム自動検出
+  // 単独運用なら専用 prompt を注入、複数同時運用なら undefined (全コマンド注入経路)。
+  // LINE 単独運用 (lemon-ai 等) の場合は XANGI_COMMANDS_LINE で Markdown 禁止
+  // 等の LINE 固有ルールを注入する。
   const discordEnabled = !!discordToken;
   const slackEnabled = !!slackBotToken && !!slackAppToken;
   let platform: ChatPlatform | undefined;
-  if (discordEnabled && !slackEnabled) {
-    platform = 'discord';
-  } else if (slackEnabled && !discordEnabled) {
-    platform = 'slack';
+  const enabledPlatforms = [
+    discordEnabled && 'discord',
+    slackEnabled && 'slack',
+    lineEnabled && 'line',
+  ].filter(Boolean) as ChatPlatform[];
+  if (enabledPlatforms.length === 1) {
+    platform = enabledPlatforms[0];
   }
-  // 両方有効 → undefined（全コマンド注入）
+  // 複数有効 or 全部 disabled (Web Chat only) → undefined（全コマンド注入 / Web 専用扱い）
 
   const agentConfig: AgentConfig = {
     model: process.env.AGENT_MODEL || undefined,
@@ -200,6 +268,33 @@ export function loadConfig(): Config {
       replyInThread: process.env.SLACK_REPLY_IN_THREAD !== 'false',
       streaming: process.env.SLACK_STREAMING !== 'false',
       showThinking: process.env.SLACK_SHOW_THINKING !== 'false',
+    },
+    line: {
+      enabled: lineEnabled,
+      channelSecret: lineChannelSecret,
+      channelAccessToken: lineChannelAccessToken,
+      allowedUsers: lineAllowedUsers,
+      webhookPort: process.env.LINE_WEBHOOK_PORT
+        ? parseInt(process.env.LINE_WEBHOOK_PORT, 10)
+        : 8765,
+      webhookPath: process.env.LINE_WEBHOOK_PATH || '/webhook',
+      loadingAnimationEnabled: process.env.LINE_LOADING_ANIMATION_ENABLED !== 'false',
+      loadingAnimationSeconds: process.env.LINE_LOADING_ANIMATION_SECONDS
+        ? parseInt(process.env.LINE_LOADING_ANIMATION_SECONDS, 10)
+        : 60,
+      slowResponseEnabled: process.env.LINE_SLOW_RESPONSE_ENABLED !== 'false',
+      slowResponseThresholdMs: process.env.LINE_SLOW_RESPONSE_THRESHOLD_MS
+        ? parseInt(process.env.LINE_SLOW_RESPONSE_THRESHOLD_MS, 10)
+        : 45000,
+      idleResetEnabled: process.env.LINE_IDLE_RESET_ENABLED !== 'false',
+      idleResetHours: process.env.LINE_IDLE_RESET_HOURS
+        ? parseFloat(process.env.LINE_IDLE_RESET_HOURS)
+        : 4,
+      resetTextPatterns: process.env.LINE_RESET_TEXT_PATTERNS
+        ? process.env.LINE_RESET_TEXT_PATTERNS.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined, // line.ts 側で default パターンに fallback
     },
     agent: {
       backend,

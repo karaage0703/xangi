@@ -4,14 +4,14 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-An AI assistant for Discord / Slack / browser, powered by Claude Code / Codex / Gemini CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
+An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / Codex / Gemini CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
 
 ## Features
 
 - Multi-backend support (Claude Code / Codex / Gemini CLI / Local LLM)
 - `/backend` command for dynamic per-channel backend/model/effort switching
 - Local LLM support (Ollama/vLLM, etc., with agent mode / chat mode toggle)
-- Discord / Slack / Web Chat UI support
+- Discord / Slack / Web Chat UI / LINE support
 - Docker support
 - Skill system
 - Scheduler (cron / one-shot / startup tasks)
@@ -168,6 +168,7 @@ A book about building AI assistants with xangi.
 - [Usage Guide](docs/en/usage.md) - Docker, env vars, Local LLM, troubleshooting
 - [Discord Setup](docs/en/discord-setup.md) - Bot creation & ID lookup
 - [Slack Setup](docs/en/slack-setup.md) - Slack integration
+- [LINE Setup](docs/en/line-setup.md) - LINE Messaging API integration (incl. Tailscale Funnel for public webhook)
 - [Design Document](docs/en/design.md) - Architecture, design philosophy, data flow
 
 ## Acknowledgments

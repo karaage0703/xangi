@@ -40,7 +40,9 @@ export function buildPersistentSystemPrompt(platform?: ChatPlatform): string {
 }
 
 // XANGI_COMMANDSを再エクスポート（local-llm runner等から使う）
-export { XANGI_COMMANDS };
+// XANGI_COMMANDS は静的版 (platform=undefined)、buildXangiCommands は runtime 切替版。
+// Local LLM runner は platform 別に system prompt を切替えたいので buildXangiCommands を使う。
+export { XANGI_COMMANDS, buildXangiCommands };
 
 // safe-env.ts から再エクスポート（既存のimportを壊さないため）
 export { getSafeEnv } from './safe-env.js';

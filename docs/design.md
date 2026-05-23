@@ -38,11 +38,48 @@ graph LR
 
 メインのオーケストレーター。以下を統合：
 
-- Discord/Slackクライアントの初期化
+- Discord / Slack / Web Chat / LINE クライアントの初期化
 - メッセージ受信とルーティング
 - AI CLIの呼び出し
 - スケジューラーの管理
 - コマンド処理（`xangi-cmd` CLIツール経由 + テキストパース）
+
+### LINE Bot 統合（line.ts）
+
+LINE Messaging API 経由の 1:1 chat に対応。設計方針:
+
+- `http.createServer` ベース（`web-chat.ts` と同じ並びで Express 依存を避ける）
+- `@line/bot-sdk` の `validateSignature` で raw body + `X-Line-Signature` を HMAC-SHA256 検証
+- text message を `runWithBubbleEvents` 経由で Runner に渡し、結果を `LineBotClient.replyMessage` で返信
+- per-userId セッション分離 (`contextKey = line:<userId>`)
+- `LINE_ALLOWED_USER` ホワイトリスト（`*` で全許可、空ならエラーで起動拒否）
+- ack を先に返す（LINE は 30 秒以内に HTTP 200 を期待、本処理は非同期で続行）
+
+#### 応答性の二段防御（loading animation + reply→push 自動切替）
+
+LINE は Slack のスレッドや Discord の New ボタンに相当する明示 UI 境界が無く、reply token も 60s で失効する。長い思考時間や Local LLM の tool ループで返信が遅れると「無視された」体験になりやすいので、2 段の防御を入れる:
+
+1. **即時 ACK — Loading animation API**: `handleEvent` の allowlist 通過直後（Runner 起動前）に LINE 公式 `POST /v2/bot/chat/loading/start` を `client.showLoadingAnimation({ chatId, loadingSeconds })` で叩き、トーク画面に「入力中…」を出す。Bot から本回答を送った時点で自動消滅。失敗しても致命的でないので `console.warn` のみ。1:1 DM のみ機能 (グループは LINE 側で無視)。秒数は `LINE_LOADING_ANIMATION_SECONDS` (default 60、`snapLoadingSeconds` で 5/10/15/20/25/30/40/50/60 にスナップ)。`LINE_LOADING_ANIMATION_ENABLED=false` で無効化可能。
+
+2. **Reply→Push 自動切替 — Slow response fallback**: `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45000ms) で `setTimeout` を仕掛け、閾値を超えたら reply token を「🤔 ちょっと待ってね、考えてる…」テンプレに使って消費する (`slowFiredRef` フラグを立てる)。Runner 完走後は `slowFiredRef.value` と elapsed を見て送信経路を決定:
+   - `slowFiredRef.value === true` → reply token 消費済なので Push API 必須
+   - `slowFiredRef.value === false` かつ `elapsed < threshold` → reply token がまだ生きてる → reply
+   - それ以外 → 安全側で Push にフォールバック
+
+   reply 失敗時はさらに push にリトライ (両方失敗したら諦め、`console.error`)。`LINE_SLOW_RESPONSE_ENABLED=false` で無効化可能だが、60s 超応答は完全に失われるので推奨しない。
+
+   Push API は個人 OA で月 200 通無料、超過後は従量課金。Local LLM 運用で多発するなら閾値を見直すか推論バックエンドを高速化する。
+
+#### Session 境界 (idle reset + reset コマンド)
+
+LINE には Slack の「スレッド」や Discord の「New ボタン」のような明示的な session 境界 UI が存在しないため、xangi は時間ベース + コマンドベースの 2 段で session を切り替える:
+
+1. **Reset コマンド検出**: `handleEvent` で allowlist 通過直後、Loading animation や Runner 起動より前に `isResetCommand(text, patterns)` で完全一致判定 (大文字小文字無視 + 前後空白 strip)。一致したら `archiveSession()` + `ensureSession()` で新規発番、`replyMessage` で「最初からお話するね！何かあった？」を即返して return (Runner 起動なし)。default パターンは曖昧さの無い slash 形式 3 つ (`/reset` `/new` `/clear`) に絞る。メイン境界は idle reset (時間ベース)、コマンドは明示リセット用の保険という位置付け。日本語自然言語パターンは「リセットってどういう意味？」「最初からお話したい」等との誤発火境界が曖昧なため default から外し、必要なら `LINE_RESET_TEXT_PATTERNS` CSV で個別追加できる設計。
+2. **Idle session reset**: reset コマンドでない通常メッセージで、現 session の `updatedAt` から `LINE_IDLE_RESET_HOURS` (default 4h) 以上経過していたら `hasSessionGoneIdle()` で true → `archiveSession()` してから `ensureSession()` で新規発番。子どもの会話は学校・就寝・食事クラスタで自然に分かれるので 4h で切ると良い境界になる。`logs/sessions/*.jsonl` は archive 後も残るので過去履歴は失われない。
+
+両機能とも `LINE_IDLE_RESET_ENABLED=false` / `LINE_RESET_TEXT_PATTERNS=` で個別に無効化可能。Rich Menu のボタン bind と組み合わせると、「最初から話す」ボタン押下→reset テキスト送信→reset コマンド検出経路でハンドリング、という統合になる。
+
+公開エンドポイントは Tailscale Funnel / Cloudflare Tunnel 等で別立て。詳細は [`docs/line-setup.md`](line-setup.md)。
 
 ### エージェントランナー（agent-runner.ts）
 
@@ -791,10 +828,12 @@ src/
 
 ### 新しいチャットプラットフォーム追加
 
-1. クライアント初期化コードを追加
-2. メッセージハンドラを実装
-3. `scheduler.registerSender()` で送信関数を登録
-4. `scheduler.registerAgentRunner()` でAI実行関数を登録
+1. クライアント初期化コードを追加（参考: `src/line.ts` は `http.createServer` ベースで Webhook を待ち受ける最小構成）
+2. メッセージハンドラを実装（`ensureSession` + `runWithBubbleEvents` で既存 Runner と接続）
+3. `Platform` 型（`events-emitter.ts`）と `ChatPlatform` 型（`prompts/index.ts`）に新 platform 名を追加
+4. `config.ts` に platform 設定（`enabled` / token / 許可ユーザー等）を追加
+5. `index.ts` の `main()` で起動分岐を追加
+6. 必要なら `scheduler.registerSender()` / `scheduler.registerAgentRunner()` で送信関数・AI実行関数を登録
 
 ### 新しいAI CLI追加
 
