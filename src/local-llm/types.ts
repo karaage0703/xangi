@@ -67,6 +67,17 @@ export interface ToolContext {
    * 呼ぶと指定 tool の schema が次ターン以降の LLM リクエストに含まれる。
    */
   activateTools?: (names: string[]) => void;
+  /**
+   * tool-trajectory-logger に tool_search 結果を記録するためのフック。
+   * tool_search ハンドラから候補一覧と activate 結果を流し込む。
+   * runner.ts でロガー有効時のみセットされる (無効時は undefined)。
+   */
+  trajectoryLogToolSearch?: (event: {
+    query: string;
+    candidates: Array<{ name: string; type: 'tool' | 'skill'; score: number }>;
+    activated_tools: string[];
+    activated_skills?: string[];
+  }) => void;
 }
 
 /** tool_search 用カタログエントリ（name + description のみ、schema は含まない） */

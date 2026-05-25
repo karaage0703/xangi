@@ -13,24 +13,35 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 ## アーキテクチャ
 
 ```mermaid
-graph LR
-    User --> |メッセージ| Chat[Chat Platform<br/>Discord / Slack]
-    Chat --> |プロンプト| xangi
-    xangi --> |実行| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
-    CLI --> |ファイル操作| WS[Workspace<br/>skills / AGENTS.md]
-    xangi --> |定期実行| Scheduler
-    Scheduler --> |プロンプト| CLI
+flowchart LR
+    User([ユーザー]) <-->|メッセージ| chat[UI<br/>Discord / Slack<br/>ブラウザ / LINE]
+    chat <-->|プロンプト| xangi[xangi]
+    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM}}
+    LLM <-->|ファイル操作| WS[(Workspace<br/>AGENTS.md / skills<br/>ローカル資料)]
+    LLM <--> Web[Web検索]
+    LLM <--> Service[Webサービス]
+    xangi -->|定期実行| Scheduler
+    Scheduler -->|プロンプト| LLM
+
+    classDef user fill:#fef3c7,stroke:#d97706,color:#111;
+    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
+    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
+    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    class User user;
+    class chat,xangi,LLM,Scheduler core;
+    class WS ws;
+    class Web,Service ext;
 ```
 
 ### レイヤー構成
 
 | レイヤー | 役割 | 実装 |
 |----------|------|------|
-| Chat | ユーザーインターフェース | Discord.js, Slack Bolt |
-| xangi | AI CLIの統合・制御 | index.ts, agent-runner.ts, dynamic-runner.ts |
+| Chat | ユーザーインターフェース | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
+| xangi | AI CLI / Local LLM の統合・制御 | index.ts, agent-runner.ts, dynamic-runner.ts |
 | Backend Resolution | チャンネル別バックエンド解決 | backend-resolver.ts, settings.ts |
-| AI CLI | 実際のAI処理 | Claude Code, Codex CLI, Gemini CLI, Local LLM |
-| Workspace | ファイル・スキル | skills/, AGENTS.md |
+| AI Backend | 実際のAI処理 | Claude Code, Codex CLI, Gemini CLI, Local LLM (Ollama / vLLM) |
+| Workspace | ファイル・スキル | skills/, AGENTS.md, ローカル資料 |
 
 ## コンポーネント
 
@@ -43,6 +54,32 @@ graph LR
 - AI CLIの呼び出し
 - スケジューラーの管理
 - コマンド処理（`xangi-cmd` CLIツール経由 + テキストパース）
+
+### Discord 統合（index.ts 内）
+
+`discord.js` v14 ベース。専用ファイルは設けず `index.ts` 内で初期化:
+
+- メンション / DM / `AUTO_REPLY_CHANNELS` のいずれかに該当したメッセージを Runner に転送
+- per-channel セッション分離（`contextKey = discord:<channelId>`）
+- スレッド・添付ファイル・リアクション対応
+- ボタン UI（Stop / 延長 / 残り時間表示）を `message.edit` で 1 秒粒度に更新
+
+### Slack 統合（slack.ts）
+
+`@slack/bolt` ベース。
+
+- `app_mention` / DM をハンドリング、スレッド単位で session 分離（`contextKey = slack:<channelId>:<threadTs>`）
+- スラッシュコマンドとリアクション対応
+- `chat.update` でメッセージ末尾に Stop / 延長 / 残り時間ボタン行を 1 秒粒度で差し替え
+
+### Web Chat（web-chat.ts）
+
+`http.createServer` ベースの軽量サーバー（Express 依存なし）。
+
+- ペイン単位でセッション分離（`contextKey = web:<paneId>`）、`WEB_CHAT_PORT` で公開
+- SSE で streaming response + timeout イベント (`timeout-started/extended/cleared`) をフロントへ push
+- フロントエンドの tick で残り時間表示を毎秒更新（追加 API 呼び出しなし）
+- ファイル添付・ダウンロードは `WEB_CHAT_UPLOAD_ACCEPT` / `WEB_CHAT_DOWNLOAD_ACCEPT` で許可拡張子を制御
 
 ### LINE Bot 統合（line.ts）
 
@@ -437,6 +474,21 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 - `unsafe_tool_in_pseudo_format`: parse 成功するが safety gate で reject
 - `already_executed`: 同一シグネチャが冪等キャッシュ HIT / loop 検出 (再実行禁止)
 - `unparseable_pseudo_call`: drift 検出されたが parse 失敗 (malformed args / 不明形式)
+
+#### Observability: tool trajectory
+
+多段防御の発火タイミング・tool_search 採用結果・drift 救済の安全判定を後で分析できるよう、`src/tool-trajectory/` で観測ロガーを別経路で構造化記録する。既存 `transcript-logger` (`logs/sessions/`) には触らず、`logs/tool-trajectory/<appSessionId>.jsonl` に 1 line = 1 event の jsonl を append する。
+
+設計の要点:
+
+- 共通 fields: `ts` / `event_id` / `kind` / `schema_version=1` / `appSessionId` / `seq` / `turn_index` / `round` / `platform` / `backend` / `model` / `channelId_hash`
+- kind: `session_start` / `tool_call` / `tool_search` / `drift_rescue` / `loop_detected` / `runner_event`
+- 強制 sanitize: secret-like key → `[REDACTED_SECRET]` / Discord+LINE ID → salt 付き sha256 hash / `$HOME` 置換 / 長文 truncate
+- Retention: default では削除しない (TTL / size cap いずれも env で明示指定時のみ動作)。観察データを残す前提。1 session = 1 file、rotation 無し
+- fail-safe: 書き込み失敗は `console.warn` のみ、runner を絶対に落とさない
+- session restore は `logs/tool-trajectory/` を一切読まないので完全分離
+
+env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 no-op になりファイル作成もしない。runner.ts には観測ログ生成だけ持たせ、蓄積データの後段処理は別ツール側に分離する設計。詳細は `docs/usage.md`「Tool Trajectory Logger」セクション参照。
 
 ### スケジューラー（scheduler.ts）
 

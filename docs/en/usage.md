@@ -732,6 +732,69 @@ The Local LLM backend maintains sessions (conversation history) per channel. Whe
 
 Other models available via Ollama/vLLM are also supported.
 
+## Tool Trajectory Logger
+
+Structured observability log of Local LLM tool usage (drift / loop / tool_search adoption mistakes). Runs independently from the existing `transcript-logger` (conversation source of truth) and is fully isolated from session restore.
+
+### Output Location
+
+```
+logs/tool-trajectory/<appSessionId>.jsonl
+```
+
+One line per event. Lives alongside but separate from `logs/sessions/<appSessionId>.jsonl` (transcript), so the two never interfere.
+
+### Event Kinds
+
+| kind | what's recorded |
+|------|-----------------|
+| `session_start` | backend / model / baseUrl / features / logger config (once per appSession) |
+| `tool_call` | tool_name / args_sanitized / result_truncated / duration_ms / status / round |
+| `tool_search` | query / candidates_top5 / activated_tools / activated_skills |
+| `drift_rescue` | raw_text_head / parsed_name / safety_verdict / executed |
+| `loop_detected` | loop_kind (exact / similar / idempotent_cache_hit) / signature / action |
+| `runner_event` | streaming_hold_buffer_drop / context_prune / session_retry / idempotent_cache_store |
+
+Common fields on every event: `ts` / `event_id` / `kind` / `schema_version=1` / `appSessionId` / `seq` / `turn_index` / `round` / `platform` / `backend` / `model` / `channelId_hash`.
+
+### Mandatory Sanitization
+
+Designed so the logs remain safe to publish (OSS):
+
+- Secret-like keys (`token` / `apiKey` / `bearer` / `cookie` / `authorization` / `password` etc.) → replaced with literal `[REDACTED_SECRET]`
+- Discord channelId / userId / LINE userId → salted sha256 hash (12 chars, `h_` prefix)
+- Absolute home-prefix paths → replaced with `$HOME`
+- URL query values matching secret-like keys → redacted
+- Long args / results → head/tail truncation (defaults: args 8KB, result 16KB, drift raw 2KB)
+
+### Retention
+
+- Disabled by default — pruning only happens when TTL or size cap is explicitly set via env
+- The logger preserves raw observation data by default; auto-deletion is opt-in
+- When TTL days is set via env, files older than that are pruned at startup
+- When size cap MB is set via env, oldest files are removed once total exceeds the cap
+- One session = one file (no rotation)
+
+### Configuration
+
+| env | default | description |
+|-----|---------|-------------|
+| `XANGI_TOOL_TRAJECTORY_LOG` | `true` | `false` disables the logger entirely (no files created) |
+| `TOOL_TRAJECTORY_LOG_HASH_SALT` | (random per startup) | Fixed salt for Discord/LINE ID hashing. Specify only if you need ID correlation across process restarts |
+| `TOOL_TRAJECTORY_LOG_MAX_ARGS_CHARS` | `8192` | Args truncation limit |
+| `TOOL_TRAJECTORY_LOG_MAX_RESULT_CHARS` | `16384` | Tool result truncation limit |
+| `TOOL_TRAJECTORY_LOG_RETENTION_DAYS` | (unset) | No pruning. When set, acts as TTL in days |
+| `TOOL_TRAJECTORY_LOG_SIZE_CAP_MB` | (unset) | No size cap. When set, total size cap (MB) for pruning |
+
+### Fail-safe
+
+Writes that fail are reported via `console.warn` only — the logger never throws. JSONL corruption, full disk, etc. won't crash the runner. Session restore never reads `logs/tool-trajectory/`, so logger-side failures cannot affect conversation continuity.
+
+### Design Intent
+
+- Target: how the multi-layer defense (loop / idempotent cache / streaming hold buffer / pseudo tool_call rescue / context prune — the 5+1 mechanisms) fires for Local LLM, tool_search adoption results, and the breakdown of drift_rescue safety verdicts.
+- The runner itself only emits observation events; any dataset conversion or downstream analysis is left to separate tooling that consumes this JSONL.
+
 ## Security
 
 ### Environment Variable Whitelist

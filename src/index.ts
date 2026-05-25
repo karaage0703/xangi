@@ -1685,15 +1685,21 @@ async function main() {
         }
 
         // スケジューラーは毎回新規セッション（stateless）
+        // - Claude Code 経路: sessionId=undefined で `claude --resume` 無し
+        // - Local LLM 経路: appSessionId を cron 発火ごとに unique 化して
+        //   transcript jsonl からの restore を回避する（PR #243 jsonl resume が
+        //   cron 文脈で stateful 化してしまう構造バグの修正）。
+        //   ensureSession(scope=scheduler) は setSession 整合性のため維持。
         const schedAppSessionId = ensureSession(channelId, {
           platform: 'discord',
           scope: 'scheduler',
         });
+        const freshAppSessionId = `${schedAppSessionId}-${Date.now()}`;
         const { result, sessionId: newSessionId } = await agentRunner.run(agentPrompt, {
           skipPermissions: config.agent.config.skipPermissions ?? false,
           sessionId: undefined,
           channelId,
-          appSessionId: schedAppSessionId,
+          appSessionId: freshAppSessionId,
         });
 
         // スケジューラーのセッションは scheduler スコープで保存

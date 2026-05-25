@@ -15,24 +15,35 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 ## Architecture
 
 ```mermaid
-graph LR
-    User --> |Message| Chat[Chat Platform<br/>Discord / Slack]
-    Chat --> |Prompt| xangi
-    xangi --> |Execute| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
-    CLI --> |File Operations| WS[Workspace<br/>skills / AGENTS.md]
-    xangi --> |Periodic Execution| Scheduler
-    Scheduler --> |Prompt| CLI
+flowchart LR
+    User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
+    chat <-->|Prompt| xangi[xangi]
+    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM}}
+    LLM <-->|File Operations| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
+    LLM <--> Web[Web Search]
+    LLM <--> Service[Web Service]
+    xangi -->|Periodic Execution| Scheduler
+    Scheduler -->|Prompt| LLM
+
+    classDef user fill:#fef3c7,stroke:#d97706,color:#111;
+    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
+    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
+    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    class User user;
+    class chat,xangi,LLM,Scheduler core;
+    class WS ws;
+    class Web,Service ext;
 ```
 
 ### Layer Structure
 
 | Layer | Role | Implementation |
 |-------|------|----------------|
-| Chat | User interface | Discord.js, Slack Bolt |
-| xangi | AI CLI integration & control | index.ts, agent-runner.ts, dynamic-runner.ts |
+| Chat | User interface | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
+| xangi | AI CLI / Local LLM integration & control | index.ts, agent-runner.ts, dynamic-runner.ts |
 | Backend Resolution | Per-channel backend resolution | backend-resolver.ts, settings.ts |
-| AI CLI | Actual AI processing | Claude Code, Codex CLI, Gemini CLI, Local LLM |
-| Workspace | Files & skills | skills/, AGENTS.md |
+| AI Backend | Actual AI processing | Claude Code, Codex CLI, Gemini CLI, Local LLM (Ollama / vLLM) |
+| Workspace | Files & skills | skills/, AGENTS.md, local docs |
 
 ## Components
 
@@ -45,6 +56,32 @@ The main orchestrator. Integrates the following:
 - AI CLI invocation
 - Scheduler management
 - Command handling (via `xangi-cmd` CLI tool + text parsing)
+
+### Discord Integration (inside index.ts)
+
+Based on `discord.js` v14. No dedicated file; initialized inline in `index.ts`:
+
+- Forwards a message to the Runner when it matches mention / DM / `AUTO_REPLY_CHANNELS`
+- Per-channel session isolation (`contextKey = discord:<channelId>`)
+- Threads, attachments, and reactions supported
+- Stop / extend / remaining-time buttons are refreshed every second via `message.edit`
+
+### Slack Integration (slack.ts)
+
+Based on `@slack/bolt`.
+
+- Handles `app_mention` and DMs; per-thread session isolation (`contextKey = slack:<channelId>:<threadTs>`)
+- Slash commands and reactions supported
+- Stop / extend / remaining-time button rows are refreshed every second via `chat.update`
+
+### Web Chat (web-chat.ts)
+
+Lightweight server based on `http.createServer` (no Express dependency).
+
+- Per-pane session isolation (`contextKey = web:<paneId>`), exposed on `WEB_CHAT_PORT`
+- SSE delivers streaming responses plus timeout events (`timeout-started/extended/cleared`) to the frontend
+- The frontend ticks every second to update the remaining time (no additional API calls)
+- File upload / download accepted extensions are gated by `WEB_CHAT_UPLOAD_ACCEPT` / `WEB_CHAT_DOWNLOAD_ACCEPT`
 
 ### LINE Bot Integration (line.ts)
 
@@ -427,6 +464,21 @@ Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pse
 - `unsafe_tool_in_pseudo_format`: parsed successfully but rejected by the safety gate
 - `already_executed`: same signature hit the idempotent cache or loop detection (no re-execution)
 - `unparseable_pseudo_call`: drift detected but parsing failed (malformed args / unknown format)
+
+#### Observability: tool trajectory
+
+To enable later analysis of when the multi-layer defenses fire, what `tool_search` adopted, and how `drift_rescue` decided safety, `src/tool-trajectory/` writes a separate structured observability log. The existing `transcript-logger` (`logs/sessions/`) is untouched; events are appended as one-line JSON to `logs/tool-trajectory/<appSessionId>.jsonl`.
+
+Design points:
+
+- Common fields: `ts` / `event_id` / `kind` / `schema_version=1` / `appSessionId` / `seq` / `turn_index` / `round` / `platform` / `backend` / `model` / `channelId_hash`
+- Kinds: `session_start` / `tool_call` / `tool_search` / `drift_rescue` / `loop_detected` / `runner_event`
+- Mandatory sanitization: secret-like keys → `[REDACTED_SECRET]`, Discord+LINE IDs → salted sha256 hash, `$HOME` substitution, head/tail truncation
+- Retention: disabled by default (TTL / size cap only activate when explicitly configured via env). The logger preserves raw observation data by default. One session = one file, no rotation
+- Fail-safe: write failures emit `console.warn` only, never throw — runner is never taken down by the logger
+- Session restore never reads `logs/tool-trajectory/`, so the two paths are fully isolated
+
+Set `XANGI_TOOL_TRAJECTORY_LOG=false` to disable the logger entirely (no files created). The runner only emits observation events; downstream processing of the accumulated JSONL is left to separate tooling. See `docs/usage.md` "Tool Trajectory Logger" for full details.
 
 ### Scheduler (scheduler.ts)
 

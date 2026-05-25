@@ -661,7 +661,25 @@ const toolSearchToolHandler: ToolHandler = {
       }
     }
 
+    // tool-trajectory: candidates top-5 を記録 (採用は activated_tools / activated_skills)
+    const trajectoryCandidates: Array<{
+      name: string;
+      type: 'tool' | 'skill';
+      score: number;
+    }> = [
+      ...toolsMatched.map((x) => ({ name: x.tool.name, type: 'tool' as const, score: x.score })),
+      ...skillsMatched.map((x) => ({ name: x.skill.name, type: 'skill' as const, score: x.score })),
+    ]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
     if (toolsMatched.length === 0 && skillsMatched.length === 0) {
+      context.trajectoryLogToolSearch?.({
+        query,
+        candidates: trajectoryCandidates,
+        activated_tools: [],
+        activated_skills: [],
+      });
       return {
         success: true,
         output: `No tools or skills matched "${query}".
@@ -674,10 +692,13 @@ Next steps you can try:
     }
 
     const sections: string[] = [];
+    const activatedToolNames: string[] = [];
+    const activatedSkillNames: string[] = skillsMatched.map((x) => x.skill.name);
 
     if (toolsMatched.length > 0) {
       // tool だけアクティブ化（skill は read で読み込んでもらう）
       const names = toolsMatched.map((x) => x.tool.name);
+      activatedToolNames.push(...names);
       context.activateTools?.(names);
       const lines = toolsMatched.map(
         (x) => `- ${x.tool.name}: ${x.tool.description.slice(0, 200)}`
@@ -696,6 +717,13 @@ Next steps you can try:
         `Found ${skillsMatched.length} skill(s) for query "${query}":\n${lines.join('\n')}\n\nSkills aren't tools — use the \`read\` tool to load each SKILL.md, then follow its workflow.`
       );
     }
+
+    context.trajectoryLogToolSearch?.({
+      query,
+      candidates: trajectoryCandidates,
+      activated_tools: activatedToolNames,
+      activated_skills: activatedSkillNames,
+    });
 
     return {
       success: true,

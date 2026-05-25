@@ -20,13 +20,24 @@ An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / C
 ## Architecture
 
 ```mermaid
-graph LR
-    User --> |Message| Chat[Chat<br/>Discord / Slack / Web]
-    Chat --> |Prompt| xangi
-    xangi --> |Execute| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
-    CLI --> |File ops| WS[Workspace<br/>skills / AGENTS.md]
-    xangi --> |Scheduled| Scheduler
-    Scheduler --> |Prompt| CLI
+flowchart LR
+    User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
+    chat <-->|Prompt| xangi[xangi]
+    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM}}
+    LLM <-->|File ops| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
+    LLM <--> Web[Web Search]
+    LLM <--> Service[Web Service]
+    xangi -->|Scheduled| Scheduler
+    Scheduler -->|Prompt| LLM
+
+    classDef user fill:#fef3c7,stroke:#d97706,color:#111;
+    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
+    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
+    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    class User user;
+    class chat,xangi,LLM,Scheduler core;
+    class WS ws;
+    class Web,Service ext;
 ```
 
 ## Quick Start

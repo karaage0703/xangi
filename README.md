@@ -20,13 +20,24 @@ Claude Code / Codex / Gemini CLI / Local LLM をバックエンドに、Discord 
 ## アーキテクチャ
 
 ```mermaid
-graph LR
-    User --> |メッセージ| Chat[Chat<br/>Discord / Slack / Web]
-    Chat --> |プロンプト| xangi
-    xangi --> |実行| CLI[AI Backend<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM]
-    CLI --> |ファイル操作| WS[Workspace<br/>skills / AGENTS.md]
-    xangi --> |定期実行| Scheduler
-    Scheduler --> |プロンプト| CLI
+flowchart LR
+    User([ユーザー]) <-->|メッセージ| chat[UI<br/>Discord / Slack<br/>ブラウザ / LINE]
+    chat <-->|プロンプト| xangi[xangi]
+    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Gemini CLI / Local LLM}}
+    LLM <-->|ファイル操作| WS[(Workspace<br/>AGENTS.md / skills<br/>ローカル資料)]
+    LLM <--> Web[Web検索]
+    LLM <--> Service[Webサービス]
+    xangi -->|定期実行| Scheduler
+    Scheduler -->|プロンプト| LLM
+
+    classDef user fill:#fef3c7,stroke:#d97706,color:#111;
+    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
+    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
+    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    class User user;
+    class chat,xangi,LLM,Scheduler core;
+    class WS ws;
+    class Web,Service ext;
 ```
 
 ## Quick Start
