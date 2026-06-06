@@ -9,6 +9,7 @@ import {
   loadMessagesFromTranscript,
 } from '../src/local-llm/runner.js';
 import type { TranscriptEntry } from '../src/transcript-logger.js';
+import { FRIENDLY_FALLBACK_MESSAGE } from '../src/local-llm/pseudo-toolcall.js';
 
 describe('isSessionRelatedError', () => {
   it('should return true for "context length exceeded"', () => {
@@ -759,5 +760,120 @@ describe('local-llm runner: compactOldToolResults (Prune)', () => {
     const result = compactOldToolResults(session, 2);
     expect(result.compactedCount).toBe(1);
     expect((session.messages[0] as { content: string }).content).toContain('[tool]');
+  });
+});
+
+describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
+  // scheduler / slash 経路は run() = 非ストリーミングループ (executeAgentLoop) を通る。
+  // このループは drift strip を持たず、`<|channel>thought<channel|>` 等の擬似テキストが
+  // 出力に漏れていた。executeStreamLoop と対称に finalizeNonStreamContent で
+  // strip するようにした回帰テスト。
+  let workdir: string;
+
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), 'xangi-drift-'));
+    mkdirSync(join(workdir, 'logs', 'sessions'), { recursive: true });
+    process.env.LOCAL_LLM_MODE = 'chat'; // enableTools=false → lite 単発 chat 経路
+  });
+
+  afterEach(() => {
+    delete process.env.LOCAL_LLM_MODE;
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  function makeRunnerReturning(content: string): LocalLlmRunner {
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    // 実ネットワークを使わず固定応答を返す mock に差し替える
+    (runner as unknown as { llm: { chat: () => Promise<unknown> } }).llm = {
+      chat: async () => ({ content, finishReason: 'stop', toolCalls: [] }),
+    };
+    return runner;
+  }
+
+  it('strips Harmony channel drift leaked on the non-streaming path', async () => {
+    const drift = '<|channel>thought\n<channel|>今日の予定を確認したにゃ🐾\n\n📅 予定はXX';
+    const runner = makeRunnerReturning(drift);
+    const { result } = await runner.run('予定教えて', { sessionId: 's1', channelId: 'c1' });
+    expect(result).not.toContain('<|channel>');
+    expect(result).not.toContain('<channel|>');
+    expect(result).toContain('今日の予定を確認したにゃ');
+  });
+
+  it('replaces drift-only output with friendly fallback (not empty → no misleading ✅)', async () => {
+    const runner = makeRunnerReturning('<|channel>thought\n<channel|>');
+    const { result } = await runner.run('q', { sessionId: 's2', channelId: 'c2' });
+    expect(result).toBe(FRIENDLY_FALLBACK_MESSAGE);
+    expect(result.trim().length).toBeGreaterThan(0);
+  });
+
+  it('leaves clean content untouched', async () => {
+    const runner = makeRunnerReturning('明日は晴れ、最高25℃だよ');
+    const { result } = await runner.run('天気は？', { sessionId: 's3', channelId: 'c3' });
+    expect(result).toBe('明日は晴れ、最高25℃だよ');
+  });
+});
+
+describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStream)', () => {
+  // StreamingDriftBuffer が最終応答の strict drift を stream 途中で drop すると fullText が
+  // 空になり、containsPseudoToolCall も false になるため rescue ループも fallback も発火せず、
+  // 呼び出し側の空応答 fallback（誤った成功マーク）に落ちていた。
+  // drift drop を下流に伝え、(1) plain text 再生成を促す (2) 最終的に空なら友好的 fallback。
+  let workdir: string;
+
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), 'xangi-streamdrift-'));
+    mkdirSync(join(workdir, 'logs', 'sessions'), { recursive: true });
+    delete process.env.LOCAL_LLM_MODE; // 既定: enableTools=true → tool ループ → final stream
+  });
+
+  afterEach(() => {
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  // chatStream を呼び出し回数ごとに別シーケンスで返す mock を仕込んだ runner を作る
+  function makeStreamRunner(streamsPerCall: string[][]): LocalLlmRunner {
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    let streamCall = 0;
+    (
+      runner as unknown as {
+        llm: {
+          chat: () => Promise<unknown>;
+          chatStream: (m: unknown, o?: unknown) => AsyncGenerator<string>;
+        };
+      }
+    ).llm = {
+      // tool ループは即 break させる（toolCalls 無し）
+      chat: async () => ({ content: '', toolCalls: [], finishReason: 'stop' }),
+      chatStream: async function* () {
+        const chunks = streamsPerCall[Math.min(streamCall, streamsPerCall.length - 1)];
+        streamCall++;
+        for (const c of chunks) yield c;
+      },
+    };
+    return runner;
+  }
+
+  it('falls back to a friendly message (not empty → no ✅) when every stream is drift-only', async () => {
+    // 毎回 strict drift だけを吐く → hold buffer が drop → 空 → retry 上限 → 友好的 fallback
+    const runner = makeStreamRunner([['<|channel>thought\n<channel|>']]);
+    const { result } = await runner.runStream('明日の天気合ってる？', {}, {
+      sessionId: 'st1',
+      channelId: 'ch1',
+    });
+    expect(result).toBe(FRIENDLY_FALLBACK_MESSAGE);
+    expect(result).not.toBe('');
+  });
+
+  it('recovers the real answer when a retry produces clean plain text', async () => {
+    // 1 回目: drift-only（drop → 空）→ 再生成プロンプト → 2 回目: クリーンな本文
+    const runner = makeStreamRunner([
+      ['<|channel>thought\n<channel|>'],
+      ['明日は晴れ時々曇り、最高20℃だよ🐾'],
+    ]);
+    const { result } = await runner.runStream('明日の天気合ってる？', {}, {
+      sessionId: 'st2',
+      channelId: 'ch2',
+    });
+    expect(result).toBe('明日は晴れ時々曇り、最高20℃だよ🐾');
   });
 });

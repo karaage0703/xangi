@@ -184,6 +184,75 @@ export function stripFilePaths(text: string): string {
 }
 
 /**
+ * 添付マーカー（MEDIA: / [IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:]）が書かれているのに、
+ * 指す先が allowlist 内の実在ファイルでない（＝添付対象にならない）ものが残っているかを返す。
+ *
+ * Local LLM が generate.py 等を実行せず出力ファイル名だけ作文して `MEDIA:...` と書く
+ * 「捏造パス（phantom path）」を検出するための関数。markdown リンクと http(s)/data URL は
+ * 通常リンク・外部 URL であって添付失敗ではないので対象外。
+ */
+export function hasUnresolvedMediaMarker(text: string, workspaceRootOverride?: string): boolean {
+  if (!text) return false;
+  const workspaceRoot = getWorkspaceRoot(workspaceRootOverride);
+  const broadRoots = getBroadAllowedRoots(workspaceRoot);
+  const patterns = [/MEDIA:\s*([^\s\n]+)/g, /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi];
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const raw = match[1].trim();
+      // http(s)/data URL は添付対象外なので「生成失敗」ではない（誤検知を防ぐ）
+      if (/^(?:https?|data):/i.test(raw)) continue;
+      const resolved = resolveCandidate(raw, workspaceRoot);
+      if (!resolved) continue;
+      if (!realFileWithinRoots(resolved, broadRoots)) return true;
+    }
+  }
+  return false;
+}
+
+const DEFAULT_MISSING_MEDIA_NOTICE =
+  '⚠️ ファイル（画像など）を生成・添付できませんでした。生成に失敗した可能性があります。もう一度試してください。';
+
+/**
+ * 添付できなかったことをユーザに伝える注記。環境変数 `ATTACHMENT_MISSING_NOTICE` で上書き可能。
+ */
+export function getMissingMediaNotice(): string {
+  const custom = process.env.ATTACHMENT_MISSING_NOTICE?.trim();
+  return custom && custom.length > 0 ? custom : DEFAULT_MISSING_MEDIA_NOTICE;
+}
+
+/**
+ * 最終応答テキストから「添付するファイル群」と「表示用テキスト」を組み立てる共通ヘルパ。
+ * - テキスト由来パス（extractFilePaths）と構造化 attachments を合算・重複排除
+ * - 添付があればマーカーを除去した表示テキストを返す
+ * - 添付ゼロでも、実在しないメディアマーカー（捏造パス）が残っている場合は、
+ *   マーカーを除去したうえで生成失敗の注記を付け、ユーザが「描いたと言うのに何も出ない」
+ *   状態に陥らないようにする
+ */
+export function buildAttachmentResult(
+  result: string,
+  structuredAttachments?: string[],
+  workspaceRootOverride?: string
+): { filePaths: string[]; displayText: string } {
+  const filePaths = [
+    ...new Set([
+      ...extractFilePaths(result, workspaceRootOverride),
+      ...(structuredAttachments ?? []),
+    ]),
+  ];
+  if (filePaths.length > 0) {
+    return { filePaths, displayText: stripFilePaths(result) };
+  }
+  if (hasUnresolvedMediaMarker(result, workspaceRootOverride)) {
+    const stripped = stripFilePaths(result);
+    const notice = getMissingMediaNotice();
+    return { filePaths, displayText: stripped ? `${stripped}\n\n${notice}` : notice };
+  }
+  return { filePaths, displayText: result };
+}
+
+/**
  * 添付ファイル情報をプロンプトに追加
  */
 export function buildPromptWithAttachments(prompt: string, filePaths: string[]): string {

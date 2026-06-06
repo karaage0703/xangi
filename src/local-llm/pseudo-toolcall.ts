@@ -54,16 +54,24 @@ export function containsPseudoToolCall(text: string): boolean {
 }
 
 /**
+ * Strict drift + cosmetic leak を除去する（trim はしない素の core）。
+ * 汎用サニタイザ（tool-call-sanitize.ts）から他ファミリと合成するために公開する。
+ */
+export function applyPseudoToolCallStrip(text: string): string {
+  let result = text;
+  for (const pattern of [...STRICT_DRIFT_PATTERNS, ...COSMETIC_LEAK_PATTERNS]) {
+    result = result.replace(pattern, '');
+  }
+  return result;
+}
+
+/**
  * Strict drift + cosmetic leak を全部除去して trim する。
  * containsPseudoToolCall が false でも cosmetic leak は残ってる可能性があるので、
  * 最終出力の整形には常にこの関数を通す。
  */
 export function stripPseudoToolCalls(text: string): string {
-  let result = text;
-  for (const pattern of [...STRICT_DRIFT_PATTERNS, ...COSMETIC_LEAK_PATTERNS]) {
-    result = result.replace(pattern, '');
-  }
-  return result.trim();
+  return applyPseudoToolCallStrip(text).trim();
 }
 
 /** drift 検出時に LLM に返すフィードバック system message */

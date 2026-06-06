@@ -5,12 +5,7 @@ import type { AgentRunner, RunResult } from './agent-runner.js';
 import { processManager } from './process-manager.js';
 import type { Skill } from './skills.js';
 import { formatSkillList } from './skills.js';
-import {
-  downloadFile,
-  extractFilePaths,
-  stripFilePaths,
-  buildPromptWithAttachments,
-} from './file-utils.js';
+import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { loadSettings, formatSettings } from './settings.js';
 import { STREAM_UPDATE_INTERVAL_MS, TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
@@ -1082,8 +1077,7 @@ async function processMessage(
     console.log(`[slack] Final result length: ${result.length}`);
 
     // ファイルパスを抽出して添付送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-    const filePaths = [...new Set([...extractFilePaths(result), ...(structuredAttachments ?? [])])];
-    const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
+    const { filePaths, displayText } = buildAttachmentResult(result, structuredAttachments);
 
     // 最終結果を更新（長い場合は分割送信）
     await sendSlackResult(client, channelId, messageTs, threadTs, displayText || '✅');

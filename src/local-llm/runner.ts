@@ -39,13 +39,13 @@ import { getAllXangiTools } from './xangi-tools.js';
 import { prependRuntimeContext } from '../runtime-context.js';
 import {
   containsPseudoToolCall,
-  stripPseudoToolCalls,
   parsePseudoToolCall,
   isSafeForRescue,
   buildStructuredFeedback,
   StreamingDriftBuffer,
   FRIENDLY_FALLBACK_MESSAGE,
 } from './pseudo-toolcall.js';
+import { stripToolCallArtifacts } from '../tool-call-sanitize.js';
 import {
   ToolTrajectoryLogger,
   loggerOptionsFromEnv,
@@ -1216,7 +1216,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       }
       session.messages.push({ role: 'assistant', content: response.content });
 
-      return response.content;
+      // 非ストリーミング経路でも drift strip を適用する（executeStreamLoop と対称）。
+      // lite モードでも擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
+      return this.finalizeNonStreamContent(response.content);
     }
 
     let toolRounds = 0;
@@ -1399,12 +1401,38 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       }
     }
 
+    // drift strip を MEDIA 追記の前に適用する（executeStreamLoop と同じ順序）。
+    // scheduler / slash command 経路はこの非ストリーミングループを通るため、ここで
+    // strip しないと `<|channel>thought<channel|>` 等の擬似テキストが Discord に漏れる。
+    finalContent = this.finalizeNonStreamContent(finalContent);
+
     // ツール結果から検出したMEDIA:パスを最終応答に追記
     if (pendingMediaPaths.length > 0) {
       finalContent += '\n' + pendingMediaPaths.map((p) => `MEDIA:${p}`).join('\n');
     }
 
     return finalContent;
+  }
+
+  /**
+   * 非ストリーミング経路の最終応答を整形する。
+   * executeStreamLoop の最終 fallback（drift strip + 空 fallback）と対称の責務。
+   * 非ストリーミング経路には rescue/retry 機構が無いため strip + 空 fallback のみ。
+   *
+   * - 実応答 + drift が混在 → drift だけ strip して実応答を残す
+   * - 出力が drift だけ（strip 後が空）→ 誤解を招く空応答（Discord の `✅` fallback）
+   *   ではなく正直な fallback メッセージを返す
+   * - 元から空（ツールだけ実行して本文無し等）→ 空のまま（既存挙動を保つ）
+   */
+  private finalizeNonStreamContent(text: string): string {
+    const cleaned = stripToolCallArtifacts(text, { trim: true });
+    if (!cleaned && text.trim()) {
+      console.warn(
+        `[local-llm] Output was drift-only in non-stream loop, replaced with fallback. Raw head: ${text.slice(0, 200)}`
+      );
+      return FRIENDLY_FALLBACK_MESSAGE;
+    }
+    return cleaned;
   }
 
   /**
@@ -1612,6 +1640,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     //   - system に FEEDBACK_PROMPT を積む (どう修正すべきかを LLM に伝える)
     //   - chatStream を 1 回だけ再実行
     // Step D: retry でも drift しか出なければ親切な fallback メッセージに差し替える。
+    // 直近の finalChatStreamOnce() が drift を drop したか。
+    // hold buffer が strict drift を stream 途中で drop すると fullText からは drift が
+    // 消えて containsPseudoToolCall が false になるため、別途このフラグで「drift があった」
+    // ことを下流の rescue ループ / 最終 fallback に伝える（drift-only → 空 → 誤 ✅ を防ぐ）。
+    let lastStreamDroppedDrift = false;
+
     const finalChatStreamOnce = async (): Promise<string> => {
       let acc = '';
       // hold buffer: streaming 中の擬似 tool_call drift を Discord に流す前に検出 + 抑止。
@@ -1657,6 +1691,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           },
         });
       }
+      lastStreamDroppedDrift = totalDroppedDuringStream || droppedAny;
       return acc;
     };
 
@@ -1681,13 +1716,48 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     };
     let driftRetryCount = 0;
 
-    while (containsPseudoToolCall(fullText) && driftRetryCount < MAX_DRIFT_RESCUE_RETRIES) {
+    while (
+      (containsPseudoToolCall(fullText) || (lastStreamDroppedDrift && !fullText.trim())) &&
+      driftRetryCount < MAX_DRIFT_RESCUE_RETRIES
+    ) {
+      const trajCommonDrift = this.trajectoryCommon(logId, options?.channelId, driftRetryCount);
+
+      // stream 中に strict drift が全部 drop されて本文が空になったケース。
+      // fullText に解析対象が残っていないので、plain text 再生成を明示的に促す。
+      // （例: ツールで情報収集後、最終応答が `<|channel>thought<channel|>` 等の擬似テキスト
+      //   だけ → hold buffer が drop → 本文が空 → 空応答が誤った成功マークになる事象を防ぐ）
+      if (!fullText.trim()) {
+        console.warn(
+          `[local-llm] Streamed response was drift-only (dropped to empty), requesting plain-text regeneration (retry ${driftRetryCount + 1}/${MAX_DRIFT_RESCUE_RETRIES}).`
+        );
+        this.trajectoryLogger.logDriftRescue(trajCommonDrift, {
+          raw_text_head: '(dropped during streaming)',
+          safety_verdict: 'dropped_empty',
+          executed: false,
+          failure_reason: 'stream drift dropped to empty',
+        });
+        session.messages.push({
+          role: 'system',
+          content: buildStructuredFeedback({
+            kind: 'unparseable_pseudo_call',
+            reason:
+              'Your previous response was discarded because it consisted only of reasoning/channel markers (e.g. <|channel>thought<channel|>) with no user-facing text.',
+            hint: 'Answer the user directly in plain Japanese text. Do NOT emit <|channel>, thought, or call: markers. Use the tool results already gathered in this conversation.',
+            allowed_actions: [
+              'Respond to the user in plain text using the information already gathered',
+            ],
+          }),
+        });
+        driftRetryCount++;
+        fullText = await finalChatStreamOnce();
+        continue;
+      }
+
       console.warn(
         `[local-llm] Pseudo tool_call drift detected (retry ${driftRetryCount + 1}/${MAX_DRIFT_RESCUE_RETRIES}). Raw head: ${fullText.slice(0, 200)}`
       );
 
       const parsed = parsePseudoToolCall(fullText);
-      const trajCommonDrift = this.trajectoryCommon(logId, options?.channelId, driftRetryCount);
 
       // assistant に raw drift を必ず積む (LLM が「自分が何を吐いたか」を見られるように)
       session.messages.push({ role: 'assistant', content: fullText });
@@ -1857,15 +1927,22 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
     // 最終 fallback: bounded retry 上限を超えても drift が残る → strip + 親切な fallback
     if (containsPseudoToolCall(fullText)) {
-      const cleaned = stripPseudoToolCalls(fullText);
+      const cleaned = stripToolCallArtifacts(fullText, { trim: true });
       console.warn(
         `[local-llm] Drift persisted after ${MAX_DRIFT_RESCUE_RETRIES} rescue retries. Raw head: ${fullText.slice(0, 200)}, cleaned: "${cleaned.slice(0, 100)}"`
       );
       fullText = cleaned || FRIENDLY_FALLBACK_MESSAGE;
     } else {
       // strict drift は無いが cosmetic leak (先頭/末尾の bare `thought\n` 等) は除去する。
-      // stripPseudoToolCalls は strict + cosmetic 両方除去する idempotent な関数。
-      fullText = stripPseudoToolCalls(fullText);
+      // stripToolCallArtifacts は strict + cosmetic + Anthropic 形式を除去する idempotent な関数。
+      const cleaned = stripToolCallArtifacts(fullText, { trim: true });
+      // cosmetic leak だけで本文が無かった、または stream 中に strict drift が drop されて
+      // 本文が空のまま残った場合、strip 結果も空になる。空のまま返すと Discord 層の
+      // `|| '✅'` fallback で誤解を招く成功マークになるため、正直な fallback に差し替える。
+      // （元から空 = ツールのみ実行で本文なし、drift も無し、のケースは空のまま維持して
+      //   既存挙動を壊さない）
+      fullText =
+        cleaned || (fullText.trim() || lastStreamDroppedDrift ? FRIENDLY_FALLBACK_MESSAGE : '');
     }
 
     // ツール結果から検出したMEDIA:パスを最終応答に追記

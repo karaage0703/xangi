@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { processManager } from './process-manager.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
+import { stripToolCallArtifacts, finalizeDisplayText } from './tool-call-sanitize.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import { getSafeEnv } from './base-runner.js';
 import { getGitHubEnv } from './github-auth.js';
@@ -98,7 +99,8 @@ export class ClaudeCodeRunner {
     }
 
     return {
-      result: response.result,
+      // 非ストリーミング経路でも tool-call 構文の除去 + 空→正直な fallback を適用
+      result: finalizeDisplayText(response.result),
       sessionId: response.session_id,
     };
   }
@@ -252,8 +254,11 @@ export class ClaudeCodeRunner {
             if (json.type === 'assistant' && json.message?.content) {
               for (const block of json.message.content) {
                 if (block.type === 'text') {
-                  fullText += block.text;
-                  callbacks.onText?.(block.text, fullText);
+                  const clean = stripToolCallArtifacts(block.text);
+                  if (clean) {
+                    fullText += clean;
+                    callbacks.onText?.(clean, fullText);
+                  }
                 }
               }
             } else if (json.type === 'result') {
@@ -267,7 +272,7 @@ export class ClaudeCodeRunner {
               // ストリーミング中の累積テキストと最終 result をマージ
               // （ツール呼び出し前のテキストが result から消えるのを防ぐ）
               if (json.result) {
-                fullText = mergeTexts(fullText, json.result);
+                fullText = mergeTexts(fullText, stripToolCallArtifacts(json.result));
               }
             }
           } catch {
@@ -297,14 +302,14 @@ export class ClaudeCodeRunner {
             if (json.type === 'assistant' && json.message?.content) {
               for (const block of json.message.content) {
                 if (block.type === 'text') {
-                  fullText += block.text;
+                  fullText += stripToolCallArtifacts(block.text);
                 }
               }
             } else if (json.type === 'result') {
               sessionId = json.session_id;
               // ストリーミング中の累積テキストと最終 result をマージ
               if (json.result) {
-                fullText = mergeTexts(fullText, json.result);
+                fullText = mergeTexts(fullText, stripToolCallArtifacts(json.result));
               }
             }
           } catch {
@@ -319,7 +324,7 @@ export class ClaudeCodeRunner {
           return;
         }
 
-        const result: RunResult = { result: fullText, sessionId };
+        const result: RunResult = { result: finalizeDisplayText(fullText), sessionId };
         callbacks.onComplete?.(result);
         resolve(result);
       });

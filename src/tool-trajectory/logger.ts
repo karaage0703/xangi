@@ -88,7 +88,8 @@ export type DriftSafetyVerdict =
   | 'unsafe'
   | 'unparseable'
   | 'already_executed'
-  | 'loop_blocked';
+  | 'loop_blocked'
+  | 'dropped_empty';
 
 export interface DriftRescuePayload {
   raw_text_head: string;

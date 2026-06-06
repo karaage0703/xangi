@@ -9,6 +9,7 @@ import type {
   ExtendTimeoutResult,
 } from './agent-runner.js';
 import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
+import { stripToolCallArtifacts, finalizeDisplayText } from './tool-call-sanitize.js';
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { getSafeEnv } from './base-runner.js';
 import { buildPersistentSystemPrompt } from './base-runner.js';
@@ -290,8 +291,11 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     if (json.type === 'assistant' && json.message?.content) {
       for (const block of json.message.content) {
         if (block.type === 'text' && block.text) {
-          this.fullText += block.text;
-          this.currentItem?.callbacks?.onText?.(block.text, this.fullText);
+          const clean = stripToolCallArtifacts(block.text);
+          if (clean) {
+            this.fullText += clean;
+            this.currentItem?.callbacks?.onText?.(clean, this.fullText);
+          }
         }
         if (block.type === 'tool_use' && block.name) {
           this.currentItem?.callbacks?.onToolUse?.(block.name, block.input ?? {});
@@ -364,11 +368,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
         // ストリーミング中の累積テキストと最終 result をマージ
         // （ツール呼び出し前のテキストが result から消えるのを防ぐ）
         if (json.result) {
-          this.fullText = mergeTexts(this.fullText, json.result);
+          this.fullText = mergeTexts(this.fullText, stripToolCallArtifacts(json.result));
         }
 
         const result: RunResult = {
-          result: this.fullText,
+          // 本文が空（strip 後に空 / モデルが本文を出さず end_turn）の場合は
+          // 誤解を招く `✅` ではなく正直な fallback を返す
+          result: finalizeDisplayText(this.fullText),
           sessionId: this.sessionId,
         };
 

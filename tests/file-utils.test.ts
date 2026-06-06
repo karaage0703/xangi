@@ -7,6 +7,9 @@ import {
   stripFilePaths,
   buildPromptWithAttachments,
   resolveAttachmentPath,
+  hasUnresolvedMediaMarker,
+  buildAttachmentResult,
+  getMissingMediaNotice,
 } from '../src/file-utils.js';
 
 describe('extractFilePaths', () => {
@@ -218,5 +221,132 @@ describe('buildPromptWithAttachments', () => {
     expect(buildPromptWithAttachments('hi', ['/a/b.png'])).toBe(
       'hi\n\n[添付ファイル]\n  - /a/b.png'
     );
+  });
+});
+
+describe('hasUnresolvedMediaMarker', () => {
+  let workspace: string;
+  let outputsDir: string;
+  let imageRel: string;
+  let imageAbs: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), 'xangi-ws-'));
+    outputsDir = join(workspace, 'outputs');
+    mkdirSync(outputsDir, { recursive: true });
+    imageAbs = join(outputsDir, 'real.png');
+    imageRel = 'outputs/real.png';
+    writeFileSync(imageAbs, 'fakepng');
+  });
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('returns true when a MEDIA: path does not exist (the phantom-path bug)', () => {
+    const text = `描いたよ！\nMEDIA:outputs/phantom.png`;
+    expect(hasUnresolvedMediaMarker(text, workspace)).toBe(true);
+  });
+
+  it('returns true when an [IMAGE:...] path does not exist', () => {
+    const text = `完成！[IMAGE:outputs/phantom.png]`;
+    expect(hasUnresolvedMediaMarker(text, workspace)).toBe(true);
+  });
+
+  it('returns false when the MEDIA: path is a real file', () => {
+    const text = `できたよ MEDIA:${imageRel}`;
+    expect(hasUnresolvedMediaMarker(text, workspace)).toBe(false);
+  });
+
+  it('returns false for http(s) / data URLs (not an attachment failure)', () => {
+    expect(hasUnresolvedMediaMarker('MEDIA:https://example.com/a.png', workspace)).toBe(false);
+    expect(hasUnresolvedMediaMarker('MEDIA:data:image/png;base64,AAAA', workspace)).toBe(false);
+  });
+
+  it('returns false for plain text with no markers', () => {
+    expect(hasUnresolvedMediaMarker('画像は作れなかったよ', workspace)).toBe(false);
+  });
+});
+
+describe('getMissingMediaNotice', () => {
+  afterEach(() => {
+    delete process.env.ATTACHMENT_MISSING_NOTICE;
+  });
+
+  it('returns the default notice', () => {
+    delete process.env.ATTACHMENT_MISSING_NOTICE;
+    expect(getMissingMediaNotice()).toContain('添付できませんでした');
+  });
+
+  it('can be overridden via ATTACHMENT_MISSING_NOTICE', () => {
+    process.env.ATTACHMENT_MISSING_NOTICE = 'カスタム注記';
+    expect(getMissingMediaNotice()).toBe('カスタム注記');
+  });
+});
+
+describe('buildAttachmentResult', () => {
+  let workspace: string;
+  let outputsDir: string;
+  let imageRel: string;
+  let imageAbs: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), 'xangi-ws-'));
+    outputsDir = join(workspace, 'outputs');
+    mkdirSync(outputsDir, { recursive: true });
+    imageAbs = join(outputsDir, 'real.png');
+    imageRel = 'outputs/real.png';
+    writeFileSync(imageAbs, 'fakepng');
+  });
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+    delete process.env.ATTACHMENT_MISSING_NOTICE;
+  });
+
+  it('attaches a real file and strips the marker from display text', () => {
+    const { filePaths, displayText } = buildAttachmentResult(
+      `描いたよ\nMEDIA:${imageRel}`,
+      undefined,
+      workspace
+    );
+    expect(filePaths).toEqual([imageAbs]);
+    expect(displayText).toBe('描いたよ');
+  });
+
+  it('merges and dedupes structured attachments with text-derived paths', () => {
+    const { filePaths } = buildAttachmentResult(`MEDIA:${imageRel}`, [imageAbs], workspace);
+    expect(filePaths).toEqual([imageAbs]);
+  });
+
+  it('appends the failure notice when a phantom MEDIA path resolves to nothing', () => {
+    const { filePaths, displayText } = buildAttachmentResult(
+      `描いたよ！\nMEDIA:outputs/phantom.png`,
+      undefined,
+      workspace
+    );
+    expect(filePaths).toEqual([]);
+    expect(displayText).toContain('描いたよ');
+    expect(displayText).toContain(getMissingMediaNotice());
+  });
+
+  it('returns the notice alone when stripping leaves an empty body', () => {
+    const { filePaths, displayText } = buildAttachmentResult(
+      `MEDIA:outputs/phantom.png`,
+      undefined,
+      workspace
+    );
+    expect(filePaths).toEqual([]);
+    expect(displayText).toBe(getMissingMediaNotice());
+  });
+
+  it('passes plain text through untouched when there are no markers', () => {
+    const { filePaths, displayText } = buildAttachmentResult(
+      '今日はいい天気だね',
+      undefined,
+      workspace
+    );
+    expect(filePaths).toEqual([]);
+    expect(displayText).toBe('今日はいい天気だね');
   });
 });

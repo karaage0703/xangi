@@ -23,12 +23,7 @@ import { ClaudeCodeRunner } from './claude-code.js';
 import { processManager } from './process-manager.js';
 import { loadSkills, formatSkillList, type Skill } from './skills.js';
 import { startSlackBot } from './slack.js';
-import {
-  downloadFile,
-  extractFilePaths,
-  stripFilePaths,
-  buildPromptWithAttachments,
-} from './file-utils.js';
+import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { initSettings, loadSettings, formatSettings } from './settings.js';
 import { updateEnvKeyValue } from './env-persist.js';
 import lockfile from 'proper-lockfile';
@@ -1083,11 +1078,11 @@ async function main() {
         setSession(channelId, runResult.sessionId);
 
         // ファイルパスを抽出して添付送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-        const filePaths = [
-          ...new Set([...extractFilePaths(runResult.result), ...(runResult.attachments ?? [])]),
-        ];
-        const displayText =
-          filePaths.length > 0 ? stripFilePaths(runResult.result) : runResult.result;
+        // 添付ゼロでも実在しない MEDIA マーカーが残る場合は生成失敗の注記に差し替える
+        const { filePaths, displayText } = buildAttachmentResult(
+          runResult.result,
+          runResult.attachments
+        );
 
         const chunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
         await interaction.editReply(chunks[0] || '✅');
@@ -1681,8 +1676,7 @@ async function main() {
         setSession(channelId, newSessionId, 'scheduler');
 
         // 結果を送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-        const filePaths = [...new Set([...extractFilePaths(result), ...(attachments ?? [])])];
-        const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
+        const { filePaths, displayText } = buildAttachmentResult(result, attachments);
 
         // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
         // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
@@ -2105,8 +2099,7 @@ async function processPrompt(
     );
 
     // ファイルパスを抽出して添付送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-    const filePaths = [...new Set([...extractFilePaths(result), ...(structuredAttachments ?? [])])];
-    const displayText = filePaths.length > 0 ? stripFilePaths(result) : result;
+    const { filePaths, displayText } = buildAttachmentResult(result, structuredAttachments);
 
     // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
     // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
