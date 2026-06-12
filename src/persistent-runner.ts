@@ -63,6 +63,8 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private currentTimeoutMs = 0;
   private workdir?: string;
   private skipPermissions: boolean;
+  private permissionMode?: string;
+  private addDirs?: string[];
   private systemPrompt: string;
   private resumeSessionId?: string; // プロセス再起動時に --resume で復元するセッションID
   private channelId?: string; // トランスクリプトログ用
@@ -74,6 +76,8 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     timeoutMs?: number;
     workdir?: string;
     skipPermissions?: boolean;
+    permissionMode?: string;
+    addDirs?: string[];
     channelId?: string;
     platform?: ChatPlatform;
     effort?: string;
@@ -84,6 +88,8 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     this.maxTimeoutMs = MAX_TIMEOUT_MS;
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
+    this.permissionMode = options?.permissionMode;
+    this.addDirs = options?.addDirs;
     this.systemPrompt = buildPersistentSystemPrompt(options?.platform);
     this.channelId = options?.channelId;
     this.effort = options?.effort;
@@ -130,6 +136,14 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     if (this.skipPermissions) {
       args.push('--dangerously-skip-permissions');
+    } else if (this.permissionMode) {
+      args.push('--permission-mode', this.permissionMode);
+    }
+
+    if (this.addDirs && this.addDirs.length > 0) {
+      for (const dir of this.addDirs) {
+        args.push('--add-dir', dir);
+      }
     }
 
     if (this.model) {

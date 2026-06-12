@@ -112,6 +112,37 @@ describe('ClaudeCodeRunner args', () => {
     expect(args).not.toContain('--dangerously-skip-permissions');
   });
 
+  it('should include --permission-mode when permissionMode is set and skipPermissions is false', async () => {
+    const runner = new ClaudeCodeRunner({ skipPermissions: false, permissionMode: 'acceptEdits' });
+    const { args } = await getSpawnArgs(runner, 'hello');
+
+    expect(args).toContain('--permission-mode');
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+  });
+
+  it('should prefer --dangerously-skip-permissions over --permission-mode', async () => {
+    const runner = new ClaudeCodeRunner({ skipPermissions: true, permissionMode: 'acceptEdits' });
+    const { args } = await getSpawnArgs(runner, 'hello');
+
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--permission-mode');
+  });
+
+  it('should include --add-dir for each addDirs entry', async () => {
+    const runner = new ClaudeCodeRunner({
+      skipPermissions: false,
+      addDirs: ['/tmp/dir-a', '/tmp/dir-b'],
+    });
+    const { args } = await getSpawnArgs(runner, 'hello');
+
+    const first = args.indexOf('--add-dir');
+    expect(first).toBeGreaterThan(-1);
+    expect(args[first + 1]).toBe('/tmp/dir-a');
+    const second = args.indexOf('--add-dir', first + 1);
+    expect(second).toBeGreaterThan(-1);
+    expect(args[second + 1]).toBe('/tmp/dir-b');
+  });
+
   it('should include --resume with sessionId', async () => {
     const runner = new ClaudeCodeRunner({});
     const { args } = await getSpawnArgs(runner, 'hello', { sessionId: 'abc-123' });

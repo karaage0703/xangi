@@ -15,6 +15,8 @@ export interface ClaudeCodeOptions {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  permissionMode?: string;
+  addDirs?: string[];
   platform?: ChatPlatform;
   effort?: string;
 }
@@ -37,6 +39,8 @@ export class ClaudeCodeRunner {
   private timeoutMs: number;
   private workdir?: string;
   private skipPermissions: boolean;
+  private permissionMode?: string;
+  private addDirs?: string[];
   private systemPrompt: string;
   private effort?: string;
 
@@ -45,6 +49,8 @@ export class ClaudeCodeRunner {
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS; // デフォルト5分
     this.workdir = options?.workdir;
     this.skipPermissions = options?.skipPermissions ?? false;
+    this.permissionMode = options?.permissionMode;
+    this.addDirs = options?.addDirs;
     this.systemPrompt = buildSystemPrompt(options?.platform);
     this.effort = options?.effort;
   }
@@ -56,6 +62,14 @@ export class ClaudeCodeRunner {
     const skip = options?.skipPermissions ?? this.skipPermissions;
     if (skip) {
       args.push('--dangerously-skip-permissions');
+    } else if (this.permissionMode) {
+      args.push('--permission-mode', this.permissionMode);
+    }
+
+    if (this.addDirs && this.addDirs.length > 0) {
+      for (const dir of this.addDirs) {
+        args.push('--add-dir', dir);
+      }
     }
 
     // セッション継続
@@ -183,6 +197,14 @@ export class ClaudeCodeRunner {
     const skip = options?.skipPermissions ?? this.skipPermissions;
     if (skip) {
       args.push('--dangerously-skip-permissions');
+    } else if (this.permissionMode) {
+      args.push('--permission-mode', this.permissionMode);
+    }
+
+    if (this.addDirs && this.addDirs.length > 0) {
+      for (const dir of this.addDirs) {
+        args.push('--add-dir', dir);
+      }
     }
 
     if (options?.sessionId) {

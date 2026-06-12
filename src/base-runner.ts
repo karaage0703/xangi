@@ -16,6 +16,8 @@ export interface BaseRunnerOptions {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  permissionMode?: string;
+  addDirs?: string[];
 }
 
 // プロンプトを再エクスポート（既存のimportを壊さないため）

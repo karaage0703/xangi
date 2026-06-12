@@ -8,6 +8,10 @@ export interface AgentConfig {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  /** Claude Code の --permission-mode（例: acceptEdits, plan, bypassPermissions） */
+  permissionMode?: string;
+  /** Claude Code の --add-dir 追加ディレクトリ一覧 */
+  addDirs?: string[];
   /** 常駐プロセスモード（高速化） */
   persistent?: boolean;
   /** 同時実行プロセス数の上限（RunnerManager用） */
@@ -206,11 +210,21 @@ export function loadConfig(): Config {
   }
   // 複数有効 or 全部 disabled (Web Chat only) → undefined（全コマンド注入 / Web 専用扱い）
 
+  const addDirsRaw = process.env.CLAUDE_ADD_DIRS;
+  const addDirs: string[] | undefined = addDirsRaw
+    ? addDirsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+
   const agentConfig: AgentConfig = {
     model: process.env.AGENT_MODEL || undefined,
     timeoutMs: process.env.TIMEOUT_MS ? parseInt(process.env.TIMEOUT_MS, 10) : DEFAULT_TIMEOUT_MS,
     workdir: process.env.WORKSPACE_PATH || undefined,
     skipPermissions: process.env.SKIP_PERMISSIONS !== 'false', // デフォルトで有効（Discord/Slack/Web 連携の非対話実行で permission プロンプト待ちを避けるため）
+    permissionMode: process.env.CLAUDE_PERMISSION_MODE || undefined,
+    addDirs,
     persistent: process.env.PERSISTENT_MODE !== 'false', // デフォルトで有効
     maxProcesses: process.env.MAX_PROCESSES ? parseInt(process.env.MAX_PROCESSES, 10) : 10,
     idleTimeoutMs: process.env.IDLE_TIMEOUT_MS

@@ -274,4 +274,28 @@ describe('config', () => {
 
     expect(config.agent.config.skipPermissions).toBe(false);
   });
+
+  it('should read CLAUDE_PERMISSION_MODE and CLAUDE_ADD_DIRS', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.CLAUDE_PERMISSION_MODE = 'acceptEdits';
+    process.env.CLAUDE_ADD_DIRS = '/tmp/dir-a, /tmp/dir-b';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.permissionMode).toBe('acceptEdits');
+    expect(config.agent.config.addDirs).toEqual(['/tmp/dir-a', '/tmp/dir-b']);
+  });
+
+  it('should leave permissionMode and addDirs undefined by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.CLAUDE_PERMISSION_MODE;
+    delete process.env.CLAUDE_ADD_DIRS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.permissionMode).toBeUndefined();
+    expect(config.agent.config.addDirs).toBeUndefined();
+  });
 });
