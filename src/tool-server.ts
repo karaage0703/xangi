@@ -50,7 +50,7 @@ async function executeCommand(
   if (command.startsWith('discord_') || command === 'media_send') {
     return discordApi(command, flags, context);
   } else if (command.startsWith('schedule_')) {
-    return scheduleCmd(command, flags);
+    return scheduleCmd(command, flags, context);
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
   } else if (command === 'web_history') {

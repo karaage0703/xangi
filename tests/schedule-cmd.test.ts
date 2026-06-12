@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { scheduleCmd } from '../src/cli/schedule-cmd.js';
@@ -55,5 +55,57 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
   it('returns empty list initially under fresh WORKSPACE_PATH', async () => {
     const result = await scheduleCmd('schedule_list', {});
     expect(result).toContain('スケジュールはありません');
+  });
+});
+
+describe('schedule-cmd context channelId', () => {
+  let tmpDir: string;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'schedule-cmd-test-'));
+    originalEnv = { ...process.env };
+    delete process.env.DATA_DIR;
+    process.env.WORKSPACE_PATH = tmpDir;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function readSchedules(): { channelId: string }[] {
+    const path = join(tmpDir, '.xangi', 'schedules.json');
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  }
+
+  it('uses context.channelId when --channel is omitted', async () => {
+    await scheduleCmd(
+      'schedule_add',
+      { input: '毎日 9:00 おはよう', platform: 'discord' },
+      { channelId: 'ctx-channel' }
+    );
+
+    const schedules = readSchedules();
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0].channelId).toBe('ctx-channel');
+  });
+
+  it('prefers --channel flag over context.channelId', async () => {
+    await scheduleCmd(
+      'schedule_add',
+      { input: '毎日 9:00 おはよう', channel: 'flag-channel', platform: 'discord' },
+      { channelId: 'ctx-channel' }
+    );
+
+    const schedules = readSchedules();
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0].channelId).toBe('flag-channel');
+  });
+
+  it('still requires channel when neither flag nor context is provided', async () => {
+    await expect(scheduleCmd('schedule_add', { input: '毎日 9:00 おはよう' })).rejects.toThrow(
+      '--channel is required'
+    );
   });
 });

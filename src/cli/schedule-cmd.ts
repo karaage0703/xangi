@@ -58,9 +58,12 @@ async function scheduleList(): Promise<string> {
   return formatScheduleList(schedules);
 }
 
-async function scheduleAdd(flags: Record<string, string>): Promise<string> {
+async function scheduleAdd(
+  flags: Record<string, string>,
+  context?: { channelId?: string }
+): Promise<string> {
   const input = flags['input'];
-  const channelId = flags['channel'];
+  const channelId = flags['channel'] || context?.channelId;
   const platform = (flags['platform'] || 'discord') as 'discord' | 'slack';
 
   if (!input) throw new Error('--input is required');
@@ -126,12 +129,16 @@ async function scheduleToggle(flags: Record<string, string>): Promise<string> {
 
 // ─── Router ─────────────────────────────────────────────────────────
 
-export async function scheduleCmd(command: string, flags: Record<string, string>): Promise<string> {
+export async function scheduleCmd(
+  command: string,
+  flags: Record<string, string>,
+  context?: { channelId?: string }
+): Promise<string> {
   switch (command) {
     case 'schedule_list':
       return scheduleList();
     case 'schedule_add':
-      return scheduleAdd(flags);
+      return scheduleAdd(flags, context);
     case 'schedule_remove':
       return scheduleRemove(flags);
     case 'schedule_toggle':
