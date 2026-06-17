@@ -130,7 +130,7 @@ export class CursorRunner extends CliRunnerBase {
 
   /**
    * 無効な sessionId での `--resume` 失敗か。
-   * Cursor CLI 固有のエラーメッセージが安定しないため、gemini と同様に
+   * Cursor CLI 固有のエラーメッセージが安定しないため、CLI 共通基盤と同様に
    * 「sessionId 指定あり + exit code エラー」を広めに resume 失敗とみなして
    * 新規セッションで 1 回だけリトライする
    */

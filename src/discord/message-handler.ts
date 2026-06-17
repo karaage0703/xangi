@@ -11,6 +11,8 @@ import { splitMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
+import { buildCompletionNotification } from './completion-notify.js';
+import { getChannelCompletionNotifyMode, loadSettings } from '../settings.js';
 import {
   getSession,
   setSession,
@@ -50,6 +52,7 @@ export async function processPrompt(
   channelId: string,
   config: Config
 ): Promise<string | null> {
+  const startedAt = Date.now();
   let replyMessage: Message | null = null;
   const toolHistory: string[] = []; // 完了後に表示する短いツール履歴
   // 表示状態のコア。エラー時に途中テキスト・ツール行を残すため関数スコープに置く
@@ -309,6 +312,27 @@ export async function processPrompt(
       } catch (err) {
         console.error('[xangi] Failed to send files:', err);
       }
+    }
+
+    const completionNotification = buildCompletionNotification({
+      mode: getChannelCompletionNotifyMode(
+        loadSettings(),
+        channelId,
+        config.discord.completionNotifyMode ?? 'message'
+      ),
+      elapsedMs: Date.now() - startedAt,
+      thresholdMs: config.discord.completionNotifyAfterMs ?? 10_000,
+      userId: message.author.id,
+    });
+    if (completionNotification && 'send' in message.channel) {
+      await (
+        message.channel as unknown as {
+          send: (options: {
+            content: string;
+            allowedMentions: { parse: []; users?: string[] };
+          }) => Promise<unknown>;
+        }
+      ).send(completionNotification);
     }
 
     return result;

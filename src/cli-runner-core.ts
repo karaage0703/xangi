@@ -51,7 +51,7 @@ export interface CollectOutputOptions {
 }
 
 /**
- * ワンショット CLI ランナー（claude / codex / gemini / cursor-agent）の共通基盤。
+ * ワンショット CLI ランナー（claude / codex / cursor-agent / grok）の共通基盤。
  *
  * spawn・プロセス登録・タイムアウト管理（TimeoutController + チャンネル無し時の
  * フォールバックタイマー）・JSONL バッファリング・exit エラー構築・

@@ -4,7 +4,7 @@ xangiのアーキテクチャと設計思想について説明します。
 
 ## 概要
 
-xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI、legacy/API-key 用の Gemini CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
+xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -16,7 +16,7 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 flowchart LR
     User([ユーザー]) <-->|メッセージ| chat[UI<br/>Discord / Slack<br/>ブラウザ / LINE]
     chat <-->|プロンプト| xangi[xangi]
-    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Cursor CLI / Local LLM<br/>Gemini CLI legacy}}
+    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
     LLM <-->|ファイル操作| WS[(Workspace<br/>AGENTS.md / skills<br/>ローカル資料)]
     LLM <--> Web[Web検索]
     LLM <--> Service[Webサービス]
@@ -40,7 +40,7 @@ flowchart LR
 | Chat | ユーザーインターフェース | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
 | xangi | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts |
 | Backend Resolution | チャンネル別バックエンド解決 | backend-resolver.ts, settings.ts |
-| AI Backend | 実際のAI処理 | Claude Code, Codex CLI, Cursor CLI, Local LLM (Ollama / vLLM), Gemini CLI legacy |
+| AI Backend | 実際のAI処理 | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Local LLM (Ollama / vLLM) |
 | Workspace | ファイル・スキル | skills/, AGENTS.md, ローカル資料 |
 
 ## コンポーネント
@@ -144,7 +144,7 @@ interface AgentRunner {
 }
 ```
 
-すべての Runner 実装 (Claude Code / Codex / Gemini / Local LLM / Dynamic) は EventEmitter
+すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Local LLM / Dynamic) は EventEmitter
 でもあり、`timeout-started` / `timeout-extended` / `timeout-cleared` を emit して
 上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。
 
@@ -215,7 +215,6 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 |-----|---------------------|----------|
 | Claude Code | `CLAUDE.md` | `--append-system-prompt`（一回限り） |
 | Codex CLI | `AGENTS.md` | `<system-context>` タグで埋め込み |
-| Gemini CLI (legacy) | `GEMINI.md` | CLI側で自動読み込み（xangi側の注入なし） |
 | Cursor CLI | `AGENTS.md` | CLI側で自動読み込み（xangi側の注入なし） |
 | Local LLM | `AGENTS.md`, `MEMORY.md` | システムプロンプトに直接埋め込み（`CLAUDE.md` は通常 `AGENTS.md` のシンボリックリンクのため除外） |
 
@@ -226,13 +225,13 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | claude-code.ts | Claude Code | ストリーミング対応、セッション管理 |
 | persistent-runner.ts | Claude Code（常駐） | `--input-format=stream-json` で常駐プロセス化、キュー管理、サーキットブレーカー |
 | codex-cli.ts | Codex CLI | OpenAI製、0.98.0対応、cancel対応 |
-| gemini-cli.ts | Gemini CLI legacy | 互換性維持と Enterprise / Google Cloud / paid API key 用。個人向け Pro / Ultra / 無料枠前提の新規利用は非推奨 |
 | cursor-cli.ts | Cursor CLI | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応 |
+| grok-cli.ts | Grok CLI | xAI `grok` コマンド、json/streaming-json、tool call表示対応 |
 | local-llm/runner.ts | Local LLM | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応 |
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
-claude-code / codex-cli / gemini-cli / cursor-cli の 4 アダプターは、抽象基底クラス
+claude-code / codex-cli / cursor-cli / grok-cli の 4 アダプターは、抽象基底クラス
 `CliRunnerBase` の上に実装されている。基底クラスが以下を一手に引き受け、各アダプターは
 「コマンド引数の構築」と「JSONL イベントの解釈（`CliStreamParser`）」だけを実装する：
 
@@ -247,7 +246,7 @@ claude-code / codex-cli / gemini-cli / cursor-cli の 4 アダプターは、抽
   セッション resume 失敗 → 新規セッションでリトライする一次試行では `notifyOnError: false`
   で誤エラー通知を抑制する
 - **stale session 自動回復**: 無効になった sessionId での resume 失敗を検出し、
-  新規セッションで 1 回だけ自動リトライする（claude-code / codex / gemini / cursor の全ランナー）
+  新規セッションで 1 回だけ自動リトライする（claude-code / codex / cursor / grok の全ランナー）
 
 #### Local LLMアダプターの詳細設計
 
@@ -732,7 +731,7 @@ AI CLIの実装詳細を隠蔽し、交換可能に：
 
 ```typescript
 // 設定でバックエンドを切り替え
-AGENT_BACKEND=claude-code  # or codex / cursor / local-llm (gemini is legacy/API-key use)
+AGENT_BACKEND=claude-code  # or codex / cursor / grok / local-llm
 ```
 
 将来的に新しいAI CLIが登場しても、アダプターを追加するだけで対応可能。
@@ -901,8 +900,8 @@ src/
 ├── claude-code.ts      # Claude Codeアダプター（per-request）
 ├── persistent-runner.ts # Claude Codeアダプター（常駐プロセス）
 ├── codex-cli.ts        # Codex CLIアダプター
-├── gemini-cli.ts       # Gemini CLIアダプター（legacy/API-key用）
 ├── cursor-cli.ts       # Cursor CLIアダプター
+├── grok-cli.ts         # Grok CLIアダプター
 ├── cli-process.ts      # 単発CLI runnerのprocess/env/timeout共通部品
 ├── jsonl-buffer.ts     # JSONL streamの行分割共通部品
 ├── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）

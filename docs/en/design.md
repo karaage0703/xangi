@@ -6,7 +6,7 @@ This document explains the architecture and design philosophy of xangi.
 
 ## Overview
 
-xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI, plus Gemini CLI for legacy/API-key use) and local LLMs (Ollama, etc.) accessible from chat platforms."
+xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -18,7 +18,7 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 flowchart LR
     User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
     chat <-->|Prompt| xangi[xangi]
-    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Local LLM<br/>Gemini CLI legacy}}
+    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
     LLM <-->|File Operations| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
     LLM <--> Web[Web Search]
     LLM <--> Service[Web Service]
@@ -42,7 +42,7 @@ flowchart LR
 | Chat | User interface | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
 | xangi | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts |
 | Backend Resolution | Per-channel backend resolution | backend-resolver.ts, settings.ts |
-| AI Backend | Actual AI processing | Claude Code, Codex CLI, Cursor CLI, Local LLM (Ollama / vLLM), Gemini CLI legacy |
+| AI Backend | Actual AI processing | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Local LLM (Ollama / vLLM) |
 | Workspace | Files & skills | skills/, AGENTS.md, local docs |
 
 ## Components
@@ -146,7 +146,7 @@ interface AgentRunner {
 }
 ```
 
-Every Runner implementation (Claude Code / Codex / Gemini / Local LLM / Dynamic) is also
+Every Runner implementation (Claude Code / Codex / Cursor / Grok / Local LLM / Dynamic) is also
 an `EventEmitter` and emits `timeout-started` / `timeout-extended` / `timeout-cleared`
 events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI.
 
@@ -206,7 +206,6 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 |-----|-------------------|------------------|
 | Claude Code | `CLAUDE.md` | `--append-system-prompt` (one-time) |
 | Codex CLI | `AGENTS.md` | Embedded via `<system-context>` tag |
-| Gemini CLI (legacy) | `GEMINI.md` | Auto-loaded by CLI (no xangi-side injection) |
 | Cursor CLI | `AGENTS.md` | Auto-loaded by CLI (no xangi-side injection) |
 | Local LLM | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded) |
 
@@ -217,13 +216,13 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | claude-code.ts | Claude Code | Streaming support, session management |
 | persistent-runner.ts | Claude Code (persistent) | Persistent process via `--input-format=stream-json`, queue management, circuit breaker |
 | codex-cli.ts | Codex CLI | Made by OpenAI, 0.98.0 compatible, cancel support |
-| gemini-cli.ts | Gemini CLI legacy | Kept for compatibility and Enterprise / Google Cloud / paid API key use. Not recommended for new Pro / Ultra / free individual setups |
 | cursor-cli.ts | Cursor CLI | `cursor-agent` command, JSON/stream-json, tool call display support |
+| grok-cli.ts | Grok CLI | xAI `grok` command, json/streaming-json, tool call display support |
 | local-llm/runner.ts | Local LLM | Direct calls to local LLMs like Ollama, tool execution & streaming support |
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
-The four adapters (claude-code / codex-cli / gemini-cli / cursor-cli) are built on the
+The four adapters (claude-code / codex-cli / cursor-cli / grok-cli) are built on the
 abstract base class `CliRunnerBase`. The base class owns the shared scaffolding, so each
 adapter only implements "command argument building" and "JSONL event interpretation
 (`CliStreamParser`)":
@@ -239,7 +238,7 @@ adapter only implements "command argument building" and "JSONL event interpretat
   The first attempt before a stale-session retry uses `notifyOnError: false` to suppress
   spurious error notifications
 - **Stale session auto-recovery**: resume failures with an invalidated sessionId are detected
-  and retried once with a fresh session (all runners: claude-code / codex / gemini / cursor)
+  and retried once with a fresh session (all runners: claude-code / codex / cursor / grok)
 
 #### Local LLM Adapter Detailed Design
 
@@ -724,7 +723,7 @@ Hides AI CLI implementation details and makes them interchangeable:
 
 ```typescript
 // Switch backends via configuration
-AGENT_BACKEND=claude-code  // or codex / cursor / local-llm (gemini is legacy/API-key use)
+AGENT_BACKEND=claude-code  // or codex / cursor / grok / local-llm
 ```
 
 When new AI CLIs emerge in the future, support can be added simply by creating a new adapter.
@@ -893,8 +892,8 @@ src/
 ├── claude-code.ts      # Claude Code adapter (per-request)
 ├── persistent-runner.ts # Claude Code adapter (persistent process)
 ├── codex-cli.ts        # Codex CLI adapter
-├── gemini-cli.ts       # Gemini CLI adapter (legacy/API-key use)
 ├── cursor-cli.ts       # Cursor CLI adapter
+├── grok-cli.ts         # Grok CLI adapter
 ├── cli-process.ts      # Shared process/env/timeout helpers for one-shot CLI runners
 ├── jsonl-buffer.ts     # Shared JSONL stream line splitter
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)

@@ -18,6 +18,6 @@ xangi-cmd web_history --count 10
 - 引数なしで **現ペインの履歴** が取れる（Discord の \`discord_history\` と同じ）
 - より多く取得: \`--count 50\` 等（jsonl を直接読むので上限なし）
 - 別ペインの履歴を見たい場合: \`--session <appSessionId>\`
-- **AI バックエンド (Claude Code / Codex / Gemini / local-llm) のセッションが切れると過去会話を忘れるので、返答前に必ずやること**
+- **AI バックエンド (Claude Code / Codex / Cursor / Grok / local-llm) のセッションが切れると過去会話を忘れるので、返答前に必ずやること**
 - **「タイムアウト」「さっきの」など前提のあるメッセージが来たら、自己流で「何の話？」と聞き返さず、まず履歴を取得する**
 - 注意: セッション起動直後（メッセージ受信前）にはペイン文脈がないので履歴取得しない`;

@@ -22,7 +22,7 @@ export function formatToolInput(toolName: string, input: Record<string, unknown>
       const cmdKey = input.command || input.cmd;
       if (!cmdKey) return '';
       const cmd = String(cmdKey);
-      // 60 文字だと codex exec / gemini -p のラッパーコマンドが本文に入る前に切れる。
+      // 60 文字だと codex/grok 等のラッパーコマンドが本文に入る前に切れる。
       // 観測性を上げるため 200 文字まで表示。Discord 1 メッセージ 2000 字制限内で十分。
       // 環境変数 XANGI_TOOL_DISPLAY_MAX で上書き可能。
       const maxLen = parseInt(process.env.XANGI_TOOL_DISPLAY_MAX ?? '200', 10);

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { buildSlashCommands } from '../src/discord/slash-commands.js';
+import type { Config } from '../src/config.js';
+import type { Skill } from '../src/skills.js';
 
 /**
  * annotateChannelMentions のテスト用に関数を再実装
@@ -133,6 +136,53 @@ describe('Discord Commands', () => {
       expect(result.allowed).toBe(true);
       expect(result.status).toBe('ON');
       expect(result.channels).toEqual(['456', '123']);
+    });
+  });
+
+  describe('buildSlashCommands command limit', () => {
+    it('keeps notify while staying within Discord command limit', () => {
+      const config = {
+        discord: {
+          allowAutoreplyCommand: true,
+          allowRespondToBotsCommand: true,
+          allowLlmModeCommand: true,
+        },
+      } as Config;
+      const skills: Skill[] = Array.from({ length: 120 }, (_, i) => ({
+        name: `skill-${i}`,
+        description: `Skill ${i}`,
+        path: `/tmp/skill-${i}`,
+      }));
+
+      const commands = buildSlashCommands(config, skills);
+      const names = commands.map((cmd) => cmd.name);
+
+      expect(commands.length).toBeLessThanOrEqual(100);
+      expect(names).toContain('notify');
+      expect(names).toContain('skill');
+      expect(names.filter((name) => name.startsWith('skill-')).length).toBeLessThan(120);
+    });
+  });
+
+  describe('/backend command choices', () => {
+    it('registers only allowed backend choices', () => {
+      const config = {
+        agent: {
+          allowedBackends: ['codex', 'grok'],
+        },
+        discord: {
+          allowAutoreplyCommand: false,
+          allowRespondToBotsCommand: false,
+          allowLlmModeCommand: false,
+        },
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const backend = commands.find((cmd) => cmd.name === 'backend') as any;
+      const setSubcommand = backend.options.find((opt: any) => opt.name === 'set');
+      const typeOption = setSubcommand.options.find((opt: any) => opt.name === 'type');
+
+      expect(typeOption.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
     });
   });
 });

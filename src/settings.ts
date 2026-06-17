@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import type { DiscordCompletionNotifyMode } from './config.js';
 
 export interface Settings {
   autoRestart: boolean;
+  discordCompletionNotifyChannels?: Record<string, DiscordCompletionNotifyMode>;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -11,6 +13,31 @@ const DEFAULT_SETTINGS: Settings = {
 
 let settingsPath: string | null = null;
 let cachedSettings: Settings | null = null;
+
+const DISCORD_COMPLETION_NOTIFY_MODES = new Set<DiscordCompletionNotifyMode>([
+  'off',
+  'message',
+  'mention',
+]);
+
+function normalizeDiscordCompletionNotifyChannels(
+  value: unknown
+): Record<string, DiscordCompletionNotifyMode> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const normalized: Record<string, DiscordCompletionNotifyMode> = {};
+  for (const [channelId, mode] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d+$/.test(channelId)) continue;
+    if (
+      typeof mode === 'string' &&
+      DISCORD_COMPLETION_NOTIFY_MODES.has(mode as DiscordCompletionNotifyMode)
+    ) {
+      normalized[channelId] = mode as DiscordCompletionNotifyMode;
+    }
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
 
 /**
  * settings.json のパスを初期化する
@@ -41,8 +68,12 @@ export function loadSettings(): Settings {
   try {
     const raw = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<Settings>;
+    const discordCompletionNotifyChannels = normalizeDiscordCompletionNotifyChannels(
+      parsed.discordCompletionNotifyChannels
+    );
     cachedSettings = {
       autoRestart: parsed.autoRestart ?? DEFAULT_SETTINGS.autoRestart,
+      ...(discordCompletionNotifyChannels && { discordCompletionNotifyChannels }),
     };
     return { ...cachedSettings };
   } catch {
@@ -72,8 +103,23 @@ export function saveSettings(settings: Partial<Settings>): Settings {
  * 設定をフォーマットして表示用文字列を返す
  */
 export function formatSettings(settings: Settings): string {
-  const lines = ['⚙️ **現在の設定**', `- 自動再起動: ${settings.autoRestart ? '✅ ON' : '❌ OFF'}`];
+  const completionNotifyChannels = Object.keys(
+    settings.discordCompletionNotifyChannels ?? {}
+  ).length;
+  const lines = [
+    '⚙️ **現在の設定**',
+    `- 自動再起動: ${settings.autoRestart ? '✅ ON' : '❌ OFF'}`,
+    `- Discord完了通知チャンネル設定: ${completionNotifyChannels}件`,
+  ];
   return lines.join('\n');
+}
+
+export function getChannelCompletionNotifyMode(
+  settings: Settings,
+  channelId: string,
+  defaultMode: DiscordCompletionNotifyMode
+): DiscordCompletionNotifyMode {
+  return settings.discordCompletionNotifyChannels?.[channelId] ?? defaultMode;
 }
 
 /**

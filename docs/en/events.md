@@ -115,10 +115,10 @@ xangi implements a minimal compatibility layer for the HTTP API expected by `@ev
 The Even Terminal UI only exposes `claude` and `codex` provider labels. xangi accepts those labels for compatibility, but the actual backend is still chosen by xangi's normal configuration:
 
 ```text
-AGENT_BACKEND=claude-code | codex | cursor | local-llm
+AGENT_BACKEND=claude-code | codex | cursor | grok | local-llm
 ```
 
-`gemini` is still available only as a legacy/API-key backend. So Local LLM still works: set `AGENT_BACKEND=local-llm` on the xangi side, then choose either provider label in the Even UI.
+Local LLM works by setting `AGENT_BACKEND=local-llm` on the xangi side, then choose either provider label in the Even UI.
 
 To use a different backend / model / Local LLM mode only for Even Terminal traffic, set `XANGI_EVEN_TERMINAL_BACKEND`, `XANGI_EVEN_TERMINAL_MODEL`, and `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE`. Per-session `CHANNEL_OVERRIDES` entries for `web-chat:<appSessionId>` take precedence over these Even Terminal defaults.
 

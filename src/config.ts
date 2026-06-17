@@ -3,7 +3,9 @@ import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { EnvValidator } from './config-validate.js';
 
-export type AgentBackend = 'claude-code' | 'codex' | 'gemini' | 'cursor' | 'local-llm';
+export const ALL_AGENT_BACKENDS = ['claude-code', 'codex', 'cursor', 'grok', 'local-llm'] as const;
+export type AgentBackend = (typeof ALL_AGENT_BACKENDS)[number];
+export type DiscordCompletionNotifyMode = 'off' | 'message' | 'mention';
 
 export interface AgentConfig {
   model?: string;
@@ -32,6 +34,8 @@ export interface Config {
     toolHistoryMode?: 'inline' | 'button' | 'off';
     showLiveToolUse?: boolean;
     showToolButton?: boolean;
+    completionNotifyMode?: DiscordCompletionNotifyMode;
+    completionNotifyAfterMs?: number;
     injectChannelTopic?: boolean;
     injectTimestamp?: boolean;
     showButtons?: boolean;
@@ -128,7 +132,7 @@ export interface Config {
     config: AgentConfig;
     platform?: ChatPlatform;
     /** 切り替え許可バックエンド一覧（未設定=全て許可） */
-    allowedBackends?: AgentBackend[];
+    allowedBackends: AgentBackend[];
     /** 切り替え許可モデル一覧（未設定=全て許可） */
     allowedModels?: string[];
   };
@@ -186,12 +190,12 @@ export function loadConfig(): Config {
   if (
     backend !== 'claude-code' &&
     backend !== 'codex' &&
-    backend !== 'gemini' &&
     backend !== 'cursor' &&
+    backend !== 'grok' &&
     backend !== 'local-llm'
   ) {
     throw new Error(
-      `Invalid AGENT_BACKEND: ${backend}. Must be 'claude-code', 'codex', 'gemini', 'cursor', or 'local-llm'`
+      `Invalid AGENT_BACKEND: ${backend}. Must be 'claude-code', 'codex', 'cursor', 'grok', or 'local-llm'`
     );
   }
 
@@ -222,14 +226,10 @@ export function loadConfig(): Config {
     idleTimeoutMs: v.int('IDLE_TIMEOUT_MS', 30 * 60 * 1000, { min: 1000 }), // 30分
   };
 
-  // ALLOWED_BACKENDS パース（typo は警告して除外、有効な項目だけ残す）
-  const allowedBackends: AgentBackend[] | undefined = v.enumList('ALLOWED_BACKENDS', [
-    'claude-code',
-    'codex',
-    'gemini',
-    'cursor',
-    'local-llm',
-  ] as const);
+  // ALLOWED_BACKENDS パース（未設定なら全 backend 許可、typo は警告して除外）
+  const allowedBackends: AgentBackend[] = v.enumList('ALLOWED_BACKENDS', ALL_AGENT_BACKENDS) ?? [
+    ...ALL_AGENT_BACKENDS,
+  ];
 
   // LOCAL_LLM_MODE は local-llm/runner 等で直接参照されるが、typo 検出のためここで検証する
   v.enumOf('LOCAL_LLM_MODE', ['agent', 'lite', 'chat'] as const, 'agent');
@@ -283,6 +283,12 @@ export function loadConfig(): Config {
       })(),
       showLiveToolUse: process.env.DISCORD_SHOW_LIVE_TOOL_USE !== 'false',
       showToolButton: process.env.DISCORD_SHOW_TOOL_BUTTON !== 'false',
+      completionNotifyMode: v.enumOf(
+        'DISCORD_COMPLETION_NOTIFY',
+        ['off', 'message', 'mention'] as const,
+        'message'
+      ),
+      completionNotifyAfterMs: v.int('DISCORD_COMPLETION_NOTIFY_AFTER_MS', 10_000, { min: 0 }),
       injectChannelTopic: process.env.INJECT_CHANNEL_TOPIC !== 'false', // デフォルトON
       injectTimestamp: process.env.INJECT_TIMESTAMP !== 'false', // デフォルトON
       showButtons: process.env.DISCORD_SHOW_BUTTONS !== 'false', // デフォルトON

@@ -27,7 +27,7 @@ import type { ChatPlatform } from './prompts/index.js';
  *
  * - claude-code (persistent): RunnerManager で管理（チャンネル別プロセス）
  * - claude-code (non-persistent): 共有 ClaudeCodeRunner
- * - codex / gemini / local-llm: バックエンド種別ごとの共有インスタンス
+ * - codex / grok / local-llm: バックエンド種別ごとの共有インスタンス
  */
 export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private resolver: BackendResolver;

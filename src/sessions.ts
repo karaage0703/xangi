@@ -20,7 +20,7 @@ import { randomUUID } from 'crypto';
 export type SessionScope = 'interactive' | 'scheduler';
 
 export interface AgentInfo {
-  backend: string; // 'claude-code' | 'codex' | 'gemini' | 'local-llm'
+  backend: string; // 'claude-code' | 'codex' | 'cursor' | 'grok' | 'local-llm'
   providerSessionId?: string;
 }
 

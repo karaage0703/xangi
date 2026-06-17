@@ -14,7 +14,7 @@ interface TimeoutResource {
 /**
  * チャンネル別のタイムアウト管理を共通化するコンポーネント。
  *
- * 全 Runner (LocalLlm/Codex/Gemini/PersistentRunner) で同じ
+ * 全 Runner (LocalLlm/Codex/Grok/PersistentRunner) で同じ
  * timeoutAt/maxTimeoutAt/extend ロジックを共有するため、状態と
  * timeout-* イベント発火を 1 箇所に集約する。
  *
