@@ -50,7 +50,7 @@ export interface ResolvedBackend {
 export class BackendResolver {
   private defaultBackend: AgentBackend;
   private defaultModel?: string;
-  private allowedBackends?: AgentBackend[];
+  private allowedBackends: AgentBackend[];
   private allowedModels?: string[];
 
   /** メモリ上のチャンネルオーバーライド */
@@ -219,10 +219,9 @@ export class BackendResolver {
 
   /**
    * バックエンドが許可リストに含まれるか
-   * ALLOWED_BACKENDS 未設定時は false（切り替え不可）
+   * ALLOWED_BACKENDS 未設定時は config 側で全 backend 許可になる
    */
   isBackendAllowed(backend: AgentBackend): boolean {
-    if (!this.allowedBackends) return false;
     return this.allowedBackends.includes(backend);
   }
 
@@ -247,10 +246,9 @@ export class BackendResolver {
 
   /**
    * 許可されているバックエンド一覧
-   * 未設定時はデフォルトバックエンドのみ
    */
   getAllowedBackends(): AgentBackend[] {
-    return this.allowedBackends ?? [this.defaultBackend];
+    return this.allowedBackends;
   }
 
   /**

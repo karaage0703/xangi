@@ -4,7 +4,13 @@ import {
   AutocompleteInteraction,
   Interaction,
 } from 'discord.js';
-import type { Config, AgentBackend, EffortLevel } from '../config.js';
+import {
+  ALL_AGENT_BACKENDS,
+  type Config,
+  type AgentBackend,
+  type EffortLevel,
+  type DiscordCompletionNotifyMode,
+} from '../config.js';
 import { getBackendDisplayName, type AgentRunner } from '../agent-runner.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
@@ -13,7 +19,12 @@ import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
 import { resolveApproval } from '../approval.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
-import { loadSettings, formatSettings } from '../settings.js';
+import {
+  getChannelCompletionNotifyMode,
+  loadSettings,
+  formatSettings,
+  saveSettings,
+} from '../settings.js';
 import { updateEnvKeyValue } from '../env-persist.js';
 import { getSession, setSession, deleteSession, ensureSession } from '../sessions.js';
 import { splitMessage } from '../message-split.js';
@@ -32,6 +43,24 @@ import { discordToolHistoryByMessageId } from './ui.js';
 /** スキル一覧を保持する可変参照。`/skills` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
   current: Skill[];
+}
+
+const DISCORD_APPLICATION_COMMAND_LIMIT = 100;
+
+const BACKEND_CHOICE_LABELS: Record<AgentBackend, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  grok: 'Grok',
+  'local-llm': 'Local LLM',
+};
+
+function getBackendChoices(config: Config): { name: string; value: AgentBackend }[] {
+  const allowedBackends = config.agent?.allowedBackends ?? [...ALL_AGENT_BACKENDS];
+  return allowedBackends.map((backend) => ({
+    name: BACKEND_CHOICE_LABELS[backend],
+    value: backend,
+  }));
 }
 
 /** スキル名を Discord コマンド名に変換（小文字英数字とハイフンのみ、最大32文字） */
@@ -76,6 +105,7 @@ export function buildSlashCommands(
   config: Config,
   skills: Skill[]
 ): ReturnType<SlashCommandBuilder['toJSON']>[] {
+  const backendChoices = getBackendChoices(config);
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
     new SlashCommandBuilder().setName('stop').setDescription('実行中のタスクを停止する').toJSON(),
@@ -92,6 +122,23 @@ export function buildSlashCommands(
       .addStringOption((option) => option.setName('args').setDescription('引数').setRequired(false))
       .toJSON(),
     new SlashCommandBuilder().setName('settings').setDescription('現在の設定を表示する').toJSON(),
+    new SlashCommandBuilder()
+      .setName('notify')
+      .setDescription('このチャンネルの完了通知を設定する')
+      .addStringOption((option) =>
+        option
+          .setName('mode')
+          .setDescription('通知モード')
+          .setRequired(true)
+          .addChoices(
+            { name: 'show (現在の設定を表示)', value: 'show' },
+            { name: 'default (起動時設定に戻す)', value: 'default' },
+            { name: 'off (通知しない)', value: 'off' },
+            { name: 'message (完了メッセージのみ)', value: 'message' },
+            { name: 'mention (依頼者にメンション)', value: 'mention' }
+          )
+      )
+      .toJSON(),
     new SlashCommandBuilder().setName('restart').setDescription('ボットを再起動する').toJSON(),
     new SlashCommandBuilder()
       .setName('skip')
@@ -145,13 +192,7 @@ export function buildSlashCommands(
               .setName('type')
               .setDescription('バックエンド名')
               .setRequired(true)
-              .addChoices(
-                { name: 'Claude Code', value: 'claude-code' },
-                { name: 'Codex', value: 'codex' },
-                { name: 'Gemini', value: 'gemini' },
-                { name: 'Cursor', value: 'cursor' },
-                { name: 'Local LLM', value: 'local-llm' }
-              )
+              .addChoices(...backendChoices)
           )
           .addStringOption((opt) => opt.setName('model').setDescription('モデル名'))
           .addStringOption((opt) =>
@@ -222,7 +263,13 @@ export function buildSlashCommands(
   }
 
   // 各スキルを個別のスラッシュコマンドとして追加
+  let skippedSkillCommands = 0;
   for (const skill of skills) {
+    if (commands.length >= DISCORD_APPLICATION_COMMAND_LIMIT) {
+      skippedSkillCommands += 1;
+      continue;
+    }
+
     // Discordコマンド名は小文字英数字とハイフンのみ（最大32文字）
     const cmdName = skillCommandName(skill.name);
 
@@ -237,6 +284,11 @@ export function buildSlashCommands(
           .toJSON()
       );
     }
+  }
+  if (skippedSkillCommands > 0) {
+    console.warn(
+      `[xangi] Skipped ${skippedSkillCommands} skill slash command(s) to stay within Discord's ${DISCORD_APPLICATION_COMMAND_LIMIT} command limit. Use /skill for omitted skills.`
+    );
   }
 
   return commands;
@@ -558,6 +610,52 @@ export function createInteractionHandler(
       return;
     }
 
+    if (interaction.commandName === 'notify') {
+      const mode = interaction.options.getString('mode', true) as
+        | DiscordCompletionNotifyMode
+        | 'default'
+        | 'show';
+      const settings = loadSettings();
+      const defaultMode = config.discord.completionNotifyMode ?? 'message';
+      const currentOverride = settings.discordCompletionNotifyChannels?.[channelId];
+
+      if (mode === 'show') {
+        const effectiveMode = getChannelCompletionNotifyMode(settings, channelId, defaultMode);
+        const thresholdMs = config.discord.completionNotifyAfterMs ?? 10_000;
+        const lines = [
+          `🔔 完了通知設定 (<#${channelId}>)`,
+          `- 適用中: \`${effectiveMode}\``,
+          `- チャンネル設定: ${currentOverride ? `\`${currentOverride}\`` : 'なし'}`,
+          `- 起動時デフォルト: \`${defaultMode}\``,
+          `- 通知閾値: \`${thresholdMs}ms\``,
+          `- 対象: 通常の Discord メッセージターンのみ（スケジュール起点は通知なし）`,
+        ];
+        await interaction.reply(lines.join('\n'));
+        return;
+      }
+
+      const nextChannels = { ...(settings.discordCompletionNotifyChannels ?? {}) };
+      if (mode === 'default') {
+        delete nextChannels[channelId];
+      } else {
+        nextChannels[channelId] = mode;
+      }
+
+      const saved = saveSettings({
+        discordCompletionNotifyChannels:
+          Object.keys(nextChannels).length > 0 ? nextChannels : undefined,
+      });
+      const effectiveMode = getChannelCompletionNotifyMode(saved, channelId, defaultMode);
+      const action =
+        mode === 'default'
+          ? `起動時デフォルト \`${defaultMode}\` に戻しました`
+          : `\`${mode}\` に設定しました`;
+      await interaction.reply(
+        `🔔 <#${channelId}> の完了通知を${action}\n現在の適用値: \`${effectiveMode}\`\n対象: 通常の Discord メッセージターンのみ（スケジュール起点は通知なし）`
+      );
+      return;
+    }
+
     if (interaction.commandName === 'backend') {
       const sub = interaction.options.getSubcommand();
 
@@ -612,20 +710,13 @@ export function createInteractionHandler(
         const effortValue =
           rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
 
-        // 許可チェック: ALLOWED_BACKENDSが未設定なら切り替え不可
+        // 許可チェック: ALLOWED_BACKENDS 未設定時は全 backend 許可
         if (!resolver.isBackendAllowed(backendValue)) {
           const allowedBackends = resolver.getAllowedBackends();
-          if (!config.agent.allowedBackends) {
-            await interaction.reply({
-              content: `❌ バックエンド切り替えが有効になっていません。\n.envに \`ALLOWED_BACKENDS\` を設定してください。`,
-              ephemeral: true,
-            });
-          } else {
-            await interaction.reply({
-              content: `❌ バックエンド \`${backendValue}\` は許可されていません\n許可: ${allowedBackends.map((b) => getBackendDisplayName(b)).join(', ')}`,
-              ephemeral: true,
-            });
-          }
+          await interaction.reply({
+            content: `❌ バックエンド \`${backendValue}\` は許可されていません\n許可: ${allowedBackends.map((b) => getBackendDisplayName(b)).join(', ')}`,
+            ephemeral: true,
+          });
           return;
         }
         if (modelValue && !resolver.isModelAllowed(modelValue)) {
@@ -685,7 +776,9 @@ export function createInteractionHandler(
               ? process.env.AGENT_MODEL || 'Claude (デフォルト)'
               : backendValue === 'cursor'
                 ? process.env.AGENT_MODEL || 'Cursor (デフォルト)'
-                : '(デフォルト)');
+                : backendValue === 'grok'
+                  ? process.env.AGENT_MODEL || 'Grok (デフォルト)'
+                  : '(デフォルト)');
         const lines = [
           `🔄 モデルを切り替えました。新しいセッションを開始します。`,
           `- バックエンド: **${display}**`,
@@ -784,10 +877,6 @@ export function createInteractionHandler(
               `⚠️ Local LLM サーバー (\`${llmBase}\`) からモデル一覧を取得できませんでした。Ollama (\`/api/tags\`) も OpenAI互換 (\`/v1/models\`) も応答なし。`
             );
           }
-        }
-
-        if (!config.agent.allowedBackends) {
-          lines.push('', '⚠️ `ALLOWED_BACKENDS` が未設定のため、切り替えは無効です。');
         }
 
         await interaction.editReply(lines.join('\n'));

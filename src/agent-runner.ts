@@ -3,8 +3,8 @@ import type { LocalLlmMode } from './backend-resolver.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
-import { GeminiRunner } from './gemini-cli.js';
 import { CursorRunner } from './cursor-cli.js';
+import { GrokRunner } from './grok-cli.js';
 import { LocalLlmRunner } from './local-llm/runner.js';
 import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
@@ -119,10 +119,10 @@ export function createAgentRunner(
       return new ClaudeCodeRunner({ ...config, platform: options?.platform });
     case 'codex':
       return new CodexRunner({ ...config, platform: options?.platform });
-    case 'gemini':
-      return new GeminiRunner(config);
     case 'cursor':
       return new CursorRunner(config);
+    case 'grok':
+      return new GrokRunner({ ...config, platform: options?.platform });
     case 'local-llm':
       return new LocalLlmRunner({ ...config, platform: options?.platform });
     default:
@@ -168,10 +168,10 @@ export function getBackendDisplayName(backend: AgentBackend): string {
       return 'Claude Code';
     case 'codex':
       return 'Codex';
-    case 'gemini':
-      return 'Gemini';
     case 'cursor':
       return 'Cursor';
+    case 'grok':
+      return 'Grok';
     case 'local-llm':
       return 'Local LLM';
     default:

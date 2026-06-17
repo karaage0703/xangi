@@ -59,3 +59,18 @@ describe('buildXangiCommands trigger section', () => {
     expect(XANGI_COMMANDS_TRIGGER).toContain('--source');
   });
 });
+
+describe('buildXangiCommands discord formatting section', () => {
+  it('discord には番号付き見出し直下の箇条書きインデント案内を含める', () => {
+    const prompt = buildXangiCommands('discord');
+
+    expect(prompt).toContain('## Discord表示フォーマット');
+    expect(prompt).toContain('番号付き見出しの直下に箇条書きを置く場合');
+    expect(prompt).toContain('   - 詳細');
+  });
+
+  it('discord 以外には Discord 表示フォーマット案内を含めない', () => {
+    expect(buildXangiCommands('web')).not.toContain('## Discord表示フォーマット');
+    expect(buildXangiCommands('line')).not.toContain('## Discord表示フォーマット');
+  });
+});

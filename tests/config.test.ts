@@ -43,6 +43,30 @@ describe('config', () => {
     expect(config.discord.allowedUsers).toContain('123456789');
   });
 
+  it('should default Discord completion notifications to message after 10 seconds', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.DISCORD_COMPLETION_NOTIFY;
+    delete process.env.DISCORD_COMPLETION_NOTIFY_AFTER_MS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.completionNotifyMode).toBe('message');
+    expect(config.discord.completionNotifyAfterMs).toBe(10_000);
+  });
+
+  it('should allow disabling Discord completion notifications via env', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    process.env.DISCORD_COMPLETION_NOTIFY = 'off';
+    process.env.DISCORD_COMPLETION_NOTIFY_AFTER_MS = '60000';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.completionNotifyMode).toBe('off');
+    expect(config.discord.completionNotifyAfterMs).toBe(60_000);
+  });
+
   it('should default to claude-code backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.AGENT_BACKEND;
@@ -51,6 +75,16 @@ describe('config', () => {
     const config = loadConfig();
 
     expect(config.agent.backend).toBe('claude-code');
+  });
+
+  it('should allow all backends when ALLOWED_BACKENDS is unset', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.ALLOWED_BACKENDS;
+
+    const { ALL_AGENT_BACKENDS, loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.allowedBackends).toEqual([...ALL_AGENT_BACKENDS]);
   });
 
   it('should accept codex backend', async () => {
@@ -73,9 +107,27 @@ describe('config', () => {
     expect(config.agent.backend).toBe('cursor');
   });
 
+  it('should accept grok backend', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'grok';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.backend).toBe('grok');
+  });
+
   it('should throw error for invalid backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     process.env.AGENT_BACKEND = 'invalid';
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(() => loadConfig()).toThrow('Invalid AGENT_BACKEND');
+  });
+
+  it('should reject removed gemini backend', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'gemini';
 
     const { loadConfig } = await import('../src/config.js');
     expect(() => loadConfig()).toThrow('Invalid AGENT_BACKEND');

@@ -4,12 +4,12 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Local LLM backends. Gemini CLI is kept only for legacy/API-key use. Discord recommended; browser-only mode also supported.
+An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Grok CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
 
 ## Features
 
 - Discord / Slack / Web Chat UI / LINE support
-- Claude Code / Codex / Cursor CLI / Local LLM support
+- Claude Code / Codex / Cursor CLI / Grok CLI / Local LLM support
 - Per-channel backend / model / effort switching with `/backend`
 - Skills, scheduler, and event triggers
 - Docker, pm2, and auto-restart support
@@ -21,7 +21,7 @@ An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / C
 flowchart LR
     User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
     chat <-->|Prompt| xangi[xangi]
-    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Local LLM<br/>Gemini CLI legacy}}
+    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
     LLM <-->|File ops| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
     LLM <--> Web[Web Search]
     LLM <--> Service[Web Service]
@@ -65,8 +65,8 @@ DISCORD_ALLOWED_USER=123456789012345678
 # Requires Node.js 22+ and at least one AI CLI
 # Claude Code: curl -fsSL https://claude.ai/install.sh | bash
 # Codex CLI:   npm install -g @openai/codex
-# Gemini CLI (legacy/API-key): npm install -g @google/gemini-cli
 # Cursor CLI:  curl https://cursor.com/install -fsS | bash
+# Grok CLI:    curl -fsSL https://x.ai/cli/install.sh | bash
 # Local LLM:   Install Ollama (https://ollama.com)
 
 npm install
@@ -76,8 +76,6 @@ npm start
 # Development
 npm run dev
 ```
-
-Gemini CLI backend is for legacy/API-key use. New setups should prefer Claude Code / Codex / Cursor CLI / Local LLM.
 
 ### 3. Verify
 
@@ -126,6 +124,7 @@ pm2 logs xangi     # View logs
 | `/new` | Start a new session |
 | `/stop` | Stop running task |
 | `/settings` | Show current settings |
+| `/notify` | Configure completion notifications for this channel |
 | `/backend` | Per-channel backend / model switching |
 | `xangi-cmd schedule_*` | Scheduler (cron / reminders) |
 | `xangi-cmd discord_*` | Discord operations (history / send / search, etc.) |

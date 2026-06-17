@@ -326,7 +326,7 @@ curl -N 'http://localhost:18888/api/events/stream?thread_id=web:<appSessionId>'
 
 `@evenrealities/even-terminal` の公式クライアントが期待する HTTP API の最小互換レイヤも、同じ Web Chat サーバ上で提供している。Even G2 のターミナルモードから xangi を直接ホストとして指定する用途向け。
 
-公式 Even Terminal は `claude` / `codex` provider を選ばせるが、xangi ではこの値を UI 互換のラベルとして受け取るだけ。実際に使う backend は xangi の通常設定 (`AGENT_BACKEND=claude-code|codex|cursor|local-llm`。`gemini` は legacy/API-key 用) で決まる。つまり Even 側に Local LLM の選択肢が無くても、xangi 側を `AGENT_BACKEND=local-llm` にすれば Local LLM に流せる。
+公式 Even Terminal は `claude` / `codex` provider を選ばせるが、xangi ではこの値を UI 互換のラベルとして受け取るだけ。実際に使う backend は xangi の通常設定 (`AGENT_BACKEND=claude-code|codex|cursor|grok|local-llm`) で決まる。つまり Even 側に Local LLM の選択肢が無くても、xangi 側を `AGENT_BACKEND=local-llm` にすれば Local LLM に流せる。
 
 Even Terminal 経由だけ別の backend / model / Local LLM mode を使いたい場合は、`XANGI_EVEN_TERMINAL_BACKEND` / `XANGI_EVEN_TERMINAL_MODEL` / `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` を設定する。`CHANNEL_OVERRIDES` に `web-chat:<appSessionId>` がある場合は、個別 session の override が専用 default より優先される。
 

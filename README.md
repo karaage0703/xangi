@@ -4,12 +4,12 @@
 
 > **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code / Codex / Cursor CLI / Local LLM（Gemini CLI は legacy/API-key 用）をバックエンドに、Discord / Slack / ブラウザ / LINE から利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
+Claude Code / Codex / Cursor CLI / Grok CLI / Local LLMをバックエンドに、Discord / Slack / ブラウザ / LINE から利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
 
 ## Features
 
 - Discord / Slack / Web Chat UI / LINE 対応
-- Claude Code / Codex / Cursor CLI / Local LLM 対応
+- Claude Code / Codex / Cursor CLI / Grok CLI / Local LLM 対応
 - `/backend` でチャンネルごとに backend / model / effort を切り替え
 - スキル、スケジューラー、イベントトリガー
 - Docker、pm2、自動再起動対応
@@ -21,7 +21,7 @@ Claude Code / Codex / Cursor CLI / Local LLM（Gemini CLI は legacy/API-key 用
 flowchart LR
     User([ユーザー]) <-->|メッセージ| chat[UI<br/>Discord / Slack<br/>ブラウザ / LINE]
     chat <-->|プロンプト| xangi[xangi]
-    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Cursor CLI / Local LLM<br/>Gemini CLI legacy}}
+    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
     LLM <-->|ファイル操作| WS[(Workspace<br/>AGENTS.md / skills<br/>ローカル資料)]
     LLM <--> Web[Web検索]
     LLM <--> Service[Webサービス]
@@ -65,8 +65,8 @@ DISCORD_ALLOWED_USER=123456789012345678
 # Node.js 22+ と使用するAI CLIが必要
 # Claude Code: curl -fsSL https://claude.ai/install.sh | bash
 # Codex CLI:   npm install -g @openai/codex
-# Gemini CLI (legacy/API-key): npm install -g @google/gemini-cli
 # Cursor CLI:  curl https://cursor.com/install -fsS | bash
+# Grok CLI:    curl -fsSL https://x.ai/cli/install.sh | bash
 # Local LLM:   Ollama (https://ollama.com) をインストール
 
 npm install
@@ -76,8 +76,6 @@ npm start
 # 開発時
 npm run dev
 ```
-
-Gemini CLI backend は legacy/API-key 用です。新規セットアップでは Claude Code / Codex / Cursor CLI / Local LLM を推奨します。
 
 ### 3. 動作確認
 
@@ -126,6 +124,7 @@ pm2 logs xangi     # ログ確認
 | `/new` | 新しいセッションを開始 |
 | `/stop` | 実行中のタスクを停止 |
 | `/settings` | 現在の設定を表示 |
+| `/notify` | チャンネルごとの完了通知を切り替え |
 | `/backend` | チャンネルごとのバックエンド・モデル切り替え |
 | `xangi-cmd schedule_*` | スケジューラー（定期実行・リマインダー） |
 | `xangi-cmd discord_*` | Discord操作（履歴取得・メッセージ送信・検索等） |
