@@ -88,7 +88,7 @@ export class AntigravityRunner extends CliRunnerBase {
       logPrompt(this.workdir, options.appSessionId, fullPrompt);
     }
 
-    const stdout = await this.collectOutput(args, options?.channelId);
+    const stdout = await this.collectOutput(args, options?.channelId, { encoding: 'utf8' });
     const response = this.parseResponse(stdout);
     const result = this.extractText(response) || stdout.trim();
     const sessionId =

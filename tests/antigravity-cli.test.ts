@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 
 vi.mock('child_process', () => {
   const EventEmitter = require('events');
+  const { PassThrough } = require('stream');
 
   class MockProcess extends EventEmitter {
-    stdout = new EventEmitter();
-    stderr = new EventEmitter();
+    stdout = new PassThrough();
+    stderr = new PassThrough();
     killed = false;
 
     kill() {
@@ -112,6 +113,26 @@ describe('AntigravityRunner', () => {
 
     await expect(promise).resolves.toEqual({
       result: 'final answer',
+      sessionId: '',
+    });
+  });
+
+  it('preserves UTF-8 characters split across stdout chunks', async () => {
+    const { getMockProcess } = await import('child_process');
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const mockProcess = (getMockProcess as () => any)();
+    const output = '水を落として根張りを活性化するのがベストです\n';
+
+    for (const byte of Buffer.from(output)) {
+      mockProcess.stdout.write(Buffer.from([byte]));
+    }
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toEqual({
+      result: output.trim(),
       sessionId: '',
     });
   });

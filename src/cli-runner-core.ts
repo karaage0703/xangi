@@ -48,6 +48,8 @@ export interface ExecuteStreamOptions {
 export interface CollectOutputOptions {
   /** exit code != 0 のとき stdout 全文からエラー詳細を抽出する（CLI の error イベント本文など） */
   exitErrorDetail?: (stdout: string) => string | undefined;
+  /** 指定時のみ、Node.js の連続デコーダで stdout / stderr を文字列化する */
+  encoding?: BufferEncoding;
 }
 
 /**
@@ -176,6 +178,11 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
       let stdout = '';
       let stderr = '';
+
+      if (opts.encoding) {
+        proc.stdout?.setEncoding(opts.encoding);
+        proc.stderr?.setEncoding(opts.encoding);
+      }
 
       proc.stdout?.on('data', (data) => {
         stdout += data.toString();
