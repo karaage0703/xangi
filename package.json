@@ -37,31 +37,31 @@
   "author": "karaage",
   "license": "MIT",
   "dependencies": {
-    "@line/bot-sdk": "^11.0.0",
+    "@line/bot-sdk": "^11.0.2",
     "@octokit/auth-app": "^8.2.0",
-    "@slack/bolt": "^4.6.0",
-    "discord.js": "^14.16.3",
-    "dotenv": "^17.3.1",
+    "@slack/bolt": "^4.7.3",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
     "node-cron": "^4.2.1",
     "proper-lockfile": "^4.1.2",
-    "yaml": "^2.6.1"
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.2",
+    "@eslint/js": "^9.39.4",
     "@types/dotenv": "^6.1.1",
-    "@types/node": "^22.10.5",
+    "@types/node": "^22.20.0",
     "@types/proper-lockfile": "^4.1.4",
-    "@typescript-eslint/eslint-plugin": "^8.19.0",
-    "@typescript-eslint/parser": "^8.19.0",
-    "eslint": "^9.17.0",
+    "@typescript-eslint/eslint-plugin": "^8.61.1",
+    "@typescript-eslint/parser": "^8.61.1",
+    "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
-    "prettier": "^3.8.1",
-    "tsx": "^4.19.2",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.4",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.54.0",
-    "vitest": "^4.0.18"
+    "typescript-eslint": "^8.61.1",
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=22.0.0"
