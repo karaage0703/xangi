@@ -187,6 +187,12 @@ async function main() {
     setApprovalEnabled(true);
   }
 
+  // ツールサーバー起動（Claude Codeからcurlで叩くAPI）
+  // イベントトリガー（POST /api/trigger）は scheduler の agentRunner 経路を再利用
+  const { startToolServer } = await import('./tool-server.js');
+  const { EventTrigger, loadTriggerConfig } = await import('./event-trigger.js');
+  startToolServer({ eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler) });
+
   // Discord ボット: トークン未設定 (Web オンリーモード等) では Client を生成しない。
   // 生成だけでも discord.js の内部リソースを確保するし、login しない Client が
   // 残っているのは紛らわしいため、有効時のみ生成・配線する (issue #173)
@@ -248,12 +254,6 @@ async function main() {
           }
         );
       });
-
-      // ツールサーバー起動（Claude Codeからcurlで叩くAPI）
-      // イベントトリガー（POST /api/trigger）は scheduler の agentRunner 経路を再利用
-      const { startToolServer } = await import('./tool-server.js');
-      const { EventTrigger, loadTriggerConfig } = await import('./event-trigger.js');
-      startToolServer({ eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler) });
 
       const rest = new REST({ version: '10' }).setToken(config.discord.token);
       try {
