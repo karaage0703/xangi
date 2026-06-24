@@ -109,7 +109,7 @@ fires. The button **doubles the remaining time** at the moment of the click.
 - `延長` is disabled / hidden once the cap is reached
 
 Supported backends: Claude Code (persistent-runner), Codex CLI, Cursor CLI,
-Local LLM, Dynamic Runner (forwards to inner runner).
+Grok CLI, Antigravity CLI, Local LLM, Dynamic Runner (forwards to inner runner).
 
 Programmatic API:
 
@@ -500,7 +500,7 @@ Run in a container-isolated environment. Three containers are available:
 
 | Container | Dockerfile | Purpose |
 |---|---|---|
-| `xangi` | `Dockerfile` | Lightweight (Claude Code / Codex / Cursor CLI / Grok CLI) |
+| `xangi` | `Dockerfile` | Lightweight (Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI) |
 | `xangi-max` | `Dockerfile.max` | Full version (uv + Python support, for Local LLM) |
 | `xangi-gpu` | `Dockerfile.gpu` | GPU version (CUDA + PyTorch, for image generation / audio processing) |
 

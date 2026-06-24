@@ -4,7 +4,7 @@ xangiのアーキテクチャと設計思想について説明します。
 
 ## 概要
 
-xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
+xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -14,23 +14,21 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 
 ```mermaid
 flowchart LR
-    User([ユーザー]) <-->|メッセージ| chat[UI<br/>Discord / Slack<br/>ブラウザ / LINE]
-    chat <-->|プロンプト| xangi[xangi]
-    xangi <-->|実行| LLM{{LLMバックエンド<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
-    LLM <-->|ファイル操作| WS[(Workspace<br/>AGENTS.md / skills<br/>ローカル資料)]
-    LLM <--> Web[Web検索]
-    LLM <--> Service[Webサービス]
-    xangi -->|定期実行| Scheduler
-    Scheduler -->|プロンプト| LLM
+    User([ユーザー]) <-->|メッセージ| Platform[チャットプラットフォーム]
+    Platform <-->|プロンプト / 応答| xangi[xangi]
+    xangi <-->|実行| Backend{{エージェントバックエンド}}
+    Backend <-->|読み書き| WS[(ワークスペース)]
+    Backend <--> External[外部情報 / Webサービス]
+    Scheduler[[スケジューラー / イベントトリガー]] -->|プロンプト| xangi
 
     classDef user fill:#fef3c7,stroke:#d97706,color:#111;
     classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
     classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
     classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
     class User user;
-    class chat,xangi,LLM,Scheduler core;
+    class Platform,xangi,Backend,Scheduler core;
     class WS ws;
-    class Web,Service ext;
+    class External ext;
 ```
 
 ### レイヤー構成
@@ -40,7 +38,7 @@ flowchart LR
 | Chat | ユーザーインターフェース | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
 | xangi | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts |
 | Backend Resolution | チャンネル別バックエンド解決 | backend-resolver.ts, settings.ts |
-| AI Backend | 実際のAI処理 | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Local LLM (Ollama / vLLM) |
+| AI Backend | 実際のAI処理 | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
 | Workspace | ファイル・スキル | skills/, AGENTS.md, ローカル資料 |
 
 ## コンポーネント
@@ -144,7 +142,7 @@ interface AgentRunner {
 }
 ```
 
-すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Local LLM / Dynamic) は EventEmitter
+すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Antigravity / Local LLM / Dynamic) は EventEmitter
 でもあり、`timeout-started` / `timeout-extended` / `timeout-cleared` を emit して
 上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。
 

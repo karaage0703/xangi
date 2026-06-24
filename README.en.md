@@ -2,14 +2,14 @@
 
 # xangi
 
-> **A**I **N**EON **G**ENESIS **I**NTELLIGENCE
+> **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Grok CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
+An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
 
 ## Features
 
 - Discord / Slack / Web Chat UI / LINE support
-- Claude Code / Codex / Cursor CLI / Grok CLI / Local LLM support
+- Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLM support
 - Per-channel backend / model / effort switching with `/backend`
 - Skills, scheduler, and event triggers
 - Docker, pm2, and auto-restart support
@@ -19,23 +19,21 @@ An AI assistant for Discord / Slack / browser / LINE, powered by Claude Code / C
 
 ```mermaid
 flowchart LR
-    User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
-    chat <-->|Prompt| xangi[xangi]
-    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
-    LLM <-->|File ops| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
-    LLM <--> Web[Web Search]
-    LLM <--> Service[Web Service]
-    xangi -->|Scheduled| Scheduler
-    Scheduler -->|Prompt| LLM
+    User([User]) <-->|Message| Platform[Chat Platforms]
+    Platform <-->|Prompt / Response| xangi[xangi]
+    xangi <-->|Execute| Backend{{Agent Backends}}
+    Backend <-->|Read / Write| WS[(Workspace)]
+    Backend <--> External[External Knowledge / Web Services]
+    Scheduler[[Scheduler / Event Trigger]] -->|Prompt| xangi
 
     classDef user fill:#fef3c7,stroke:#d97706,color:#111;
     classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
     classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
     classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
     class User user;
-    class chat,xangi,LLM,Scheduler core;
+    class Platform,xangi,Backend,Scheduler core;
     class WS ws;
-    class Web,Service ext;
+    class External ext;
 ```
 
 ## Quick Start
@@ -67,6 +65,7 @@ DISCORD_ALLOWED_USER=123456789012345678
 # Codex CLI:   npm install -g @openai/codex
 # Cursor CLI:  curl https://cursor.com/install -fsS | bash
 # Grok CLI:    curl -fsSL https://x.ai/cli/install.sh | bash
+# Antigravity CLI: curl -fsSL https://antigravity.google/cli/install.sh | bash
 # Local LLM:   Install Ollama (https://ollama.com)
 
 npm install

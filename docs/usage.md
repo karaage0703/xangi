@@ -108,7 +108,7 @@ INJECT_TIMESTAMP=false
 対応バックエンド:
 
 - Claude Code (`persistent-runner`): タイマーをスケジュール再設定して延長
-- Codex / Cursor / Grok: 子プロセスの kill タイマーを再設定
+- Codex / Cursor / Grok / Antigravity: 子プロセスの kill タイマーを再設定
 - Local LLM: AbortController を最新参照経由で延長
 - Dynamic Runner: 内部 Runner にパススルー
 
@@ -516,7 +516,7 @@ docker compose -f docker-compose.standalone.yml down
 
 | コンテナ | Dockerfile | 用途 |
 |---|---|---|
-| `xangi` | `Dockerfile` | 軽量版（Claude Code / Codex / Cursor CLI / Grok CLI） |
+| `xangi` | `Dockerfile` | 軽量版（Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI） |
 | `xangi-max` | `Dockerfile.max` | フル版（uv + Python対応、Local LLM向け） |
 | `xangi-gpu` | `Dockerfile.gpu` | GPU版（CUDA + PyTorch、画像生成・音声処理向け） |
 

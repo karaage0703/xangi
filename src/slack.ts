@@ -13,7 +13,7 @@ import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
-import { ensureSession, getActiveSessionId } from './sessions.js';
+import { ensureSession, getActiveSessionId, setSession } from './sessions.js';
 import {
   attachPlatformMessageIdToLast,
   findEntryByPlatformMessageId,
@@ -287,6 +287,64 @@ export interface SlackChannelOptions {
   skills: Skill[];
   reloadSkills: () => Skill[];
   scheduler?: Scheduler;
+}
+
+export function registerSlackSchedulerBridge(deps: {
+  scheduler: Scheduler;
+  client: WebClient;
+  config: Config;
+  agentRunner: AgentRunner;
+}): void {
+  const { scheduler, client, config, agentRunner } = deps;
+
+  scheduler.registerSender('slack', async (channelId, msg) => {
+    await client.chat.postMessage({
+      channel: channelId,
+      text: msg,
+    });
+  });
+
+  scheduler.registerAgentRunner('slack', async (prompt, channelId) => {
+    const thinking = await client.chat.postMessage({
+      channel: channelId,
+      text: '🤔 考え中...',
+    });
+    const messageTs = thinking.ts;
+    if (!messageTs) {
+      throw new Error('Failed to get Slack message timestamp');
+    }
+
+    try {
+      const appSessionId = ensureSession(channelId, {
+        platform: 'slack',
+        scope: 'scheduler',
+      });
+      const {
+        result,
+        sessionId: newSessionId,
+        attachments,
+      } = await agentRunner.run(prompt, {
+        skipPermissions: config.agent.config.skipPermissions ?? false,
+        sessionId: undefined,
+        channelId,
+        appSessionId: `${appSessionId}-${Date.now()}`,
+      });
+
+      setSession(channelId, newSessionId, 'scheduler');
+      const { displayText } = buildAttachmentResult(result, attachments);
+      await sendSlackResult(client, channelId, messageTs, undefined, displayText || '✅');
+      return result;
+    } catch (error) {
+      await client.chat
+        .update({
+          channel: channelId,
+          ts: messageTs,
+          text: formatAgentErrorForUser(error),
+        })
+        .catch(() => {});
+      throw error;
+    }
+  });
 }
 
 export async function startSlackBot(options: SlackChannelOptions): Promise<void> {
@@ -835,13 +893,12 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     });
   }
 
-  // スケジューラにSlack送信関数を登録
   if (options.scheduler) {
-    options.scheduler.registerSender('slack', async (channelId, msg) => {
-      await app.client.chat.postMessage({
-        channel: channelId,
-        text: msg,
-      });
+    registerSlackSchedulerBridge({
+      scheduler: options.scheduler,
+      client: app.client,
+      config,
+      agentRunner,
     });
   }
 }

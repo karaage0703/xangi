@@ -6,7 +6,7 @@ This document explains the architecture and design philosophy of xangi.
 
 ## Overview
 
-xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
+xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -16,23 +16,21 @@ User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
 
 ```mermaid
 flowchart LR
-    User([User]) <-->|Message| chat[UI<br/>Discord / Slack<br/>Browser / LINE]
-    chat <-->|Prompt| xangi[xangi]
-    xangi <-->|Execute| LLM{{LLM Backend<br/>Claude Code / Codex<br/>Cursor CLI / Grok CLI<br/>Local LLM}}
-    LLM <-->|File Operations| WS[(Workspace<br/>AGENTS.md / skills<br/>Local docs)]
-    LLM <--> Web[Web Search]
-    LLM <--> Service[Web Service]
-    xangi -->|Periodic Execution| Scheduler
-    Scheduler -->|Prompt| LLM
+    User([User]) <-->|Message| Platform[Chat Platforms]
+    Platform <-->|Prompt / Response| xangi[xangi]
+    xangi <-->|Execute| Backend{{Agent Backends}}
+    Backend <-->|Read / Write| WS[(Workspace)]
+    Backend <--> External[External Knowledge / Web Services]
+    Scheduler[[Scheduler / Event Trigger]] -->|Prompt| xangi
 
     classDef user fill:#fef3c7,stroke:#d97706,color:#111;
     classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
     classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
     classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
     class User user;
-    class chat,xangi,LLM,Scheduler core;
+    class Platform,xangi,Backend,Scheduler core;
     class WS ws;
-    class Web,Service ext;
+    class External ext;
 ```
 
 ### Layer Structure
@@ -42,7 +40,7 @@ flowchart LR
 | Chat | User interface | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
 | xangi | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts |
 | Backend Resolution | Per-channel backend resolution | backend-resolver.ts, settings.ts |
-| AI Backend | Actual AI processing | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Local LLM (Ollama / vLLM) |
+| AI Backend | Actual AI processing | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
 | Workspace | Files & skills | skills/, AGENTS.md, local docs |
 
 ## Components
@@ -146,7 +144,7 @@ interface AgentRunner {
 }
 ```
 
-Every Runner implementation (Claude Code / Codex / Cursor / Grok / Local LLM / Dynamic) is also
+Every Runner implementation (Claude Code / Codex / Cursor / Grok / Antigravity / Local LLM / Dynamic) is also
 an `EventEmitter` and emits `timeout-started` / `timeout-extended` / `timeout-cleared`
 events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI.
 
