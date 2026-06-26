@@ -146,7 +146,7 @@ Try the following in Slack:
 1. Verify Socket Mode is enabled
 2. Verify `app_mention` and `message.im` are set in Event Subscriptions
 3. Verify the bot has been invited to the channel (`/invite @xangi`)
-4. Verify `ALLOWED_USER` is set to the correct Slack User ID
+4. Verify `SLACK_ALLOWED_USER` is set to the correct Slack User ID
 
 ### Slash Commands Don't Work
 
@@ -174,7 +174,7 @@ To use the bot in a channel, you need to invite it:
 
 - **Never commit tokens to Git** (`.env` is already in `.gitignore`)
 - **Never expose tokens publicly** (regenerate in Slack App settings if leaked)
-- `ALLOWED_USER` restricts usage to a single user (in compliance with Claude Code Terms of Service)
+- `SLACK_ALLOWED_USER` restricts usage to a single user (in compliance with Claude Code Terms of Service)
 
 ## References
 

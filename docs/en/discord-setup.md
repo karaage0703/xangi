@@ -64,7 +64,7 @@ vim .env
 DISCORD_TOKEN=YOUR_BOT_TOKEN_HERE
 
 # Allowed user ID (single user only)
-ALLOWED_USER=YOUR_DISCORD_USER_ID
+DISCORD_ALLOWED_USER=YOUR_DISCORD_USER_ID
 ```
 
 ## 7. Verify It Works
@@ -105,7 +105,7 @@ Try `/new` or `/skills` in your Discord server, or mention the bot:
 
 1. Verify that **Message Content Intent** is ON
 2. Verify the bot has been invited to the server
-3. Verify `ALLOWED_USER` is set correctly
+3. Verify `DISCORD_ALLOWED_USER` is set correctly
 
 ### Slash Commands Don't Appear
 
@@ -121,4 +121,4 @@ The `DISCORD_TOKEN` in `.env` is empty. Set the token.
 
 - **Never commit tokens to Git** (`.env` is already in `.gitignore`)
 - **Never expose tokens publicly** (regenerate immediately if leaked)
-- `ALLOWED_USER` restricts usage to a single user (in compliance with Claude Code Terms of Service)
+- `DISCORD_ALLOWED_USER` restricts usage to a single user (in compliance with Claude Code Terms of Service)
