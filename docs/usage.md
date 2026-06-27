@@ -992,6 +992,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `DISCORD_TOKEN` | Discord Bot Token | **必須** |
 | `DISCORD_ALLOWED_USER` | 許可ユーザーID（カンマ区切りで複数可、`*`で全員許可） | **必須** |
 | `AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID（カンマ区切り） | - |
+| `DISCORD_REPLY_IN_THREAD` | 返信をチャンネルではなく発言ごとに作成したスレッドへ投稿 | `false` |
 | `DISCORD_STREAMING` | ストリーミング出力 | `true` |
 | `DISCORD_SHOW_THINKING` | 思考過程を表示 | `true` |
 | `DISCORD_SHOW_BUTTONS` | Stop/New Sessionボタン表示 | `true` |

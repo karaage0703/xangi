@@ -976,6 +976,7 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `DISCORD_TOKEN` | Discord Bot Token | **Required** |
 | `DISCORD_ALLOWED_USER` | Allowed user ID (comma-separated for multiple, `*` to allow all) | **Required** |
 | `AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention (comma-separated) | - |
+| `DISCORD_REPLY_IN_THREAD` | Post replies into a per-message thread instead of the channel | `false` |
 | `DISCORD_STREAMING` | Streaming output | `true` |
 | `DISCORD_SHOW_THINKING` | Show thinking process | `true` |
 | `DISCORD_SHOW_BUTTONS` | Show Stop/New Session buttons | `true` |

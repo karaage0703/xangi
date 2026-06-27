@@ -67,6 +67,26 @@ describe('config', () => {
     expect(config.discord.completionNotifyAfterMs).toBe(60_000);
   });
 
+  it('should default Discord replyInThread to false', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.DISCORD_REPLY_IN_THREAD;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.replyInThread).toBe(false);
+  });
+
+  it('should enable Discord replyInThread when DISCORD_REPLY_IN_THREAD=true', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    process.env.DISCORD_REPLY_IN_THREAD = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.replyInThread).toBe(true);
+  });
+
   it('should default to claude-code backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.AGENT_BACKEND;

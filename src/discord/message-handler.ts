@@ -146,11 +146,45 @@ export async function processPrompt(
     });
     streamSession = session;
 
+    // スレッド返信モード: 発言ごとにスレッドを作成し、以降の投稿先をそのスレッドにする。
+    // すでにスレッド内の発言 / DM など startThread 不可の場合は通常どおりチャンネルへ返信する。
+    let newThread: { send: (options: unknown) => Promise<Message> } | null = null;
+    if (config.discord.replyInThread) {
+      const ch = message.channel as unknown as { isThread?: () => boolean };
+      const alreadyThread = typeof ch.isThread === 'function' && ch.isThread();
+      const canStartThread =
+        typeof (message as unknown as { startThread?: unknown }).startThread === 'function';
+      if (!alreadyThread && canStartThread) {
+        try {
+          const threadName =
+            (stripPromptMetadata(message.content).trim() || 'xangi').slice(0, 80) || 'xangi';
+          newThread = (await (
+            message as unknown as {
+              startThread: (opts: { name: string }) => Promise<unknown>;
+            }
+          ).startThread({ name: threadName })) as { send: (options: unknown) => Promise<Message> };
+        } catch (err) {
+          console.warn(
+            '[xangi] Failed to start thread, falling back to channel:',
+            (err as Error)?.message
+          );
+        }
+      }
+    }
+    // 以降の追加投稿（続きチャンク・ファイル・完了通知）の送信先。
+    // スレッドを新規作成したらそのスレッド、そうでなければ元のチャンネル。
+    const outputChannel = (newThread ?? (message.channel as unknown)) as {
+      send: (options: unknown) => Promise<Message>;
+    };
+
     // 最初のメッセージを送信
-    replyMessage = await message.reply({
+    const firstPayload = {
       content: session.view().statusLine,
       ...(showButtons && { components: [createProcessingButtons()] }),
-    });
+    };
+    replyMessage = newThread
+      ? await newThread.send(firstPayload)
+      : await message.reply(firstPayload);
 
     // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で edit される)
     // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
@@ -287,8 +321,8 @@ export async function processPrompt(
       content: firstChunks[0] || '✅',
       ...(showButtons && { components: [createCompletedButtons({ showTools: showToolsButton })] }),
     });
-    if ('send' in message.channel) {
-      const channel = message.channel as unknown as {
+    if ('send' in outputChannel) {
+      const channel = outputChannel as unknown as {
         send: (content: string) => Promise<unknown>;
       };
       // 最初のパートの残りチャンク
@@ -306,10 +340,10 @@ export async function processPrompt(
       }
     }
 
-    if (filePaths.length > 0 && 'send' in message.channel) {
+    if (filePaths.length > 0 && 'send' in outputChannel) {
       try {
         await (
-          message.channel as unknown as {
+          outputChannel as unknown as {
             send: (options: { files: { attachment: string }[] }) => Promise<unknown>;
           }
         ).send({
@@ -331,9 +365,9 @@ export async function processPrompt(
       thresholdMs: config.discord.completionNotifyAfterMs ?? 10_000,
       userId: message.author.id,
     });
-    if (completionNotification && 'send' in message.channel) {
+    if (completionNotification && 'send' in outputChannel) {
       await (
-        message.channel as unknown as {
+        outputChannel as unknown as {
           send: (options: {
             content: string;
             allowedMentions: { parse: []; users?: string[] };
@@ -401,12 +435,12 @@ export async function processPrompt(
           if (followUpResult.result) {
             setSession(channelId, followUpResult.sessionId);
             const followUpText = followUpResult.result.slice(0, DISCORD_SAFE_LENGTH);
-            if ('send' in message.channel) {
-              await (
-                message.channel as unknown as {
-                  send: (content: string) => Promise<unknown>;
-                }
-              ).send(`📋 **エラー前の作業報告:**\n${followUpText}`);
+            // スレッド返信時は replyMessage がスレッド内にあるので、その投稿先へ揃える
+            const followUpChannel = (replyMessage?.channel ?? message.channel) as {
+              send?: (content: string) => Promise<unknown>;
+            };
+            if (typeof followUpChannel.send === 'function') {
+              await followUpChannel.send(`📋 **エラー前の作業報告:**\n${followUpText}`);
             }
           }
         }

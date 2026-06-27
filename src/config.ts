@@ -35,6 +35,8 @@ export interface Config {
     token: string;
     allowedUsers?: string[];
     autoReplyChannels?: string[];
+    /** 返信をチャンネルではなくスレッドに投稿するか (default: false)。発言ごとにスレッドを作成する */
+    replyInThread?: boolean;
     streaming?: boolean;
     showThinking?: boolean;
     showToolUse?: boolean;
@@ -272,6 +274,7 @@ export function loadConfig(): Config {
         process.env.AUTO_REPLY_CHANNELS?.split(',')
           .map((s) => s.trim())
           .filter(Boolean) || [],
+      replyInThread: process.env.DISCORD_REPLY_IN_THREAD === 'true', // デフォルトOFF
       streaming: process.env.DISCORD_STREAMING !== 'false',
       showThinking: process.env.DISCORD_SHOW_THINKING !== 'false',
       showToolUse: process.env.DISCORD_SHOW_TOOL_USE !== 'false',
