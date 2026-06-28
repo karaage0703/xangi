@@ -62,7 +62,7 @@ vim .env
 DISCORD_TOKEN=YOUR_BOT_TOKEN_HERE
 
 # 許可するユーザーID（1人のみ）
-ALLOWED_USER=YOUR_DISCORD_USER_ID
+DISCORD_ALLOWED_USER=YOUR_DISCORD_USER_ID
 ```
 
 ## 7. 動作確認
@@ -103,7 +103,7 @@ Discord サーバーで `/new` や `/skills` を試す、または Bot をメン
 
 1. **Message Content Intent** が ON になっているか確認
 2. Bot がサーバーに招待されているか確認
-3. `ALLOWED_USER` が正しく設定されているか確認
+3. `DISCORD_ALLOWED_USER` が正しく設定されているか確認
 
 ### スラッシュコマンドが表示されない
 
@@ -119,4 +119,4 @@ Discord サーバーで `/new` や `/skills` を試す、または Bot をメン
 
 - **トークンを Git にコミットしない**（`.gitignore` に `.env` を追加済み）
 - **トークンを公開しない**（漏洩した場合は即座に再生成）
-- `ALLOWED_USER` で使用できるユーザーを1人に制限（Claude Code 利用規約遵守）
+- `DISCORD_ALLOWED_USER` で使用できるユーザーを1人に制限（Claude Code 利用規約遵守）
