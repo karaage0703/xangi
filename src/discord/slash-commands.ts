@@ -615,9 +615,7 @@ export function createInteractionHandler(
 
     if (interaction.commandName === 'notify') {
       const mode = interaction.options.getString('mode', true) as
-        | DiscordCompletionNotifyMode
-        | 'default'
-        | 'show';
+        DiscordCompletionNotifyMode | 'default' | 'show';
       const settings = loadSettings();
       const defaultMode = config.discord.completionNotifyMode ?? 'message';
       const currentOverride = settings.discordCompletionNotifyChannels?.[channelId];
@@ -1017,11 +1015,7 @@ export function createInteractionHandler(
       }
       const chId = interaction.channelId;
       const mode = interaction.options.getString('mode', true) as
-        | 'agent'
-        | 'lite'
-        | 'chat'
-        | 'default'
-        | 'show';
+        'agent' | 'lite' | 'chat' | 'default' | 'show';
 
       // show: 現在の設定を表示するだけ
       if (mode === 'show') {

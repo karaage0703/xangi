@@ -38,10 +38,7 @@ export interface LLMTool {
  * - { type: 'function', function: { name } }: 特定 tool を強制
  */
 export type LLMToolChoice =
-  | 'auto'
-  | 'none'
-  | 'required'
-  | { type: 'function'; function: { name: string } };
+  'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface LLMChatOptions {
   tools?: LLMTool[];

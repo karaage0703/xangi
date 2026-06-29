@@ -86,8 +86,7 @@ function toOllamaMessages(messages: LLMMessage[]): Array<Record<string, unknown>
 export const __testables = { applyOpenAITools, applyOllamaTools, toOllamaMessages };
 
 type OpenAIContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string } };
+  { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
 interface OpenAIMessage {
   role: string;

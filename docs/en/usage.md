@@ -1095,6 +1095,16 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 
 **Docker:** The private key is auto-mounted to `/secrets/github-app.pem`. Set the host-side path in `.env`.
 
+**Runtime check:**
+
+```bash
+curl -i "$XANGI_TOOL_SERVER/github-token"
+```
+
+- `200 OK`: GitHub App authentication is enabled
+- `404 {"error":"GitHub App is not configured"}`: this is a configuration or restart issue, not a missing implementation. Set `GITHUB_APP_*` in `.env`, then restart xangi
+- `500`: token generation failed due to the private key, App ID, Installation ID, or GitHub API call
+
 **Security:**
 - The private key is loaded into memory at startup and is not directly accessible as a file by the AI agent
 - Token generation is performed via the tool-server's HTTP endpoint (`/github-token`), and the AI agent can only obtain short-lived installation tokens (valid for 1 hour)

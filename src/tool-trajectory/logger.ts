@@ -37,12 +37,7 @@ import {
 export const TRAJECTORY_SCHEMA_VERSION = 1;
 
 export type TrajectoryKind =
-  | 'session_start'
-  | 'tool_call'
-  | 'tool_search'
-  | 'drift_rescue'
-  | 'loop_detected'
-  | 'runner_event';
+  'session_start' | 'tool_call' | 'tool_search' | 'drift_rescue' | 'loop_detected' | 'runner_event';
 
 export interface TrajectoryCommon {
   appSessionId: string;
@@ -84,12 +79,7 @@ export interface ToolSearchPayload {
 }
 
 export type DriftSafetyVerdict =
-  | 'safe'
-  | 'unsafe'
-  | 'unparseable'
-  | 'already_executed'
-  | 'loop_blocked'
-  | 'dropped_empty';
+  'safe' | 'unsafe' | 'unparseable' | 'already_executed' | 'loop_blocked' | 'dropped_empty';
 
 export interface DriftRescuePayload {
   raw_text_head: string;

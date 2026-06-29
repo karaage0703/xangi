@@ -462,8 +462,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     // 添付ファイルをダウンロード
     const attachmentPaths: string[] = [];
     const files = (event as unknown as Record<string, unknown>).files as
-      | Array<{ url_private_download?: string; name?: string }>
-      | undefined;
+      Array<{ url_private_download?: string; name?: string }> | undefined;
     if (files && files.length > 0) {
       for (const file of files) {
         if (file.url_private_download) {
