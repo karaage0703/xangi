@@ -637,7 +637,7 @@ AI CLI outputs command
 
 ### GitHub App Authentication (github-auth.ts)
 
-Generates Installation Tokens (short-lived, 1-hour validity) using a GitHub App private key and wraps the `gh` CLI.
+Generates Installation Tokens (short-lived, 1-hour validity) using a GitHub App private key and wraps both the `gh` CLI and GitHub HTTPS credentials for `git`.
 
 ```
 gh command execution (inside AI CLI)
@@ -645,11 +645,19 @@ gh command execution (inside AI CLI)
   → curl to tool-server's /github-token endpoint
   → github-auth.ts generates token using in-memory private key
   → Injected as GH_TOKEN → exec real gh
+
+git fetch/push/ls-remote etc. (inside AI CLI)
+  → /tmp/xangi-gh-wrapper/git (wrapper)
+  → Disable existing credential helpers and install the GitHub HTTPS helper
+  → Fetch /github-token only when Git asks for credentials
+  → Return x-access-token user + installation token
 ```
 
 - Private key is read from file into memory at startup; file access is no longer needed
 - AI agent (child processes) cannot directly access the private key
 - No fallback to PAT on token generation failure (errors out)
+- The wrapper directory is pinned to the front of child-process `PATH` and re-applied through `BASH_ENV`, so regular `gh` / `git` binaries do not shadow the wrappers when non-interactive shells rebuild `PATH` from startup files
+- The `git` wrapper only affects GitHub HTTPS credentials and does not intercept SSH remotes.
 
 ### Trigger Feature (local-llm/triggers.ts)
 

@@ -1095,6 +1095,10 @@ Without these settings, existing `gh` authentication (`gh auth login` / `GH_TOKE
 
 **Docker:** The private key is auto-mounted to `/secrets/github-app.pem`. Set the host-side path in `.env`.
 
+**`gh` / `git` wrappers:** When GitHub App authentication is enabled, xangi generates `/tmp/xangi-gh-wrapper/gh` and `/tmp/xangi-gh-wrapper/git`, then pins that directory to the front of the `PATH` passed to AI agents. It also re-applies the same setting through `BASH_ENV`, so non-interactive shells are less likely to rebuild `PATH` back to the regular `gh` / `git`.
+
+The `gh` wrapper fetches a short-lived installation token from `/github-token` on each run and passes it to the real `gh` as `GH_TOKEN`. The `git` wrapper bypasses the existing `gh auth git-credential` helper and returns an installation token from `/github-token` as the `x-access-token` user only when Git asks for GitHub HTTPS credentials. SSH remotes are not affected.
+
 **Runtime check:**
 
 ```bash

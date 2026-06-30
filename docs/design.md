@@ -645,7 +645,7 @@ AI CLI がコマンド出力
 
 ### GitHub App認証（github-auth.ts）
 
-GitHub Appの秘密鍵を使ってInstallation Token（短寿命・1時間有効）を生成し、`gh` CLIをラップする。
+GitHub Appの秘密鍵を使ってInstallation Token（短寿命・1時間有効）を生成し、`gh` CLI と GitHub HTTPS 向け `git` credential をラップする。
 
 ```
 gh コマンド実行（AI CLI内）
@@ -653,11 +653,19 @@ gh コマンド実行（AI CLI内）
   → curl で tool-server の /github-token エンドポイントにリクエスト
   → github-auth.ts がメモリ上の秘密鍵でトークン生成
   → GH_TOKEN として注入 → 本物の gh を exec
+
+git fetch/push/ls-remote 等（AI CLI内）
+  → /tmp/xangi-gh-wrapper/git（ラッパー）
+  → 既存 credential helper を無効化し、GitHub HTTPS 用 helper を指定
+  → Git が credential を要求した時だけ /github-token にリクエスト
+  → x-access-token ユーザー + installation token を返す
 ```
 
 - 秘密鍵は起動時にファイルからメモリに読み込み、以降ファイルアクセス不要
 - AIエージェント（子プロセス）からは秘密鍵に直接アクセスできない
 - トークン生成失敗時はPATへのフォールバックなし（エラー）
+- ラッパーディレクトリは子プロセスの `PATH` 先頭へ固定し、`BASH_ENV` でも再適用する。非対話 shell の起動時に rc file 等が `PATH` を組み直しても、通常の `gh` / `git` がラッパーを shadow しないようにする
+- `git` ラッパーは GitHub HTTPS credential のみを対象にし、SSH remote には介入しない
 
 ### トリガー機能（local-llm/triggers.ts）
 
