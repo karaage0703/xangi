@@ -22,6 +22,14 @@ import {
 } from './transcript-logger.js';
 import type { KnownBlock } from '@slack/types';
 
+export function shouldReplyInSlackThread(
+  slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
+  channelId: string
+): boolean {
+  if (slackConfig.replyInThread === false) return false;
+  return !slackConfig.replyInChannels?.includes(channelId);
+}
+
 /** 残り時間を mm:ss でフォーマット */
 function formatRemaining(remainingMs: number): string {
   const sec = Math.max(0, Math.floor(remainingMs / 1000));
@@ -482,7 +490,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     text = buildPromptWithAttachments(text || '添付ファイルを確認してください', attachmentPaths);
 
     const channelId = event.channel;
-    const threadTs = config.slack.replyInThread ? event.thread_ts || event.ts : undefined;
+    const threadTs = shouldReplyInSlackThread(config.slack, channelId)
+      ? event.thread_ts || event.ts
+      : undefined;
 
     // セッションクリアコマンド
     if (['!new', 'new', '/new'].includes(text)) {
@@ -642,7 +652,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     text = buildPromptWithAttachments(text || '添付ファイルを確認してください', dmAttachmentPaths);
 
     const channelId = messageEvent.channel;
-    const threadTs = config.slack.replyInThread ? messageEvent.ts : undefined;
+    const threadTs = shouldReplyInSlackThread(config.slack, channelId)
+      ? messageEvent.ts
+      : undefined;
 
     // セッションクリアコマンド
     if (['!new', 'new', '/new'].includes(text)) {

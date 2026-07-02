@@ -46,6 +46,16 @@ describe('extractFilePaths', () => {
     expect(extractFilePaths(text, workspace)).toEqual([imageAbs]);
   });
 
+  it('ignores MEDIA: examples inside inline code', () => {
+    const text = `説明: \`MEDIA:${imageRel}\` は添付マーカー`;
+    expect(extractFilePaths(text, workspace)).toEqual([]);
+  });
+
+  it('ignores MEDIA: examples inside fenced code blocks', () => {
+    const text = `例:\n\`\`\`\nMEDIA:${imageRel}\n\`\`\``;
+    expect(extractFilePaths(text, workspace)).toEqual([]);
+  });
+
   it('handles markdown image ![alt](path)', () => {
     const text = `結果: ![hero](${imageRel})`;
     expect(extractFilePaths(text, workspace)).toEqual([imageAbs]);
@@ -199,6 +209,10 @@ describe('stripFilePaths', () => {
     expect(stripFilePaths('できたよ\nMEDIA:/workspace/outputs/a.png')).toBe('できたよ');
   });
 
+  it('keeps MEDIA: examples inside inline code', () => {
+    expect(stripFilePaths('説明: `MEDIA:` マーカー')).toBe('説明: `MEDIA:` マーカー');
+  });
+
   it('removes [IMAGE:...] bracket markers', () => {
     expect(stripFilePaths('描いたよ [IMAGE:outputs/a.png] どう？')).toBe('描いたよ  どう？');
   });
@@ -253,6 +267,18 @@ describe('hasUnresolvedMediaMarker', () => {
     expect(hasUnresolvedMediaMarker(text, workspace)).toBe(true);
   });
 
+  it('returns false when a MEDIA: path exists outside allowed roots', () => {
+    const outsideDir = mkdtempSync(join(process.env.HOME ?? tmpdir(), 'xangi-outside-'));
+    const outsideFile = join(outsideDir, 'real.png');
+    writeFileSync(outsideFile, 'fakepng');
+    try {
+      const text = `できたよ\nMEDIA:${outsideFile}`;
+      expect(hasUnresolvedMediaMarker(text, workspace)).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   it('returns false when the MEDIA: path is a real file', () => {
     const text = `できたよ MEDIA:${imageRel}`;
     expect(hasUnresolvedMediaMarker(text, workspace)).toBe(false);
@@ -266,6 +292,15 @@ describe('hasUnresolvedMediaMarker', () => {
   it('returns false for plain text with no markers', () => {
     expect(hasUnresolvedMediaMarker('画像は作れなかったよ', workspace)).toBe(false);
   });
+
+  it('returns false for MEDIA: text inside inline code', () => {
+    expect(hasUnresolvedMediaMarker('説明: `MEDIA:` マーカー', workspace)).toBe(false);
+  });
+
+  it('returns false for MEDIA: examples inside fenced code blocks', () => {
+    const text = `例:\n\`\`\`\nMEDIA:outputs/phantom.png\n\`\`\``;
+    expect(hasUnresolvedMediaMarker(text, workspace)).toBe(false);
+  });
 });
 
 describe('getMissingMediaNotice', () => {
@@ -276,6 +311,9 @@ describe('getMissingMediaNotice', () => {
   it('returns the default notice', () => {
     delete process.env.ATTACHMENT_MISSING_NOTICE;
     expect(getMissingMediaNotice()).toContain('添付できませんでした');
+    expect(getMissingMediaNotice()).toContain('存在しません');
+    expect(getMissingMediaNotice()).not.toContain('添付許可範囲外');
+    expect(getMissingMediaNotice()).not.toContain('生成に失敗');
   });
 
   it('can be overridden via ATTACHMENT_MISSING_NOTICE', () => {
@@ -330,6 +368,16 @@ describe('buildAttachmentResult', () => {
     expect(displayText).toContain(getMissingMediaNotice());
   });
 
+  it('does not append a notice for MEDIA: text inside inline code', () => {
+    const { filePaths, displayText } = buildAttachmentResult(
+      '説明: `MEDIA:` マーカーだけ消す',
+      undefined,
+      workspace
+    );
+    expect(filePaths).toEqual([]);
+    expect(displayText).toBe('説明: `MEDIA:` マーカーだけ消す');
+  });
+
   it('returns the notice alone when stripping leaves an empty body', () => {
     const { filePaths, displayText } = buildAttachmentResult(
       `MEDIA:outputs/phantom.png`,
@@ -338,6 +386,23 @@ describe('buildAttachmentResult', () => {
     );
     expect(filePaths).toEqual([]);
     expect(displayText).toBe(getMissingMediaNotice());
+  });
+
+  it('strips the marker without a notice when a real file is outside allowed roots', () => {
+    const outsideDir = mkdtempSync(join(process.env.HOME ?? tmpdir(), 'xangi-outside-'));
+    const outsideFile = join(outsideDir, 'real.ehpk');
+    writeFileSync(outsideFile, 'fake ehpk');
+    try {
+      const { filePaths, displayText } = buildAttachmentResult(
+        `生成した\nMEDIA:${outsideFile}`,
+        undefined,
+        workspace
+      );
+      expect(filePaths).toEqual([]);
+      expect(displayText).toBe('生成した');
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it('passes plain text through untouched when there are no markers', () => {

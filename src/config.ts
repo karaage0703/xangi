@@ -79,6 +79,7 @@ export interface Config {
     allowedUsers?: string[];
     autoReplyChannels?: string[];
     replyInThread?: boolean;
+    replyInChannels?: string[];
     streaming?: boolean;
     showThinking?: boolean;
   };
@@ -351,6 +352,10 @@ export function loadConfig(): Config {
           .map((s) => s.trim())
           .filter(Boolean) || [],
       replyInThread: process.env.SLACK_REPLY_IN_THREAD !== 'false',
+      replyInChannels:
+        process.env.SLACK_REPLY_IN_CHANNELS?.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean) || [],
       streaming: process.env.SLACK_STREAMING !== 'false',
       showThinking: process.env.SLACK_SHOW_THINKING !== 'false',
     },

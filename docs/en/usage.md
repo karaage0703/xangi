@@ -1198,6 +1198,7 @@ Because Antigravity CLI does not currently expose a stable JSON/stream-json cont
 | `SLACK_ALLOWED_USER` | Allowed user ID |
 | `SLACK_AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention |
 | `SLACK_REPLY_IN_THREAD` | Reply in threads (default: `true`) |
+| `SLACK_REPLY_IN_CHANNELS` | Channel IDs to post replies directly in the channel even when thread replies are enabled (comma-separated) |
 
 ## Running Multiple Instances
 

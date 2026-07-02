@@ -16,7 +16,7 @@ Open [@BotFather](https://t.me/BotFather) in Telegram and send:
 
 ```
 Use this token to access the HTTP API:
-7123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+<API token issued by BotFather>
 ```
 
 ⚠️ **Keep this token secret.** It grants full control over your bot.
@@ -76,7 +76,7 @@ Forward a message from the target bot to [@userinfobot](https://t.me/userinfobot
 ## 4. Configure xangi `.env`
 
 ```bash
-TELEGRAM_BOT_TOKEN=7123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=<API token issued by BotFather>
 
 # Allowed users (numeric Telegram user IDs, CSV). Use "*" to allow everyone.
 TELEGRAM_ALLOWED_USER=123456789,987654321
@@ -149,7 +149,7 @@ In groups, xangi posts the initial processing message and edits it once with the
 If you only need 1:1 DMs, this is all you need:
 
 ```bash
-TELEGRAM_BOT_TOKEN=7123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=<API token issued by BotFather>
 TELEGRAM_ALLOWED_USER=123456789
 ```
 

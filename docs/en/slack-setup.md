@@ -100,6 +100,9 @@ SLACK_APP_TOKEN=xapp-your-app-token
 
 # Allowed user ID (Slack User ID)
 SLACK_ALLOWED_USER=U01234567
+
+# Optional: Post replies directly in specific channels instead of threads
+SLACK_REPLY_IN_CHANNELS=C01234567
 ```
 
 > **Warning**: If you're only using Slack, remove (or comment out) `DISCORD_TOKEN` from `.env`.

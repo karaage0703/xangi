@@ -37,7 +37,7 @@
   "author": "karaage",
   "license": "MIT",
   "dependencies": {
-    "@line/bot-sdk": "^11.0.2",
+    "@line/bot-sdk": "^11.1.0",
     "@octokit/auth-app": "^8.2.0",
     "@slack/bolt": "^4.7.3",
     "discord.js": "^14.26.4",

@@ -113,6 +113,61 @@ function realFileWithinRoots(resolved: string, allowedRoots: string[]): string |
   return null;
 }
 
+function realExistingFile(resolved: string): string | null {
+  try {
+    const real = fs.realpathSync(resolved);
+    return fs.statSync(real).isFile() ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+type TextSegment = { text: string; isCode: boolean };
+
+function splitMarkdownCodeSegments(text: string): TextSegment[] {
+  const segments: TextSegment[] = [];
+  const lines = text.split(/(\n)/);
+  let inFence = false;
+  for (let i = 0; i < lines.length; i += 2) {
+    const line = lines[i] ?? '';
+    const newline = lines[i + 1] ?? '';
+    const wholeLine = line + newline;
+    if (/^\s*```/.test(line)) {
+      segments.push({ text: wholeLine, isCode: true });
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      segments.push({ text: wholeLine, isCode: true });
+      continue;
+    }
+
+    let lastIndex = 0;
+    const inlineCodePattern = /`[^`\n]*`/g;
+    let match: RegExpExecArray | null;
+    while ((match = inlineCodePattern.exec(line)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({ text: line.slice(lastIndex, match.index), isCode: false });
+      }
+      segments.push({ text: match[0], isCode: true });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < line.length) {
+      segments.push({ text: line.slice(lastIndex), isCode: false });
+    }
+    if (newline) {
+      segments.push({ text: newline, isCode: false });
+    }
+  }
+  return segments;
+}
+
+function nonCodeSegments(text: string): string[] {
+  return splitMarkdownCodeSegments(text)
+    .filter((segment) => !segment.isCode)
+    .map((segment) => segment.text);
+}
+
 /**
  * 応答テキストから添付マーカーのファイルパスを抽出する。
  *
@@ -137,20 +192,29 @@ export function extractFilePaths(text: string, workspaceRootOverride?: string): 
 
   // 1) MEDIA:/path/to/file（裸の MEDIA:）
   const mediaPattern = /MEDIA:\s*([^\s\n]+)/g;
-  while ((match = mediaPattern.exec(text)) !== null) {
-    consider(match[1]);
+  for (const segment of nonCodeSegments(text)) {
+    mediaPattern.lastIndex = 0;
+    while ((match = mediaPattern.exec(segment)) !== null) {
+      consider(match[1]);
+    }
   }
 
   // 2) [IMAGE:path] / [FILE:path] / [VIDEO:path] / [AUDIO:path] / [MEDIA:path]
   const bracketPattern = /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi;
-  while ((match = bracketPattern.exec(text)) !== null) {
-    consider(match[1]);
+  for (const segment of nonCodeSegments(text)) {
+    bracketPattern.lastIndex = 0;
+    while ((match = bracketPattern.exec(segment)) !== null) {
+      consider(match[1]);
+    }
   }
 
   // 3) markdown リンク / 画像  ![alt](path) または [label](path)
   const mdLinkPattern = /!?\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g;
-  while ((match = mdLinkPattern.exec(text)) !== null) {
-    consider(match[1]);
+  for (const segment of nonCodeSegments(text)) {
+    mdLinkPattern.lastIndex = 0;
+    while ((match = mdLinkPattern.exec(segment)) !== null) {
+      consider(match[1]);
+    }
   }
 
   return [...found];
@@ -175,44 +239,69 @@ export function resolveAttachmentPath(raw: string, workspaceRootOverride?: strin
  * 表示用テキストを返す。
  */
 export function stripFilePaths(text: string): string {
-  return text
-    .replace(/MEDIA:\s*[^\s\n]+/g, '')
-    .replace(/\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*[^\]\n]+\]/gi, '')
-    .replace(/!\[[^\]]*\]\(\s*[^)\s]+\s*\)/g, '')
+  return splitMarkdownCodeSegments(text)
+    .map((segment) =>
+      segment.isCode
+        ? segment.text
+        : segment.text
+            .replace(/MEDIA:\s*[^\s\n]+/g, '')
+            .replace(/\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*[^\]\n]+\]/gi, '')
+            .replace(/!\[[^\]]*\]\(\s*[^)\s]+\s*\)/g, '')
+    )
+    .join('')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
+function inspectUnattachedMediaMarkers(
+  text: string,
+  workspaceRootOverride?: string
+): { hasMissing: boolean; hasOutsideAllowedExisting: boolean } {
+  if (!text) return { hasMissing: false, hasOutsideAllowedExisting: false };
+  const workspaceRoot = getWorkspaceRoot(workspaceRootOverride);
+  const broadRoots = getBroadAllowedRoots(workspaceRoot);
+  const patterns = [/MEDIA:\s*([^\s\n]+)/g, /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi];
+  let hasMissing = false;
+  let hasOutsideAllowedExisting = false;
+
+  for (const segment of nonCodeSegments(text)) {
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(segment)) !== null) {
+        const raw = match[1].trim();
+        // http(s)/data URL は添付対象外なので「生成失敗」ではない（誤検知を防ぐ）
+        if (/^(?:https?|data):/i.test(raw)) continue;
+        const resolved = resolveCandidate(raw, workspaceRoot);
+        if (!resolved) continue;
+        if (realFileWithinRoots(resolved, broadRoots)) continue;
+        if (realExistingFile(resolved)) {
+          hasOutsideAllowedExisting = true;
+        } else {
+          hasMissing = true;
+        }
+      }
+    }
+  }
+
+  return { hasMissing, hasOutsideAllowedExisting };
+}
+
 /**
  * 添付マーカー（MEDIA: / [IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:]）が書かれているのに、
- * 指す先が allowlist 内の実在ファイルでない（＝添付対象にならない）ものが残っているかを返す。
+ * 指す先が実在しない（＝捏造パスの疑いがある）ものが残っているかを返す。
+ * 実在するが allowlist 外のファイルは、生成失敗ではないので警告対象にしない。
  *
  * Local LLM が generate.py 等を実行せず出力ファイル名だけ作文して `MEDIA:...` と書く
  * 「捏造パス（phantom path）」を検出するための関数。markdown リンクと http(s)/data URL は
  * 通常リンク・外部 URL であって添付失敗ではないので対象外。
  */
 export function hasUnresolvedMediaMarker(text: string, workspaceRootOverride?: string): boolean {
-  if (!text) return false;
-  const workspaceRoot = getWorkspaceRoot(workspaceRootOverride);
-  const broadRoots = getBroadAllowedRoots(workspaceRoot);
-  const patterns = [/MEDIA:\s*([^\s\n]+)/g, /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi];
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const raw = match[1].trim();
-      // http(s)/data URL は添付対象外なので「生成失敗」ではない（誤検知を防ぐ）
-      if (/^(?:https?|data):/i.test(raw)) continue;
-      const resolved = resolveCandidate(raw, workspaceRoot);
-      if (!resolved) continue;
-      if (!realFileWithinRoots(resolved, broadRoots)) return true;
-    }
-  }
-  return false;
+  return inspectUnattachedMediaMarkers(text, workspaceRootOverride).hasMissing;
 }
 
 const DEFAULT_MISSING_MEDIA_NOTICE =
-  '⚠️ ファイル（画像など）を生成・添付できませんでした。生成に失敗した可能性があります。もう一度試してください。';
+  '⚠️ 指定されたファイルを添付できませんでした。ファイルが存在しません。';
 
 /**
  * 添付できなかったことをユーザに伝える注記。環境変数 `ATTACHMENT_MISSING_NOTICE` で上書き可能。
@@ -244,10 +333,14 @@ export function buildAttachmentResult(
   if (filePaths.length > 0) {
     return { filePaths, displayText: stripFilePaths(result) };
   }
-  if (hasUnresolvedMediaMarker(result, workspaceRootOverride)) {
+  const unattachedMarkers = inspectUnattachedMediaMarkers(result, workspaceRootOverride);
+  if (unattachedMarkers.hasMissing) {
     const stripped = stripFilePaths(result);
     const notice = getMissingMediaNotice();
     return { filePaths, displayText: stripped ? `${stripped}\n\n${notice}` : notice };
+  }
+  if (unattachedMarkers.hasOutsideAllowedExisting) {
+    return { filePaths, displayText: stripFilePaths(result) };
   }
   return { filePaths, displayText: result };
 }

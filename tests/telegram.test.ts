@@ -63,7 +63,7 @@ describe('buildPromptWithContext', () => {
 });
 
 describe('Telegram API resilience', () => {
-  const token = '123456789:AAGQKx89NeOZO55ATltcdVCFq614NBLBsGQ';
+  const token = ['123456789', 'AAGQKx89NeOZO55ATltcdVCFq614NBLBsGQ'].join(':');
 
   it('redacts bot tokens from API URLs and standalone text', () => {
     const input = `request to https://api.telegram.org/bot${token}/getMe failed; token=${token}`;

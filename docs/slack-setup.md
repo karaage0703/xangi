@@ -98,6 +98,9 @@ SLACK_APP_TOKEN=xapp-your-app-token
 
 # 許可するユーザー ID（Slack の User ID）
 SLACK_ALLOWED_USER=U01234567
+
+# 任意: 特定チャンネルだけスレッドではなくチャンネル直下に返信
+SLACK_REPLY_IN_CHANNELS=C01234567
 ```
 
 > **⚠️ Slack のみで使用する場合は `.env` から `DISCORD_TOKEN` を削除（またはコメントアウト）してください。**

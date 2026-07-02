@@ -326,4 +326,14 @@ describe('config', () => {
 
     expect(config.agent.config.skipPermissions).toBe(false);
   });
+
+  it('should parse Slack reply-in-channel overrides as comma-separated list', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SLACK_REPLY_IN_CHANNELS = 'C0AD8S0QCFP, C1234567890 ,, CABCDEF1234';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.slack.replyInChannels).toEqual(['C0AD8S0QCFP', 'C1234567890', 'CABCDEF1234']);
+  });
 });
