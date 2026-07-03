@@ -17,6 +17,7 @@
  *   node xangi-cmd.js discord_search --channel <id> --keyword <text>
  *   node xangi-cmd.js discord_edit --channel <id> --message-id <id> --content <text>
  *   node xangi-cmd.js discord_delete --channel <id> --message-id <id>
+ *   node xangi-cmd.js discord_thread_leave --user <id> [--channel <id>]
  *   node xangi-cmd.js slack_history [--channel <id>] [--count <n>]
  *   node xangi-cmd.js slack_send --channel <id> --message <text> [--thread-ts <ts>]
  *   node xangi-cmd.js slack_channels [--types public_channel,private_channel] [--limit <n>]
@@ -143,6 +144,7 @@ Discord操作:
   discord_search    メッセージ検索
   discord_edit      メッセージ編集
   discord_delete    メッセージ削除
+  discord_thread_leave    スレッドから指定ユーザーを退出させる
 
 Slack操作:
   slack_history      現チャンネル履歴取得

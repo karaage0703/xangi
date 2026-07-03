@@ -36,6 +36,7 @@ Discord操作:
   discord_search    メッセージ検索
   discord_edit      メッセージ編集
   discord_delete    メッセージ削除
+  discord_thread_leave    スレッドから指定ユーザーを退出させる
   media_send        ファイル送信
 
 Web Chat操作:

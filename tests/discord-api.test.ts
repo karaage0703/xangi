@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolveHistoryChannelId } from '../src/cli/discord-api.js';
+import {
+  resolveHistoryChannelId,
+  resolveChannelId,
+  resolveLeaveUserId,
+} from '../src/cli/discord-api.js';
 import { ValidationError } from '../src/errors.js';
 
 describe('resolveHistoryChannelId', () => {
@@ -63,5 +67,25 @@ describe('resolveHistoryChannelId', () => {
     delete process.env.XANGI_CHANNEL_ID;
     const result = resolveHistoryChannelId({ channel: 'flag-only' });
     expect(result).toBe('flag-only');
+  });
+});
+
+describe('resolveChannelId error label', () => {
+  it('embeds the given command label in the missing-channel error', () => {
+    delete process.env.XANGI_CHANNEL_ID;
+    expect(() => resolveChannelId({}, {}, 'discord_thread_leave')).toThrow(
+      /discord_thread_leave: channel が未指定/
+    );
+  });
+});
+
+describe('resolveLeaveUserId', () => {
+  it('returns the --user value when provided', () => {
+    expect(resolveLeaveUserId({ user: '111222333' })).toBe('111222333');
+  });
+
+  it('throws a discord_thread_leave-labelled error when --user is missing', () => {
+    expect(() => resolveLeaveUserId({})).toThrow(/discord_thread_leave: user が未指定/);
+    expect(() => resolveLeaveUserId({})).toThrow(ValidationError);
   });
 });

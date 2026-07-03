@@ -117,9 +117,10 @@ interface DiscordCommandContext {
 
 // ─── Commands ───────────────────────────────────────────────────────
 
-export function resolveHistoryChannelId(
+export function resolveChannelId(
   flags: Record<string, string>,
-  context?: DiscordCommandContext
+  context: DiscordCommandContext | undefined,
+  commandLabel: string
 ): string {
   const explicitChannelId = flags['channel'];
   if (explicitChannelId) return explicitChannelId;
@@ -133,11 +134,33 @@ export function resolveHistoryChannelId(
 
   throw new ValidationError(
     [
-      'discord_history: channel が未指定です。',
+      `${commandLabel}: channel が未指定です。`,
       'xangi上で実行中なら現在のチャンネルIDを自動補完します。',
       'CLI単体実行では `--channel <チャンネルID>` を付けてください。',
     ].join(' ')
   );
+}
+
+export function resolveHistoryChannelId(
+  flags: Record<string, string>,
+  context?: DiscordCommandContext
+): string {
+  return resolveChannelId(flags, context, 'discord_history');
+}
+
+/** discord_thread_leave: 退出させるユーザーIDを解決する（テスト用に純関数化） */
+export function resolveLeaveUserId(flags: Record<string, string>): string {
+  const userId = flags['user'];
+  if (!userId) {
+    throw new ValidationError(
+      [
+        'discord_thread_leave: user が未指定です。',
+        '退出させるユーザーIDを `--user <ユーザーID>` で指定してください。',
+        '（自分＝発言者を退出させたい場合は発言者のユーザーIDを渡します）',
+      ].join(' ')
+    );
+  }
+  return userId;
 }
 
 async function discordHistory(
@@ -145,7 +168,7 @@ async function discordHistory(
   context: DiscordCommandContext | undefined,
   tracker: DiscordRateLimitTracker
 ): Promise<string> {
-  const channelId = resolveHistoryChannelId(flags, context);
+  const channelId = resolveChannelId(flags, context, 'discord_history');
 
   const count = Math.min(parseInt(flags['count'] || '10', 10), 100);
   const offset = parseInt(flags['offset'] || '0', 10);
@@ -353,6 +376,40 @@ async function discordDelete(
   return '🗑️ メッセージを削除しました';
 }
 
+async function discordThreadLeave(
+  flags: Record<string, string>,
+  context: DiscordCommandContext | undefined,
+  tracker: DiscordRateLimitTracker
+): Promise<string> {
+  // --channel 省略時は現在のチャンネル（＝スレッド内なら当該スレッド）を対象にする
+  const channelId = resolveChannelId(flags, context, 'discord_thread_leave');
+  const userId = resolveLeaveUserId(flags);
+
+  // 表示用にスレッド名を取得（失敗しても退出処理は続行する）
+  let label = `(ID:${channelId})`;
+  try {
+    const thread = (await discordFetch(`/channels/${channelId}`, { method: 'GET' }, tracker)) as {
+      id: string;
+      name?: string;
+    };
+    if (thread.name) label = `「${thread.name}」`;
+  } catch {
+    // 名前取得に失敗しても致命的ではないので無視
+  }
+
+  // スレッドメンバーから当該ユーザーを外す＝そのユーザーのサイドバーから消える。
+  // Discord UI の「このスレッドを退出」と同じ挙動（他メンバーには影響しない）。
+  await discordFetch(
+    `/channels/${channelId}/thread-members/${userId}`,
+    {
+      method: 'DELETE',
+    },
+    tracker
+  );
+
+  return `🚪 スレッド${label}からユーザー(ID:${userId})を退出させました`;
+}
+
 async function mediaSend(
   flags: Record<string, string>,
   tracker: DiscordRateLimitTracker
@@ -453,6 +510,9 @@ export async function discordApi(
       break;
     case 'discord_delete':
       result = await discordDelete(flags, tracker);
+      break;
+    case 'discord_thread_leave':
+      result = await discordThreadLeave(flags, context, tracker);
       break;
     case 'media_send':
       result = await mediaSend(flags, tracker);

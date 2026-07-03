@@ -185,6 +185,25 @@ const discordDeleteHandler: ToolHandler = {
   },
 };
 
+const discordThreadLeaveHandler: ToolHandler = {
+  name: 'discord_thread_leave',
+  description:
+    'スレッドから指定ユーザーを退出させる（Discordの「このスレッドを退出」と同じ＝そのユーザーのサイドバーから消える）。channel 省略時は現在のスレッドが対象。user は必須で、自分を退出させたい場合は発言者のユーザーIDを渡す。',
+  parameters: {
+    type: 'object',
+    properties: {
+      user: { type: 'string', description: '退出させるユーザーID（必須。自分＝発言者のIDを渡す）' },
+      channel: { type: 'string', description: 'スレッドID（省略時は現在のスレッド）' },
+    },
+    required: ['user'],
+  },
+  async execute(args): Promise<ToolResult> {
+    const cmd = ['discord_thread_leave', '--user', String(args.user)];
+    if (args.channel) cmd.push('--channel', String(args.channel));
+    return runXangiCmd(cmd);
+  },
+};
+
 // ─── Schedule Tools ─────────────────────────────────────────────────
 
 const scheduleListHandler: ToolHandler = {
@@ -488,6 +507,7 @@ export function getDiscordTools(): ToolHandler[] {
     discordSearchHandler,
     discordEditHandler,
     discordDeleteHandler,
+    discordThreadLeaveHandler,
     mediaSendHandler,
   ];
 }
