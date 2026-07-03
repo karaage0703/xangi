@@ -25,6 +25,7 @@ import {
 } from '../sessions.js';
 import { stripPromptMetadata } from '../session-title.js';
 import { deriveThreadTitle } from './thread-title.js';
+import { resolveConversationChannelId } from './thread-context.js';
 import {
   attachPlatformMessageIdToLast,
   findEntryByPlatformMessageId,
@@ -61,39 +62,16 @@ export async function processPrompt(
   let streamSession: StreamSession | null = null;
   // プロセス終了時に実行中表示を「中断」表示で確定させる finalizer の登録解除関数 (issue #293)
   let unregisterStreamFinalizer: (() => void) | undefined;
-  // xangi-events 用 ID（fire-and-forget なのでエラーで本業を止めない）
-  const threadId = threadIdFor('discord', channelId);
   const turnId = turnIdFor('discord', message.id);
   const channelName = 'name' in message.channel ? (message.channel as { name: string }).name : null;
   const threadLabel = channelName ? `#${channelName}` : 'DM';
-  const eventCtx = {
-    threadId,
-    turnId,
-    threadLabel,
-    platform: 'discord' as const,
-    userText: message.content || undefined,
-  };
+  // 会話コンテキストのキー。replyInThread で新規スレッドを作成した場合はそのスレッドIDへ
+  // 切り替える（後段のセッション/イベント/UI と catch 内フォローアップから参照するため
+  // 関数スコープに置く）。作成しない場合は受信チャンネルIDのまま。
+  let conversationChannelId = channelId;
   try {
-    // チャンネル・ユーザー情報をプロンプトに付与
-    const userInfo = `[発言者: ${message.author.displayName ?? message.author.username} (ID: ${message.author.id})]`;
-    if (channelName) {
-      prompt = `[プラットフォーム: Discord]\n[チャンネル: #${channelName} (ID: ${channelId})]\n${userInfo}\n${prompt}`;
-    } else {
-      prompt = `${userInfo}\n${prompt}`;
-    }
-
     console.log(`[xangi] Processing message in channel ${channelId}`);
     await message.react('👀').catch(() => {});
-
-    const sessionId = getSession(channelId);
-    const appSessionId = ensureSession(channelId, { platform: 'discord' });
-
-    // 再起動直後の resume では、直前の未完了 tool 呼び出しが 'rejected' として
-    // 記録されている（ユーザー拒否ではない）。誤解釈防止の注記を一度だけ注入する
-    const restartNote = consumeRestartNote(channelId, !!sessionId);
-    if (restartNote) {
-      prompt = `${restartNote}\n${prompt}`;
-    }
 
     const useStreaming = config.discord.streaming ?? true;
     const showThinking = config.discord.showThinking ?? true;
@@ -137,7 +115,7 @@ export async function processPrompt(
         };
         if (showButtons && !needsSkipRunner) {
           payload.components = [
-            createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+            createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, conversationChannelId)),
           ];
         }
         await replyMessage.edit(payload).catch((err) => {
@@ -147,10 +125,11 @@ export async function processPrompt(
     });
     streamSession = session;
 
-    // スレッド返信モード: 発言ごとにスレッドを作成し、以降の投稿先をそのスレッドにする。
-    // すでにスレッド内の発言 / DM など startThread 不可の場合は通常どおりチャンネルへ返信する。
-    // スレッド名は投稿本文から決定的に生成する（AI バックエンド非依存）。
+    // スレッド返信モード: 発言ごとにスレッドを作成し、以降の投稿先・会話コンテキストを
+    // そのスレッドにする。すでにスレッド内の発言 / DM など startThread 不可の場合は
+    // 通常どおりチャンネルへ返信する。スレッド名は投稿本文から決定的に生成する。
     let newThread: {
+      id: string;
       send: (options: unknown) => Promise<Message>;
     } | null = null;
     if (config.discord.replyInThread) {
@@ -166,6 +145,7 @@ export async function processPrompt(
               startThread: (opts: { name: string }) => Promise<unknown>;
             }
           ).startThread({ name: threadName })) as {
+            id: string;
             send: (options: unknown) => Promise<Message>;
           };
         } catch (err) {
@@ -176,6 +156,39 @@ export async function processPrompt(
         }
       }
     }
+    // 新規スレッドを作成できた場合は、以降の会話コンテキスト（セッション・イベント・UI・
+    // ランナー呼び出し）をそのスレッドIDに紐付ける。これがないとスレッド内の続き発言が
+    // 別セッション扱いになり、同じ会話を継続できない。
+    conversationChannelId = resolveConversationChannelId(channelId, newThread?.id);
+
+    // チャンネル・ユーザー情報をプロンプトに付与
+    const userInfo = `[発言者: ${message.author.displayName ?? message.author.username} (ID: ${message.author.id})]`;
+    if (channelName) {
+      prompt = `[プラットフォーム: Discord]\n[チャンネル: #${channelName} (ID: ${conversationChannelId})]\n${userInfo}\n${prompt}`;
+    } else {
+      prompt = `${userInfo}\n${prompt}`;
+    }
+
+    // xangi-events 用 ID（fire-and-forget なのでエラーで本業を止めない）
+    const threadId = threadIdFor('discord', conversationChannelId);
+    const eventCtx = {
+      threadId,
+      turnId,
+      threadLabel,
+      platform: 'discord' as const,
+      userText: message.content || undefined,
+    };
+
+    const sessionId = getSession(conversationChannelId);
+    const appSessionId = ensureSession(conversationChannelId, { platform: 'discord' });
+
+    // 再起動直後の resume では、直前の未完了 tool 呼び出しが 'rejected' として
+    // 記録されている（ユーザー拒否ではない）。誤解釈防止の注記を一度だけ注入する
+    const restartNote = consumeRestartNote(conversationChannelId, !!sessionId);
+    if (restartNote) {
+      prompt = `${restartNote}\n${prompt}`;
+    }
+
     // 以降の追加投稿（続きチャンク・ファイル・完了通知）の送信先。
     // スレッドを新規作成したらそのスレッド、そうでなければ元のチャンネル。
     const outputChannel = (newThread ?? (message.channel as unknown)) as {
@@ -195,7 +208,7 @@ export async function processPrompt(
     // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
     // 別個に作った ClaudeCodeRunner には timeout イベントが流れないのでスキップ
     if (showButtons && !needsSkipRunner) {
-      discordProcessingMessages.set(channelId, { message: replyMessage });
+      discordProcessingMessages.set(conversationChannelId, { message: replyMessage });
     }
 
     // プロセス再起動 (SIGTERM) で turn が中断されたとき、ストリーミング表示
@@ -234,7 +247,7 @@ export async function processPrompt(
           {
             skipPermissions,
             sessionId,
-            channelId,
+            channelId: conversationChannelId,
             appSessionId,
           }
         );
@@ -258,7 +271,7 @@ export async function processPrompt(
           {
             skipPermissions,
             sessionId,
-            channelId,
+            channelId: conversationChannelId,
             appSessionId,
           }
         );
@@ -270,7 +283,7 @@ export async function processPrompt(
       }
     }
 
-    setSession(channelId, newSessionId);
+    setSession(conversationChannelId, newSessionId);
     incrementMessageCount(appSessionId);
     // transcript の最後の user / assistant エントリに Discord の messageId を
     // 紐付ける。これがあれば後で messageUpdate / messageDelete から jsonl を
@@ -364,7 +377,7 @@ export async function processPrompt(
     const completionNotification = buildCompletionNotification({
       mode: getChannelCompletionNotifyMode(
         loadSettings(),
-        channelId,
+        conversationChannelId,
         config.discord.completionNotifyMode ?? 'message'
       ),
       elapsedMs: Date.now() - startedAt,
@@ -427,19 +440,19 @@ export async function processPrompt(
     if (shouldSendErrorFollowUp(error)) {
       try {
         console.log('[xangi] Sending error follow-up to agent');
-        const sessionId = getSession(channelId);
+        const sessionId = getSession(conversationChannelId);
         if (sessionId) {
           const followUpPrompt =
             '先ほどの処理がエラー（タイムアウト等）で中断されました。途中まで行った作業内容と現在の状況を簡潔に報告してください。';
-          const followUpAppId = getActiveSessionId(channelId);
+          const followUpAppId = getActiveSessionId(conversationChannelId);
           const followUpResult = await agentRunner.run(followUpPrompt, {
             skipPermissions,
             sessionId,
-            channelId,
+            channelId: conversationChannelId,
             appSessionId: followUpAppId,
           });
           if (followUpResult.result) {
-            setSession(channelId, followUpResult.sessionId);
+            setSession(conversationChannelId, followUpResult.sessionId);
             const followUpText = followUpResult.result.slice(0, DISCORD_SAFE_LENGTH);
             // スレッド返信時は replyMessage がスレッド内にあるので、その投稿先へ揃える
             const followUpChannel = (replyMessage?.channel ?? message.channel) as {
