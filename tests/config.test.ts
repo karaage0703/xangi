@@ -87,6 +87,26 @@ describe('config', () => {
     expect(config.discord.replyInThread).toBe(true);
   });
 
+  it('should allow /threadmode command by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.ALLOW_THREAD_MODE_COMMAND;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowThreadModeCommand).toBe(true);
+  });
+
+  it('should disable /threadmode command when ALLOW_THREAD_MODE_COMMAND=false', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    process.env.ALLOW_THREAD_MODE_COMMAND = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.allowThreadModeCommand).toBe(false);
+  });
+
   it('should default to claude-code backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.AGENT_BACKEND;
@@ -355,5 +375,39 @@ describe('config', () => {
     const config = loadConfig();
 
     expect(config.slack.replyInChannels).toEqual(['C0AD8S0QCFP', 'C1234567890', 'CABCDEF1234']);
+  });
+
+  it('should configure Slack completion notification threshold', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SLACK_COMPLETION_NOTIFY_AFTER_MS = '60000';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.slack.completionNotifyAfterMs).toBe(60_000);
+  });
+
+  it('should default Slack completion notification threshold to the Discord default value', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.DISCORD_COMPLETION_NOTIFY_AFTER_MS;
+    delete process.env.SLACK_COMPLETION_NOTIFY_AFTER_MS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.completionNotifyAfterMs).toBe(10_000);
+    expect(config.slack.completionNotifyAfterMs).toBe(10_000);
+  });
+
+  it('should keep Slack completion notification threshold independent from Discord env', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.DISCORD_COMPLETION_NOTIFY_AFTER_MS = '45000';
+    delete process.env.SLACK_COMPLETION_NOTIFY_AFTER_MS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.discord.completionNotifyAfterMs).toBe(45_000);
+    expect(config.slack.completionNotifyAfterMs).toBe(10_000);
   });
 });

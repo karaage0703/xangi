@@ -23,6 +23,14 @@
 
 import { events, type Platform } from './events-emitter.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import {
+  abortActivity,
+  completeActivity,
+  errorActivity,
+  startActivity,
+  updateActivityText,
+  updateActivityTool,
+} from './activity-store.js';
 
 export interface BubbleEventContext {
   threadId: string;
@@ -43,6 +51,7 @@ export async function runWithBubbleEvents(
   options?: RunOptions
 ): Promise<RunResult> {
   const { userText, ...eventBase } = ctx;
+  startActivity(ctx);
   events.turnStarted({ ...eventBase, userText });
   let errorEmitted = false;
   try {
@@ -55,18 +64,25 @@ export async function runWithBubbleEvents(
       prompt,
       {
         onText: (chunk, fullText) => {
+          updateActivityText(ctx, fullText);
           events.messageDelta({ ...eventBase, chunk, fullText });
           callbacks.onText?.(chunk, fullText);
         },
-        onToolUse: callbacks.onToolUse,
+        onToolUse: (toolName, toolInput) => {
+          updateActivityTool(ctx, toolName, toolInput);
+          callbacks.onToolUse?.(toolName, toolInput);
+        },
         onComplete: (result) => {
+          completeActivity(ctx, result.result);
           events.turnComplete({ ...eventBase, text: result.result });
           callbacks.onComplete?.(result);
         },
         onError: (error) => {
           if (error.message === CANCEL_MESSAGE) {
+            abortActivity(ctx);
             events.turnAborted(eventBase);
           } else {
+            errorActivity(ctx, error.message);
             events.agentError({ ...eventBase, message: error.message });
           }
           errorEmitted = true;
@@ -79,8 +95,10 @@ export async function runWithBubbleEvents(
     if (!errorEmitted) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === CANCEL_MESSAGE) {
+        abortActivity(ctx);
         events.turnAborted(eventBase);
       } else {
+        errorActivity(ctx, msg);
         events.agentError({ ...eventBase, message: msg });
       }
     }

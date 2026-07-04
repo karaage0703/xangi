@@ -92,6 +92,14 @@ describe('CursorRunner', () => {
     expect(args[args.indexOf('--output-format') + 1]).toBe('json');
     expect(args).toContain('--force');
     expect(args).toContain('--trust');
+    expect(args[args.indexOf('--model') + 1]).toBe('auto');
+  });
+
+  it('uses auto model by default to avoid Cursor CLI global model drift', async () => {
+    const runner = new CursorRunner({});
+    const { args } = await getSpawnArgs(runner, 'stream');
+
+    expect(args[args.indexOf('--model') + 1]).toBe('auto');
   });
 
   it('omits force only when CURSOR_FORCE is disabled', async () => {

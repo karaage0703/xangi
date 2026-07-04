@@ -30,6 +30,24 @@ export function shouldReplyInSlackThread(
   return !slackConfig.replyInChannels?.includes(channelId);
 }
 
+export function buildSlackCompletionNotification(input: {
+  threadTs?: string;
+  elapsedMs: number;
+  thresholdMs: number;
+}): string | null {
+  if (input.threadTs) return null;
+  if (input.elapsedMs < input.thresholdMs) return null;
+  return `✅ 完了しました（${formatElapsed(input.elapsedMs)}）`;
+}
+
+function formatElapsed(elapsedMs: number): string {
+  const totalSec = Math.max(0, Math.round(elapsedMs / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `${sec}秒`;
+  return `${min}分${sec.toString().padStart(2, '0')}秒`;
+}
+
 /** 残り時間を mm:ss でフォーマット */
 function formatRemaining(remainingMs: number): string {
   const sec = Math.max(0, Math.floor(remainingMs / 1000));
@@ -924,6 +942,7 @@ async function processMessage(
   config: Config
 ): Promise<void> {
   const skipPermissions = config.agent.config.skipPermissions ?? false;
+  const startedAt = Date.now();
   let prompt = text;
 
   // スキップ設定
@@ -1156,6 +1175,22 @@ async function processMessage(
       } catch (err) {
         console.error('[slack] Failed to upload files:', err);
       }
+    }
+
+    const completionNotification = buildSlackCompletionNotification({
+      threadTs,
+      elapsedMs: Date.now() - startedAt,
+      thresholdMs: config.slack.completionNotifyAfterMs ?? 10_000,
+    });
+    if (completionNotification) {
+      await client.chat
+        .postMessage({
+          channel: channelId,
+          text: completionNotification,
+        })
+        .catch((err) => {
+          console.error('[slack] Failed to send completion notification:', err?.message || err);
+        });
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);

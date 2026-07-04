@@ -12,3 +12,16 @@ export function resolveConversationChannelId(
 ): string {
   return createdThreadId ?? receivedChannelId;
 }
+
+export function buildDiscordChannelContextLine(params: {
+  channelName: string | null;
+  conversationChannelId: string;
+  createdThreadName?: string | null;
+}): string | null {
+  const { channelName, conversationChannelId, createdThreadName } = params;
+  if (!channelName) return null;
+  if (createdThreadName) {
+    return `[チャンネル: #${channelName} / thread: ${createdThreadName} (ID: ${conversationChannelId})]`;
+  }
+  return `[チャンネル: #${channelName} (ID: ${conversationChannelId})]`;
+}

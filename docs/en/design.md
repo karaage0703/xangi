@@ -58,7 +58,7 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 
 Based on `discord.js` v14. Split into modules by responsibility:
 
-- `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `AUTO_REPLY_CHANNELS` matching → forwarding to the Runner)
+- `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `discordAutoReplyChannels` in `settings.json` → forwarding to the Runner)
 - `slash-commands.ts` — Slash command definitions and interaction handling
 - `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions
 - `ui.ts` — Button rows (Stop / extend / remaining-time display) and processing-message management
@@ -79,6 +79,7 @@ Based on `@slack/bolt`.
 - Handles `app_mention` and DMs; per-thread session isolation (`contextKey = slack:<channelId>:<threadTs>`)
 - Slash commands and reactions supported
 - Stop / extend / remaining-time button rows are refreshed every second via `chat.update`
+- For non-thread turns, xangi posts a separate `✅ 完了しました（...）` completion notice after long runs to improve visibility
 
 ### Web Chat (web-chat.ts)
 
@@ -88,6 +89,8 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - SSE delivers streaming responses plus timeout events (`timeout-started/extended/cleared`) to the frontend
 - The frontend ticks every second to update the remaining time (no additional API calls)
 - File upload / download accepted extensions are gated by `WEB_CHAT_UPLOAD_ACCEPT` / `WEB_CHAT_DOWNLOAD_ACCEPT`
+- `GET /api/sessions` includes an `activity` snapshot for each managed session. `activity-store.ts` keeps the current turn state, summary, recent tool lines, and elapsed seconds in process memory
+- `/monitor` is a read-only session monitoring page. It polls the same `/api/sessions` endpoint every 2 seconds and sorts running sessions first. Rows and text are sized for phone and Even G2 viewing
 
 ### LINE Bot Integration (line.ts)
 
@@ -161,6 +164,17 @@ interface AgentRunner {
 Every Runner implementation (Claude Code / Codex / Cursor / Grok / Antigravity / Local LLM / Dynamic) is also
 an `EventEmitter` and emits `timeout-started` / `timeout-extended` / `timeout-cleared`
 events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI.
+
+### Activity Store (activity-store.ts)
+
+`runWithBubbleEvents` updates a lightweight snapshot of the current turn from the shared lifecycle.
+
+- `turn.started` equivalent sets `thinking`
+- `onText` sets `streaming`
+- `onToolUse` sets `tool` and records recent tool lines
+- `onComplete` / cancel / error set `complete` / `aborted` / `error`
+- Snapshots are process-memory only. They are not restored after restart and do not write to `sessions.json` or transcripts
+- `GET /api/sessions` and the Even Terminal compatible `GET /api/sessions?provider=...` read the same activity data
 
 ### Timeout Controller (timeout-controller.ts)
 
@@ -761,8 +775,9 @@ Detects and automatically executes special commands output by the AI:
 | CLI tool | `xangi-cmd system_restart` | Process restart |
 | Text parsing | `MEDIA:/path/to/file` | File sending |
 | Text parsing | `\n===\n` | Message splitting |
-| Slash command | `/autoreply` | Toggle mention-free auto-reply per channel |
+| Slash command | `/autoreply` | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`) |
 | Slash command | `/respondtobots` | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`) |
+| Slash command | `/threadmode` | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
 
 CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
@@ -809,19 +824,19 @@ Scraping paths from text (layer 2) is a rescue, not the intended path. Local LLM
 
 #### Environment file persistence and Docker security design
 
-What "settings persistence" means in xangi has **two layers** that are easy to confuse, so we spell them out:
+`/autoreply`, `/notify`, and `/threadmode` use `settings.json`; `/respondtobots`, `/backend`, and `/llmmode` use `.env` write-back. `.env` persistence has **two layers** that are easy to confuse, so we spell them out:
 
 **Layer 1: Startup-time env var injection (always active)**
 
 Values in the host `.env` are injected into the container as env vars at startup via Docker's `env_file` directive. This is independent of file write-back and works the same way in Docker and locally:
 
-- Host `.env` initial values like `AUTO_REPLY_CHANNELS=...` are guaranteed to land in `process.env.AUTO_REPLY_CHANNELS` at startup.
+- Host `.env` initial values are guaranteed to land in `process.env` at startup.
 - Every container restart re-injects the same env vars, so **initial values survive restarts**.
 - To change them in production, edit host `.env` and restart the container (the canonical deploy path).
 
 **Layer 2: Runtime write-back (skipped by default in Docker)**
 
-When a slash command like `/autoreply` flips an in-memory setting, whether that change is written back to the host `.env` is decided by `resolveEnvFilePath()` in `src/env-persist.ts`:
+When a slash command like `/respondtobots`, `/backend`, or `/llmmode` flips an in-memory setting, whether that change is written back to the host `.env` is decided by `resolveEnvFilePath()` in `src/env-persist.ts`:
 
 | Environment | Default behaviour |
 |-------------|-------------------|
@@ -926,6 +941,7 @@ src/
 ├── event-trigger.ts    # Event trigger (start a turn externally via POST /api/trigger)
 ├── events-emitter.ts   # Event bus for response lifecycle events
 ├── events-stream-server.ts # Pull-based SSE delivery (GET /api/events/stream, piggybacks on web-chat)
+├── activity-store.ts   # Current-turn lightweight snapshots
 ├── pet-inbox-server.ts # Accepts text sent from xangi-pets (POST /api/pet/inbox)
 ├── even-terminal-server.ts # Even Terminal compatible HTTP API
 ├── approval.ts         # Dangerous command detection (pattern matching)

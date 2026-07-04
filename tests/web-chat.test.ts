@@ -12,12 +12,8 @@ import {
   createSession,
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
-import type {
-  AgentRunner,
-  RunOptions,
-  RunResult,
-  StreamCallbacks,
-} from '../src/agent-runner.js';
+import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src/agent-runner.js';
+import { clearActivities, startActivity } from '../src/activity-store.js';
 
 /**
  * 任意のタイミングで完了させられる Fake AgentRunner。
@@ -168,6 +164,7 @@ describe('web-chat HTTP API', () => {
       runner.release(ch);
     }
     clearSessions();
+    clearActivities();
     if (testDir && existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
     }
@@ -327,6 +324,45 @@ describe('web-chat HTTP API', () => {
     expect(sb.isActive).toBe(false);
   });
 
+  it('GET /api/sessions includes monitor source metadata', async () => {
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      meta?: { processCwd?: string; workdir?: string; pid?: number };
+    };
+
+    expect(list.meta?.workdir).toBe(testDir);
+    expect(list.meta?.processCwd).toBe(process.cwd());
+    expect(typeof list.meta?.pid).toBe('number');
+  });
+
+  it('GET /api/sessions includes current activity for running web sessions', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'monitor me' }),
+    });
+
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{
+        id: string;
+        activity?: { state: string; summary: string; active: boolean; userTextPreview?: string };
+      }>;
+    };
+    const found = list.sessions.find((s) => s.id === id);
+    expect(found?.activity?.state).toBe('thinking');
+    expect(found?.activity?.active).toBe(true);
+    expect(found?.activity?.userTextPreview).toBe('monitor me');
+
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`);
+    await readSSEUntilDone((await send).body);
+  });
+
   it('GET /api/sessions includes Discord sessions (channelId-based contextKey) as managed', async () => {
     // Discord セッション: title 空 + contextKey が 10桁以上の数字 channel ID。
     // 旧フィルターはこれを除外していたが、修正後は managed として出るべき。
@@ -368,6 +404,35 @@ describe('web-chat HTTP API', () => {
     expect(found?.contextKey).toBe(channelId);
     // タイトルは最初の user メッセージから導出されるので「最初のメッセージです」
     expect(found?.title).toBe('最初のメッセージです');
+  });
+
+  it('GET /api/sessions attaches Discord activity only to the current session', async () => {
+    const channelId = '1469726038291386523';
+    const oldId = createSession(channelId, { platform: 'discord', title: 'old discord turn' });
+    const currentId = createSession(channelId, {
+      platform: 'discord',
+      title: 'current discord turn',
+    });
+
+    startActivity({
+      threadId: `discord:${channelId}`,
+      turnId: 'turn-current',
+      platform: 'discord',
+      userText: 'モニターテストです',
+    });
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{
+        id: string;
+        activity?: { state: string; summary: string; active: boolean; userTextPreview?: string };
+      }>;
+    };
+
+    const oldSession = list.sessions.find((s) => s.id === oldId);
+    const currentSession = list.sessions.find((s) => s.id === currentId);
+    expect(oldSession?.activity).toBeUndefined();
+    expect(currentSession?.activity?.state).toBe('thinking');
+    expect(currentSession?.activity?.userTextPreview).toBe('モニターテストです');
   });
 
   it('GET /api/sessions falls back to contextKey when no title and no log can be derived', async () => {

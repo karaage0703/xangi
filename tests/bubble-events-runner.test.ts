@@ -9,6 +9,9 @@
  * subscribeEvents() でイベントを集める。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type { AgentRunner, RunOptions, StreamCallbacks, RunResult } from '../src/agent-runner.js';
 
 interface ReceivedEvent {
@@ -44,9 +47,13 @@ class FakeRunner implements AgentRunner {
 describe('runWithBubbleEvents', () => {
   let collected: ReceivedEvent[];
   let unsubscribe: () => void;
+  let testDir: string;
+  const prevWorkspace = process.env.WORKSPACE_PATH;
 
   beforeEach(async () => {
     vi.resetModules();
+    testDir = mkdtempSync(join(tmpdir(), 'bubble-events-test-'));
+    process.env.WORKSPACE_PATH = testDir;
     collected = [];
     const ee = await import('../src/events-emitter.js');
     unsubscribe = ee.subscribeEvents((ev) => {
@@ -57,6 +64,11 @@ describe('runWithBubbleEvents', () => {
   afterEach(() => {
     unsubscribe?.();
     delete process.env.XANGI_EVENTS_ENABLED;
+    if (prevWorkspace === undefined) delete process.env.WORKSPACE_PATH;
+    else process.env.WORKSPACE_PATH = prevWorkspace;
+    if (testDir && existsSync(testDir)) {
+      rmSync(testDir, { recursive: true });
+    }
   });
 
   it('publishes turn.started → message.delta×N → turn.complete in normal flow', async () => {
@@ -114,6 +126,71 @@ describe('runWithBubbleEvents', () => {
     expect(seen.tools).toEqual(['Bash']);
     expect(seen.complete).toBe(1);
     expect(seen.error).toBe(0);
+  });
+
+  it('updates current activity snapshots through the turn lifecycle', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getActivity, clearActivities } = await import('../src/activity-store.js');
+    clearActivities();
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onToolUse?.('Bash', { command: 'npm test' });
+      cb.onText?.('o', 'ok');
+      const result = { result: 'ok', sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      'hi',
+      { threadId: 'web:s1', turnId: 'u-activity', platform: 'web', userText: 'hi' },
+      {}
+    );
+
+    const activity = getActivity('web:s1');
+    expect(activity?.state).toBe('complete');
+    expect(activity?.summary).toContain('完了');
+    expect(activity?.toolLines).toEqual(['Bash: npm test']);
+    expect(activity?.history.map((h) => h.state)).toEqual([
+      'thinking',
+      'tool',
+      'streaming',
+      'complete',
+    ]);
+    expect(activity?.active).toBe(false);
+
+    const logPath = join(testDir, 'logs', 'monitor-activity', 'web_s1.jsonl');
+    const logged = readFileSync(logPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { state: string; summary: string });
+    expect(logged.map((e) => e.state)).toEqual(['thinking', 'tool', 'complete']);
+    expect(logged.at(-1)?.summary).toContain('完了');
+  });
+
+  it('coalesces repeated streaming activity history entries', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getActivity, clearActivities } = await import('../src/activity-store.js');
+    clearActivities();
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onText?.('a', 'a');
+      cb.onText?.('b', 'ab');
+      cb.onText?.('c', 'abc');
+      const result = { result: 'abc', sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      'hi',
+      { threadId: 'web:s1', turnId: 'u-streaming-history', platform: 'web', userText: 'hi' },
+      {}
+    );
+
+    const activity = getActivity('web:s1');
+    expect(activity?.history.map((h) => h.state)).toEqual(['thinking', 'streaming', 'complete']);
+    expect(activity?.history[1]?.summary).toBe('応答中: abc');
   });
 
   it('publishes turn.aborted (not agent.error) when the runner reports cancel via onError', async () => {

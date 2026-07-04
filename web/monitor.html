@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>xangi monitor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #08090a;
+        --surface: #111315;
+        --surface-alt: #171a1d;
+        --border: #2a2f35;
+        --border-strong: #3a424a;
+        --text: #f3f5f7;
+        --muted: #a8b0ba;
+        --subtle: #737d88;
+        --accent: #5e6ad2;
+        --good: #2fbf71;
+        --busy: #d6a73a;
+        --error: #e5484d;
+        --radius: 8px;
+        --font:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans JP', system-ui, sans-serif;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          color-scheme: light;
+          --canvas: #f7f8fa;
+          --surface: #ffffff;
+          --surface-alt: #eef1f5;
+          --border: #d8dde5;
+          --border-strong: #b8c0cc;
+          --text: #15181d;
+          --muted: #4b5563;
+          --subtle: #7b8492;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: var(--font);
+        letter-spacing: 0;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in srgb, var(--canvas) 92%, transparent);
+        backdrop-filter: blur(12px);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.2;
+        font-weight: 650;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: flex-end;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 9px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+        white-space: nowrap;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        overflow-x: auto;
+      }
+
+      button,
+      a.nav {
+        min-height: 38px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        padding: 8px 12px;
+        font: inherit;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button.active {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 24%, var(--surface));
+      }
+
+      main {
+        width: min(1120px, 100%);
+        margin: 0 auto;
+        padding: 12px;
+      }
+
+      #summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .metric,
+      .detail,
+      .legend,
+      .empty {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+
+      .metric {
+        min-height: 64px;
+        padding: 10px 12px;
+      }
+
+      .metric .value {
+        font-size: 24px;
+        line-height: 1;
+        font-weight: 700;
+      }
+
+      .metric .label {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .legend span {
+        white-space: nowrap;
+      }
+
+      #detail {
+        margin-bottom: 12px;
+      }
+
+      .detail {
+        padding: 12px;
+      }
+
+      .detail-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .detail-title {
+        overflow-wrap: anywhere;
+        font-size: 17px;
+        font-weight: 700;
+        line-height: 1.35;
+      }
+
+      .detail-sub,
+      .kv,
+      .event {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 88px minmax(0, 1fr);
+        align-items: start;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+        overflow-wrap: normal;
+        word-break: keep-all;
+      }
+
+      .kv b {
+        display: block;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .mono {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        word-break: normal;
+      }
+
+      .events {
+        display: grid;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .event {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 8px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-alt);
+      }
+
+      .event div {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      #sessions {
+        display: grid;
+        gap: 8px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 11px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 82px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        text-align: left;
+      }
+
+      .row.selected {
+        border-color: var(--accent);
+      }
+
+      .row.running {
+        border-color: color-mix(in srgb, var(--busy) 58%, var(--border));
+        background: color-mix(in srgb, var(--busy) 8%, var(--surface));
+      }
+
+      .row.error {
+        border-color: color-mix(in srgb, var(--error) 58%, var(--border));
+        background: color-mix(in srgb, var(--error) 8%, var(--surface));
+      }
+
+      .dot {
+        width: 11px;
+        height: 44px;
+        border-radius: 999px;
+        background: var(--subtle);
+      }
+
+      .dot.running {
+        background: var(--busy);
+      }
+
+      .dot.active {
+        background: var(--good);
+      }
+
+      .dot.error {
+        background: var(--error);
+      }
+
+      .title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 17px;
+        font-weight: 650;
+        line-height: 1.25;
+      }
+
+      .activity {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .session-meta {
+        margin-top: 5px;
+        color: var(--subtle);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .tool-lines {
+        margin-top: 7px;
+        display: grid;
+        gap: 4px;
+      }
+
+      .tool {
+        color: var(--subtle);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .right {
+        display: grid;
+        justify-items: end;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .platform {
+        min-width: 38px;
+        text-align: center;
+        padding: 4px 7px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface-alt);
+        text-transform: uppercase;
+      }
+
+      .empty {
+        padding: 28px 16px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 680px) {
+        header {
+          grid-template-columns: 1fr;
+        }
+
+        .meta {
+          justify-content: flex-start;
+        }
+
+        #summary,
+        .row {
+          grid-template-columns: 9px minmax(0, 1fr);
+        }
+
+        .right {
+          grid-column: 2;
+          justify-items: start;
+          grid-auto-flow: column;
+        }
+      }
+
+      @media (max-width: 420px) {
+        h1 {
+          font-size: 18px;
+        }
+
+        main {
+          padding: 8px;
+        }
+
+        .toolbar {
+          padding: 8px;
+        }
+
+        #summary {
+          grid-template-columns: 1fr;
+        }
+
+        .title,
+        .detail-title {
+          font-size: 15px;
+        }
+
+        .activity,
+        .event {
+          font-size: 13px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>xangi monitor</h1>
+      <div class="meta">
+        <span class="pill" id="updated">--</span>
+        <span class="pill" id="status">loading</span>
+        <span class="pill" id="source">source --</span>
+      </div>
+    </header>
+    <nav class="toolbar" aria-label="filters">
+      <button data-filter="watch" class="active">監視中</button>
+      <button data-filter="running">実行中</button>
+      <button data-filter="recent">最近</button>
+      <button data-filter="chat">Chat</button>
+      <button data-filter="web">Web</button>
+      <button data-filter="all">All</button>
+      <a class="nav" href="/">Open chat</a>
+    </nav>
+    <main>
+      <section id="summary" aria-label="summary"></section>
+      <section class="legend" aria-label="legend">
+        <span>実行中: 返答・tool実行中</span>
+        <span>入力待ち: runnerあり、操作待ち</span>
+        <span>履歴: 過去ログ</span>
+        <span>監視中: 実行中/入力待ち/直近履歴</span>
+        <span>内部イベント保存: logs/monitor-activity</span>
+        <span>行をタップで詳細</span>
+      </section>
+      <section id="detail" aria-label="selected session"></section>
+      <section id="sessions" aria-label="sessions"></section>
+    </main>
+    <script>
+      var sessions = [];
+      var filter = 'watch';
+      var selectedId = '';
+      var maxRows = 150;
+      var watchRows = 30;
+      var recentMs = 24 * 60 * 60 * 1000;
+      var statusEl = document.getElementById('status');
+      var updatedEl = document.getElementById('updated');
+      var sourceEl = document.getElementById('source');
+      var summaryEl = document.getElementById('summary');
+      var detailEl = document.getElementById('detail');
+      var sessionsEl = document.getElementById('sessions');
+      var buttons = document.querySelectorAll('button[data-filter]');
+
+      buttons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          filter = btn.getAttribute('data-filter') || 'watch';
+          buttons.forEach(function (b) {
+            b.classList.toggle('active', b === btn);
+          });
+          render();
+        });
+      });
+
+      function isRunning(s) {
+        return Boolean(s.activity && s.activity.active);
+      }
+
+      function isChatPlatform(s) {
+        return s.platform === 'discord' || s.platform === 'slack';
+      }
+
+      function isRecent(s) {
+        var t = Date.parse(s.updatedAt || s.createdAt || '');
+        return Number.isFinite(t) && Date.now() - t < recentMs;
+      }
+
+      function isWatchTarget(s) {
+        return isRunning(s) || s.isActive || isRecent(s);
+      }
+
+      function platformLabel(p) {
+        if (p === 'discord') return 'D';
+        if (p === 'slack') return 'S';
+        if (p === 'web') return 'W';
+        return (p || '?').slice(0, 1);
+      }
+
+      function stateLabel(s) {
+        if (s.activity && s.activity.active) {
+          if (s.activity.state === 'tool') return 'tool実行中';
+          if (s.activity.state === 'streaming') return '応答中';
+          if (s.activity.state === 'thinking') return '考え中';
+          return s.activity.state;
+        }
+        if (s.isActive) return '入力待ち';
+        return '履歴';
+      }
+
+      function stateDescription(s) {
+        if (s.activity && s.activity.active) return '今このターンが動いている';
+        if (s.isActive) return 'このチャンネル/セッションのrunnerは残っていて、次の入力を待っている';
+        return '過去の会話ログ。現在の処理や待機runnerではない';
+      }
+
+      function sessionLine(s) {
+        if (s.activity && s.activity.summary) return s.activity.summary;
+        if (s.isActive) return '入力待ち: runnerは残っているが現在の返答処理はない';
+        return '履歴: 現在の処理なし';
+      }
+
+      function shortId(id) {
+        var raw = String(id || '');
+        if (raw.length <= 12) return raw;
+        return raw.slice(0, 8) + '...' + raw.slice(-4);
+      }
+
+      function formatAge(iso) {
+        var t = Date.parse(iso || '');
+        if (!Number.isFinite(t)) return '';
+        var sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        if (sec < 60) return sec + 's ago';
+        var min = Math.floor(sec / 60);
+        if (min < 60) return min + 'm ago';
+        var hour = Math.floor(min / 60);
+        if (hour < 48) return hour + 'h ago';
+        return Math.floor(hour / 24) + 'd ago';
+      }
+
+      function formatTime(ts) {
+        if (!Number.isFinite(ts)) return '--';
+        return new Date(ts).toLocaleTimeString();
+      }
+
+      function escapeText(s) {
+        return String(s || '');
+      }
+
+      function filteredSessions() {
+        return sessions.filter(function (s) {
+          if (filter === 'watch') return isWatchTarget(s);
+          if (filter === 'running') return isRunning(s);
+          if (filter === 'recent') return isRecent(s);
+          if (filter === 'chat') return isChatPlatform(s);
+          if (filter === 'web') return s.platform === 'web';
+          return true;
+        });
+      }
+
+      function visibleSessions() {
+        return filteredSessions()
+          .sort(function (a, b) {
+            var ar = isRunning(a) ? 2 : a.isActive ? 1 : 0;
+            var br = isRunning(b) ? 2 : b.isActive ? 1 : 0;
+            if (ar !== br) return br - ar;
+            return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+          })
+          .slice(0, filter === 'watch' ? watchRows : maxRows);
+      }
+
+      function metric(value, label) {
+        var el = document.createElement('div');
+        el.className = 'metric';
+        var v = document.createElement('div');
+        v.className = 'value';
+        v.textContent = value;
+        var l = document.createElement('div');
+        l.className = 'label';
+        l.textContent = label;
+        el.appendChild(v);
+        el.appendChild(l);
+        return el;
+      }
+
+      function renderSummary() {
+        summaryEl.textContent = '';
+        var running = sessions.filter(isRunning).length;
+        var active = sessions.filter(function (s) {
+          return s.isActive;
+        }).length;
+        var recent = sessions.filter(isRecent).length;
+        var shown = visibleSessions().length;
+        summaryEl.appendChild(metric(String(running), '実行中ターン'));
+        summaryEl.appendChild(metric(String(active), '入力待ちrunner'));
+        summaryEl.appendChild(metric(String(recent), '24時間以内の更新'));
+        summaryEl.appendChild(metric(String(shown), '表示中'));
+      }
+
+      function renderDetail() {
+        detailEl.textContent = '';
+        var selected = sessions.find(function (s) {
+          return s.id === selectedId;
+        });
+        if (!selected) return;
+
+        var detail = document.createElement('article');
+        detail.className = 'detail';
+
+        var head = document.createElement('div');
+        head.className = 'detail-head';
+        var left = document.createElement('div');
+        var title = document.createElement('div');
+        title.className = 'detail-title';
+        title.textContent = selected.title || selected.id;
+        var sub = document.createElement('div');
+        sub.className = 'detail-sub';
+        sub.textContent = stateLabel(selected) + ' - ' + stateDescription(selected);
+        left.appendChild(title);
+        left.appendChild(sub);
+        var close = document.createElement('button');
+        close.textContent = '閉じる';
+        close.addEventListener('click', function () {
+          selectedId = '';
+          render();
+        });
+        head.appendChild(left);
+        head.appendChild(close);
+        detail.appendChild(head);
+
+        var grid = document.createElement('div');
+        grid.className = 'detail-grid';
+        [
+          ['状態', stateLabel(selected)],
+          ['platform', selected.platform || '-'],
+          ['updated', formatAge(selected.updatedAt || selected.createdAt)],
+          ['messages', String(selected.messageCount || 0)],
+          ['session id', selected.id],
+          ['context', selected.contextKey || '-'],
+        ].forEach(function (pair) {
+          var box = document.createElement('div');
+          box.className = 'kv';
+          var key = document.createElement('b');
+          key.textContent = pair[0];
+          var val = document.createElement('div');
+          val.className = pair[0].includes('id') || pair[0] === 'context' ? 'mono' : '';
+          val.textContent = pair[1];
+          box.appendChild(key);
+          box.appendChild(val);
+          grid.appendChild(box);
+        });
+        detail.appendChild(grid);
+
+        var events = document.createElement('div');
+        events.className = 'events';
+        var history =
+          selected.activity && Array.isArray(selected.activity.history) ? selected.activity.history : [];
+        if (history.length === 0) {
+          var ev = document.createElement('div');
+          ev.className = 'event';
+          var label = document.createElement('div');
+          label.textContent = '状態';
+          var msg = document.createElement('div');
+          msg.textContent = sessionLine(selected);
+          ev.appendChild(label);
+          ev.appendChild(msg);
+          events.appendChild(ev);
+        } else {
+          history.slice(-8).forEach(function (h) {
+            var ev = document.createElement('div');
+            ev.className = 'event';
+            var t = document.createElement('div');
+            t.textContent = formatTime(h.at);
+            var msg = document.createElement('div');
+            msg.textContent = escapeText(h.summary);
+            ev.appendChild(t);
+            ev.appendChild(msg);
+            events.appendChild(ev);
+          });
+        }
+        detail.appendChild(events);
+        detailEl.appendChild(detail);
+      }
+
+      function renderSessions() {
+        sessionsEl.textContent = '';
+        var list = visibleSessions();
+        if (list.length === 0) {
+          var empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent =
+            filter === 'watch'
+              ? '実行中または入力待ちのセッションはありません'
+              : 'No sessions';
+          sessionsEl.appendChild(empty);
+          return;
+        }
+        list.forEach(function (s) {
+          var row = document.createElement('button');
+          var running = isRunning(s);
+          var errored = s.activity && s.activity.state === 'error';
+          row.className =
+            'row' +
+            (running ? ' running' : '') +
+            (errored ? ' error' : '') +
+            (s.id === selectedId ? ' selected' : '');
+          row.addEventListener('click', function () {
+            selectedId = selectedId === s.id ? '' : s.id;
+            render();
+          });
+
+          var dot = document.createElement('div');
+          dot.className =
+            'dot' + (errored ? ' error' : running ? ' running' : s.isActive ? ' active' : '');
+          row.appendChild(dot);
+
+          var body = document.createElement('div');
+          var title = document.createElement('div');
+          title.className = 'title';
+          title.textContent = s.title || s.id;
+          body.appendChild(title);
+
+          var meta = document.createElement('div');
+          meta.className = 'session-meta';
+          meta.textContent =
+            platformLabel(s.platform) +
+            ' #' +
+            shortId(s.id) +
+            (s.contextKey ? ' / ' + shortId(s.contextKey) : '') +
+            ' / ' +
+            formatAge(s.updatedAt || s.createdAt);
+          body.appendChild(meta);
+
+          var activity = document.createElement('div');
+          activity.className = 'activity';
+          activity.textContent = sessionLine(s);
+          body.appendChild(activity);
+
+          var tools = s.activity && Array.isArray(s.activity.toolLines) ? s.activity.toolLines : [];
+          if (tools.length > 0) {
+            var toolBox = document.createElement('div');
+            toolBox.className = 'tool-lines';
+            tools.slice(-3).forEach(function (line) {
+              var tool = document.createElement('div');
+              tool.className = 'tool';
+              tool.textContent = line;
+              toolBox.appendChild(tool);
+            });
+            body.appendChild(toolBox);
+          }
+          row.appendChild(body);
+
+          var right = document.createElement('div');
+          right.className = 'right';
+          var platform = document.createElement('div');
+          platform.className = 'platform';
+          platform.textContent = platformLabel(s.platform);
+          right.appendChild(platform);
+          var state = document.createElement('div');
+          var elapsed =
+            s.activity && s.activity.active && Number.isFinite(s.activity.elapsedSec)
+              ? ' ' + s.activity.elapsedSec + 's'
+              : '';
+          state.textContent = stateLabel(s) + elapsed;
+          right.appendChild(state);
+          var age = document.createElement('div');
+          age.textContent = formatAge(s.updatedAt || s.createdAt);
+          right.appendChild(age);
+          row.appendChild(right);
+
+          sessionsEl.appendChild(row);
+        });
+      }
+
+      function render() {
+        renderSummary();
+        renderDetail();
+        renderSessions();
+      }
+
+      async function load() {
+        try {
+          var res = await fetch('/api/sessions', { cache: 'no-store' });
+          var data = await res.json();
+          sessions = data.sessions || [];
+          if (selectedId && !sessions.some((s) => s.id === selectedId)) selectedId = '';
+          var shown = visibleSessions().length;
+          var filtered = filteredSessions().length;
+          statusEl.textContent = 'online ' + shown + '/' + filtered + ' shown';
+          if (data.meta) {
+            sourceEl.textContent = 'process ' + data.meta.processCwd + ' / data ' + data.meta.workdir;
+          }
+          updatedEl.textContent = new Date().toLocaleTimeString();
+          render();
+        } catch (e) {
+          statusEl.textContent = 'offline';
+        }
+      }
+
+      load();
+      setInterval(load, 2000);
+    </script>
+  </body>
+</html>

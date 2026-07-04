@@ -20,7 +20,9 @@ import { processManager } from '../process-manager.js';
 import { resolveApproval } from '../approval.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
 import {
+  getChannelAutoReply,
   getChannelCompletionNotifyMode,
+  getChannelThreadMode,
   loadSettings,
   formatSettings,
   saveSettings,
@@ -222,7 +224,19 @@ export function buildSlashCommands(
     commands.push(
       new SlashCommandBuilder()
         .setName('autoreply')
-        .setDescription('このチャンネルのメンションなし応答を切り替え')
+        .setDescription('このチャンネルのメンションなし応答を設定')
+        .addStringOption((option) =>
+          option
+            .setName('mode')
+            .setDescription('メンションなし応答モード')
+            .setRequired(true)
+            .addChoices(
+              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'on (メンションなしで応答)', value: 'on' },
+              { name: 'off (メンションなし応答を無効)', value: 'off' },
+              { name: 'default (チャンネル設定を削除)', value: 'default' }
+            )
+        )
         .toJSON()
     );
   }
@@ -234,6 +248,28 @@ export function buildSlashCommands(
         .setName('respondtobots')
         .setDescription(
           'bot メッセージへの応答を ON/OFF 切替 (反応対象は RESPOND_TO_BOTS 環境変数)'
+        )
+        .toJSON()
+    );
+  }
+
+  // ALLOW_THREAD_MODE_COMMAND=true の場合のみコマンドを登録
+  if (config.discord.allowThreadModeCommand) {
+    commands.push(
+      new SlashCommandBuilder()
+        .setName('threadmode')
+        .setDescription('Discord の発言ごとスレッド返信モードを切替')
+        .addStringOption((option) =>
+          option
+            .setName('mode')
+            .setDescription('スレッドモード')
+            .setRequired(true)
+            .addChoices(
+              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'on (発言ごとにスレッド返信)', value: 'on' },
+              { name: 'off (チャンネル直下に返信)', value: 'off' },
+              { name: 'default (チャンネル設定を削除)', value: 'default' }
+            )
         )
         .toJSON()
     );
@@ -952,27 +988,42 @@ export function createInteractionHandler(
         return;
       }
       const chId = interaction.channelId;
-      const channels = config.discord.autoReplyChannels ?? [];
-      const idx = channels.indexOf(chId);
-      const isCurrentlyOn = idx !== -1;
+      const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
+      const settings = loadSettings();
+      const channels = { ...(settings.discordAutoReplyChannels ?? {}) };
+      const defaultEnabled = false;
+      const currentOverride = settings.discordAutoReplyChannels?.[chId];
 
-      if (isCurrentlyOn) {
-        // OFF: メモリから削除
-        channels.splice(idx, 1);
+      if (mode === 'show') {
+        const current = getChannelAutoReply(settings, chId, defaultEnabled);
+        await interaction.reply(
+          `💬 メンションなし応答 (<#${chId}>): ${current ? 'ON' : 'OFF'}\n` +
+            `- チャンネル設定: ${currentOverride === undefined ? 'なし' : currentOverride ? '`on`' : '`off`'}\n` +
+            `- 起動時デフォルト: \`off\`\n` +
+            `- ON: このチャンネルではメンションなしで応答\n` +
+            `- OFF: メンションまたはDMのみ応答\n` +
+            `- チャンネル設定の保存先: \`settings.json\``
+        );
+        return;
+      }
+
+      if (mode === 'default') {
+        delete channels[chId];
+      } else if (mode === 'on') {
+        channels[chId] = true;
       } else {
-        // ON: メモリに追加
-        channels.push(chId);
+        channels[chId] = false;
       }
-      config.discord.autoReplyChannels = channels;
+      const saved = saveSettings({
+        discordAutoReplyChannels: Object.keys(channels).length > 0 ? channels : undefined,
+      });
+      const effective = getChannelAutoReply(saved, chId, defaultEnabled);
 
-      // .env に永続化 (Docker 環境で .env ファイルが無い場合は graceful skip)
-      const persistResult = updateEnvKeyValue('AUTO_REPLY_CHANNELS', channels.join(','));
-      if (!persistResult.ok) {
-        console.warn(`[xangi] AUTO_REPLY_CHANNELS persistence skipped: ${persistResult.reason}`);
-      }
-
-      const status = isCurrentlyOn ? '❌ OFF' : '✅ ON';
-      await interaction.reply(`メンションなし応答: ${status} (<#${chId}>)`);
+      const action =
+        mode === 'default' ? '起動時デフォルト `off` に戻しました' : `\`${mode}\` に設定しました`;
+      await interaction.reply(
+        `💬 <#${chId}> のメンションなし応答を${action}\n現在の適用値: \`${effective ? 'on' : 'off'}\``
+      );
       return;
     }
 
@@ -1005,6 +1056,54 @@ export function createInteractionHandler(
             : whitelist.join(', ');
       const status = nextEnabled ? '✅ ON' : '❌ OFF';
       await interaction.reply(`bot メッセージへの応答: ${status} / 反応対象: ${target}`);
+      return;
+    }
+
+    if (interaction.commandName === 'threadmode') {
+      if (!config.discord.allowThreadModeCommand) {
+        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+        return;
+      }
+
+      const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
+      const settings = loadSettings();
+      const defaultEnabled = config.discord.replyInThread ?? false;
+      const currentOverride = settings.discordThreadModeChannels?.[channelId];
+
+      if (mode === 'show') {
+        const current = getChannelThreadMode(settings, channelId, defaultEnabled);
+        const status = current ? 'ON' : 'OFF';
+        await interaction.reply(
+          `🧵 Discord スレッドモード (<#${channelId}>): ${status}\n` +
+            `- チャンネル設定: ${currentOverride === undefined ? 'なし' : currentOverride ? '`on`' : '`off`'}\n` +
+            `- 起動時デフォルト: \`${defaultEnabled ? 'on' : 'off'}\`\n` +
+            `- ON: 通常メッセージへの応答を発言ごとのスレッドに投稿\n` +
+            `- OFF: チャンネル直下に返信\n` +
+            `- チャンネル設定の保存先: \`settings.json\`\n` +
+            `- 全体デフォルトの env: \`DISCORD_REPLY_IN_THREAD\``
+        );
+        return;
+      }
+
+      const nextChannels = { ...(settings.discordThreadModeChannels ?? {}) };
+      if (mode === 'default') {
+        delete nextChannels[channelId];
+      } else {
+        nextChannels[channelId] = mode === 'on';
+      }
+
+      const saved = saveSettings({
+        discordThreadModeChannels: Object.keys(nextChannels).length > 0 ? nextChannels : undefined,
+      });
+
+      const effective = getChannelThreadMode(saved, channelId, defaultEnabled);
+      const action =
+        mode === 'default'
+          ? `起動時デフォルト \`${defaultEnabled ? 'on' : 'off'}\` に戻しました`
+          : `\`${mode}\` に設定しました`;
+      await interaction.reply(
+        `🧵 <#${channelId}> の Discord スレッドモードを${action}\n現在の適用値: \`${effective ? 'on' : 'off'}\``
+      );
       return;
     }
 
