@@ -30,6 +30,7 @@ import {
   deleteMessage as deleteTranscriptMessage,
 } from './transcript-logger.js';
 import { threadIdFor, turnIdFor, events } from './events-emitter.js';
+import { getActivity } from './activity-store.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { deriveTitleFromFirstMessage, stripPromptMetadata } from './session-title.js';
@@ -55,6 +56,17 @@ function webContextKey(appSessionId: string): string {
 function isWebSession(appSessionId: string): boolean {
   const entry = getSessionEntry(appSessionId);
   return entry?.platform === 'web';
+}
+
+function sessionThreadId(session: {
+  id: string;
+  platform: string;
+  contextKey: string;
+}): string | null {
+  if (session.platform === 'web') return threadIdFor('web', session.id);
+  if (session.platform === 'discord') return threadIdFor('discord', session.contextKey);
+  if (session.platform === 'slack') return threadIdFor('slack', session.contextKey);
+  return null;
 }
 
 /** resume 後の最初のメッセージで履歴注入を行う対象 appSessionId */
@@ -187,6 +199,24 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    if (url === '/monitor' || url === '/monitor.html') {
+      try {
+        const htmlPath = join(__dirname, '..', 'web', 'monitor.html');
+        const html = readFileSync(htmlPath, 'utf-8');
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+        });
+        res.end(html);
+      } catch {
+        res.writeHead(500);
+        res.end('web/monitor.html not found');
+      }
+      return;
+    }
+
     if (url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', port }));
@@ -211,14 +241,15 @@ export function startWebChat(options: WebChatOptions): void {
       // タイトルが空なら最初のユーザーメッセージから導出し、それも無ければ
       // contextKey をそのまま見せる（Discord/Slack はチャンネル ID、Web は web-chat:<id>）。
       const managed = listAllSessions().map((s) => {
+        const isCurrentSession = s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id;
         const isActive =
-          Boolean(s.contextKey && agentRunner.hasRunner?.(s.contextKey)) &&
-          (s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id);
+          Boolean(s.contextKey && agentRunner.hasRunner?.(s.contextKey)) && isCurrentSession;
         // 🟢 = サーバ側で runner プロセスが pool に居る + そのセッションが
         // contextKey の current（Web は contextKey が appSessionId 個別なので常に current）
         // 進行中リクエストがあれば timeoutAt / maxTimeoutAt を載せる (UI のカウントダウン用)
         const timeoutState =
           isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
+        const threadId = isCurrentSession ? sessionThreadId(s) : null;
         return {
           id: s.id,
           title: s.title || deriveTitleFromFirstMessage(workdir, s.id) || s.contextKey,
@@ -233,6 +264,7 @@ export function startWebChat(options: WebChatOptions): void {
           timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
           maxTimeoutAt: timeoutState?.active ? timeoutState.maxTimeoutAt : undefined,
           timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
+          activity: threadId ? getActivity(threadId) : undefined,
         };
       });
       const managedIds = new Set(managed.map((s) => s.id));
@@ -264,6 +296,7 @@ export function startWebChat(options: WebChatOptions): void {
             timeoutAt: undefined,
             maxTimeoutAt: undefined,
             timeoutMs: undefined,
+            activity: undefined,
           });
         }
       }
@@ -272,7 +305,17 @@ export function startWebChat(options: WebChatOptions): void {
       const sessions = [...managed, ...unmanaged];
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ sessions }));
+      res.end(
+        JSON.stringify({
+          sessions,
+          meta: {
+            processCwd: process.cwd(),
+            workdir,
+            pid: process.pid,
+            pmId: process.env.pm_id,
+          },
+        })
+      );
       return;
     }
 

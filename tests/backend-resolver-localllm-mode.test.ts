@@ -9,7 +9,6 @@ function makeConfig(): Config {
   return {
     discord: {
       enabled: false,
-      autoReplyChannels: [],
       replyInThread: false,
       streaming: false,
       showThinking: false,

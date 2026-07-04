@@ -14,6 +14,8 @@ export const ALL_AGENT_BACKENDS = [
 export type AgentBackend = (typeof ALL_AGENT_BACKENDS)[number];
 export type DiscordCompletionNotifyMode = 'off' | 'message' | 'mention';
 
+const DEFAULT_COMPLETION_NOTIFY_AFTER_MS = 10_000;
+
 export interface AgentConfig {
   model?: string;
   timeoutMs?: number;
@@ -34,7 +36,6 @@ export interface Config {
     enabled: boolean;
     token: string;
     allowedUsers?: string[];
-    autoReplyChannels?: string[];
     /** 返信をチャンネルではなくスレッドに投稿するか (default: false)。発言ごとにスレッドを作成する */
     replyInThread?: boolean;
     streaming?: boolean;
@@ -71,6 +72,8 @@ export interface Config {
     respondToBotsMaxConsecutive?: number;
     /** /respondtobots slash command を有効化するか (default: true) */
     allowRespondToBotsCommand?: boolean;
+    /** /threadmode slash command を有効化するか (default: true) */
+    allowThreadModeCommand?: boolean;
     /** /llmmode slash command を有効化するか (default: true)。Local LLM 動作モードを per-channel 切替 */
     allowLlmModeCommand?: boolean;
   };
@@ -82,6 +85,7 @@ export interface Config {
     autoReplyChannels?: string[];
     replyInThread?: boolean;
     replyInChannels?: string[];
+    completionNotifyAfterMs?: number;
     streaming?: boolean;
     showThinking?: boolean;
   };
@@ -302,10 +306,6 @@ export function loadConfig(): Config {
       enabled: !!discordToken,
       token: discordToken || '',
       allowedUsers: discordAllowedUsers,
-      autoReplyChannels:
-        process.env.AUTO_REPLY_CHANNELS?.split(',')
-          .map((s) => s.trim())
-          .filter(Boolean) || [],
       replyInThread: process.env.DISCORD_REPLY_IN_THREAD === 'true', // デフォルトOFF
       streaming: process.env.DISCORD_STREAMING !== 'false',
       showThinking: process.env.DISCORD_SHOW_THINKING !== 'false',
@@ -331,7 +331,11 @@ export function loadConfig(): Config {
         ['off', 'message', 'mention'] as const,
         'message'
       ),
-      completionNotifyAfterMs: v.int('DISCORD_COMPLETION_NOTIFY_AFTER_MS', 10_000, { min: 0 }),
+      completionNotifyAfterMs: v.int(
+        'DISCORD_COMPLETION_NOTIFY_AFTER_MS',
+        DEFAULT_COMPLETION_NOTIFY_AFTER_MS,
+        { min: 0 }
+      ),
       injectChannelTopic: process.env.INJECT_CHANNEL_TOPIC !== 'false', // デフォルトON
       injectTimestamp: process.env.INJECT_TIMESTAMP !== 'false', // デフォルトON
       showButtons: process.env.DISCORD_SHOW_BUTTONS !== 'false', // デフォルトON
@@ -343,6 +347,7 @@ export function loadConfig(): Config {
       respondToBotsEnabled: process.env.RESPOND_TO_BOTS_ENABLED === 'true', // デフォルトOFF
       respondToBotsMaxConsecutive: v.int('RESPOND_TO_BOTS_MAX_CONSECUTIVE', 3), // デフォルト3回、0以下は制限無効
       allowRespondToBotsCommand: process.env.ALLOW_RESPOND_TO_BOTS_COMMAND !== 'false', // デフォルトON
+      allowThreadModeCommand: process.env.ALLOW_THREAD_MODE_COMMAND !== 'false', // デフォルトON
       allowLlmModeCommand: process.env.ALLOW_LLM_MODE_COMMAND !== 'false', // デフォルトON
     },
     slack: {
@@ -359,6 +364,11 @@ export function loadConfig(): Config {
         process.env.SLACK_REPLY_IN_CHANNELS?.split(',')
           .map((s) => s.trim())
           .filter(Boolean) || [],
+      completionNotifyAfterMs: v.int(
+        'SLACK_COMPLETION_NOTIFY_AFTER_MS',
+        DEFAULT_COMPLETION_NOTIFY_AFTER_MS,
+        { min: 0 }
+      ),
       streaming: process.env.SLACK_STREAMING !== 'false',
       showThinking: process.env.SLACK_SHOW_THINKING !== 'false',
     },

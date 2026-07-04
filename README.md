@@ -95,6 +95,7 @@ npm start
 ```
 
 ブラウザで `http://localhost:18888` にアクセスして会話を開始。
+セッション監視だけを見たい場合は `http://localhost:18888/monitor` を開くと、Web / Discord / Slack の実行状態を読み取り専用で一覧できます。
 
 > 💡 ポート競合を避けるため Web Chat UI は明示的に `WEB_CHAT_ENABLED=true` した時だけ起動します。ポート変更は `WEB_CHAT_PORT` で。
 > 💡 Slack を使う場合は [Slack セットアップ](docs/slack-setup.md) を参照。

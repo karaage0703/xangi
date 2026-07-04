@@ -12,7 +12,12 @@ import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { buildCompletionNotification } from './completion-notify.js';
-import { getChannelCompletionNotifyMode, loadSettings } from '../settings.js';
+import {
+  getChannelAutoReply,
+  getChannelCompletionNotifyMode,
+  getChannelThreadMode,
+  loadSettings,
+} from '../settings.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import {
   getSession,
@@ -25,7 +30,7 @@ import {
 } from '../sessions.js';
 import { stripPromptMetadata } from '../session-title.js';
 import { deriveThreadTitle } from './thread-title.js';
-import { resolveConversationChannelId } from './thread-context.js';
+import { buildDiscordChannelContextLine, resolveConversationChannelId } from './thread-context.js';
 import {
   attachPlatformMessageIdToLast,
   findEntryByPlatformMessageId,
@@ -130,9 +135,16 @@ export async function processPrompt(
     // 通常どおりチャンネルへ返信する。スレッド名は投稿本文から決定的に生成する。
     let newThread: {
       id: string;
+      name?: string;
       send: (options: unknown) => Promise<Message>;
     } | null = null;
-    if (config.discord.replyInThread) {
+    const settings = loadSettings();
+    const replyInThread = getChannelThreadMode(
+      settings,
+      channelId,
+      config.discord.replyInThread ?? false
+    );
+    if (replyInThread) {
       const ch = message.channel as unknown as { isThread?: () => boolean };
       const alreadyThread = typeof ch.isThread === 'function' && ch.isThread();
       const canStartThread =
@@ -146,6 +158,7 @@ export async function processPrompt(
             }
           ).startThread({ name: threadName })) as {
             id: string;
+            name?: string;
             send: (options: unknown) => Promise<Message>;
           };
         } catch (err) {
@@ -163,8 +176,13 @@ export async function processPrompt(
 
     // チャンネル・ユーザー情報をプロンプトに付与
     const userInfo = `[発言者: ${message.author.displayName ?? message.author.username} (ID: ${message.author.id})]`;
-    if (channelName) {
-      prompt = `[プラットフォーム: Discord]\n[チャンネル: #${channelName} (ID: ${conversationChannelId})]\n${userInfo}\n${prompt}`;
+    const channelContextLine = buildDiscordChannelContextLine({
+      channelName,
+      conversationChannelId,
+      createdThreadName: newThread?.name ?? null,
+    });
+    if (channelContextLine) {
+      prompt = `[プラットフォーム: Discord]\n${channelContextLine}\n${userInfo}\n${prompt}`;
     } else {
       prompt = `${userInfo}\n${prompt}`;
     }
@@ -376,7 +394,7 @@ export async function processPrompt(
 
     const completionNotification = buildCompletionNotification({
       mode: getChannelCompletionNotifyMode(
-        loadSettings(),
+        settings,
         conversationChannelId,
         config.discord.completionNotifyMode ?? 'message'
       ),
@@ -491,7 +509,7 @@ export interface MessageHandlerDeps {
 
 /**
  * Discord のメッセージ系イベントハンドラを client に登録する。
- * - MessageCreate: メンション / DM / AUTO_REPLY_CHANNELS のメッセージを processPrompt に流す
+ * - MessageCreate: メンション / DM / チャンネル別メンションなし応答設定のメッセージを processPrompt に流す
  * - MessageUpdate / MessageDelete: ユーザ操作を transcript jsonl に同期する
  */
 export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
@@ -598,6 +616,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
 
     const isMentioned = message.mentions.has(client.user!);
     const isDM = !message.guild;
+    const settings = loadSettings();
     // スレッドは親チャンネルとは別IDを持つため、autoreply 設定はそのままでは継承されない。
     // スレッド内のメッセージは親チャンネル (parentId) の autoreply 状態も見て継承する。
     const threadCh = message.channel as unknown as {
@@ -607,9 +626,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
     const parentChannelId =
       typeof threadCh.isThread === 'function' && threadCh.isThread() ? threadCh.parentId : null;
     const isAutoReplyChannel =
-      (config.discord.autoReplyChannels?.includes(message.channel.id) ?? false) ||
-      (parentChannelId != null &&
-        (config.discord.autoReplyChannels?.includes(parentChannelId) ?? false));
+      getChannelAutoReply(settings, message.channel.id, false) ||
+      (parentChannelId != null && getChannelAutoReply(settings, parentChannelId, false));
 
     if (!isMentioned && !isDM && !isAutoReplyChannel) return;
 

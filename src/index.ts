@@ -246,8 +246,10 @@ async function main() {
       // ツール承認サーバー起動（Claude Code PreToolUseフック用）
       const { startApprovalServer } = await import('./approval-server.js');
       startApprovalServer(async (toolName, toolInput, dangerDescription) => {
-        // 最初のauto-replyチャンネルに承認メッセージを送信
-        const approvalChannelId = config.discord.autoReplyChannels?.[0];
+        // 最初のメンションなし応答チャンネルに承認メッセージを送信
+        const approvalChannelId = Object.entries(
+          loadSettings().discordAutoReplyChannels ?? {}
+        ).find(([, enabled]) => enabled)?.[0];
         if (!approvalChannelId) return true; // チャンネル未設定なら許可
         const channel = c.channels.cache.get(approvalChannelId);
         if (!channel || !('send' in channel)) return true;

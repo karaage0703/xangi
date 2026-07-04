@@ -26,6 +26,7 @@ import {
 import { threadIdFor, turnIdFor, subscribeEvents } from './events-emitter.js';
 import type { PublishedEvent } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { getActivity } from './activity-store.js';
 import { flowFromHostPlatform } from './inter-instance-chat/index.js';
 import { isLocalOrPrivate } from './pet-inbox-server.js';
 import { readSessionMessages } from './transcript-logger.js';
@@ -558,17 +559,21 @@ function listTerminalSessions(provider: 'claude' | 'codex', limit: number): unkn
     .map((s) => {
       const terminal = getTerminalSession(s.id);
       const summary = summarizeTerminalHistory(s.id, terminal.status);
+      const activity = getActivity(threadIdFor('web', s.id));
       return {
         id: s.id,
         title: s.title || s.id,
         cwd: process.env.WORKSPACE_PATH || process.cwd(),
         timestamp: s.updatedAt,
-        status: summary.status,
+        status: activity?.active ? activity.state : summary.status,
         provider,
         messageCount: summary.messageCount,
-        lastMessage: summary.lastMessage,
+        lastMessage: activity?.active ? activity.summary : summary.lastMessage,
         lastRole: summary.lastRole,
         updatedAt: s.updatedAt,
+        activityState: activity?.state,
+        activitySummary: activity?.summary,
+        activityElapsedSec: activity?.elapsedSec,
       };
     });
   return all;

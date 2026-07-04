@@ -37,7 +37,7 @@ Detailed usage guide for xangi.
 
 ### Dedicated Channels
 
-Channels configured in `AUTO_REPLY_CHANNELS` will respond without requiring a mention.
+Channels enabled with `/autoreply` will respond without requiring a mention. The setting is persisted in `settings.json`.
 
 ## Channel Topic Injection
 
@@ -327,8 +327,14 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 ```json
 {
   "autoRestart": true,
+  "discordAutoReplyChannels": {
+    "123456789012345678": true
+  },
   "discordCompletionNotifyChannels": {
     "123456789012345678": "mention"
+  },
+  "discordThreadModeChannels": {
+    "123456789012345678": true
   }
 }
 ```
@@ -336,7 +342,9 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | Setting | Description | Default |
 | --- | --- | --- |
 | `autoRestart` | Allow AI agent to trigger restarts | `true` |
+| `discordAutoReplyChannels` | Per-channel mention-free auto-reply settings (`true` / `false`) | none |
 | `discordCompletionNotifyChannels` | Per-channel completion notification overrides (`off` / `message` / `mention`) | none |
+| `discordThreadModeChannels` | Per-channel Discord thread reply overrides (`true` / `false`) | none |
 
 ### Viewing and Changing Settings
 
@@ -344,9 +352,10 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | --- | --- |
 | `/settings` | Show current settings |
 | `/restart` | Restart the bot |
-| `/autoreply` | Toggle mention-free auto-reply for this channel (no restart needed) |
+| `/autoreply <on\|off\|default\|show>` | Configure mention-free auto-reply for this channel (no restart needed, persisted to `settings.json`) |
 | `/notify <off\|message\|mention\|default\|show>` | Configure completion notifications for this channel (no restart needed, persisted to `settings.json`) |
 | `/respondtobots` | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env) |
+| `/threadmode <on\|off\|default\|show>` | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
 | `/llmmode <agent\|lite\|chat\|default\|show>` | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`) |
 
 ### Backend Dynamic Switching
@@ -397,11 +406,14 @@ The AI can edit the `.env` file to change settings:
 
 ```
 "Please respond in this channel too"
-→ AI edits AUTO_REPLY_CHANNELS → restarts
+→ AI saves the equivalent `/autoreply` setting to `settings.json`
 ```
 
-You can also use the `/autoreply` command to toggle mention-free auto-reply per channel (no restart needed, persisted to `.env`).
+Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF.
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
+
+Use `/threadmode mode:on|off|default|show` to inspect or toggle this channel's Discord per-message thread reply mode while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel override and falls back to the global `DISCORD_REPLY_IN_THREAD` default.
+To disable this command, set `ALLOW_THREAD_MODE_COMMAND=false` in `.env` (default: enabled).
 
 Use `/notify` to configure separate completion notifications for long Discord turns per channel. `DISCORD_COMPLETION_NOTIFY` is the startup default, while channel overrides are stored in `settings.json`. This applies only to normal Discord message turns; scheduler-triggered turns do not send completion notifications.
 
@@ -432,7 +444,7 @@ Use case: run multiple xangi instances (e.g. xangi-borot=Claude / xangi-dev=Loca
 
 #### Constraints / Known Limitations
 
-- Responding to bot messages still requires the normal gate: **mention / DM / channel listed in `AUTO_REPLY_CHANNELS`**. Whitelisting a bot via `RESPOND_TO_BOTS` does not make it reply across all channels. To test bot-to-bot replies, add the test channel to `AUTO_REPLY_CHANNELS`.
+- Responding to bot messages still requires the normal gate: **mention / DM / channel enabled via `/autoreply`**. Whitelisting a bot via `RESPOND_TO_BOTS` does not make it reply across all channels. To test bot-to-bot replies, enable `/autoreply` in the test channel.
 - `xangi-cmd discord_send` always sends with `allowed_mentions: { parse: [] }` to suppress notifications. As a result, mentions (`<@user_id>` / `<@&role_id>` / `@everyone`) embedded in messages sent via `xangi-cmd` are *not* parsed into `message.mentions` on the receiving side (Discord-spec behaviour). Mention-based triggers from another bot using `xangi-cmd discord_send` will therefore not fire.
 - Lifting that mention suppression would require an opt-in flag on `xangi-cmd discord_send` (out of scope of this feature).
 
@@ -993,7 +1005,6 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 |----------|-------------|---------|
 | `DISCORD_TOKEN` | Discord Bot Token | **Required** |
 | `DISCORD_ALLOWED_USER` | Allowed user ID (comma-separated for multiple, `*` to allow all) | **Required** |
-| `AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention (comma-separated) | - |
 | `DISCORD_REPLY_IN_THREAD` | Post replies into a per-message thread instead of the channel | `false` |
 | `DISCORD_STREAMING` | Streaming output | `true` |
 | `DISCORD_SHOW_THINKING` | Show thinking process | `true` |
@@ -1010,6 +1021,7 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `RESPOND_TO_BOTS_ENABLED` | Toggle bot-to-bot reply ON/OFF (`/respondtobots` switches at runtime) | `false` |
 | `RESPOND_TO_BOTS_MAX_CONSECUTIVE` | Max consecutive replies to the same bot (0 = unlimited) | `3` |
 | `ALLOW_RESPOND_TO_BOTS_COMMAND` | Enable `/respondtobots` command | `true` |
+| `ALLOW_THREAD_MODE_COMMAND` | Enable `/threadmode` command | `true` |
 | `ALLOW_LLM_MODE_COMMAND` | Enable `/llmmode` command (Local LLM mode switcher) | `true` |
 | `INJECT_CHANNEL_TOPIC` | Inject channel topic into prompt | `true` |
 | `INJECT_TIMESTAMP` | Inject current time into prompt | `true` |
@@ -1066,6 +1078,8 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 | `WEB_CHAT_PORT` | Web Chat UI port | `18888` |
 | `WEB_CHAT_UPLOAD_ACCEPT` | Upload allowlist (HTML `accept` syntax). Empty = allow all. `.ext` entries are also enforced server-side | (unset / allow all) |
 | `WEB_CHAT_DOWNLOAD_ACCEPT` | Download allowlist of extensions (e.g. `.html,.txt,.md`). Empty = allow all. Known extensions are served inline with proper Content-Type; unknown ones fall back to `Content-Disposition: attachment` | (unset / allow all) |
+
+When Web Chat is enabled, the same server also exposes `http://localhost:<WEB_CHAT_PORT>/monitor`. `/monitor` is a read-only session monitor that lists Web / Discord / Slack sessions with the current turn summary, recent tool lines, elapsed seconds, and runner state.
 
 ### External Event Stream and Device Input
 
@@ -1205,6 +1219,7 @@ Because Antigravity CLI does not currently expose a stable JSON/stream-json cont
 | `SLACK_AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention |
 | `SLACK_REPLY_IN_THREAD` | Reply in threads (default: `true`) |
 | `SLACK_REPLY_IN_CHANNELS` | Channel IDs to post replies directly in the channel even when thread replies are enabled (comma-separated) |
+| `SLACK_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notice for non-thread Slack turns (ms) | `10000` |
 
 ## Running Multiple Instances
 

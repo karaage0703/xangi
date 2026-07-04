@@ -390,6 +390,32 @@ describe('even-terminal compatibility API', () => {
     });
   });
 
+  it('includes current activity fields in Even Terminal session polling', async () => {
+    const { createWebSession } = await import('../src/sessions.js');
+    const sessionId = createWebSession({ title: 'G2 monitor activity' });
+
+    const accepted = await postJson(
+      `${server.url}/api/prompt`,
+      { text: 'watch this session', provider: 'codex', sessionId },
+      { Authorization: 'Bearer secret' }
+    );
+    expect(accepted.status).toBe(202);
+
+    await waitUntil(() => server.runner.runs.length === 1);
+    const sessionsRes = await fetch(`${server.url}/api/sessions?provider=codex&token=secret`);
+    expect(sessionsRes.ok).toBe(true);
+    const sessionsBody = await sessionsRes.json();
+    const session = sessionsBody.sessions.find((s: Record<string, unknown>) => s.id === sessionId);
+    expect(session).toMatchObject({
+      id: sessionId,
+      status: 'thinking',
+      activityState: 'thinking',
+    });
+    expect(String(session.activitySummary)).toContain('watch this session');
+
+    server.runner.complete('watched');
+  });
+
   it('passes Even Terminal specific backend defaults to the runner', async () => {
     process.env.XANGI_EVEN_TERMINAL_BACKEND = 'local-llm';
     process.env.XANGI_EVEN_TERMINAL_MODEL = 'gemma-4-26b-a4b';

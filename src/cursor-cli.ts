@@ -54,9 +54,7 @@ export class CursorRunner extends CliRunnerBase {
       args.push('--trust');
     }
 
-    if (this.model) {
-      args.push('--model', this.model);
-    }
+    args.push('--model', this.model ?? 'auto');
 
     if (this.workdir) {
       args.push('--workspace', this.workdir);

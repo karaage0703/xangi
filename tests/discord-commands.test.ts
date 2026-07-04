@@ -83,22 +83,25 @@ describe('Discord Commands', () => {
      */
     function handleAutoreply(
       allowAutoreplyCommand: boolean,
-      autoReplyChannels: string[],
-      channelId: string
-    ): { allowed: boolean; status?: string; channels?: string[] } {
+      autoReplyChannels: Record<string, boolean>,
+      channelId: string,
+      mode: 'show' | 'on' | 'off' | 'default'
+    ): { allowed: boolean; status?: string; channels?: Record<string, boolean> } {
       if (!allowAutoreplyCommand) {
         return { allowed: false };
       }
-      const channels = [...autoReplyChannels];
-      const idx = channels.indexOf(channelId);
-      const isCurrentlyOn = idx !== -1;
-      if (isCurrentlyOn) {
-        channels.splice(idx, 1);
-      } else {
-        channels.push(channelId);
+      const channels = { ...autoReplyChannels };
+      if (mode === 'show') {
+        return { allowed: true, status: channels[channelId] ? 'ON' : 'OFF', channels };
       }
-      const status = isCurrentlyOn ? 'OFF' : 'ON';
-      return { allowed: true, status, channels };
+      if (mode === 'default') {
+        delete channels[channelId];
+      } else if (mode === 'on') {
+        channels[channelId] = true;
+      } else {
+        channels[channelId] = false;
+      }
+      return { allowed: true, status: mode.toUpperCase(), channels };
     }
 
     it('should not register autoreply command when allowAutoreplyCommand is false', () => {
@@ -112,30 +115,54 @@ describe('Discord Commands', () => {
     });
 
     it('should reject autoreply execution when allowAutoreplyCommand is false', () => {
-      const result = handleAutoreply(false, [], '123');
+      const result = handleAutoreply(false, {}, '123', 'on');
       expect(result.allowed).toBe(false);
       expect(result.status).toBeUndefined();
     });
 
-    it('should allow autoreply execution and toggle ON when allowAutoreplyCommand is true', () => {
-      const result = handleAutoreply(true, [], '123');
+    it('should allow autoreply execution and set ON when allowAutoreplyCommand is true', () => {
+      const result = handleAutoreply(true, {}, '123', 'on');
       expect(result.allowed).toBe(true);
       expect(result.status).toBe('ON');
-      expect(result.channels).toEqual(['123']);
+      expect(result.channels).toEqual({ '123': true });
     });
 
-    it('should toggle OFF when channel is already in autoReplyChannels', () => {
-      const result = handleAutoreply(true, ['123', '456'], '123');
+    it('should set OFF when channel is already in autoReplyChannels', () => {
+      const result = handleAutoreply(true, { '123': true, '456': true }, '123', 'off');
       expect(result.allowed).toBe(true);
       expect(result.status).toBe('OFF');
-      expect(result.channels).toEqual(['456']);
+      expect(result.channels).toEqual({ '123': false, '456': true });
     });
 
-    it('should add channel when not in autoReplyChannels', () => {
-      const result = handleAutoreply(true, ['456'], '123');
+    it('should remove channel setting on default', () => {
+      const result = handleAutoreply(true, { '123': false, '456': true }, '123', 'default');
       expect(result.allowed).toBe(true);
-      expect(result.status).toBe('ON');
-      expect(result.channels).toEqual(['456', '123']);
+      expect(result.status).toBe('DEFAULT');
+      expect(result.channels).toEqual({ '456': true });
+    });
+
+    it('should register autoreply mode choices when enabled', () => {
+      const config = {
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {
+          allowAutoreplyCommand: true,
+          allowRespondToBotsCommand: false,
+          allowThreadModeCommand: false,
+          allowLlmModeCommand: false,
+        },
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const autoreply = commands.find((cmd) => cmd.name === 'autoreply') as any;
+      const modeOption = autoreply.options.find((opt: any) => opt.name === 'mode');
+
+      expect(autoreply).toBeTruthy();
+      expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
+        'show',
+        'on',
+        'off',
+        'default',
+      ]);
     });
   });
 
@@ -145,6 +172,7 @@ describe('Discord Commands', () => {
         discord: {
           allowAutoreplyCommand: true,
           allowRespondToBotsCommand: true,
+          allowThreadModeCommand: true,
           allowLlmModeCommand: true,
         },
       } as Config;
@@ -158,6 +186,7 @@ describe('Discord Commands', () => {
       const names = commands.map((cmd) => cmd.name);
 
       expect(commands.length).toBeLessThanOrEqual(100);
+      expect(names).toContain('threadmode');
       expect(names).toContain('notify');
       expect(names).toContain('skill');
       expect(names.filter((name) => name.startsWith('skill-')).length).toBeLessThan(120);
@@ -173,6 +202,7 @@ describe('Discord Commands', () => {
         discord: {
           allowAutoreplyCommand: false,
           allowRespondToBotsCommand: false,
+          allowThreadModeCommand: false,
           allowLlmModeCommand: false,
         },
       } as Config;
@@ -183,6 +213,47 @@ describe('Discord Commands', () => {
       const typeOption = setSubcommand.options.find((opt: any) => opt.name === 'type');
 
       expect(typeOption.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
+    });
+  });
+
+  describe('/threadmode command registration', () => {
+    it('registers threadmode command when enabled', () => {
+      const config = {
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {
+          allowAutoreplyCommand: false,
+          allowRespondToBotsCommand: false,
+          allowThreadModeCommand: true,
+          allowLlmModeCommand: false,
+        },
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const threadmode = commands.find((cmd) => cmd.name === 'threadmode') as any;
+      const modeOption = threadmode.options.find((opt: any) => opt.name === 'mode');
+
+      expect(threadmode).toBeTruthy();
+      expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
+        'show',
+        'on',
+        'off',
+        'default',
+      ]);
+    });
+
+    it('does not register threadmode command when disabled', () => {
+      const config = {
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {
+          allowAutoreplyCommand: false,
+          allowRespondToBotsCommand: false,
+          allowThreadModeCommand: false,
+          allowLlmModeCommand: false,
+        },
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      expect(commands.map((cmd) => cmd.name)).not.toContain('threadmode');
     });
   });
 });

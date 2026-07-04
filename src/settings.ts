@@ -4,7 +4,9 @@ import type { DiscordCompletionNotifyMode } from './config.js';
 
 export interface Settings {
   autoRestart: boolean;
+  discordAutoReplyChannels?: Record<string, boolean>;
   discordCompletionNotifyChannels?: Record<string, DiscordCompletionNotifyMode>;
+  discordThreadModeChannels?: Record<string, boolean>;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -39,6 +41,24 @@ function normalizeDiscordCompletionNotifyChannels(
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeDiscordBooleanChannels(value: unknown): Record<string, boolean> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const normalized: Record<string, boolean> = {};
+  for (const [channelId, enabled] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d+$/.test(channelId)) continue;
+    if (typeof enabled === 'boolean') {
+      normalized[channelId] = enabled;
+    }
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDiscordThreadModeChannels(value: unknown): Record<string, boolean> | undefined {
+  return normalizeDiscordBooleanChannels(value);
+}
+
 /**
  * settings.json のパスを初期化する
  * dataDir（DATA_DIR or WORKSPACE_PATH/.xangi）配下に保存。
@@ -68,12 +88,20 @@ export function loadSettings(): Settings {
   try {
     const raw = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<Settings>;
+    const discordAutoReplyChannels = normalizeDiscordBooleanChannels(
+      parsed.discordAutoReplyChannels
+    );
     const discordCompletionNotifyChannels = normalizeDiscordCompletionNotifyChannels(
       parsed.discordCompletionNotifyChannels
     );
+    const discordThreadModeChannels = normalizeDiscordThreadModeChannels(
+      parsed.discordThreadModeChannels
+    );
     cachedSettings = {
       autoRestart: parsed.autoRestart ?? DEFAULT_SETTINGS.autoRestart,
+      ...(discordAutoReplyChannels && { discordAutoReplyChannels }),
       ...(discordCompletionNotifyChannels && { discordCompletionNotifyChannels }),
+      ...(discordThreadModeChannels && { discordThreadModeChannels }),
     };
     return { ...cachedSettings };
   } catch {
@@ -103,15 +131,27 @@ export function saveSettings(settings: Partial<Settings>): Settings {
  * 設定をフォーマットして表示用文字列を返す
  */
 export function formatSettings(settings: Settings): string {
+  const autoReplyChannels = Object.keys(settings.discordAutoReplyChannels ?? {}).length;
   const completionNotifyChannels = Object.keys(
     settings.discordCompletionNotifyChannels ?? {}
   ).length;
+  const threadModeChannels = Object.keys(settings.discordThreadModeChannels ?? {}).length;
   const lines = [
     '⚙️ **現在の設定**',
     `- 自動再起動: ${settings.autoRestart ? '✅ ON' : '❌ OFF'}`,
+    `- Discordメンションなし応答チャンネル設定: ${autoReplyChannels}件`,
     `- Discord完了通知チャンネル設定: ${completionNotifyChannels}件`,
+    `- Discordスレッドモードチャンネル設定: ${threadModeChannels}件`,
   ];
   return lines.join('\n');
+}
+
+export function getChannelAutoReply(
+  settings: Settings,
+  channelId: string,
+  defaultEnabled: boolean
+): boolean {
+  return settings.discordAutoReplyChannels?.[channelId] ?? defaultEnabled;
 }
 
 export function getChannelCompletionNotifyMode(
@@ -120,6 +160,14 @@ export function getChannelCompletionNotifyMode(
   defaultMode: DiscordCompletionNotifyMode
 ): DiscordCompletionNotifyMode {
   return settings.discordCompletionNotifyChannels?.[channelId] ?? defaultMode;
+}
+
+export function getChannelThreadMode(
+  settings: Settings,
+  channelId: string,
+  defaultEnabled: boolean
+): boolean {
+  return settings.discordThreadModeChannels?.[channelId] ?? defaultEnabled;
 }
 
 /**
