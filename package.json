@@ -43,7 +43,7 @@
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
     "grammy": "^1.31.0",
-    "node-cron": "^4.2.1",
+    "node-cron": "^4.6.0",
     "proper-lockfile": "^4.1.2",
     "yaml": "^2.9.0"
   },
@@ -59,7 +59,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "prettier": "^3.9.4",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.0",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.62.1",
     "vitest": "^4.1.9"
