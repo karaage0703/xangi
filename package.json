@@ -42,7 +42,7 @@
   "author": "karaage",
   "license": "MIT",
   "dependencies": {
-    "@line/bot-sdk": "^11.1.0",
+    "@line/bot-sdk": "^11.2.0",
     "@octokit/auth-app": "^8.2.0",
     "@slack/bolt": "^4.7.3",
     "discord.js": "^14.26.4",
@@ -57,8 +57,8 @@
     "@types/dotenv": "^6.1.1",
     "@types/node": "^22.20.0",
     "@types/proper-lockfile": "^4.1.4",
-    "@typescript-eslint/eslint-plugin": "^8.62.1",
-    "@typescript-eslint/parser": "^8.62.1",
+    "@typescript-eslint/eslint-plugin": "^8.63.0",
+    "@typescript-eslint/parser": "^8.63.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
@@ -66,8 +66,8 @@
     "prettier": "^3.9.4",
     "tsx": "^4.23.0",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.9"
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=22.0.0"
