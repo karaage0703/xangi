@@ -38,7 +38,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: xangi
 
   # フル版（uv + Python）
   xangi-max:
@@ -47,7 +46,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.max
-    container_name: xangi-max
 
   # GPU版（CUDA + uv + Python + PyTorch）
   xangi-gpu:
@@ -56,7 +54,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.gpu
-    container_name: xangi-gpu
     depends_on:
       - ollama
     deploy:
@@ -70,7 +67,6 @@ services:
   # Ollama（GPU付きコンテナ）
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
     restart: unless-stopped
     volumes:
       - ${OLLAMA_MODELS_PATH:-/usr/share/ollama/.ollama}:/root/.ollama
@@ -84,6 +80,4 @@ services:
 
 volumes:
   claude-data:
-    name: xangi_claude-data
   codex-data:
-    name: xangi_codex-data

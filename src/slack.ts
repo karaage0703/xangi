@@ -7,13 +7,15 @@ import type { Skill } from './skills.js';
 import { formatSkillList } from './skills.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { loadSettings, formatSettings } from './settings.js';
+import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
-import { ensureSession, getActiveSessionId, setSession } from './sessions.js';
+import { addToolHistory, appendToolHistory, formatToolHistoryDisclosure } from './tool-history.js';
+import { ensureSession, getActiveSessionId, getProviderSessionId, setSession } from './sessions.js';
 import {
   attachPlatformMessageIdToLast,
   findEntryByPlatformMessageId,
@@ -28,6 +30,43 @@ export function shouldReplyInSlackThread(
 ): boolean {
   if (slackConfig.replyInThread === false) return false;
   return !slackConfig.replyInChannels?.includes(channelId);
+}
+
+export function shouldProcessSlackMessage(
+  slackConfig: Pick<Config['slack'], 'autoReplyChannels'>,
+  input: {
+    channel: string;
+    channelType?: string;
+    threadTs?: string;
+    subtype?: string;
+    hasActiveThreadSession?: boolean;
+  }
+): boolean {
+  if (input.subtype) return false;
+  if (input.channelType === 'im') return true;
+  if (input.threadTs && input.hasActiveThreadSession) return true;
+  return slackConfig.autoReplyChannels?.includes(input.channel) ?? false;
+}
+
+export function slackConversationKey(channelId: string, threadTs?: string): string {
+  return threadTs ? `${channelId}:${threadTs}` : channelId;
+}
+
+function slackRunKeyFromActionBody(body: {
+  channel?: { id?: string };
+  message?: { thread_ts?: string; ts?: string };
+}): string | undefined {
+  const channelId = body.channel?.id;
+  if (!channelId) return undefined;
+  return slackConversationKey(channelId, body.message?.thread_ts);
+}
+
+function markSlackMessageProcessed(channelId: string, ts: string): boolean {
+  const key = `${channelId}:${ts}`;
+  if (processedSlackMessages.has(key)) return false;
+  processedSlackMessages.add(key);
+  setTimeout(() => processedSlackMessages.delete(key), 5 * 60 * 1000).unref?.();
+  return true;
 }
 
 export function buildSlackCompletionNotification(input: {
@@ -114,23 +153,35 @@ function getSlackTimeoutInfoFor(
   return { remainingMs, canExtend, extendEnabled: TIMEOUT_EXTEND_ENABLED };
 }
 
-/** Slack Block Kit: New Sessionボタン */
-function createSlackCompletedBlocks(): KnownBlock[] {
+/** Slack Block Kit: 完了後ボタン */
+function createSlackCompletedBlocks(options?: { showTools?: boolean }): KnownBlock[] {
+  const elements: Array<{
+    type: 'button';
+    text: { type: 'plain_text'; text: string };
+    action_id: string;
+  }> = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: 'New' },
+      action_id: 'xangi_new',
+    },
+  ];
+  if (options?.showTools) {
+    elements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Tools' },
+      action_id: 'xangi_tools',
+    });
+  }
   return [
     {
       type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'New' },
-          action_id: 'xangi_new',
-        },
-      ],
+      elements,
     },
   ];
 }
 
-// セッション管理（チャンネルID → セッションID）
+// セッション管理（conversationKey → provider session ID）
 const sessions = new Map<string, string>();
 
 // 最後のBotメッセージ（チャンネルID → メッセージts）
@@ -138,10 +189,11 @@ const lastBotMessages = new Map<string, string>();
 
 /**
  * 処理中の Slack メッセージ管理 (タイムアウト UI 更新用)
- * channelId -> { messageTs, threadTs, intervalId }。
+ * runKey(conversationKey) -> { channelId, messageTs, threadTs, intervalId }。
  * runner の timeout-* イベントで残り時間 / +5m ブロックを 10 秒間隔で chat.update する。
  */
 type SlackProcessingEntry = {
+  channelId: string;
   messageTs: string;
   threadTs?: string;
   currentText: string;
@@ -150,9 +202,16 @@ type SlackProcessingEntry = {
   startedAt?: number;
 };
 const slackProcessingMessages = new Map<string, SlackProcessingEntry>();
+const slackToolHistoryByMessageKey = new Map<string, string[]>();
+const busySlackConversations = new Set<string>();
+const processedSlackMessages = new Set<string>();
 
 // Slack メッセージバイト数制限（chat.updateはバイト数で制限される）
 const SLACK_MAX_TEXT_BYTES = 3900;
+
+function slackMessageKey(channelId: string, messageTs: string): string {
+  return `${channelId}:${messageTs}`;
+}
 
 /**
  * 文字列をUTF-8バイト数で安全に切り詰める
@@ -393,6 +452,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     await ack();
     const channelId = body.channel?.id;
     if (!channelId) return;
+    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
     if (
       !config.slack.allowedUsers?.includes('*') &&
@@ -401,9 +461,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     ) {
       return;
     }
-    const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+    const stopped = processManager.stop(runKey) || agentRunner.cancel?.(runKey) || false;
     if (!stopped) {
-      console.log(`[slack] No running task to stop for channel ${channelId}`);
+      console.log(`[slack] No running task to stop for runKey ${runKey}`);
     }
   });
 
@@ -412,6 +472,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     await ack();
     const channelId = body.channel?.id;
     if (!channelId) return;
+    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
     if (
       !config.slack.allowedUsers?.includes('*') &&
@@ -421,7 +482,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
     // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
-    const result = agentRunner.extendTimeout?.(channelId) ?? {
+    const result = agentRunner.extendTimeout?.(runKey) ?? {
       ok: false,
       reason: 'unsupported' as const,
     };
@@ -444,11 +505,35 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     await ack();
   });
 
+  // ボタンアクション: ツール履歴を押した本人だけに表示
+  app.action('xangi_tools', async ({ ack, body, client: actionClient }) => {
+    await ack();
+    const channelId = body.channel?.id;
+    const userId = body.user?.id;
+    if (!channelId || !userId) return;
+    if (!config.slack.allowedUsers?.includes('*') && !config.slack.allowedUsers?.includes(userId)) {
+      return;
+    }
+    const messageTs =
+      'message' in body ? (body.message as { ts?: string } | undefined)?.ts : undefined;
+    const toolHistory = messageTs
+      ? slackToolHistoryByMessageKey.get(slackMessageKey(channelId, messageTs))
+      : undefined;
+    const text = formatToolHistoryDisclosure(toolHistory ?? []);
+    const chunks = splitTextByBytes(text, SLACK_MAX_TEXT_BYTES);
+    for (const chunk of chunks.length > 0 ? chunks : ['ツール履歴はありません']) {
+      await actionClient.chat
+        .postEphemeral({ channel: channelId, user: userId, text: chunk })
+        .catch(() => {});
+    }
+  });
+
   // ボタンアクション: New Session
   app.action('xangi_new', async ({ ack, body, client: actionClient }) => {
     await ack();
     const channelId = body.channel?.id;
     if (!channelId) return;
+    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
     if (
       !config.slack.allowedUsers?.includes('*') &&
@@ -457,10 +542,13 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     ) {
       return;
     }
-    sessions.delete(channelId);
-    agentRunner.destroy?.(channelId);
+    sessions.delete(runKey);
+    agentRunner.destroy?.(runKey);
     // ボタンを消す
     if ('message' in body && body.message) {
+      slackToolHistoryByMessageKey.delete(
+        slackMessageKey(channelId, (body.message as { ts: string }).ts)
+      );
       await actionClient.chat
         .update({
           channel: channelId,
@@ -511,10 +599,11 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const threadTs = shouldReplyInSlackThread(config.slack, channelId)
       ? event.thread_ts || event.ts
       : undefined;
+    const conversationKey = slackConversationKey(channelId, threadTs);
 
     // セッションクリアコマンド
     if (['!new', 'new', '/new'].includes(text)) {
-      sessions.delete(channelId);
+      sessions.delete(conversationKey);
       await say({
         text: '🆕 新しいセッションを開始しました',
         ...(threadTs && { thread_ts: threadTs }),
@@ -524,7 +613,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+      const stopped =
+        processManager.stop(conversationKey) || agentRunner.cancel?.(conversationKey) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),
@@ -544,6 +634,13 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
 
     // 👀 リアクション追加
+    if (!markSlackMessageProcessed(channelId, event.ts)) {
+      console.log(
+        `[slack] Skipping duplicate app_mention event: channel=${channelId}, ts=${event.ts}`
+      );
+      return;
+    }
+
     await client.reactions
       .add({
         channel: channelId,
@@ -554,7 +651,16 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         console.error('[slack] Failed to add reaction:', err.message || err);
       });
 
-    await processMessage(channelId, threadTs, text, event.ts, client, agentRunner, config);
+    await processMessage(
+      channelId,
+      conversationKey,
+      threadTs,
+      text,
+      event.ts,
+      client,
+      agentRunner,
+      config
+    );
   });
 
   // DMの処理 + autoReplyChannels
@@ -566,10 +672,12 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (subtype === 'message_changed') {
       try {
         const channelId = (event as { channel: string }).channel;
-        const inner = (event as { message?: { ts?: string; text?: string; user?: string } })
-          .message;
+        const inner = (
+          event as { message?: { ts?: string; text?: string; user?: string; thread_ts?: string } }
+        ).message;
         if (!inner?.ts || !channelId) return;
-        const appSessionId = getActiveSessionId(channelId);
+        const contextKey = slackConversationKey(channelId, inner.thread_ts);
+        const appSessionId = getActiveSessionId(contextKey) || getActiveSessionId(channelId);
         if (!appSessionId) return;
         const workdir = config.agent.config.workdir || process.cwd();
         const entry = findEntryByPlatformMessageId(workdir, appSessionId, inner.ts);
@@ -588,7 +696,11 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         const channelId = (event as { channel: string }).channel;
         const deletedTs = (event as { deleted_ts?: string }).deleted_ts;
         if (!deletedTs || !channelId) return;
-        const appSessionId = getActiveSessionId(channelId);
+        const contextKey = slackConversationKey(
+          channelId,
+          (event as { thread_ts?: string }).thread_ts
+        );
+        const appSessionId = getActiveSessionId(contextKey) || getActiveSessionId(channelId);
         if (!appSessionId) return;
         const workdir = config.agent.config.workdir || process.cwd();
         const entry = findEntryByPlatformMessageId(workdir, appSessionId, deletedTs);
@@ -620,21 +732,37 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       `[slack] Message event: channel=${messageEvent.channel}, type=${messageEvent.channel_type}, autoReplyChannels=${config.slack.autoReplyChannels?.join(',')}`
     );
 
-    // DM, autoReplyChannels, またはスレッド内返信を処理
+    // DM または autoReplyChannels を処理。
+    // app_mention は別 handler で処理されるため、対象外チャンネルのスレッド返信は拾わない。
     const isDM = messageEvent.channel_type === 'im';
     const isAutoReplyChannel = config.slack.autoReplyChannels?.includes(messageEvent.channel);
     const isThreadReply = !!messageEvent.thread_ts;
-    if (!isDM && !isAutoReplyChannel && !isThreadReply) {
+    const textRaw = messageEvent.text || '';
+    if (/<@[A-Z0-9]+>/i.test(textRaw)) {
+      console.log(`[slack] Skipping bot mention in message event (handled by app_mention)`);
+      return;
+    }
+    const contextKey = slackConversationKey(messageEvent.channel, messageEvent.thread_ts);
+    const hasActiveThreadSession = isThreadReply && !!getActiveSessionId(contextKey);
+    if (
+      !shouldProcessSlackMessage(config.slack, {
+        channel: messageEvent.channel,
+        channelType: messageEvent.channel_type,
+        threadTs: messageEvent.thread_ts,
+        subtype,
+        hasActiveThreadSession,
+      })
+    ) {
       console.log(
-        `[slack] Skipping: isDM=${isDM}, isAutoReplyChannel=${isAutoReplyChannel}, isThread=${isThreadReply}`
+        `[slack] Skipping: isDM=${isDM}, isAutoReplyChannel=${isAutoReplyChannel}, isThread=${isThreadReply}, hasActiveThreadSession=${hasActiveThreadSession}, subtype=${subtype ?? 'none'}`
       );
       return;
     }
 
-    // autoReplyChannels でメンション付きメッセージは app_mention で処理済みなのでスキップ
-    const textRaw = messageEvent.text || '';
-    if (isAutoReplyChannel && !isThreadReply && /<@[A-Z0-9]+>/i.test(textRaw)) {
-      console.log(`[slack] Skipping mention in autoReplyChannel (handled by app_mention)`);
+    if (!markSlackMessageProcessed(messageEvent.channel, messageEvent.ts)) {
+      console.log(
+        `[slack] Skipping duplicate message event: channel=${messageEvent.channel}, ts=${messageEvent.ts}`
+      );
       return;
     }
 
@@ -671,12 +799,13 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     const channelId = messageEvent.channel;
     const threadTs = shouldReplyInSlackThread(config.slack, channelId)
-      ? messageEvent.ts
+      ? messageEvent.thread_ts || messageEvent.ts
       : undefined;
+    const conversationKey = slackConversationKey(channelId, threadTs);
 
     // セッションクリアコマンド
     if (['!new', 'new', '/new'].includes(text)) {
-      sessions.delete(channelId);
+      sessions.delete(conversationKey);
       await say({
         text: '🆕 新しいセッションを開始しました',
         ...(threadTs && { thread_ts: threadTs }),
@@ -686,7 +815,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+      const stopped =
+        processManager.stop(conversationKey) || agentRunner.cancel?.(conversationKey) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),
@@ -716,7 +846,16 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         console.error('[slack] Failed to add reaction:', err.message || err);
       });
 
-    await processMessage(channelId, threadTs, text, messageEvent.ts, client, agentRunner, config);
+    await processMessage(
+      channelId,
+      conversationKey,
+      threadTs,
+      text,
+      messageEvent.ts,
+      client,
+      agentRunner,
+      config
+    );
   });
 
   // /new コマンド
@@ -838,9 +977,11 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
-    const settings = loadSettings();
-    if (!settings.autoRestart) {
-      await respond({ text: '⚠️ 自動再起動が無効です。先に有効にしてください。' });
+    const selfLifecycle = getSelfLifecyclePermission();
+    if (!canSelfRestart(selfLifecycle)) {
+      await respond({
+        text: '⚠️ 自己再起動が無効です。管理者が `.env` の `XANGI_SELF_LIFECYCLE=restart-only` を設定し、xangi を再起動してください。',
+      });
       return;
     }
     await respond({ text: '🔄 再起動します...' });
@@ -852,19 +993,19 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
   // runner の timeout-* イベントを Slack メッセージ更新に紐付け
   const getSlackTimeoutInfo = (
-    channelId: string
+    runKey: string
   ): { remainingMs: number; canExtend: boolean; extendEnabled: boolean } | undefined => {
-    return getSlackTimeoutInfoFor(agentRunner, channelId);
+    return getSlackTimeoutInfoFor(agentRunner, runKey);
   };
 
-  const refreshSlackProcessingBlocks = async (channelId: string): Promise<void> => {
-    const entry = slackProcessingMessages.get(channelId);
+  const refreshSlackProcessingBlocks = async (runKey: string): Promise<void> => {
+    const entry = slackProcessingMessages.get(runKey);
     if (!entry) return;
-    const info = getSlackTimeoutInfo(channelId);
+    const info = getSlackTimeoutInfo(runKey);
     if (!info) return;
     try {
       await app.client.chat.update({
-        channel: channelId,
+        channel: entry.channelId,
         ts: entry.messageTs,
         text: entry.currentText,
         blocks: [
@@ -932,8 +1073,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   }
 }
 
-async function processMessage(
+export async function processMessage(
   channelId: string,
+  conversationKey: string,
   threadTs: string | undefined,
   text: string,
   originalTs: string,
@@ -941,6 +1083,7 @@ async function processMessage(
   agentRunner: AgentRunner,
   config: Config
 ): Promise<void> {
+  const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
   const startedAt = Date.now();
   let prompt = text;
@@ -951,10 +1094,10 @@ async function processMessage(
   }
 
   // プラットフォーム情報をプロンプトに注入
-  prompt = `[プラットフォーム: Slack]\n[チャンネル: ${channelId}]\n${prompt}`;
+  prompt = `[プラットフォーム: Slack]\n[チャンネル: ${channelId}]${threadTs ? `\n[スレッド: ${threadTs}]` : ''}\n${prompt}`;
 
   // xangi-events 用 ID とラベル（fire-and-forget）
-  const threadId = threadIdFor('slack', channelId);
+  const threadId = threadIdFor('slack', conversationKey);
   const turnId = turnIdFor('slack', originalTs);
   // チャンネル名は conversations.info で取得 (失敗時は undefined)
   let threadLabel: string | undefined;
@@ -980,29 +1123,48 @@ async function processMessage(
   let unregisterStreamFinalizer: (() => void) | undefined;
   // appSessionId は xangi 内部 (sessions.json) のセッション ID。
   // transcript-logger / 編集・削除同期で必要。
-  const appSessionId = ensureSession(channelId, { platform: 'slack' });
+  const appSessionId = ensureSession(conversationKey, { platform: 'slack' });
   const tWorkdir = config.agent.config.workdir || process.cwd();
   try {
-    console.log(`[slack] Processing message in channel ${channelId}`);
+    if (busySlackConversations.has(runKey)) {
+      console.log(`[slack] Skipping busy conversation: runKey=${runKey}`);
+      return;
+    }
+    busySlackConversations.add(runKey);
+    console.log(`[slack] Processing message: channel=${channelId}, runKey=${runKey}`);
 
-    const sessionId = sessions.get(channelId);
+    const sessionId = getProviderSessionId(conversationKey) ?? sessions.get(conversationKey);
     const useStreaming = config.slack.streaming ?? true;
     const showThinking = config.slack.showThinking ?? true;
 
     const showButtons = config.slack.showThinking ?? true;
+    const toolHistory: string[] = [];
+    const captureCallbacks = {
+      onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
+        addToolHistory(toolHistory, toolName, toolInput);
+      },
+    };
 
     // ストリーミング表示のプラットフォーム非依存コア (stream-session.ts)。
     // Slack 固有の描画 (chat.update / blocks / バイト制限での切り詰め) はこの render に集約する
     const session = new StreamSession({
+      formatToolLine: (toolName, toolInput) => {
+        const lines: string[] = [];
+        addToolHistory(lines, toolName, toolInput);
+        return lines[0] ?? null;
+      },
       render: async (view) => {
         if (!messageTs) return;
         const text =
           view.phase === 'thinking'
-            ? view.statusLine
-            : sliceByBytes(view.text, SLACK_MAX_TEXT_BYTES - 10) + ' ▌';
+            ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
+            : sliceByBytes(
+                appendToolHistory(view.text, view.toolLines, ' ▌'),
+                SLACK_MAX_TEXT_BYTES
+              );
         // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、
         // 最新の timeout 状態を渡して blocks を再生成する
-        const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, channelId);
+        const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, runKey);
         await client.chat
           .update({
             channel: channelId,
@@ -1045,7 +1207,8 @@ async function processMessage(
 
     // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で update される)
     if (showButtons) {
-      slackProcessingMessages.set(channelId, {
+      slackProcessingMessages.set(runKey, {
+        channelId,
         messageTs,
         threadTs,
         currentText: initialText,
@@ -1079,8 +1242,8 @@ async function processMessage(
           agentRunner,
           prompt,
           eventCtx,
-          session.callbacks(),
-          { skipPermissions, sessionId, channelId, appSessionId }
+          session.callbacks(captureCallbacks),
+          { skipPermissions, sessionId, channelId: runKey, appSessionId }
         );
       } finally {
         session.finish();
@@ -1093,13 +1256,14 @@ async function processMessage(
       // useStreaming=false の意図（本文の逐次表示をしない）を保つため
       // callbacks は渡さず、思考中アニメーションだけ更新する
       session.start();
+      const sessionCallbacks = session.callbacks(captureCallbacks);
       try {
         const runResult = await runWithBubbleEvents(
           agentRunner,
           prompt,
           eventCtx,
-          {},
-          { skipPermissions, sessionId, channelId, appSessionId }
+          { onToolUse: sessionCallbacks.onToolUse },
+          { skipPermissions, sessionId, channelId: runKey, appSessionId }
         );
         result = runResult.result;
         newSessionId = runResult.sessionId;
@@ -1109,7 +1273,7 @@ async function processMessage(
       }
     }
 
-    sessions.set(channelId, newSessionId);
+    sessions.set(conversationKey, newSessionId);
     // transcript の最後の user / assistant エントリに Slack の messageTs を
     // 紐付ける (PR ③、Discord と同じ post-hoc attach 戦略)。
     try {
@@ -1124,6 +1288,10 @@ async function processMessage(
 
     // ファイルパスを抽出して添付送信（テキスト由来 + 構造化 attachments を合算・重複排除）
     const { filePaths, displayText } = buildAttachmentResult(result, structuredAttachments);
+    const showToolsButton = toolHistory.length > 0;
+    if (showToolsButton) {
+      slackToolHistoryByMessageKey.set(slackMessageKey(channelId, messageTs), [...toolHistory]);
+    }
 
     // 最終結果を更新（長い場合は分割送信）
     await sendSlackResult(client, channelId, messageTs, threadTs, displayText || '✅');
@@ -1132,7 +1300,7 @@ async function processMessage(
     // ただしタイムアウト UI ([+5m][⏱ MM:SS]) が表示された直後だと一瞬で
     // 上書きされて視認できない。最低 2.5 秒は表示を残してから完了表示に切り替える。
     if (showButtons) {
-      const entry = slackProcessingMessages.get(channelId);
+      const entry = slackProcessingMessages.get(runKey);
       const MIN_TIMEOUT_DISPLAY_MS = 2500;
       if (entry?.startedAt) {
         const elapsed = Date.now() - entry.startedAt;
@@ -1149,7 +1317,7 @@ async function processMessage(
               type: 'section',
               text: { type: 'mrkdwn', text: sliceByBytes(displayText || '✅', 3000) },
             },
-            ...createSlackCompletedBlocks(),
+            ...createSlackCompletedBlocks({ showTools: showToolsButton }),
           ],
         })
         .catch(() => {});
@@ -1215,6 +1383,7 @@ async function processMessage(
       });
     }
   } finally {
+    busySlackConversations.delete(runKey);
     // 正常完了・エラー処理後は shutdown finalizer の対象から外す
     unregisterStreamFinalizer?.();
     // 👀 リアクションを削除
@@ -1228,4 +1397,16 @@ async function processMessage(
         console.error('[slack] Failed to remove reaction:', err.message || err);
       });
   }
+}
+
+export function _resetSlackStateForTest(): void {
+  sessions.clear();
+  lastBotMessages.clear();
+  for (const entry of slackProcessingMessages.values()) {
+    if (entry.intervalId) clearInterval(entry.intervalId);
+  }
+  slackProcessingMessages.clear();
+  slackToolHistoryByMessageKey.clear();
+  busySlackConversations.clear();
+  processedSlackMessages.clear();
 }

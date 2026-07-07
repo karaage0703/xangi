@@ -75,7 +75,7 @@ npm run build
 docker compose up -d --build
 
 # ログ確認
-docker logs -f xangi
+docker compose logs -f xangi
 ```
 
 Discord サーバーで `/new` や `/skills` を試す、または Bot をメンションして話しかける：

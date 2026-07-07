@@ -164,7 +164,7 @@ volumes:
 ```
 
 - ホスト直 xangi（pm2）と Docker 起動 xangi が **混在しても同じパスで共有可能**
-- `Dockerfile`=`USER node` (UID 1000) と `Dockerfile.standalone`=root の UID 差は `mode 0777` で吸収
+- Docker 起動 xangi とホスト直 xangi の UID 差は `mode 0777` で吸収
 - `/tmp` の OS 再起動消去が揮発要件と一致（named volume だとホスト直 xangi から見えない）
 
 ### Mac / Windows Docker Desktop
@@ -184,5 +184,4 @@ xangi が起動時に `INTER_INSTANCE_CHAT_DIR` を `mkdir -p` して mode 0777 
 
 ## 残課題
 
-- Docker image の UID 統一（`Dockerfile.standalone` の `USER node` 化、別 PR）
 - 他プラットフォーム（Discord/Slack）のシステムプロンプトへの inter-chat 文脈注入（v2）

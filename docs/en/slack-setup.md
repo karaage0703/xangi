@@ -118,7 +118,7 @@ npm run build
 docker compose up -d --build
 
 # Check logs
-docker logs -f xangi
+docker compose logs -f xangi
 ```
 
 Try the following in Slack:

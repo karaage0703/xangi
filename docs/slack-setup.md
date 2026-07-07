@@ -116,7 +116,7 @@ npm run build
 docker compose up -d --build
 
 # ログ確認
-docker logs -f xangi
+docker compose logs -f xangi
 ```
 
 Slack で以下を試す：

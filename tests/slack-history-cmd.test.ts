@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { slackHistoryCmd } from '../src/cli/slack-history-cmd.js';
 
+const DUMMY_RUNTIME_CWD = '/workspace/xangi-dev';
+
 const originalWorkspacePath = process.env.WORKSPACE_PATH;
 const originalChannelId = process.env.XANGI_CHANNEL_ID;
 let tempDir: string | undefined;
@@ -50,7 +52,7 @@ describe('slackHistoryCmd', () => {
       {
         role: 'user',
         content:
-          '[runtime] cwd=/home/karaage/xangi-dev\n\n[プラットフォーム: Slack]\n[チャンネル: C123]\nこんばんは',
+          `[runtime] cwd=${DUMMY_RUNTIME_CWD}\n\n[プラットフォーム: Slack]\n[チャンネル: C123]\nこんばんは`,
         createdAt: '2026-07-01T00:00:00.000Z',
       },
       {

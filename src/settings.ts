@@ -3,15 +3,12 @@ import { join, dirname } from 'path';
 import type { DiscordCompletionNotifyMode } from './config.js';
 
 export interface Settings {
-  autoRestart: boolean;
   discordAutoReplyChannels?: Record<string, boolean>;
   discordCompletionNotifyChannels?: Record<string, DiscordCompletionNotifyMode>;
   discordThreadModeChannels?: Record<string, boolean>;
 }
 
-const DEFAULT_SETTINGS: Settings = {
-  autoRestart: true,
-};
+const DEFAULT_SETTINGS: Settings = {};
 
 let settingsPath: string | null = null;
 let cachedSettings: Settings | null = null;
@@ -98,7 +95,6 @@ export function loadSettings(): Settings {
       parsed.discordThreadModeChannels
     );
     cachedSettings = {
-      autoRestart: parsed.autoRestart ?? DEFAULT_SETTINGS.autoRestart,
       ...(discordAutoReplyChannels && { discordAutoReplyChannels }),
       ...(discordCompletionNotifyChannels && { discordCompletionNotifyChannels }),
       ...(discordThreadModeChannels && { discordThreadModeChannels }),
@@ -116,7 +112,10 @@ export function loadSettings(): Settings {
  */
 export function saveSettings(settings: Partial<Settings>): Settings {
   const current = loadSettings();
-  const merged: Settings = { ...current, ...settings };
+  const merged: Settings = {
+    ...current,
+    ...settings,
+  };
 
   const path = getSettingsPath();
   mkdirSync(dirname(path), { recursive: true });
@@ -138,7 +137,6 @@ export function formatSettings(settings: Settings): string {
   const threadModeChannels = Object.keys(settings.discordThreadModeChannels ?? {}).length;
   const lines = [
     '⚙️ **現在の設定**',
-    `- 自動再起動: ${settings.autoRestart ? '✅ ON' : '❌ OFF'}`,
     `- Discordメンションなし応答チャンネル設定: ${autoReplyChannels}件`,
     `- Discord完了通知チャンネル設定: ${completionNotifyChannels}件`,
     `- Discordスレッドモードチャンネル設定: ${threadModeChannels}件`,

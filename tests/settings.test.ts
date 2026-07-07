@@ -30,16 +30,19 @@ describe('settings', () => {
   describe('loadSettings', () => {
     it('should return default settings when no file exists', () => {
       const settings = loadSettings();
-      expect(settings).toEqual({ autoRestart: true });
+      expect(settings).toEqual({});
     });
 
     it('should load settings from file', () => {
       const filePath = join(tempDir, 'settings.json');
       const { writeFileSync } = require('fs');
-      writeFileSync(filePath, JSON.stringify({ autoRestart: false }));
+      writeFileSync(
+        filePath,
+        JSON.stringify({ discordAutoReplyChannels: { '123': true } })
+      );
 
       const settings = loadSettings();
-      expect(settings.autoRestart).toBe(false);
+      expect(settings.discordAutoReplyChannels).toEqual({ '123': true });
     });
 
     it('should load valid Discord completion notification channel settings', () => {
@@ -48,7 +51,6 @@ describe('settings', () => {
       writeFileSync(
         filePath,
         JSON.stringify({
-          autoRestart: true,
           discordCompletionNotifyChannels: {
             '123': 'mention',
             '456': 'message',
@@ -71,7 +73,6 @@ describe('settings', () => {
       writeFileSync(
         filePath,
         JSON.stringify({
-          autoRestart: true,
           discordAutoReplyChannels: {
             '123': true,
             '456': false,
@@ -94,7 +95,6 @@ describe('settings', () => {
       writeFileSync(
         filePath,
         JSON.stringify({
-          autoRestart: true,
           discordThreadModeChannels: {
             '123': true,
             '456': false,
@@ -117,7 +117,7 @@ describe('settings', () => {
       writeFileSync(filePath, 'not json');
 
       const settings = loadSettings();
-      expect(settings).toEqual({ autoRestart: true });
+      expect(settings).toEqual({});
     });
 
     it('should use cached value on second call', () => {
@@ -129,14 +129,14 @@ describe('settings', () => {
 
   describe('saveSettings', () => {
     it('should save and return merged settings', () => {
-      const result = saveSettings({ autoRestart: false });
-      expect(result.autoRestart).toBe(false);
+      const result = saveSettings({ discordAutoReplyChannels: { '123': true } });
+      expect(result.discordAutoReplyChannels).toEqual({ '123': true });
 
       // ファイルに書き込まれたか確認
       const filePath = join(tempDir, 'settings.json');
       const raw = readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(raw);
-      expect(parsed.autoRestart).toBe(false);
+      expect(parsed.discordAutoReplyChannels).toEqual({ '123': true });
     });
 
     it('should save Discord completion notification channel settings', () => {
@@ -183,41 +183,33 @@ describe('settings', () => {
     });
 
     it('should merge with existing settings', () => {
-      saveSettings({ autoRestart: false });
+      saveSettings({ discordAutoReplyChannels: { '123': true } });
 
       clearSettingsCache();
       initSettings(tempDir);
 
-      // autoRestart以外のフィールドが将来追加されてもマージされる
+      // 既存フィールドが将来追加されてもマージされる
       const loaded = loadSettings();
-      expect(loaded.autoRestart).toBe(false);
+      expect(loaded.discordAutoReplyChannels).toEqual({ '123': true });
     });
 
     it('should update cache after save', () => {
-      saveSettings({ autoRestart: false });
+      saveSettings({ discordAutoReplyChannels: { '123': true } });
       const loaded = loadSettings();
-      expect(loaded.autoRestart).toBe(false);
+      expect(loaded.discordAutoReplyChannels).toEqual({ '123': true });
     });
   });
 
   describe('formatSettings', () => {
     it('should format settings with ON status', () => {
-      const result = formatSettings({ autoRestart: true });
-      expect(result).toContain('✅ ON');
-      expect(result).toContain('自動再起動');
+      const result = formatSettings({});
       expect(result).toContain('Discordメンションなし応答チャンネル設定: 0件');
       expect(result).toContain('Discord完了通知チャンネル設定: 0件');
       expect(result).toContain('Discordスレッドモードチャンネル設定: 0件');
     });
 
-    it('should format settings with OFF status', () => {
-      const result = formatSettings({ autoRestart: false });
-      expect(result).toContain('❌ OFF');
-    });
-
     it('should include Discord completion notification channel count', () => {
       const result = formatSettings({
-        autoRestart: true,
         discordCompletionNotifyChannels: { '123': 'mention', '456': 'off' },
       });
       expect(result).toContain('Discord完了通知チャンネル設定: 2件');
@@ -225,7 +217,6 @@ describe('settings', () => {
 
     it('should include Discord auto-reply channel count', () => {
       const result = formatSettings({
-        autoRestart: true,
         discordAutoReplyChannels: { '123': true, '456': true },
       });
       expect(result).toContain('Discordメンションなし応答チャンネル設定: 2件');
@@ -233,7 +224,6 @@ describe('settings', () => {
 
     it('should include Discord thread mode channel count', () => {
       const result = formatSettings({
-        autoRestart: true,
         discordThreadModeChannels: { '123': true, '456': false },
       });
       expect(result).toContain('Discordスレッドモードチャンネル設定: 2件');
@@ -243,7 +233,7 @@ describe('settings', () => {
   describe('getChannelAutoReply', () => {
     it('should prefer channel setting', () => {
       const enabled = getChannelAutoReply(
-        { autoRestart: true, discordAutoReplyChannels: { '123': true } },
+        { discordAutoReplyChannels: { '123': true } },
         '123',
         false
       );
@@ -251,7 +241,7 @@ describe('settings', () => {
     });
 
     it('should fall back to default setting', () => {
-      const enabled = getChannelAutoReply({ autoRestart: true }, '123', false);
+      const enabled = getChannelAutoReply({}, '123', false);
       expect(enabled).toBe(false);
     });
   });
@@ -259,7 +249,7 @@ describe('settings', () => {
   describe('getChannelCompletionNotifyMode', () => {
     it('should prefer channel override', () => {
       const mode = getChannelCompletionNotifyMode(
-        { autoRestart: true, discordCompletionNotifyChannels: { '123': 'mention' } },
+        { discordCompletionNotifyChannels: { '123': 'mention' } },
         '123',
         'off'
       );
@@ -267,7 +257,7 @@ describe('settings', () => {
     });
 
     it('should fall back to default mode', () => {
-      const mode = getChannelCompletionNotifyMode({ autoRestart: true }, '123', 'message');
+      const mode = getChannelCompletionNotifyMode({}, '123', 'message');
       expect(mode).toBe('message');
     });
   });
@@ -275,7 +265,7 @@ describe('settings', () => {
   describe('getChannelThreadMode', () => {
     it('should prefer channel override', () => {
       const mode = getChannelThreadMode(
-        { autoRestart: true, discordThreadModeChannels: { '123': true } },
+        { discordThreadModeChannels: { '123': true } },
         '123',
         false
       );
@@ -283,7 +273,7 @@ describe('settings', () => {
     });
 
     it('should fall back to default mode', () => {
-      const mode = getChannelThreadMode({ autoRestart: true }, '123', true);
+      const mode = getChannelThreadMode({}, '123', true);
       expect(mode).toBe(true);
     });
   });

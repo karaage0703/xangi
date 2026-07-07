@@ -28,6 +28,7 @@ import { registerDiscordMessageHandlers } from './discord/message-handler.js';
 import { finalizeActiveStreams } from './stream-finalizer.js';
 import { registerDiscordSchedulerBridge } from './discord/scheduler-bridge.js';
 import { runShutdownCleanup } from './shutdown.js';
+import { getSelfLifecyclePermission } from './self-lifecycle.js';
 dotenvConfig({ override: true });
 
 /**
@@ -137,8 +138,8 @@ async function main() {
 
   // 設定を初期化（dataDir 配下の settings.json を使用）
   initSettings(dataDir);
-  const initialSettings = loadSettings();
-  console.log(`[xangi] Settings loaded: autoRestart=${initialSettings.autoRestart}`);
+  loadSettings();
+  console.log(`[xangi] Self lifecycle permission: ${getSelfLifecyclePermission()}`);
 
   // スケジューラを初期化（ワークスペースの .xangi を使用）
   const scheduler = new Scheduler(dataDir);

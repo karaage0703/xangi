@@ -44,13 +44,17 @@ import {
   discordProcessingMessages,
   discordToolHistoryByMessageId,
 } from './ui.js';
-import { appendToolHistory, addToolHistory } from './tool-history.js';
+import { appendToolHistory, addToolHistory } from '../tool-history.js';
 import {
   fetchDiscordLinkContent,
   fetchReplyContent,
   fetchChannelMessages,
   annotateChannelMentions,
 } from './message-utils.js';
+
+export function shouldProcessDiscordMessage(input: { system?: boolean }): boolean {
+  return !input.system;
+}
 
 export async function processPrompt(
   message: Message,
@@ -577,6 +581,11 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
 
   // メッセージ処理
   client.on(Events.MessageCreate, async (message) => {
+    if (!shouldProcessDiscordMessage({ system: message.system })) {
+      console.log(`[xangi] Skipping Discord system message: ${message.id}`);
+      return;
+    }
+
     let isFromAllowedBot = false;
     if (message.author.bot) {
       // 自分自身のメッセージには絶対に反応しない (無限ループ防止)

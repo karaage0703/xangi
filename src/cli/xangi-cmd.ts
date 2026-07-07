@@ -117,7 +117,10 @@ async function requestToolServer(command: string, flags: Record<string, string>)
   return body.result ?? '';
 }
 
-function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
+function parseArgs(argv: string[]): {
+  command: string;
+  flags: Record<string, string>;
+} {
   const command = argv[2] || '';
   const flags: Record<string, string> = {};
   for (let i = 3; i < argv.length; i++) {

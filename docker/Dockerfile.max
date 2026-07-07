@@ -49,8 +49,10 @@ RUN chmod +x /app/bin/xangi-cmd
 # Install Codex CLI globally (as root)
 RUN npm install -g @openai/codex
 
-# Create directories for node user
-RUN mkdir -p /home/node/.config/gh && chown -R node:node /home/node/.config
+# Create directories for node user. The named volume mounted at /home/node/.codex
+# inherits the ownership from this image directory on first creation.
+RUN mkdir -p /home/node/.config/gh /home/node/.codex \
+    && chown -R node:node /home/node/.config /home/node/.codex
 
 # Switch to node user for Claude Code CLI installation
 USER node

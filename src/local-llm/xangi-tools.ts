@@ -306,7 +306,8 @@ const mediaSendHandler: ToolHandler = {
 
 const systemRestartHandler: ToolHandler = {
   name: 'system_restart',
-  description: 'xangiを再起動する（autoRestartが有効な場合のみ）。',
+  description:
+    'xangiを再起動する（管理者が.envでXANGI_SELF_LIFECYCLE=restart-onlyを設定している場合のみ）。',
   parameters: {
     type: 'object',
     properties: {},

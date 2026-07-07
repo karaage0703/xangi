@@ -1,0 +1,33 @@
+#!/bin/bash
+# xangi — user-facing terminal client for xangi sessions
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" == /* ]]; then
+    SOURCE="$TARGET"
+  else
+    SOURCE="$SCRIPT_DIR/$TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ "${XANGI_USE_TSX:-}" = "true" ] && [ -f "$ROOT_DIR/src/cli/xangi.ts" ]; then
+  exec npx tsx "$ROOT_DIR/src/cli/xangi.ts" "$@"
+fi
+
+if [ -f "$ROOT_DIR/dist/cli/xangi.js" ]; then
+  exec node "$ROOT_DIR/dist/cli/xangi.js" "$@"
+fi
+
+if [ -f "$ROOT_DIR/src/cli/xangi.ts" ]; then
+  exec npx tsx "$ROOT_DIR/src/cli/xangi.ts" "$@"
+fi
+
+echo "Error: dist/cli/xangi.js not found. Run npm run build first." >&2
+exit 1

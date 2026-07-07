@@ -1,5 +1,5 @@
-import { isGitHubAppEnabled } from '../github-auth.js';
-import { capToolLines } from '../stream-session.js';
+import { isGitHubAppEnabled } from './github-auth.js';
+import { capToolLines } from './stream-session.js';
 
 /**
  * ツール入力の要約を生成（Discord表示用）
@@ -60,6 +60,12 @@ export function appendToolHistory(text: string, toolHistory: string[], suffix = 
   // (StreamSession 側で cap 済みのリストはそのまま通る)
   const toolDisplay = capToolLines(toolHistory).join('\n');
   return `${toolDisplay}${base ? `\n\n${base}` : ''}${suffix}`;
+}
+
+export function formatToolHistoryDisclosure(toolHistory: string[]): string {
+  const lines = capToolLines(toolHistory);
+  if (lines.length === 0) return 'ツール履歴はありません';
+  return `ツール履歴\n${lines.join('\n')}`;
 }
 
 export function formatInternalContextCommand(command: string): string | null {

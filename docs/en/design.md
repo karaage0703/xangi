@@ -35,13 +35,13 @@ flowchart LR
 
 ### Layer Structure
 
-| Layer | Role | Implementation |
-|-------|------|----------------|
-| Chat | User interface | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk |
-| xangi | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts |
-| Backend Resolution | Per-channel backend resolution | backend-resolver.ts, settings.ts |
-| AI Backend | Actual AI processing | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
-| Workspace | Files & skills | skills/, AGENTS.md, local docs |
+| Layer              | Role                                     | Implementation                                                                           |
+| ------------------ | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Chat               | User interface                           | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                  |
+| xangi              | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                    |
+| Backend Resolution | Per-channel backend resolution           | backend-resolver.ts, settings.ts                                                         |
+| AI Backend         | Actual AI processing                     | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
+| Workspace          | Files & skills                           | skills/, AGENTS.md, local docs                                                           |
 
 ## Components
 
@@ -58,7 +58,7 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 
 Based on `discord.js` v14. Split into modules by responsibility:
 
-- `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `discordAutoReplyChannels` in `settings.json` → forwarding to the Runner)
+- `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `discordAutoReplyChannels` in `settings.json` → forwarding to the Runner; Discord system messages are ignored)
 - `slash-commands.ts` — Slash command definitions and interaction handling
 - `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions
 - `ui.ts` — Button rows (Stop / extend / remaining-time display) and processing-message management
@@ -76,7 +76,11 @@ Behavior:
 
 Based on `@slack/bolt`.
 
-- Handles `app_mention` and DMs; per-thread session isolation (`contextKey = slack:<channelId>:<threadTs>`)
+- Handles `app_mention` and DMs; per-thread session isolation (`contextKey = <channelId>:<threadTs>`)
+- Handles follow-up messages without mentions inside active threads that xangi started from a mention, while ignoring unrelated thread replies in non-auto-reply channels
+- Keeps Slack API posting on `channelId`, but uses `runKey = contextKey` for runner / timeout / Stop / processing state so separate threads in the same Slack channel do not share an execution slot
+- Prevents duplicate runs with a per-`runKey` busy lock, message timestamp de-dupe, and message-handler bot-mention skip so `app_mention` owns mention events
+- Shows formatted tool-history lines while a Slack turn is running, then hides the final history behind a `Tools` button visible only to the clicking user
 - Slash commands and reactions supported
 - Stop / extend / remaining-time button rows are refreshed every second via `chat.update`
 - For non-thread turns, xangi posts a separate `✅ 完了しました（...）` completion notice after long runs to improve visibility
@@ -182,18 +186,18 @@ A shared helper that centralizes per-channel timeout state for every runner:
 
 ```typescript
 class TimeoutController extends EventEmitter {
-  start(channelId, onTimeout): void;       // start request + emit 'timeout-started'
-  clear(channelId, reason): void;          // completed / error + emit 'timeout-cleared'
+  start(channelId, onTimeout): void; // start request + emit 'timeout-started'
+  clear(channelId, reason): void; // completed / error + emit 'timeout-cleared'
   extend(channelId, additionalMs): ExtendTimeoutResult; // extend + emit 'timeout-extended'
-  getState(channelId): TimeoutState;       // UI consumption
-  clearAll(reason): void;                  // shutdown cleanup
+  getState(channelId): TimeoutState; // UI consumption
+  clearAll(reason): void; // shutdown cleanup
 }
 ```
 
 - `start()` schedules `setTimeout(onTimeout, baseTimeoutMs)`
 - `extend()` reschedules the timer and rejects with `max_timeout_exceeded` if the new
   deadline would exceed `maxTimeoutAt` (request start time + 1 hour)
-- `onTimeout` looks up the *current* AbortController / child process so that retries
+- `onTimeout` looks up the _current_ AbortController / child process so that retries
   swapping out the underlying resource still get killed on timeout
 
 ### Dynamic Runner Manager (dynamic-runner.ts)
@@ -209,6 +213,7 @@ Message received
 ```
 
 BackendResolver priority:
+
 1. channelOverrides set via `/backend set` (in-memory, persisted to CHANNEL_OVERRIDES in `.env`)
 2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`)
 
@@ -224,28 +229,28 @@ Manages the system prompts that xangi injects into AI CLIs:
   - Slack-specific (`xangi-commands-slack.ts`): Slack-specific operations
   - Automatic platform detection: If only Discord is active, only Discord-specific commands are injected (saves tokens)
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
-- **Tool-use display** — Discord tool-use history is controlled by `DISCORD_TOOL_HISTORY_MODE=button|inline|off`. The default is `button`: completed messages do not include the history inline, and a `Tools` button shows it only to the user who clicked it via an ephemeral response. `DISCORD_SHOW_TOOL_BUTTON=false` hides the `Tools` button even in `button` mode. `inline` keeps the previous top-of-message display, and `off` disables tool history display. For compatibility, `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. While a turn is running, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. After completion it normalizes internal context tools into short labels such as `workspace-RAG検索`; Bash/exec final history strips wrappers such as `/bin/bash -lc` and shows a shorter command summary. Live Bash/exec tool argument display is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
+- **Tool-use display** — Discord tool-use history is controlled by `DISCORD_TOOL_HISTORY_MODE=button|inline|off`. The default is `button`: completed messages do not include the history inline, and a `Tools` button shows it only to the user who clicked it via an ephemeral response. Slack uses the same `Tools` button pattern and does not inline tool history in the completed message. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Tools button for Discord even in `button` mode. `inline` keeps the previous top-of-message display, and `off` disables tool history display. For compatibility, `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. While a turn is running, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. After completion it normalizes internal context tools into short labels such as `workspace-RAG検索`; Bash/exec final history strips wrappers such as `/bin/bash -lc` and shows a shorter command summary. Live Bash/exec tool argument display is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
 
 AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to each AI CLI's auto-loading feature:
 
-| CLI | Auto-loaded Files | Injection Method |
-|-----|-------------------|------------------|
-| Claude Code | `CLAUDE.md` | `--append-system-prompt` (one-time) |
-| Codex CLI | `AGENTS.md` | Embedded via `<system-context>` tag |
-| Cursor CLI | `AGENTS.md` | Auto-loaded by CLI (no xangi-side injection) |
-| Local LLM | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded) |
+| CLI         | Auto-loaded Files        | Injection Method                                                                                         |
+| ----------- | ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Claude Code | `CLAUDE.md`              | `--append-system-prompt` (one-time)                                                                      |
+| Codex CLI   | `AGENTS.md`              | Embedded via `<system-context>` tag                                                                      |
+| Cursor CLI  | `AGENTS.md`              | Auto-loaded by CLI (no xangi-side injection)                                                             |
+| Local LLM   | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded) |
 
 ### AI CLI Adapters
 
-| File | Supported CLI | Features |
-|------|---------------|----------|
-| claude-code.ts | Claude Code | Streaming support, session management |
+| File                 | Supported CLI            | Features                                                                               |
+| -------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
+| claude-code.ts       | Claude Code              | Streaming support, session management                                                  |
 | persistent-runner.ts | Claude Code (persistent) | Persistent process via `--input-format=stream-json`, queue management, circuit breaker |
-| codex-cli.ts | Codex CLI | Made by OpenAI, 0.98.0 compatible, cancel support |
-| cursor-cli.ts | Cursor CLI | `cursor-agent` command, JSON/stream-json, tool call display support |
-| grok-cli.ts | Grok CLI | xAI `grok` command, json/streaming-json, tool call display support |
-| antigravity-cli.ts | Antigravity CLI | Google `agy` command, headless `-p`, final-response streaming fallback |
-| local-llm/runner.ts | Local LLM | Direct calls to local LLMs like Ollama, tool execution & streaming support |
+| codex-cli.ts         | Codex CLI                | Made by OpenAI, 0.98.0 compatible, cancel support                                      |
+| cursor-cli.ts        | Cursor CLI               | `cursor-agent` command, JSON/stream-json, tool call display support                    |
+| grok-cli.ts          | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
+| antigravity-cli.ts   | Antigravity CLI          | Google `agy` command, headless `-p`, final-response streaming fallback                 |
+| local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
@@ -293,11 +298,11 @@ adapter only implements "command argument building" and "JSONL event interpretat
 
 The LLM client has two API paths: Ollama native API and OpenAI-compatible API. Note the different message formats for tool calling:
 
-| Item | OpenAI-compatible API | Ollama Native API |
-|------|----------------------|-------------------|
-| Assistant tool calls | Identified by `tool_calls[].id` | Identified by `tool_calls[].function` |
-| Tool message association | `tool_call_id` (by ID) | `tool_name` (by name) |
-| Conversion function | `toOpenAIMessages()` | `toOllamaMessages()` |
+| Item                     | OpenAI-compatible API           | Ollama Native API                     |
+| ------------------------ | ------------------------------- | ------------------------------------- |
+| Assistant tool calls     | Identified by `tool_calls[].id` | Identified by `tool_calls[].function` |
+| Tool message association | `tool_call_id` (by ID)          | `tool_name` (by name)                 |
+| Conversion function      | `toOpenAIMessages()`            | `toOllamaMessages()`                  |
 
 In the Ollama native path, a reverse lookup map from `toolCallId` to `tool_name` is used for association. `toOllamaMessages()` is shared by both `chatOllamaNative` and `chatStreamOllamaNative` so tool history is never dropped on the streaming path.
 
@@ -307,12 +312,12 @@ In the Ollama native path, a reverse lookup map from `toolCallId` to `tool_name`
 
 `LLMChatOptions.toolChoice`:
 
-| Value | Purpose |
-|---|---|
-| `'auto'` | LLM decides (OpenAI default) |
-| `'none'` | Forces text-only reply (used for the final answer) |
-| `'required'` | Forces a tool call |
-| `{ type: 'function', function: { name } }` | Forces a specific tool |
+| Value                                      | Purpose                                            |
+| ------------------------------------------ | -------------------------------------------------- |
+| `'auto'`                                   | LLM decides (OpenAI default)                       |
+| `'none'`                                   | Forces text-only reply (used for the final answer) |
+| `'required'`                               | Forces a tool call                                 |
+| `{ type: 'function', function: { name } }` | Forces a specific tool                             |
 
 `executeStreamLoop` sets `toolChoice='none'` on the final chatStream call so the model cannot try to call another tool — preventing the pseudo tool_call text leak after the tool loop has completed. Codex CLI's Responses API sends streaming and tools/tool_choice as a single integrated request (`codex-rs/core/src/client.rs`); xangi-dev stays on Chat Completions but achieves the equivalent effect via `tool_choice='none'`.
 
@@ -326,11 +331,11 @@ The Ollama native API does not officially support the OpenAI `tool_choice` param
 
 To ensure the four paths (`chat` / `chatStream` × OpenAI / Ollama) inject tools and convert messages identically with no drift, the following helpers are consolidated at the top of `src/local-llm/llm-client.ts`:
 
-| Helper | Purpose | Callers |
-|---|---|---|
-| `applyOpenAITools(body, options)` | Inject OpenAI-style tools/tool_choice | `chatOpenAI`, `chatStream` (OpenAI branch) |
-| `applyOllamaTools(body, options)` | Inject Ollama-style tools + emulate `tool_choice='none'` | `chatOllamaNative`, `chatStreamOllamaNative` |
-| `toOllamaMessages(messages)` | Convert LLMMessage → Ollama format (images / tool_calls / tool_name) | `chatOllamaNative`, `chatStreamOllamaNative` |
+| Helper                            | Purpose                                                              | Callers                                      |
+| --------------------------------- | -------------------------------------------------------------------- | -------------------------------------------- |
+| `applyOpenAITools(body, options)` | Inject OpenAI-style tools/tool_choice                                | `chatOpenAI`, `chatStream` (OpenAI branch)   |
+| `applyOllamaTools(body, options)` | Inject Ollama-style tools + emulate `tool_choice='none'`             | `chatOllamaNative`, `chatStreamOllamaNative` |
+| `toOllamaMessages(messages)`      | Convert LLMMessage → Ollama format (images / tool_calls / tool_name) | `chatOllamaNative`, `chatStreamOllamaNative` |
 
 Adding new behavior (extra tool_choice values, new message fields, new providers) only requires touching one helper to reflect across all four paths. The test suite (`tests/local-llm-client-ollama-tools.test.ts`) covers both the helper units and the Ollama payload at the integration level.
 
@@ -356,15 +361,15 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≈ 3 c
 
 Example: with `NUM_CTX=32768` → `(32768 - 8000 - 4096 - 1000) * 3 = 59016 chars`.
 
-| env | Role | Default |
-|---|---|---|
-| `LOCAL_LLM_CONTEXT_MAX_CHARS` | Explicit override (skip derivation) | Auto-derived |
-| `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt | `8000` |
-| `LOCAL_LLM_OUTPUT_BUDGET_TOKENS` | Max output tokens per request | `4096` |
-| `LOCAL_LLM_SAFETY_MARGIN_TOKENS` | Safety margin | `1000` |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST` | Most recent N messages are never trimmed | `10` |
-| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS` | Tool result truncation | `4000` |
-| `LOCAL_LLM_MAX_SESSION_MESSAGES` | Max messages per session | `50` |
+| env                                     | Role                                     | Default      |
+| --------------------------------------- | ---------------------------------------- | ------------ |
+| `LOCAL_LLM_CONTEXT_MAX_CHARS`           | Explicit override (skip derivation)      | Auto-derived |
+| `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt    | `8000`       |
+| `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | Max output tokens per request            | `4096`       |
+| `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | Safety margin                            | `1000`       |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | Most recent N messages are never trimmed | `10`         |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | Tool result truncation                   | `4000`       |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | Max messages per session                 | `50`         |
 
 The `ContextBudget` value includes derivation details (`source: 'explicit' | 'derived'`, per-token budgets) and is logged at startup for tuning/debugging traceability.
 
@@ -384,11 +389,11 @@ The `ContextBudget` value includes derivation details (`source: 'explicit' | 'de
 
 `MODE_DEFAULTS` (runner.ts):
 
-| mode | tools | skills | xangiCommands | triggers |
-|---|---|---|---|---|
-| `agent` | ✅ | ✅ | ✅ | – |
-| `lite`  | ✅ | – | ✅ | ✅ |
-| `chat`  | – | – | – | – |
+| mode    | tools | skills | xangiCommands | triggers |
+| ------- | ----- | ------ | ------------- | -------- |
+| `agent` | ✅    | ✅     | ✅            | –        |
+| `lite`  | ✅    | –      | ✅            | ✅       |
+| `chat`  | –     | –      | –             | –        |
 
 **Per-call application flow:**
 
@@ -420,11 +425,11 @@ Design pillars:
 
 `tool_search` scoring (`scoreToolMatch`):
 
-| Match type | Score |
-|---|---|
-| Exact name match | 100 |
-| Substring of name | 50 |
-| Query token in name | +20 / token |
+| Match type                 | Score       |
+| -------------------------- | ----------- |
+| Exact name match           | 100         |
+| Substring of name          | 50          |
+| Query token in name        | +20 / token |
 | Query token in description | +10 / token |
 
 Top N results (`LOCAL_LLM_TOOL_SEARCH_LIMIT`, default 8) are sorted by descending score and added to the session via the `context.activateTools(names)` callback.
@@ -435,7 +440,7 @@ Top N results (`LOCAL_LLM_TOOL_SEARCH_LIMIT`, default 8) are sorted by descendin
 interface ToolContext {
   workspace: string;
   channelId?: string;
-  activateTools?: (names: string[]) => void;  // invoked from tool_search
+  activateTools?: (names: string[]) => void; // invoked from tool_search
 }
 ```
 
@@ -443,10 +448,10 @@ interface ToolContext {
 
 env summary:
 
-| env | Role | Default |
-|---|---|---|
-| `LOCAL_LLM_TOOL_SEARCH_ENABLED` | Enable deferred loading | `true` |
-| `LOCAL_LLM_TOOL_SEARCH_LIMIT` | Max hits per search | `8` |
+| env                             | Role                                                          | Default                    |
+| ------------------------------- | ------------------------------------------------------------- | -------------------------- |
+| `LOCAL_LLM_TOOL_SEARCH_ENABLED` | Enable deferred loading                                       | `true`                     |
+| `LOCAL_LLM_TOOL_SEARCH_LIMIT`   | Max hits per search                                           | `8`                        |
 | `LOCAL_LLM_ALWAYS_LOADED_TOOLS` | Always-loaded tool names (CSV); `tool_search` is always added | builtin core + tool_search |
 
 To revert to the legacy behaviour (all tools always loaded), set `LOCAL_LLM_TOOL_SEARCH_ENABLED=false`.
@@ -457,12 +462,12 @@ Trade-off: a deferred tool's first call requires a `tool_search` round-trip → 
 
 Some local LLMs loop on the same `tool_search` query up to `MAX_TOOL_ROUNDS` when no useful results come back, then hallucinate pseudo tool_call text (`<|channel>thought\ncall:fn{args}<channel|>` / bare `call:fn{args}`) in the final chatStream — leaking drift into the final response. A naive post-process strip would just hide the symptom; the LLM never learns it produced invalid output and re-emits the same drift next turn. Instead we **feed the failure back to the LLM and let it self-correct**.
 
-| Step | Trigger | Behaviour |
-|---|---|---|
-| **A** (`tools.ts: toolSearchToolHandler`) | `tool_search` executes | Match against **skills** in addition to tools. When a skill matches, return `read("skills/<name>/SKILL.md")` as next-step guidance. On no matches, return guidance: don't repeat the same query, load the skill directly via `read`, or respond to the user in plain text. |
-| **B** (`runner.ts: recordToolCallAndCheckLoop`) | Same `(name, args)` tool_call repeated 3 times consecutively | Skip `executeTool` and return a synthetic error result (`Tool '...' has been called 3 times consecutively...`) instructing the LLM to try different args, a different tool, or plain-text response. |
+| Step                                                                                                                         | Trigger                                                                                                                                 | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **A** (`tools.ts: toolSearchToolHandler`)                                                                                    | `tool_search` executes                                                                                                                  | Match against **skills** in addition to tools. When a skill matches, return `read("skills/<name>/SKILL.md")` as next-step guidance. On no matches, return guidance: don't repeat the same query, load the skill directly via `read`, or respond to the user in plain text.                                                                                                                                                                                                                                                                                                                                                           |
+| **B** (`runner.ts: recordToolCallAndCheckLoop`)                                                                              | Same `(name, args)` tool_call repeated 3 times consecutively                                                                            | Skip `executeTool` and return a synthetic error result (`Tool '...' has been called 3 times consecutively...`) instructing the LLM to try different args, a different tool, or plain-text response.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **C** (`runner.ts` final chatStream + `pseudo-toolcall.ts: parsePseudoToolCall / isSafeForRescue / buildStructuredFeedback`) | Final chatStream output contains **strict drift** (`call:fn{}` / `<\|channel\|>...<\|channel\|>` / `<\|tool_call\|>...<\|tool_call\|>`) | Try to parse `(name, args)` from the drift. **(i) Parse OK + read-only allowlist OK** → run the parsed tool with the real `executeTool`, inject the result as `[RESCUED TOOL RESULT]` system message, and regenerate. **(ii) Parse OK + side-effect/unsafe** → push a structured error record `{kind, attempted_tool, attempted_args, reason, hint, allowed_actions}` wrapped in `[SYSTEM ERROR RECORD]` delimiters and regenerate. **(iii) Parse fail / idempotent-cache HIT / loop detected** → return the matching `kind` (`unparseable_pseudo_call` / `already_executed`) as a structured record. Repeated up to `Kmax=2` times. |
-| **D** (`runner.ts` output replacement + `FRIENDLY_FALLBACK_MESSAGE`) | Step C exhausted `Kmax=2` retries and strict drift persists | After `stripPseudoToolCalls`, use any meaningful leftover text; if empty, replace with `FRIENDLY_FALLBACK_MESSAGE` ("ごめん、うまく応答を組み立てられなかった…"). Raw content is preserved via `console.warn` for debugging. |
+| **D** (`runner.ts` output replacement + `FRIENDLY_FALLBACK_MESSAGE`)                                                         | Step C exhausted `Kmax=2` retries and strict drift persists                                                                             | After `stripPseudoToolCalls`, use any meaningful leftover text; if empty, replace with `FRIENDLY_FALLBACK_MESSAGE` ("ごめん、うまく応答を組み立てられなかった…"). Raw content is preserved via `console.warn` for debugging.                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Drift classification:
 
@@ -475,14 +480,14 @@ The session tracks `recentToolCallSigs: string[]` (capped at 8, FIFO). `toolCall
 
 Step B (exact 3-times) is the starting point; six cooperating mechanisms cover "same tool being repeated", "pseudo tool_call drift surfacing to Discord", "bot intent lost on drift", and "context bloat from accumulated tool results":
 
-| Mechanism | Trigger | Action |
-|---|---|---|
-| exact detection | Same `(name, args)` tool_call repeated 3 times consecutively (`REPEATED_TOOL_CALL_THRESHOLD=3`) | `repeatedToolCallErrorMessage`: force feedback "try different args / a different tool / plain-text answer" |
-| idempotent cache | `exec` / `bash` / `python` `command` / `script` / `code` contains an idempotent pattern (`wc -[clmw]` / `base64` / `(md5\|sha1\|sha224\|sha256\|sha384\|sha512)sum` / `urllib.parse.(quote\|unquote)` / `hashlib` / `printf '%[bs]'`) and no side-effect pattern (`> redirect` / `rm` / `mv` / `curl` / `git` / `docker` / `kill` etc.) | Skip `exec` from the second call on and return the cached result. `Session.idempotentResultCache: Map<string, string>` (FIFO, capped at `IDEMPOTENT_CACHE_LIMIT=32`) |
-| similar detection | The trigram Jaccard similarity of the normalised signature (lowercase / digits→`n` / ASCII punctuation→space / collapsed whitespace) against the last `RECENT_TOOL_CALL_BUFFER=8` entries clears `SIMILAR_SIGNATURE_THRESHOLD=0.85` for `SIMILAR_LOOP_MATCH_COUNT=2` or more entries | `similarToolCallErrorMessage`: states explicitly that small wording tweaks won't change the result, prompts a different intent / tool / stop. `Session.recentNormSigs: string[]` keeps the normalised history |
-| streaming hold buffer | While streaming, a partial drift pattern (`<\|channel` open only / trailing `call:fn{...` / trailing `thought\n`) appears at the buffer tail | Hold the partial section (don't flush to Discord). On the next chunk, drop it if it becomes a fully matched strict drift; release it once a normal-text boundary is reached. At stream end, `flush()` releases any remainder into the final `fullText` for Step C/D verification |
-| context prune | During `trimSession`, any `tool` message older than the last `contextKeepLast` (=10) entries | Replace the old tool result body with a one-line summary `[<tool>] (M chars, pruned from old turn)`. Multiple `read` calls on the same file path keep only the latest body; older ones become `(deduped - see latest read of same path below)`. Skips short results (< 200 chars) and already-pruned entries, making it idempotent. Improves KV-cache utilisation. |
-| pseudo tool_call rescue + structured feedback | Strict drift detected in the final chatStream (Step C) | Parse `(name, args)` from the drift → check `isSafeForRescue`. **(i) Safe** → run the parsed tool with the real `executeTool` and inject the result as `[RESCUED TOOL RESULT]` system message. **(ii) Unsafe** → push a structured `{kind, attempted_tool, attempted_args, reason, hint, allowed_actions}` record wrapped in `[SYSTEM ERROR RECORD]` delimiters. **(iii) Parse fail / cache HIT / loop detected** → return the matching `kind` (`unparseable_pseudo_call` / `already_executed`) record. Loop up to `Kmax=2`; on exhaustion fall through to `FRIENDLY_FALLBACK_MESSAGE` (Step D) |
+| Mechanism                                     | Trigger                                                                                                                                                                                                                                                                                                                                 | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| exact detection                               | Same `(name, args)` tool_call repeated 3 times consecutively (`REPEATED_TOOL_CALL_THRESHOLD=3`)                                                                                                                                                                                                                                         | `repeatedToolCallErrorMessage`: force feedback "try different args / a different tool / plain-text answer"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| idempotent cache                              | `exec` / `bash` / `python` `command` / `script` / `code` contains an idempotent pattern (`wc -[clmw]` / `base64` / `(md5\|sha1\|sha224\|sha256\|sha384\|sha512)sum` / `urllib.parse.(quote\|unquote)` / `hashlib` / `printf '%[bs]'`) and no side-effect pattern (`> redirect` / `rm` / `mv` / `curl` / `git` / `docker` / `kill` etc.) | Skip `exec` from the second call on and return the cached result. `Session.idempotentResultCache: Map<string, string>` (FIFO, capped at `IDEMPOTENT_CACHE_LIMIT=32`)                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| similar detection                             | The trigram Jaccard similarity of the normalised signature (lowercase / digits→`n` / ASCII punctuation→space / collapsed whitespace) against the last `RECENT_TOOL_CALL_BUFFER=8` entries clears `SIMILAR_SIGNATURE_THRESHOLD=0.85` for `SIMILAR_LOOP_MATCH_COUNT=2` or more entries                                                    | `similarToolCallErrorMessage`: states explicitly that small wording tweaks won't change the result, prompts a different intent / tool / stop. `Session.recentNormSigs: string[]` keeps the normalised history                                                                                                                                                                                                                                                                                                                                                                                   |
+| streaming hold buffer                         | While streaming, a partial drift pattern (`<\|channel` open only / trailing `call:fn{...` / trailing `thought\n`) appears at the buffer tail                                                                                                                                                                                            | Hold the partial section (don't flush to Discord). On the next chunk, drop it if it becomes a fully matched strict drift; release it once a normal-text boundary is reached. At stream end, `flush()` releases any remainder into the final `fullText` for Step C/D verification                                                                                                                                                                                                                                                                                                                |
+| context prune                                 | During `trimSession`, any `tool` message older than the last `contextKeepLast` (=10) entries                                                                                                                                                                                                                                            | Replace the old tool result body with a one-line summary `[<tool>] (M chars, pruned from old turn)`. Multiple `read` calls on the same file path keep only the latest body; older ones become `(deduped - see latest read of same path below)`. Skips short results (< 200 chars) and already-pruned entries, making it idempotent. Improves KV-cache utilisation.                                                                                                                                                                                                                              |
+| pseudo tool_call rescue + structured feedback | Strict drift detected in the final chatStream (Step C)                                                                                                                                                                                                                                                                                  | Parse `(name, args)` from the drift → check `isSafeForRescue`. **(i) Safe** → run the parsed tool with the real `executeTool` and inject the result as `[RESCUED TOOL RESULT]` system message. **(ii) Unsafe** → push a structured `{kind, attempted_tool, attempted_args, reason, hint, allowed_actions}` record wrapped in `[SYSTEM ERROR RECORD]` delimiters. **(iii) Parse fail / cache HIT / loop detected** → return the matching `kind` (`unparseable_pseudo_call` / `already_executed`) record. Loop up to `Kmax=2`; on exhaustion fall through to `FRIENDLY_FALLBACK_MESSAGE` (Step D) |
 
 API: `recordToolCallAndDetectLoop(session, sig)` returns `{ kind: 'none' \| 'exact' \| 'similar', repeats? }` so `executeRunLoop` / `executeStreamLoop` can pick `repeatedToolCallErrorMessage` vs `similarToolCallErrorMessage` based on `kind`. `recordToolCallAndCheckLoop` is preserved as a boolean wrapper for backward compatibility. `compactOldToolResults(session, recentKeepCount)` returns `{ compactedCount, bytesReclaimed }` and runs at the top of `trimSession`. `parsePseudoToolCall(text)` decomposes `call:fn{args}` into `{name, args}` via anchored grammar (returns `null` on failure). `isSafeForRescue(name, args)` returns `{safe, reason?}`.
 
@@ -503,11 +508,11 @@ Design rationale: Step A's skill hinting is usually decisive — by surfacing "w
 
 `isSafeForRescue(name, args)` decides whether a parsed pseudo tool_call may be executed. We avoid a denylist approach (rejecting specific dangerous commands like `rm/curl/git`) because such lists are easy to bypass; instead, only an explicit allowlist is permitted:
 
-| Category | Allowed |
-|---|---|
-| Direct read-only tools | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
-| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}` |
-| Shell metacharacters | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject |
+| Category                    | Allowed                                                                                                                                                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Direct read-only tools      | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
+| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}`                |
+| Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                     |
 
 Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pseudo_format` structured error that nudges the LLM toward the proper function_calling structure.
 
@@ -524,7 +529,7 @@ Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pse
 
 #### Workspace hooks (Stop hook gate)
 
-While the multi-layer defenses guard the *shape* of tool calls, hooks verify the *consistency between the response content and actual tool execution*. At turn end, an external process (hook) receives the final response text and the list of executed tools; if it returns block, the feedback is injected as a system message and exactly one continuation round runs.
+While the multi-layer defenses guard the _shape_ of tool calls, hooks verify the _consistency between the response content and actual tool execution_. At turn end, an external process (hook) receives the final response text and the list of executed tools; if it returns block, the feedback is injected as a system message and exactly one continuation round runs.
 
 - The contract is compatible with the Stop hooks of Claude Code / Codex CLI (stdin JSON, exit 0 + `{"decision":"block","reason":"..."}` or exit 2 + stderr), so the same hook script can be shared across runtimes
 - As a xangi extension, the payload includes `tools_called` (names of tools actually executed this turn, in order). Since the harness itself knows about tool execution, hooks do not need to parse a transcript
@@ -572,18 +577,22 @@ Manages periodic execution and reminders:
 ```
 
 **Schedule Types:**
+
 - `cron`: Periodic execution via cron expressions
 - `once`: One-time reminder (executes once at a specified time)
 
 **Persistence:**
+
 - JSON file (`${DATA_DIR}/schedules.json`)
 - Monitors file changes for automatic reload (with debounce)
 
 **Timezone:**
+
 - Follows the server's system timezone (`TZ` environment variable)
 - In Docker environments, setting `TZ=Asia/Tokyo` etc. is recommended
 
 **Execution Resilience:**
+
 - Duplicate-fire guard: if a cron fires while the previous run of the same schedule is still in progress, the new fire is skipped (prevents duplicate runs / duplicate posts for long jobs)
 - Transient network errors (temporary DNS failures, connect timeouts, etc.) are retried once after a backoff. Agent-side timeouts and usage limits are not retried
 
@@ -600,12 +609,14 @@ AI CLI (Claude Code, etc.)
 ```
 
 **Port Management:**
+
 - The previously used port is saved in dataDir and reused across restarts (keeps stale `XANGI_TOOL_SERVER` references in resumed sessions working). Falls back to OS auto-assign if busy; `XANGI_TOOL_SERVER_PORT` pins a fixed port
 - The started URL is injected into child processes as `XANGI_TOOL_SERVER`
 - `xangi-cmd` connects using `XANGI_TOOL_SERVER`
 - Execution context such as the current channel ID is passed to tool-server via the `context` field of the HTTP request
 
 **Security:**
+
 - Secrets such as DISCORD_TOKEN remain inside the xangi process only
 - AI CLIs receive only safe environment variables via the whitelist in `safe-env.ts`
 - GitHub App private keys are loaded into memory at startup; token generation is handled via the tool-server's `/github-token` endpoint (only short-lived tokens are accessible)
@@ -623,11 +634,13 @@ External process (build script / CI / watcher cron)
 ```
 
 **Design decisions:**
+
 - Turn execution reuses the scheduler's `agentRunner` path. The per-platform run functions (thinking message, splitting, attachments) are already registered on the scheduler, so the trigger only needs `Scheduler.getAgentRunner(platform)`
 - The HTTP response (`202` + `triggerId`) is fire-and-forget and does not wait for the turn, so callers (build scripts etc.) are never blocked
 - A `⚡ trigger: <source>` label is posted to the channel first, making it visible what woke the agent
 
 **Security:**
+
 - Explicit opt-in via `TRIGGER_ENABLED` (default: false)
 - HTTP requests require Bearer auth with `XANGI_TRIGGER_TOKEN`. If the token is not configured, all requests are rejected even when enabled (the tool-server binds 0.0.0.0, so unauthenticated acceptance would allow arbitrary prompt injection over the network). Token comparison is constant-time
 - `xangi-cmd trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still requires the opt-in
@@ -758,7 +771,7 @@ Hides AI CLI implementation details and makes them interchangeable:
 
 ```typescript
 // Switch backends via configuration
-AGENT_BACKEND=claude-code  // or codex / cursor / grok / antigravity / local-llm
+AGENT_BACKEND = claude - code; // or codex / cursor / grok / antigravity / local-llm
 ```
 
 When new AI CLIs emerge in the future, support can be added simply by creating a new adapter.
@@ -767,17 +780,17 @@ When new AI CLIs emerge in the future, support can be added simply by creating a
 
 Detects and automatically executes special commands output by the AI:
 
-| Method | Command Example | Action |
-|--------|----------------|--------|
-| CLI tool | `xangi-cmd discord_send --channel ID --message "..."` | Discord operations |
-| CLI tool | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | Button-attached message |
-| CLI tool | `xangi-cmd schedule_add --input "Daily 9:00 ..."` | Schedule operations |
-| CLI tool | `xangi-cmd system_restart` | Process restart |
-| Text parsing | `MEDIA:/path/to/file` | File sending |
-| Text parsing | `\n===\n` | Message splitting |
-| Slash command | `/autoreply` | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`) |
-| Slash command | `/respondtobots` | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`) |
-| Slash command | `/threadmode` | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
+| Method        | Command Example                                                          | Action                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI tool      | `xangi-cmd discord_send --channel ID --message "..."`                    | Discord operations                                                                                                                                |
+| CLI tool      | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | Button-attached message                                                                                                                           |
+| CLI tool      | `xangi-cmd schedule_add --input "Daily 9:00 ..."`                        | Schedule operations                                                                                                                               |
+| CLI tool      | `xangi-cmd system_restart`                                               | Process restart                                                                                                                                   |
+| Text parsing  | `MEDIA:/path/to/file`                                                    | File sending                                                                                                                                      |
+| Text parsing  | `\n===\n`                                                                | Message splitting                                                                                                                                 |
+| Slash command | `/autoreply`                                                             | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`)                                                              |
+| Slash command | `/respondtobots`                                                         | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`)                                            |
+| Slash command | `/threadmode`                                                            | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
 
 CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
@@ -813,14 +826,14 @@ Scraping paths from text (layer 2) is a rescue, not the intended path. Local LLM
 
 ### Persistence Strategy
 
-| Data | Storage Location | Format |
-|------|-----------------|--------|
-| Schedules | `${DATA_DIR}/schedules.json` | JSON |
-| Runtime settings | `${WORKSPACE}/settings.json` | JSON |
-| Sessions | `${DATA_DIR}/sessions.json` | JSON (appSessionId-based, activeByContext + sessions) |
-| Transcripts | `logs/sessions/{appSessionId}.jsonl` | JSONL (per-session conversation logs) |
-| DATA_DIR lock | `${DATA_DIR}.lock/` | Lock directory managed by `proper-lockfile` (detects duplicate xangi instances sharing the same DATA_DIR; 30s heartbeat + 60s stale auto-reclaim) |
-| Environment file (`.env`) | Default: `process.cwd()/.env` / Override: `XANGI_ENV_PATH` env var | KEY=VALUE lines |
+| Data                      | Storage Location                                                   | Format                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schedules                 | `${DATA_DIR}/schedules.json`                                       | JSON                                                                                                                                              |
+| Runtime settings          | `${WORKSPACE}/settings.json`                                       | JSON                                                                                                                                              |
+| Sessions                  | `${DATA_DIR}/sessions.json`                                        | JSON (appSessionId-based, activeByContext + sessions)                                                                                             |
+| Transcripts               | `logs/sessions/{appSessionId}.jsonl`                               | JSONL (per-session conversation logs)                                                                                                             |
+| DATA_DIR lock             | `${DATA_DIR}.lock/`                                                | Lock directory managed by `proper-lockfile` (detects duplicate xangi instances sharing the same DATA_DIR; 30s heartbeat + 60s stale auto-reclaim) |
+| Environment file (`.env`) | Default: `process.cwd()/.env` / Override: `XANGI_ENV_PATH` env var | KEY=VALUE lines                                                                                                                                   |
 
 #### Environment file persistence and Docker security design
 
@@ -838,10 +851,10 @@ Values in the host `.env` are injected into the container as env vars at startup
 
 When a slash command like `/respondtobots`, `/backend`, or `/llmmode` flips an in-memory setting, whether that change is written back to the host `.env` is decided by `resolveEnvFilePath()` in `src/env-persist.ts`:
 
-| Environment | Default behaviour |
-|-------------|-------------------|
-| Local direct execution | Read/write `process.cwd()/.env` → dynamic changes are persisted and survive restarts. |
-| Docker | `process.cwd() = /app`, but `/app/.env` does not exist, so write-back fails → only the in-memory state is updated, and a restart reverts to Layer 1's initial value (safe default). |
+| Environment            | Default behaviour                                                                                                                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local direct execution | Read/write `process.cwd()/.env` → dynamic changes are persisted and survive restarts.                                                                                               |
+| Docker                 | `process.cwd() = /app`, but `/app/.env` does not exist, so write-back fails → only the in-memory state is updated, and a restart reverts to Layer 1's initial value (safe default). |
 
 Skipping write-back inside Docker is intentional: container images shouldn't have `.env` mutated by chat-driven slash commands from outside, so the image-rebuild / re-deploy lifecycle is preserved as the source of truth. `updateEnvKeyValue()` returns `{ok: false, reason}` instead of throwing on ENOENT; the caller emits a `console.warn` noting "not persisted" while keeping the in-memory state updated.
 
@@ -863,6 +876,7 @@ services:
 Sessions are managed using xangi's own `appSessionId`. The backend's `providerSessionId` (e.g., Claude Code's session_id) is saved after the response.
 
 **sessions.json Structure:**
+
 ```json
 {
   "activeByContext": { "<contextKey>": "<appSessionId>" },
@@ -883,6 +897,7 @@ Sessions are managed using xangi's own `appSessionId`. The backend's `providerSe
 Automatically saves per-session AI conversation logs in JSONL format. Used for debugging, incident analysis, and WebUI browsing.
 
 **Directory Structure:**
+
 ```
 logs/sessions/
   m4abc123_def456.jsonl   # Per-session logs
@@ -890,11 +905,13 @@ logs/sessions/
 ```
 
 **Recorded Content:**
+
 - `user`: Prompt sent by the user
 - `assistant`: AI's final response
 - `error`: Timeouts, API errors, etc.
 
 **Notes:**
+
 - Logs are excluded via `.gitignore`
 - Automatic rotation (directory split by date)
 - Log write failures are ignored (no impact on core functionality)
@@ -903,16 +920,17 @@ logs/sessions/
 
 ```
 bin/
+├── xangi               # User-facing terminal CLI (calls Web / Even Terminal compatible API)
 └── xangi-cmd           # CLI wrapper (shell script, relays to tool-server)
 
 src/
 ├── index.ts            # Entry point (startup sequence)
 ├── stream-session.ts   # Shared streaming display core (thinking display / update throttling; used by Discord/Slack/Web)
 ├── stream-finalizer.ts # Registry that finalizes in-flight streaming displays as "interrupted" on process shutdown
+├── tool-history.ts     # Tool history formatting/accumulation (display capped via TOOL_HISTORY_MAX_LINES)
 ├── message-split.ts    # Text splitting against per-platform length limits
 ├── discord/            # Discord integration
 │   ├── ui.ts               # Button rows, timeout UI, processing-message management
-│   ├── tool-history.ts     # Tool history formatting/accumulation (display capped via TOOL_HISTORY_MAX_LINES)
 │   ├── message-utils.ts    # Link expansion, reply quoting, channel-mention expansion
 │   ├── message-handler.ts  # MessageCreate/Update/Delete + processPrompt
 │   ├── slash-commands.ts   # Slash command definitions & interaction handling
@@ -964,6 +982,7 @@ src/
 │   ├── web-history-cmd.ts      # Web Chat history retrieval
 │   ├── inter-chat-cmd.ts       # Inter-instance chat operations
 │   ├── terminal-session-cmd.ts # Terminal session operations
+│   ├── xangi.ts        #   User-facing terminal CLI entry point
 │   └── xangi-cmd.ts    #   Node.js CLI entry point
 ├── inter-instance-chat/ # Inter-instance chat (per-instance jsonl / auto-talk / history viewer)
 ├── local-llm/          # Local LLM adapter

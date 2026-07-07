@@ -66,7 +66,7 @@ RUN npm install -g @openai/codex
 
 # Use existing ubuntu user (UID 1000, matches host user for volume permissions)
 # Reference: karaagebot Dockerfile uses ubuntu user the same way
-RUN mkdir -p /home/ubuntu/.config/gh /home/ubuntu/.local/bin /home/ubuntu/.local/share/uv \
+RUN mkdir -p /home/ubuntu/.config/gh /home/ubuntu/.codex /home/ubuntu/.local/bin /home/ubuntu/.local/share/uv \
     && chown -R ubuntu:ubuntu /home/ubuntu
 
 # Switch to ubuntu user for CLI installations

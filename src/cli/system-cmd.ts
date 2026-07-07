@@ -2,20 +2,18 @@
  * システムコマンドCLIモジュール
  *
  * tool-server (xangi 本体プロセス) 内で実行される前提。
- * 再起動は自プロセスへ SIGTERM を送って pm2 / Docker の auto-restart に任せる。
+ * 再起動は自プロセスへ SIGTERM を送って pm2 / Docker などの supervisor に任せる。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
 
 interface Settings {
-  autoRestart?: boolean;
   [key: string]: unknown;
 }
 
 // src/settings.ts の DEFAULT_SETTINGS と揃える
-const DEFAULT_SETTINGS: Settings = {
-  autoRestart: true,
-};
+const DEFAULT_SETTINGS: Settings = {};
 
 function getSettingsFilePath(): string {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
@@ -47,12 +45,12 @@ function saveSettings(settings: Settings): void {
  *
  * 前提: tool-server 経由で xangi 本体プロセス内から呼ばれる。
  * レスポンスを先に返してから kill するため、kill は次の tick (100ms 後) に遅延させる。
- * pm2 / Docker の auto-restart 設定で復活する想定。
+ * pm2 / Docker の restart policy で復活する想定。
  */
 async function systemRestart(): Promise<string> {
-  const settings = loadSettings();
-  if (!settings.autoRestart) {
-    return '⚠️ 自動再起動が無効です。先に system_settings --key autoRestart --value true で有効にしてください。';
+  const selfLifecycle = getSelfLifecyclePermission();
+  if (!canSelfRestart(selfLifecycle)) {
+    return '⚠️ 自己再起動が無効です。管理者が .env の XANGI_SELF_LIFECYCLE=restart-only を設定し、xangi を再起動してください。';
   }
 
   setTimeout(() => {
@@ -80,6 +78,11 @@ async function systemSettings(flags: Record<string, string>): Promise<string> {
   }
 
   const settings = loadSettings();
+  if (key === 'selfLifecycle' || key === 'XANGI_SELF_LIFECYCLE') {
+    throw new Error(
+      'selfLifecycle is not a runtime setting; self lifecycle permission is managed by XANGI_SELF_LIFECYCLE in .env and requires process restart'
+    );
+  }
 
   // 型変換
   let typedValue: unknown;

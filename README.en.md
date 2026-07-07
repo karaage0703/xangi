@@ -45,6 +45,7 @@ cp .env.example .env
 ```
 
 **Minimum required settings (.env):**
+
 ```bash
 # Discord Bot Token (required)
 DISCORD_TOKEN=your_discord_bot_token
@@ -100,35 +101,50 @@ Open `http://localhost:18888` in your browser.
 > 💡 See [Slack Setup](docs/en/slack-setup.md) for Slack integration.
 > 💡 See [Telegram Setup](docs/en/telegram-setup.md) for Telegram Bot integration.
 
-### Auto-restart (pm2)
+### Lifecycle management (pm2)
 
-xangi supports `/restart` command. A process manager is required for auto-recovery.
+xangi uses `./bin/xangi service` inside each clone to control the external supervisor. The `/restart` command is a low-level request for the running xangi process to gracefully shut down. A process manager is required for auto-recovery.
 
 ```bash
 npm install -g pm2
-pm2 start "npm start" --name xangi
-pm2 restart xangi  # Manual restart
-pm2 logs xangi     # View logs
+./bin/xangi service start
+./bin/xangi service status
+./bin/xangi service restart
+./bin/xangi service stop
 ```
+
+When running multiple clones, run `./bin/xangi` from each target directory. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
+
+```bash
+ln -sf /home/user/xangi-dev/bin/xangi ~/.local/bin/xangi-dev
+ln -sf /home/user/xangi-prod/bin/xangi ~/.local/bin/xangi-prod
+
+xangi-dev service status
+xangi-prod service restart
+```
+
+`ecosystem.config.cjs` is a PM2 app definition file. It uses `.env`'s `XANGI_PROCESS_NAME` as the PM2 process name, falling back to `XANGI_INSTANCE_ID` and then the directory name. It also defines the script and `node --env-file=.env` arguments. `./bin/xangi service start` uses this config to ask PM2 to start xangi. The `.cjs` extension keeps the PM2 config in CommonJS (`module.exports`) even though this package uses ESM (`"type": "module"`).
 
 ## Usage
 
 ### Basics
+
 - `@xangi your question` - Mention to interact
 - No mention needed in dedicated channels
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `/new` | Start a new session |
-| `/stop` | Stop running task |
-| `/settings` | Show current settings |
-| `/notify` | Configure completion notifications for this channel |
-| `/backend` | Per-channel backend / model switching |
-| `xangi-cmd schedule_*` | Scheduler (cron / reminders) |
-| `xangi-cmd discord_*` | Discord operations (history / send / search, etc.) |
-| `xangi-cmd trigger` | Event trigger (start an agent turn when a job finishes) |
+| Command                    | Description                                             |
+| -------------------------- | ------------------------------------------------------- |
+| `/new`                     | Start a new session                                     |
+| `/stop`                    | Stop running task                                       |
+| `/settings`                | Show current settings                                   |
+| `/notify`                  | Configure completion notifications for this channel     |
+| `/backend`                 | Per-channel backend / model switching                   |
+| `xangi sessions/chat/send` | Connect to xangi Web sessions from a terminal           |
+| `xangi-cmd schedule_*`     | Scheduler (cron / reminders)                            |
+| `xangi-cmd discord_*`      | Discord operations (history / send / search, etc.)      |
+| `xangi-cmd trigger`        | Event trigger (start an agent turn when a job finishes) |
 
 Response messages include buttons (Stop / New Session). Set `DISCORD_SHOW_BUTTONS=false` to hide.
 
@@ -155,9 +171,9 @@ See [Usage Guide: Docker](docs/en/usage.md#docker-deployment) for details.
 
 ### Required (when using Discord)
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_TOKEN` | Discord Bot Token |
+| Variable               | Description                                     |
+| ---------------------- | ----------------------------------------------- |
+| `DISCORD_TOKEN`        | Discord Bot Token                               |
 | `DISCORD_ALLOWED_USER` | Allowed user IDs (comma-separated, `*` for all) |
 
 For browser-only operation, just set `WEB_CHAT_ENABLED=true` (no Discord token required).

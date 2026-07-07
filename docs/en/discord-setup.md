@@ -77,7 +77,7 @@ npm run build
 docker compose up -d --build
 
 # Check logs
-docker logs -f xangi
+docker compose logs -f xangi
 ```
 
 Try `/new` or `/skills` in your Discord server, or mention the bot:

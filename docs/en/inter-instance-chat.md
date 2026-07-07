@@ -166,7 +166,7 @@ volumes:
 ```
 
 - A host-direct xangi (pm2) and a Docker-launched xangi **can share the same path even when mixed**
-- The UID difference between `Dockerfile`=`USER node` (UID 1000) and `Dockerfile.standalone`=root is absorbed by `mode 0777`
+- UID differences between Docker-launched xangi and host-direct xangi are absorbed by `mode 0777`
 - `/tmp` being wiped on OS restart matches the volatility requirement (a named volume would not be visible from a host-direct xangi)
 
 ### Mac / Windows Docker Desktop
@@ -186,5 +186,4 @@ On failure it logs a warning and continues (covering the case where another inst
 
 ## Remaining Tasks
 
-- Unify the UID across Docker images (switch `Dockerfile.standalone` to `USER node`; separate change)
 - Inject inter-chat context into the system prompts of other platforms (Discord/Slack) (v2)

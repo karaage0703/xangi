@@ -18,13 +18,14 @@ resolve_server() {
   return 1
 }
 
+COMMAND="$1"
+shift || true
+
 TOOL_SERVER=$(resolve_server) || {
   echo "Error: XANGI_TOOL_SERVER が設定されていません" >&2
   echo "xangi配下で起動するか、XANGI_TOOL_SERVER=http://127.0.0.1:<port> を指定してください" >&2
   exit 1
 }
-COMMAND="$1"
-shift
 
 if [ -z "$COMMAND" ] || [ "$COMMAND" = "help" ]; then
   echo "xangi-cmd — xangiコマンドCLI

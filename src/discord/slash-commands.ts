@@ -27,6 +27,7 @@ import {
   formatSettings,
   saveSettings,
 } from '../settings.js';
+import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
 import { updateEnvKeyValue } from '../env-persist.js';
 import { getSession, setSession, deleteSession, ensureSession } from '../sessions.js';
 import { splitMessage } from '../message-split.js';
@@ -41,6 +42,7 @@ import {
   type ScheduleType,
 } from '../scheduler.js';
 import { discordToolHistoryByMessageId } from './ui.js';
+import { formatToolHistoryDisclosure } from '../tool-history.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 
 /** スキル一覧を保持する可変参照。`/skills` での再読込を呼び出し元と共有する */
@@ -583,7 +585,7 @@ export function createInteractionHandler(
             .catch(() => {});
           return;
         }
-        const chunks = splitMessage(`ツール履歴\n${toolHistory.join('\n')}`, DISCORD_SAFE_LENGTH);
+        const chunks = splitMessage(formatToolHistoryDisclosure(toolHistory), DISCORD_SAFE_LENGTH);
         await interaction.reply({
           content: chunks[0] || 'ツール履歴はありません',
           ephemeral: true,
@@ -1169,9 +1171,11 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'restart') {
-      const settings = loadSettings();
-      if (!settings.autoRestart) {
-        await interaction.reply('⚠️ 自動再起動が無効です。先に有効にしてください。');
+      const selfLifecycle = getSelfLifecyclePermission();
+      if (!canSelfRestart(selfLifecycle)) {
+        await interaction.reply(
+          '⚠️ 自己再起動が無効です。管理者が `.env` の `XANGI_SELF_LIFECYCLE=restart-only` を設定し、xangi を再起動してください。'
+        );
         return;
       }
       await interaction.reply('🔄 再起動します...');

@@ -39,7 +39,15 @@ xangi-cmd schedule_toggle --id <スケジュールID>
 ## システムコマンド
 
 \`\`\`bash
+./bin/xangi service start
+./bin/xangi service stop
+./bin/xangi service restart
+./bin/xangi service status
 xangi-cmd system_restart
-xangi-cmd system_settings --key autoRestart --value true
 xangi-cmd system_settings  # 設定一覧
-\`\`\``;
+\`\`\`
+
+起動・停止・再起動・状態確認は原則、対象 clone の \`./bin/xangi service\` を使う。PATHに置く場合は \`xangi-dev\` / \`xangi-prod\` のような名前付き symlink を使う。
+xangi-cmd system_restart は、起動中の xangi 自身に graceful shutdown を要求し、外側の supervisor に復帰させる低レベル操作。
+自己再起動の許可は管理者が .env の XANGI_SELF_LIFECYCLE で設定する。
+AI は system_settings で変更しない。`;

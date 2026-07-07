@@ -180,7 +180,7 @@ describe('StreamSession', () => {
 });
 
 import { capToolLines, DEFAULT_TOOL_HISTORY_MAX_LINES } from '../src/stream-session.js';
-import { addToolHistory, appendToolHistory } from '../src/discord/tool-history.js';
+import { addToolHistory, appendToolHistory } from '../src/tool-history.js';
 
 describe('capToolLines', () => {
   const original = process.env.TOOL_HISTORY_MAX_LINES;
