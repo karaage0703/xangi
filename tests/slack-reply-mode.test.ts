@@ -10,6 +10,7 @@ import {
   _resetSlackStateForTest,
   buildSlackCompletionNotification,
   processMessage,
+  resolveSlackDeleteReactionTarget,
   shouldProcessSlackMessage,
   shouldReplyInSlackThread,
   slackConversationKey,
@@ -180,6 +181,87 @@ describe('slackConversationKey', () => {
     expect(slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS)).toBe(
       `${AUTO_REPLY_CHANNEL}:${THREAD_TS}`
     );
+  });
+});
+
+describe('resolveSlackDeleteReactionTarget', () => {
+  it('accepts wastebasket and x reactions from allowed users by default', () => {
+    const wastebasketTarget = resolveSlackDeleteReactionTarget(
+      { allowedUsers: ['U_ALLOWED'] },
+      {
+        user: 'U_ALLOWED',
+        reaction: 'wastebasket',
+        item: { type: 'message', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000100' },
+      }
+    );
+    const xTarget = resolveSlackDeleteReactionTarget(
+      { allowedUsers: ['U_ALLOWED'] },
+      {
+        user: 'U_ALLOWED',
+        reaction: 'x',
+        item: { type: 'message', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000101' },
+      }
+    );
+
+    expect(wastebasketTarget).toEqual({
+      channelId: AUTO_REPLY_CHANNEL,
+      messageTs: '1783487000.000100',
+      userId: 'U_ALLOWED',
+      reaction: 'wastebasket',
+    });
+    expect(xTarget?.reaction).toBe('x');
+  });
+
+  it('ignores delete reactions when the feature is disabled', () => {
+    expect(
+      resolveSlackDeleteReactionTarget(
+        { allowedUsers: ['U_ALLOWED'], reactionDeleteEnabled: false },
+        {
+          user: 'U_ALLOWED',
+          reaction: 'x',
+          item: { type: 'message', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000100' },
+        }
+      )
+    ).toBeNull();
+  });
+
+  it('ignores reactions from unauthorized users', () => {
+    expect(
+      resolveSlackDeleteReactionTarget(
+        { allowedUsers: ['U_ALLOWED'] },
+        {
+          user: 'U_OTHER',
+          reaction: 'x',
+          item: { type: 'message', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000100' },
+        }
+      )
+    ).toBeNull();
+  });
+
+  it('uses custom delete reaction names', () => {
+    const target = resolveSlackDeleteReactionTarget(
+      { allowedUsers: ['*'], deleteReactions: ['xangi_delete'] },
+      {
+        user: 'U_ANY',
+        reaction: 'xangi_delete',
+        item: { type: 'message', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000100' },
+      }
+    );
+
+    expect(target?.reaction).toBe('xangi_delete');
+  });
+
+  it('ignores non-message reaction targets', () => {
+    expect(
+      resolveSlackDeleteReactionTarget(
+        { allowedUsers: ['*'] },
+        {
+          user: 'U_ANY',
+          reaction: 'x',
+          item: { type: 'file', channel: AUTO_REPLY_CHANNEL, ts: '1783487000.000100' },
+        }
+      )
+    ).toBeNull();
   });
 });
 

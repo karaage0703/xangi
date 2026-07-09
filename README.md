@@ -114,6 +114,15 @@ npm install -g pm2
 ./bin/xangi service stop
 ```
 
+OS 再起動後も自動起動したい場合は、対象 clone で一度だけ以下を実行します。
+
+```bash
+./bin/xangi service start
+./bin/xangi service autostart
+```
+
+`autostart` は `pm2 save` で現在のプロセス一覧を保存し、`pm2 startup` で OS 起動時の PM2 復帰設定を案内します。`pm2 startup` が `sudo env ... pm2 startup ...` のようなコマンドを表示した場合は、そのコマンドを一度だけ実行してください。
+
 複数 clone を運用する場合は、それぞれのディレクトリで `./bin/xangi` を実行します。PATH から使いたい場合は、単一の `xangi` symlink ではなく `xangi-dev` / `xangi-prod` のような名前付き symlink を作ると対象 clone が明確になります。
 
 ```bash
@@ -165,6 +174,8 @@ docker compose up xangi-max -d --build
 # GPU版（CUDA + Python + PyTorch）
 docker compose up xangi-gpu -d --build
 ```
+
+`docker-compose.yml` には `restart: unless-stopped` が設定されています。`docker compose stop` / `docker compose down` で明示停止しない限り、Docker daemon の起動時に xangi コンテナも自動復帰します。OS 再起動後も自動起動したい場合は、ホスト側で Docker daemon 自体の自動起動を有効にしてください。
 
 詳細は [使い方ガイド: Docker実行](docs/usage.md#docker実行) を参照してください。
 

@@ -113,6 +113,15 @@ npm install -g pm2
 ./bin/xangi service stop
 ```
 
+To start xangi automatically after an OS reboot, run the following once from the target clone:
+
+```bash
+./bin/xangi service start
+./bin/xangi service autostart
+```
+
+`autostart` saves the current PM2 process list with `pm2 save`, then runs `pm2 startup` to show or register the OS startup integration. If `pm2 startup` prints a command such as `sudo env ... pm2 startup ...`, run that command once.
+
 When running multiple clones, run `./bin/xangi` from each target directory. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
 
 ```bash
@@ -164,6 +173,8 @@ docker compose up xangi-max -d --build
 # GPU version (CUDA + Python + PyTorch)
 docker compose up xangi-gpu -d --build
 ```
+
+`docker-compose.yml` sets `restart: unless-stopped`. Unless you explicitly stop the service with `docker compose stop` / `docker compose down`, the xangi container will be restored when the Docker daemon starts. To start xangi after an OS reboot, enable auto-start for the Docker daemon on the host.
 
 See [Usage Guide: Docker](docs/en/usage.md#docker-deployment) for details.
 

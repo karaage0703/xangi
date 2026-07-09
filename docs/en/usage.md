@@ -103,8 +103,8 @@ fires. The button **doubles the remaining time** at the moment of the click.
   - When `false`, the `延長` button is hidden and `extendTimeout` API returns `unsupported`
 - UI:
   - Web Chat — `[延長][⏱ MM:SS]` shown next to the `⏹` button in the composer (only while sending)
-  - Discord — `[Stop][延長][⏱ MM:SS]` row on the "Thinking…" message
-  - Slack — same buttons in the Block Kit actions block
+  - Discord — `[Stop][延長][⏱ MM:SS]` row on the "Thinking…" message, including turns started by schedules / triggers
+  - Slack — same buttons in the Block Kit actions block, including turns started by schedules / triggers
 - Display turns red + pulses when under 30 seconds remain
 - `延長` is disabled / hidden once the cap is reached
 
@@ -286,6 +286,8 @@ The AI performs Discord / Slack operations via the `xangi-cmd` CLI tool. Because
 | `xangi-cmd slack_search --channel <id> --keyword "text" [--count N]`            | Search Slack messages                                                                                                       |
 | `xangi-cmd slack_edit --channel <id> --message-ts <ts> --content "text"`        | Edit a Slack message                                                                                                        |
 | `xangi-cmd slack_delete --channel <id> --message-ts <ts>`                       | Delete a Slack message                                                                                                      |
+
+On Slack, when `SLACK_REACTION_DELETE_ENABLED=true` (default) and the Slack App subscribes to the `reaction_added` event with the `reactions:read` scope, an allowed user can delete a bot message by adding a `:wastebasket:` or `:x:` reaction. Customize the reaction names with `SLACK_DELETE_REACTIONS=wastebasket,x`.
 
 ### Examples
 
@@ -476,6 +478,7 @@ Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free a
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 
 Use `/threadmode mode:on|off|default|show` to inspect or toggle this channel's Discord per-message thread reply mode while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel override and falls back to the global `DISCORD_REPLY_IN_THREAD` default.
+For messages received inside an existing Discord thread, xangi automatically injects the thread starter message as `🧵 スレッド元`. This keeps the original parent-channel topic available even when thread-local history does not include the starter message.
 To disable this command, set `ALLOW_THREAD_MODE_COMMAND=false` in `.env` (default: enabled).
 
 Use `/notify` to configure separate completion notifications for long Discord turns per channel. `DISCORD_COMPLETION_NOTIFY` is the startup default, while channel overrides are stored in `settings.json`. This applies only to normal Discord message turns; scheduler-triggered turns do not send completion notifications.
@@ -561,6 +564,15 @@ flowchart TD
 ./bin/xangi service stop
 ```
 
+To start xangi automatically after an OS reboot, run the following once from the target clone:
+
+```bash
+./bin/xangi service start
+./bin/xangi service autostart
+```
+
+`autostart` saves the current PM2 process list with `pm2 save`, then runs `pm2 startup` to show or register the OS startup integration. If `pm2 startup` prints a command such as `sudo env ... pm2 startup ...`, run that command once.
+
 When running multiple clones, run `./bin/xangi service ...` from the target clone. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
 
 ```bash
@@ -607,6 +619,8 @@ docker compose up xangi -d --build
 # Claude Code authentication
 docker compose exec xangi claude
 ```
+
+`docker-compose.yml` sets `restart: unless-stopped`. Unless you explicitly stop the service with `docker compose stop` / `docker compose down`, the xangi container will be restored when the Docker daemon starts. To start xangi after an OS reboot, enable auto-start for the Docker daemon on the host.
 
 To run Claude Code with Anthropic API-key billing, set `ANTHROPIC_API_KEY` in `.env`.
 This value is passed only to the Claude Code child process and is not part of the general safe environment whitelist.
@@ -662,6 +676,8 @@ docker compose up xangi-max -d --force-recreate
 # Check logs
 docker compose logs -f xangi-max
 ```
+
+`docker compose down` explicitly stops and removes the container, so it will not come back until you run `docker compose up ... -d` again. If you only want to pause it, use `docker compose stop`; resume with `docker compose start`.
 
 ### Workspace Mounting
 

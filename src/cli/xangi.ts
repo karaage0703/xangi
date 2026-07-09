@@ -86,7 +86,7 @@ Usage:
   git diff | xangi send -
   xangi chat [--session ID]
   xangi status --session ID
-  xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
+  xangi service <start|stop|restart|status|autostart> [--name NAME] [--dir DIR]
 
 Options:
   --url URL       xangi Web Chat URL (default: ${DEFAULT_URL})

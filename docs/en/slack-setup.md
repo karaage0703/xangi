@@ -18,6 +18,51 @@ Log in with your Slack account.
 4. Select your workspace
 5. Click **"Create App"**
 
+### Optional: Create from a Manifest
+
+If you select **"From an app manifest"** when creating the Slack App, you can configure Socket Mode / Event Subscriptions / OAuth scopes in one step. Paste the following manifest if you want to reduce manual setup.
+
+```yaml
+display_information:
+  name: xangi
+  description: AI CLI assistant for Slack
+  background_color: "#2f3136"
+features:
+  bot_user:
+    display_name: xangi
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - files:read
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - reactions:read
+      - reactions:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - reaction_added
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+```
+
+Even when using the manifest, you still need to create an App-Level Token (`connections:write`), install the app to the workspace, and copy the Bot User OAuth Token / App Token. Slash commands are not included in the manifest to avoid environment-specific Request URL behavior; add them manually in Step 6 only if needed.
+
 ## 3. Enable Socket Mode (Important)
 
 xangi operates in Socket Mode (no Webhook required).
@@ -39,6 +84,7 @@ xangi operates in Socket Mode (no Webhook required).
 | Event | Description | Purpose |
 |-------|-------------|---------|
 | `app_mention` | When the bot is mentioned | Required |
+| `reaction_added` | When a deletion reaction is added | For reaction-based deletion |
 | `message.im` | When a DM is received | For DM support |
 | `message.channels` | Messages in public channels | For responding without mentions |
 | `message.groups` | Messages in private channels | For responding without mentions |
@@ -55,6 +101,7 @@ xangi operates in Socket Mode (no Webhook required).
 | `app_mentions:read` | Read mentions | Required |
 | `chat:write` | Send messages | Required |
 | `files:read` | Read files | For file attachment support |
+| `reactions:read` | Read reaction events | For reaction-based deletion |
 | `reactions:write` | Add reactions (e.g. eyes emoji) | Required |
 | `im:history` | Read DM history | For DM support |
 | `im:read` | Read DMs | For DM support |
@@ -63,6 +110,8 @@ xangi operates in Socket Mode (no Webhook required).
 | `groups:read` | Read private channel information | For `xangi-cmd slack_channels` |
 | `channels:history` | Read public channel history | For responding without mentions |
 | `groups:history` | Read private channel history | For responding without mentions |
+
+After adding or changing scopes/events, reinstall the app from **"Install App"** in the left menu. Without reinstalling, `reaction_added` and `reactions:read` will not take effect.
 
 ## 6. Register Slash Commands (Optional)
 
@@ -103,6 +152,10 @@ SLACK_ALLOWED_USER=U01234567
 
 # Optional: Post replies directly in specific channels instead of threads
 SLACK_REPLY_IN_CHANNELS=C01234567
+
+# Optional: Delete bot messages with `:wastebasket:` / `:x:` reactions (enabled by default)
+SLACK_REACTION_DELETE_ENABLED=true
+SLACK_DELETE_REACTIONS=wastebasket,x
 ```
 
 > **Warning**: If you're only using Slack, remove (or comment out) `DISCORD_TOKEN` from `.env`.
@@ -126,6 +179,7 @@ Try the following in Slack:
 - Send a DM
 - `/new` command
 - `/skills` command
+- Add a `:wastebasket:` or `:x:` reaction to a bot message to delete it
 
 ## How to Find IDs
 

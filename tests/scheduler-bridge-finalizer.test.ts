@@ -15,7 +15,7 @@ function buildBridge(runImpl: () => Promise<AgentRunResult>) {
     edit: vi.fn(async (_content: string) => {}),
     delete: vi.fn(async () => {}),
   };
-  const channel = { send: vi.fn(async (_content: string) => thinkingMsg) };
+  const channel = { send: vi.fn(async (_content: unknown) => thinkingMsg) };
   const scheduler = {
     registerSender: vi.fn(),
     registerAgentRunner: vi.fn(
@@ -37,7 +37,7 @@ function buildBridge(runImpl: () => Promise<AgentRunResult>) {
     agentRunner,
   } as unknown as Parameters<typeof registerDiscordSchedulerBridge>[0]);
   if (!capturedRunner) throw new Error('agent runner not registered');
-  return { runner: capturedRunner, thinkingMsg };
+  return { runner: capturedRunner, thinkingMsg, channel };
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -62,7 +62,10 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
     expect(activeStreamFinalizerCount()).toBe(1);
 
     await finalizeActiveStreams();
-    expect(thinkingMsg.edit).toHaveBeenCalledWith('⏸ プロセス再起動により中断されました');
+    expect(thinkingMsg.edit).toHaveBeenCalledWith({
+      content: '⏸ プロセス再起動により中断されました',
+      components: [],
+    });
 
     resolveRun!({ result: 'done', sessionId: 's1' });
     await turn;
@@ -78,8 +81,11 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
     expect(activeStreamFinalizerCount()).toBe(0);
 
     await finalizeActiveStreams();
-    expect(thinkingMsg.edit).not.toHaveBeenCalledWith('⏸ プロセス再起動により中断されました');
-    expect(thinkingMsg.edit).toHaveBeenCalledWith('done');
+    expect(thinkingMsg.edit).not.toHaveBeenCalledWith({
+      content: '⏸ プロセス再起動により中断されました',
+      components: [],
+    });
+    expect(thinkingMsg.edit).toHaveBeenCalledWith({ content: 'done', components: [] });
   });
 
   it('agent がエラーで落ちても finalizer は解除される', async () => {
@@ -89,5 +95,19 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
 
     await expect(runner('test prompt', 'channel-1')).rejects.toThrow('boom');
     expect(activeStreamFinalizerCount()).toBe(0);
+  });
+
+  it('スケジューラ起点でも処理中メッセージに timeout UI 用ボタンを付ける', async () => {
+    const { runner, channel } = buildBridge(async () => ({
+      result: 'done',
+      sessionId: 's1',
+    }));
+
+    await runner('test prompt', 'channel-1');
+
+    expect(channel.send).toHaveBeenCalledWith({
+      content: '🤔 考え中...',
+      components: expect.any(Array),
+    });
   });
 });

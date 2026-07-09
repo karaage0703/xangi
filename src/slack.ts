@@ -52,6 +52,39 @@ export function slackConversationKey(channelId: string, threadTs?: string): stri
   return threadTs ? `${channelId}:${threadTs}` : channelId;
 }
 
+export type SlackDeleteReactionTarget = {
+  channelId: string;
+  messageTs: string;
+  userId: string;
+  reaction: string;
+};
+
+export function resolveSlackDeleteReactionTarget(
+  slackConfig: Pick<Config['slack'], 'allowedUsers' | 'reactionDeleteEnabled' | 'deleteReactions'>,
+  event: {
+    user?: string;
+    reaction?: string;
+    item?: { type?: string; channel?: string; ts?: string };
+  }
+): SlackDeleteReactionTarget | null {
+  if (slackConfig.reactionDeleteEnabled === false) return null;
+  const userId = event.user;
+  if (!userId) return null;
+  if (!slackConfig.allowedUsers?.includes('*') && !slackConfig.allowedUsers?.includes(userId)) {
+    return null;
+  }
+  const reaction = event.reaction;
+  const deleteReactions = slackConfig.deleteReactions ?? ['wastebasket', 'x'];
+  if (!reaction || !deleteReactions.includes(reaction)) return null;
+  if (event.item?.type !== 'message' || !event.item.channel || !event.item.ts) return null;
+  return {
+    channelId: event.item.channel,
+    messageTs: event.item.ts,
+    userId,
+    reaction,
+  };
+}
+
 function slackRunKeyFromActionBody(body: {
   channel?: { id?: string };
   message?: { thread_ts?: string; ts?: string };
@@ -242,7 +275,8 @@ async function sendSlackResult(
   channelId: string,
   messageTs: string,
   threadTs: string | undefined,
-  result: string
+  result: string,
+  blocks?: KnownBlock[]
 ): Promise<void> {
   const text = sliceByBytes(result, SLACK_MAX_TEXT_BYTES);
   const textBytes = new TextEncoder().encode(text).length;
@@ -255,6 +289,7 @@ async function sendSlackResult(
       channel: channelId,
       ts: messageTs,
       text,
+      ...(blocks !== undefined && { blocks }),
     });
 
     // 残りのテキストがあれば分割送信
@@ -364,6 +399,27 @@ async function deleteMessage(client: WebClient, channelId: string, arg: string):
   }
 }
 
+async function deleteMessageByReaction(
+  client: WebClient,
+  target: SlackDeleteReactionTarget
+): Promise<string> {
+  try {
+    await client.chat.delete({
+      channel: target.channelId,
+      ts: target.messageTs,
+    });
+    for (const [channelId, messageTs] of lastBotMessages.entries()) {
+      if (messageTs === target.messageTs) {
+        lastBotMessages.delete(channelId);
+      }
+    }
+    return '🗑️ メッセージを削除しました';
+  } catch (err) {
+    console.error('[slack] Failed to delete message by reaction:', err);
+    return 'メッセージの削除に失敗しました';
+  }
+}
+
 import type { Scheduler } from './scheduler.js';
 
 export interface SlackChannelOptions {
@@ -390,14 +446,26 @@ export function registerSlackSchedulerBridge(deps: {
   });
 
   scheduler.registerAgentRunner('slack', async (prompt, channelId) => {
+    const initialText = '🤔 考え中...';
     const thinking = await client.chat.postMessage({
       channel: channelId,
-      text: '🤔 考え中...',
+      text: initialText,
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: initialText } },
+        ...createSlackProcessingBlocks(),
+      ],
     });
     const messageTs = thinking.ts;
     if (!messageTs) {
       throw new Error('Failed to get Slack message timestamp');
     }
+
+    slackProcessingMessages.set(channelId, {
+      channelId,
+      messageTs,
+      currentText: initialText,
+      startedAt: Date.now(),
+    });
 
     try {
       const appSessionId = ensureSession(channelId, {
@@ -417,7 +485,7 @@ export function registerSlackSchedulerBridge(deps: {
 
       setSession(channelId, newSessionId, 'scheduler');
       const { displayText } = buildAttachmentResult(result, attachments);
-      await sendSlackResult(client, channelId, messageTs, undefined, displayText || '✅');
+      await sendSlackResult(client, channelId, messageTs, undefined, displayText || '✅', []);
       return result;
     } catch (error) {
       await client.chat
@@ -425,9 +493,14 @@ export function registerSlackSchedulerBridge(deps: {
           channel: channelId,
           ts: messageTs,
           text: formatAgentErrorForUser(error),
+          blocks: [],
         })
         .catch(() => {});
       throw error;
+    } finally {
+      const entry = slackProcessingMessages.get(channelId);
+      if (entry?.intervalId) clearInterval(entry.intervalId);
+      slackProcessingMessages.delete(channelId);
     }
   });
 }
@@ -558,6 +631,20 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         })
         .catch(() => {});
     }
+  });
+
+  // リアクションによる bot メッセージ削除
+  app.event('reaction_added', async ({ event, client: eventClient }) => {
+    const target = resolveSlackDeleteReactionTarget(config.slack, event);
+    if (!target) return;
+    const result = await deleteMessageByReaction(eventClient, target);
+    await eventClient.chat
+      .postEphemeral({
+        channel: target.channelId,
+        user: target.userId,
+        text: result,
+      })
+      .catch(() => {});
   });
 
   // メンション時の処理

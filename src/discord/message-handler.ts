@@ -48,6 +48,7 @@ import { appendToolHistory, addToolHistory } from '../tool-history.js';
 import {
   fetchDiscordLinkContent,
   fetchReplyContent,
+  fetchThreadStarterContent,
   fetchChannelMessages,
   annotateChannelMentions,
 } from './message-utils.js';
@@ -56,13 +57,80 @@ export function shouldProcessDiscordMessage(input: { system?: boolean }): boolea
   return !input.system;
 }
 
+interface DiscordMessageTarget {
+  conversationChannelId: string;
+  createdThreadName: string | null;
+  outputChannel: {
+    send: (options: unknown) => Promise<Message>;
+  };
+  sendInitial: (options: Parameters<Message['reply']>[0]) => Promise<Message>;
+}
+
+async function resolveDiscordMessageTarget(
+  message: Message,
+  channelId: string,
+  config: Config,
+  settings: ReturnType<typeof loadSettings>
+): Promise<DiscordMessageTarget> {
+  let newThread: {
+    id: string;
+    name?: string;
+    send: (options: unknown) => Promise<Message>;
+  } | null = null;
+  const replyInThread = getChannelThreadMode(
+    settings,
+    channelId,
+    config.discord.replyInThread ?? false
+  );
+
+  if (replyInThread) {
+    const ch = message.channel as unknown as { isThread?: () => boolean };
+    const alreadyThread = typeof ch.isThread === 'function' && ch.isThread();
+    const canStartThread =
+      typeof (message as unknown as { startThread?: unknown }).startThread === 'function';
+    if (!alreadyThread && canStartThread) {
+      try {
+        const threadName = deriveThreadTitle(message.content);
+        newThread = (await (
+          message as unknown as {
+            startThread: (opts: { name: string }) => Promise<unknown>;
+          }
+        ).startThread({ name: threadName })) as {
+          id: string;
+          name?: string;
+          send: (options: unknown) => Promise<Message>;
+        };
+      } catch (err) {
+        console.warn(
+          '[xangi] Failed to start thread, falling back to channel:',
+          (err as Error)?.message
+        );
+      }
+    }
+  }
+
+  const conversationChannelId = resolveConversationChannelId(channelId, newThread?.id);
+  const outputChannel = (newThread ?? (message.channel as unknown)) as {
+    send: (options: unknown) => Promise<Message>;
+  };
+
+  return {
+    conversationChannelId,
+    createdThreadName: newThread?.name ?? null,
+    outputChannel,
+    sendInitial: (options: Parameters<Message['reply']>[0]) =>
+      newThread ? newThread.send(options) : message.reply(options),
+  };
+}
+
 export async function processPrompt(
   message: Message,
   agentRunner: AgentRunner,
   prompt: string,
   skipPermissions: boolean,
   channelId: string,
-  config: Config
+  config: Config,
+  target: DiscordMessageTarget
 ): Promise<string | null> {
   const startedAt = Date.now();
   let replyMessage: Message | null = null;
@@ -74,12 +142,13 @@ export async function processPrompt(
   const turnId = turnIdFor('discord', message.id);
   const channelName = 'name' in message.channel ? (message.channel as { name: string }).name : null;
   const threadLabel = channelName ? `#${channelName}` : 'DM';
-  // 会話コンテキストのキー。replyInThread で新規スレッドを作成した場合はそのスレッドIDへ
-  // 切り替える（後段のセッション/イベント/UI と catch 内フォローアップから参照するため
-  // 関数スコープに置く）。作成しない場合は受信チャンネルIDのまま。
-  let conversationChannelId = channelId;
+  // MessageCreate 側でスレッド作成を済ませ、確定済みの runKey を渡す。
+  // 以降のセッション / runner / timeout UI / Stop はこのキーに揃える。
+  const conversationChannelId = target.conversationChannelId;
   try {
-    console.log(`[xangi] Processing message in channel ${channelId}`);
+    console.log(
+      `[xangi] Processing message in channel ${channelId}, runKey ${conversationChannelId}`
+    );
     await message.react('👀').catch(() => {});
 
     const useStreaming = config.discord.streaming ?? true;
@@ -134,56 +203,14 @@ export async function processPrompt(
     });
     streamSession = session;
 
-    // スレッド返信モード: 発言ごとにスレッドを作成し、以降の投稿先・会話コンテキストを
-    // そのスレッドにする。すでにスレッド内の発言 / DM など startThread 不可の場合は
-    // 通常どおりチャンネルへ返信する。スレッド名は投稿本文から決定的に生成する。
-    let newThread: {
-      id: string;
-      name?: string;
-      send: (options: unknown) => Promise<Message>;
-    } | null = null;
     const settings = loadSettings();
-    const replyInThread = getChannelThreadMode(
-      settings,
-      channelId,
-      config.discord.replyInThread ?? false
-    );
-    if (replyInThread) {
-      const ch = message.channel as unknown as { isThread?: () => boolean };
-      const alreadyThread = typeof ch.isThread === 'function' && ch.isThread();
-      const canStartThread =
-        typeof (message as unknown as { startThread?: unknown }).startThread === 'function';
-      if (!alreadyThread && canStartThread) {
-        try {
-          const threadName = deriveThreadTitle(message.content);
-          newThread = (await (
-            message as unknown as {
-              startThread: (opts: { name: string }) => Promise<unknown>;
-            }
-          ).startThread({ name: threadName })) as {
-            id: string;
-            name?: string;
-            send: (options: unknown) => Promise<Message>;
-          };
-        } catch (err) {
-          console.warn(
-            '[xangi] Failed to start thread, falling back to channel:',
-            (err as Error)?.message
-          );
-        }
-      }
-    }
-    // 新規スレッドを作成できた場合は、以降の会話コンテキスト（セッション・イベント・UI・
-    // ランナー呼び出し）をそのスレッドIDに紐付ける。これがないとスレッド内の続き発言が
-    // 別セッション扱いになり、同じ会話を継続できない。
-    conversationChannelId = resolveConversationChannelId(channelId, newThread?.id);
 
     // チャンネル・ユーザー情報をプロンプトに付与
     const userInfo = `[発言者: ${message.author.displayName ?? message.author.username} (ID: ${message.author.id})]`;
     const channelContextLine = buildDiscordChannelContextLine({
       channelName,
       conversationChannelId,
-      createdThreadName: newThread?.name ?? null,
+      createdThreadName: target.createdThreadName,
     });
     if (channelContextLine) {
       prompt = `[プラットフォーム: Discord]\n${channelContextLine}\n${userInfo}\n${prompt}`;
@@ -212,19 +239,14 @@ export async function processPrompt(
     }
 
     // 以降の追加投稿（続きチャンク・ファイル・完了通知）の送信先。
-    // スレッドを新規作成したらそのスレッド、そうでなければ元のチャンネル。
-    const outputChannel = (newThread ?? (message.channel as unknown)) as {
-      send: (options: unknown) => Promise<Message>;
-    };
+    const outputChannel = target.outputChannel;
 
     // 最初のメッセージを送信
     const firstPayload = {
       content: session.view().statusLine,
       ...(showButtons && { components: [createProcessingButtons()] }),
     };
-    replyMessage = newThread
-      ? await newThread.send(firstPayload)
-      : await message.reply(firstPayload);
+    replyMessage = await target.sendInitial(firstPayload);
 
     // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で edit される)
     // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
@@ -519,8 +541,10 @@ export interface MessageHandlerDeps {
 export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
   const { client, config, agentRunner, workdir } = deps;
 
-  // チャンネル単位の処理中ロック
-  const processingChannels = new Set<string>();
+  // 実行キー単位の処理中ロック。Discord のスレッド返信モードでは、親チャンネルに
+  // 届いた発言から先に thread を作って runKey を確定し、Slack の conversationKey と
+  // 同じくスレッドごとに独立してロックする。
+  const processingRuns = new Set<string>();
 
   // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
   // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
@@ -640,12 +664,6 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
 
     if (!isMentioned && !isDM && !isAutoReplyChannel) return;
 
-    // 同じチャンネルで処理中なら無視（メンション時は除く）
-    if (!isMentioned && processingChannels.has(message.channel.id)) {
-      console.log(`[xangi] Skipping message in busy channel: ${message.channel.id}`);
-      return;
-    }
-
     if (
       !isFromAllowedBot &&
       !config.discord.allowedUsers?.includes('*') &&
@@ -671,6 +689,14 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
 
     // Discordリンクからメッセージ内容を取得
     prompt = await fetchDiscordLinkContent(client, prompt);
+
+    // 既存スレッド内の発言では、スレッド元メッセージを明示的にプロンプトへ追加する。
+    // Discord のスレッド履歴だけでは親チャンネル側の starter message が見えず、
+    // 「このスレッドの最初の話題」を取り違えるため。
+    const threadStarterContent = await fetchThreadStarterContent(message);
+    if (threadStarterContent) {
+      prompt = threadStarterContent + prompt;
+    }
 
     // 返信元メッセージを取得してプロンプトに追加
     const replyContent = await fetchReplyContent(message);
@@ -724,11 +750,20 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
       prompt = `[現在時刻: ${now}(${day})]\n${prompt}`;
     }
 
-    processingChannels.add(channelId);
+    const target = await resolveDiscordMessageTarget(message, channelId, config, settings);
+    const runKey = target.conversationChannelId;
+
+    // 同じ実行キーで処理中なら無視（メンション時は除く）
+    if (!isMentioned && processingRuns.has(runKey)) {
+      console.log(`[xangi] Skipping message in busy run: ${runKey}`);
+      return;
+    }
+
+    processingRuns.add(runKey);
     try {
-      await processPrompt(message, agentRunner, prompt, skipPermissions, channelId, config);
+      await processPrompt(message, agentRunner, prompt, skipPermissions, channelId, config, target);
     } finally {
-      processingChannels.delete(channelId);
+      processingRuns.delete(runKey);
     }
   });
 }

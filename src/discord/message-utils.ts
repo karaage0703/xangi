@@ -58,6 +58,32 @@ export async function fetchReplyContent(message: Message): Promise<string | null
   }
 }
 
+/** スレッド内メッセージの場合、スレッドの元メッセージを取得してプロンプト用に返す */
+export async function fetchThreadStarterContent(message: Message): Promise<string | null> {
+  const channel = message.channel as unknown as {
+    isThread?: () => boolean;
+    fetchStarterMessage?: () => Promise<Message | null>;
+  };
+  if (typeof channel.isThread !== 'function' || !channel.isThread()) return null;
+  if (typeof channel.fetchStarterMessage !== 'function') return null;
+
+  try {
+    const starterMessage = await channel.fetchStarterMessage();
+    if (!starterMessage) return null;
+    const author = starterMessage.author.tag;
+    const content = starterMessage.content || '(添付ファイルのみ)';
+    const attachmentNames = Array.from(starterMessage.attachments.values()).map((a) => a.name);
+    const attachmentInfo =
+      attachmentNames.length > 0 ? `\n[添付: ${attachmentNames.join(', ')}]` : '';
+
+    console.log(`[xangi] Fetched thread starter message from ${author}`);
+    return `\n---\n🧵 スレッド元 (${author}):\n${content}${attachmentInfo}\n---\n`;
+  } catch (err) {
+    console.error('[xangi] Failed to fetch thread starter message:', err);
+    return null;
+  }
+}
+
 /**
  * メッセージコンテンツ内のチャンネルメンション <#ID> を無害化する
  * fetchChannelMessages() による意図しない二重展開を防ぐ

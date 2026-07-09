@@ -410,4 +410,36 @@ describe('config', () => {
     expect(config.discord.completionNotifyAfterMs).toBe(45_000);
     expect(config.slack.completionNotifyAfterMs).toBe(10_000);
   });
+
+  it('should enable Slack reaction delete by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    delete process.env.SLACK_REACTION_DELETE_ENABLED;
+    delete process.env.SLACK_DELETE_REACTIONS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.slack.reactionDeleteEnabled).toBe(true);
+    expect(config.slack.deleteReactions).toEqual(['wastebasket', 'x']);
+  });
+
+  it('should allow disabling Slack reaction delete', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SLACK_REACTION_DELETE_ENABLED = 'false';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.slack.reactionDeleteEnabled).toBe(false);
+  });
+
+  it('should parse Slack delete reactions as comma-separated list', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SLACK_DELETE_REACTIONS = 'wastebasket, x, xangi_delete ,,';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.slack.deleteReactions).toEqual(['wastebasket', 'x', 'xangi_delete']);
+  });
 });

@@ -1,4 +1,4 @@
-import type { Client } from 'discord.js';
+import type { Client, Message } from 'discord.js';
 import type { Config } from '../config.js';
 import type { AgentRunner } from '../agent-runner.js';
 import type { Scheduler } from '../scheduler.js';
@@ -9,6 +9,7 @@ import { ensureSession, setSession } from '../sessions.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
+import { createProcessingButtons, discordProcessingMessages } from './ui.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
@@ -42,18 +43,22 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
     // 処理中メッセージを送信
     const thinkingMsg = await (
       channel as {
-        send: (content: string) => Promise<{
-          edit: (content: string) => Promise<unknown>;
-          delete: () => Promise<unknown>;
-        }>;
+        send: (options: unknown) => Promise<Message>;
       }
-    ).send('🤔 考え中...');
+    ).send({
+      content: '🤔 考え中...',
+      components: [createProcessingButtons()],
+    });
+
+    discordProcessingMessages.set(channelId, { message: thinkingMsg });
 
     // プロセス再起動 (SIGTERM) で turn が中断されたとき、「考え中」表示を
     // 放置せず「中断」表示で確定させる (issue #293)。スケジューラ起点ターンは
     // message-handler を通らないため、ここで個別に登録する
     const unregisterStreamFinalizer = registerStreamFinalizer(async () => {
-      await thinkingMsg.edit('⏸ プロセス再起動により中断されました').catch(() => {});
+      await thinkingMsg
+        .edit({ content: '⏸ プロセス再起動により中断されました', components: [] })
+        .catch(() => {});
     });
 
     try {
@@ -110,7 +115,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
 
       // 最初のパートは既存のthinkingMsgを編集して送信
       const firstChunks = splitMessage(messageParts[0], DISCORD_SAFE_LENGTH);
-      await thinkingMsg.edit(firstChunks[0] || '✅');
+      await thinkingMsg.edit({ content: firstChunks[0] || '✅', components: [] });
       const ch = channel as { send: (content: string) => Promise<unknown> };
       // 最初のパートの残りチャンク
       for (let i = 1; i < firstChunks.length; i++) {
@@ -136,9 +141,14 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
 
       return result;
     } catch (error) {
-      await thinkingMsg.edit(formatAgentErrorForUser(error)).catch(() => {});
+      await thinkingMsg
+        .edit({ content: formatAgentErrorForUser(error), components: [] })
+        .catch(() => {});
       throw error;
     } finally {
+      const entry = discordProcessingMessages.get(channelId);
+      if (entry?.intervalId) clearInterval(entry.intervalId);
+      discordProcessingMessages.delete(channelId);
       unregisterStreamFinalizer();
     }
   });

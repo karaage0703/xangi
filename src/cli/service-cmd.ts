@@ -86,6 +86,10 @@ function pm2ProcessExists(name: string, flags: Record<string, string | boolean>)
   return runPm2(['describe', name], flags).status === 0;
 }
 
+function isPm2StartupGuidance(output: string): boolean {
+  return /\bsudo\s+env\b/.test(output) && /\bpm2\s+startup\b/.test(output);
+}
+
 function startFromPm2Config(flags: Record<string, string | boolean>): string {
   const pm2ConfigPath = join(projectDir(flags), 'ecosystem.config.cjs');
   if (!existsSync(pm2ConfigPath)) {
@@ -104,7 +108,7 @@ export async function serviceCmd(
 ): Promise<string> {
   if (!action || action === 'help') {
     return [
-      'Usage: xangi service <start|stop|restart|status> [--name <process-name>] [--dir <xangi-dir>]',
+      'Usage: xangi service <start|stop|restart|status|autostart> [--name <process-name>] [--dir <xangi-dir>]',
       'Tip: run ./bin/xangi from the target clone, or use named symlinks such as xangi-dev / xangi-prod.',
       '--dir is an escape hatch for controlling another clone from a PATH-level xangi.',
     ].join('\n');
@@ -135,10 +139,27 @@ export async function serviceCmd(
     case 'status':
       result = runPm2(['describe', name], flags);
       break;
+    case 'autostart': {
+      const save = runPm2(['save'], flags);
+      const startup = runPm2(['startup'], flags);
+      const output = [
+        '$ pm2 save',
+        save.output || '(no output)',
+        '',
+        '$ pm2 startup',
+        startup.output || '(no output)',
+        '',
+        'If pm2 printed a sudo command above, run it once to register the OS startup service.',
+      ].join('\n');
+      if (save.status !== 0 || (startup.status !== 0 && !isPm2StartupGuidance(startup.output))) {
+        throw new Error(output);
+      }
+      return output;
+    }
     default:
       throw new Error(
         [
-          'Usage: xangi service <start|stop|restart|status> [--name <process-name>] [--dir <xangi-dir>]',
+          'Usage: xangi service <start|stop|restart|status|autostart> [--name <process-name>] [--dir <xangi-dir>]',
           'Tip: run ./bin/xangi from the target clone, or use named symlinks such as xangi-dev / xangi-prod.',
         ].join('\n')
       );

@@ -44,7 +44,13 @@ describe('registerSlackSchedulerBridge', () => {
     const result = await runner?.('trigger payload', 'C123');
 
     expect(result).toBe('done');
-    expect(postMessage).toHaveBeenCalledWith({ channel: 'C123', text: '🤔 考え中...' });
+    expect(postMessage).toHaveBeenCalledWith({
+      channel: 'C123',
+      text: '🤔 考え中...',
+      blocks: expect.any(Array),
+    });
+    const initialPayload = postMessage.mock.calls[0][0] as { blocks: unknown[] };
+    expect(JSON.stringify(initialPayload.blocks)).toContain('Stop');
     expect(agentRunner.run).toHaveBeenCalledWith(
       'trigger payload',
       expect.objectContaining({
@@ -57,6 +63,7 @@ describe('registerSlackSchedulerBridge', () => {
       channel: 'C123',
       ts: '1700000000.000100',
       text: 'done',
+      blocks: [],
     });
   });
 });

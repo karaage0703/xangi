@@ -88,6 +88,10 @@ export interface Config {
     completionNotifyAfterMs?: number;
     streaming?: boolean;
     showThinking?: boolean;
+    /** Slack reaction-based bot message deletion (default: true) */
+    reactionDeleteEnabled?: boolean;
+    /** Emoji reaction names that trigger deletion (default: wastebasket,x) */
+    deleteReactions?: string[];
   };
   line: {
     enabled: boolean;
@@ -371,6 +375,10 @@ export function loadConfig(): Config {
       ),
       streaming: process.env.SLACK_STREAMING !== 'false',
       showThinking: process.env.SLACK_SHOW_THINKING !== 'false',
+      reactionDeleteEnabled: process.env.SLACK_REACTION_DELETE_ENABLED !== 'false',
+      deleteReactions: process.env.SLACK_DELETE_REACTIONS?.split(',')
+        .map((s) => s.trim())
+        .filter(Boolean) || ['wastebasket', 'x'],
     },
     line: {
       enabled: lineEnabled,

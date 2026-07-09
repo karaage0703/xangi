@@ -58,14 +58,16 @@ flowchart LR
 
 - `message-handler.ts` — MessageCreate/Update/Delete のハンドリングと `processPrompt`（メンション / DM / `settings.json` の `discordAutoReplyChannels` 判定 → Runner 転送。Discord system message は処理対象外）
 - `slash-commands.ts` — スラッシュコマンド定義と Interaction 処理
-- `scheduler-bridge.ts` — スケジューラの Discord 送信関数・エージェント実行関数の登録
+- `scheduler-bridge.ts` — スケジューラの Discord 送信関数・エージェント実行関数の登録。schedule / trigger 起点の処理中メッセージも `ui.ts` の処理中メッセージ管理に登録し、Stop / 延長 / 残り時間表示を通常メッセージ経路と揃える
 - `ui.ts` — ボタン行（Stop / 延長 / 残り時間表示）・処理中メッセージ管理
 - `tool-history.ts` — ツール履歴の整形・蓄積（`TOOL_HISTORY_MAX_LINES` で表示行数を制限）
-- `message-utils.ts` — Discord メッセージリンク展開・返信元引用・チャンネルメンション展開
+- `message-utils.ts` — Discord メッセージリンク展開・返信元引用・スレッド元引用・チャンネルメンション展開
 
 挙動:
 
-- per-channel セッション分離（`contextKey = discord:<channelId>`）
+- per-channel / per-thread セッション分離（`contextKey = discord:<channelId>`。スレッド返信モードで新規スレッドを作成できた場合は `discord:<threadId>`）
+- Discord API 投稿先は親チャンネルまたは作成済みスレッド、runner / timeout / Stop / processing 管理は確定済みの `runKey = contextKey` で分離し、同じDiscordチャンネル内の別スレッドを別実行単位として扱う
+- 既存スレッド内の発言では、Discord の starter message（親チャンネル側の元メッセージ）を `🧵 スレッド元` としてプロンプトに注入し、スレッド履歴だけでは見えない最初の話題にフォーカスする
 - スレッド・添付ファイル・リアクション対応
 - ストリーミング表示は `stream-session.ts`（Slack / Web と共通コア）で思考表示・更新スロットリングを統一し、ボタン UI を `message.edit` で 1 秒粒度に更新
 - プロセス終了時（SIGTERM）は `stream-finalizer.ts` が実行中のストリーミング表示を「⏸ プロセス再起動により中断されました」へ確定させる（message-handler / scheduler-bridge 両経路で登録）
@@ -644,7 +646,7 @@ AI CLI（Claude Code等）
 
 **設計判断:**
 
-- ターン実行は scheduler の `agentRunner` 経路を再利用する。プラットフォームごとの投稿処理（thinking メッセージ・分割・添付）を持つ実行関数が既に scheduler に登録されているため、トリガー側は `Scheduler.getAgentRunner(platform)` で取得して呼ぶだけでよい
+- ターン実行は scheduler の `agentRunner` 経路を再利用する。プラットフォームごとの投稿処理（thinking メッセージ・分割・添付・Stop / 延長 / 残り時間表示）を持つ実行関数が既に scheduler に登録されているため、トリガー側は `Scheduler.getAgentRunner(platform)` で取得して呼ぶだけでよい
 - HTTP 応答（`202` + `triggerId`）はターン完了を待たない fire-and-forget。呼び出し側（ビルドスクリプト等）をブロックしない
 - 発火時に `⚡ trigger: <source>` ラベルをチャンネルへ先行投稿し、何が起動したか可視化する
 

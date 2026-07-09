@@ -60,14 +60,16 @@ Based on `discord.js` v14. Split into modules by responsibility:
 
 - `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `discordAutoReplyChannels` in `settings.json` → forwarding to the Runner; Discord system messages are ignored)
 - `slash-commands.ts` — Slash command definitions and interaction handling
-- `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions
+- `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions. Processing messages started by schedules / triggers are also registered with the processing-message UI so Stop / extend / remaining-time controls match the normal message path
 - `ui.ts` — Button rows (Stop / extend / remaining-time display) and processing-message management
 - `tool-history.ts` — Tool history formatting/accumulation (display lines capped via `TOOL_HISTORY_MAX_LINES`)
-- `message-utils.ts` — Discord message link expansion, reply quoting, channel-mention expansion
+- `message-utils.ts` — Discord message link expansion, reply quoting, thread-starter quoting, channel-mention expansion
 
 Behavior:
 
-- Per-channel session isolation (`contextKey = discord:<channelId>`)
+- Per-channel / per-thread session isolation (`contextKey = discord:<channelId>`; when thread-reply mode creates a new thread, `discord:<threadId>`)
+- Discord API posting targets the parent channel or the created thread, while runner / timeout / Stop / processing state use the resolved `runKey = contextKey`, so separate threads in the same Discord channel do not share an execution slot
+- For messages inside an existing Discord thread, xangi injects the starter message from the parent channel as `🧵 スレッド元` so the agent focuses on the thread's original topic even when thread-local history does not include it
 - Threads, attachments, and reactions supported
 - Streaming display uses `stream-session.ts` (a core shared with Slack / Web) to unify thinking display and update throttling, and refreshes the button UI at 1-second granularity via `message.edit`
 - On process shutdown (SIGTERM), `stream-finalizer.ts` finalizes in-flight streaming displays into a "⏸ interrupted by process restart" notice (registered on both the message-handler and scheduler-bridge paths)
@@ -635,7 +637,7 @@ External process (build script / CI / watcher cron)
 
 **Design decisions:**
 
-- Turn execution reuses the scheduler's `agentRunner` path. The per-platform run functions (thinking message, splitting, attachments) are already registered on the scheduler, so the trigger only needs `Scheduler.getAgentRunner(platform)`
+- Turn execution reuses the scheduler's `agentRunner` path. The per-platform run functions (thinking message, splitting, attachments, Stop / extend / remaining-time controls) are already registered on the scheduler, so the trigger only needs `Scheduler.getAgentRunner(platform)`
 - The HTTP response (`202` + `triggerId`) is fire-and-forget and does not wait for the turn, so callers (build scripts etc.) are never blocked
 - A `⚡ trigger: <source>` label is posted to the channel first, making it visible what woke the agent
 

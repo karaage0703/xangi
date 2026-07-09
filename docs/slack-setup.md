@@ -16,6 +16,51 @@ Slack アカウントでログイン。
 4. ワークスペースを選択
 5. **「Create App」** をクリック
 
+### Manifest で作成する場合（任意）
+
+Slack App の作成時に **「From an app manifest」** を選ぶと、Socket Mode / Event Subscriptions / OAuth scopes をまとめて設定できます。手動設定を減らしたい場合は以下を貼り付けてください。
+
+```yaml
+display_information:
+  name: xangi
+  description: AI CLI assistant for Slack
+  background_color: "#2f3136"
+features:
+  bot_user:
+    display_name: xangi
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - files:read
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - reactions:read
+      - reactions:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - reaction_added
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+```
+
+manifest を使った場合でも、App-Level Token（`connections:write`）の作成、ワークスペースへのインストール、Bot User OAuth Token / App Token のコピーは必要です。スラッシュコマンドは環境差を避けるため manifest には含めず、必要な場合だけ Step 6 で手動登録してください。
+
 ## 3. Socket Mode を有効化（重要）
 
 xangi は Socket Mode で動作します（Webhook 不要）。
@@ -37,6 +82,7 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | Event | 説明 | 用途 |
 |-------|------|------|
 | `app_mention` | メンションされた時 | 必須 |
+| `reaction_added` | 削除用リアクションが追加された時 | リアクション削除を使う場合 |
 | `message.im` | DM を受け取った時 | DM対応時 |
 | `message.channels` | パブリックチャンネルのメッセージ | メンションなし応答時 |
 | `message.groups` | プライベートチャンネルのメッセージ | メンションなし応答時 |
@@ -53,6 +99,7 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `app_mentions:read` | メンションの読み取り | 必須 |
 | `chat:write` | メッセージ送信 | 必須 |
 | `files:read` | ファイルの読み取り | 添付ファイル対応時 |
+| `reactions:read` | リアクションイベントの読み取り | リアクション削除を使う場合 |
 | `reactions:write` | リアクション追加（👀など） | 必須 |
 | `im:history` | DM の履歴読み取り | DM対応時 |
 | `im:read` | DM の読み取り | DM対応時 |
@@ -61,6 +108,8 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `groups:read` | プライベートチャンネル情報の読み取り | `xangi-cmd slack_channels` 使用時 |
 | `channels:history` | パブリックチャンネルの履歴読み取り | メンションなし応答時 |
 | `groups:history` | プライベートチャンネルの履歴読み取り | メンションなし応答時 |
+
+権限やイベントを追加・変更した後は、左メニュー **「Install App」** からアプリをワークスペースへ再インストールしてください。再インストールしないと `reaction_added` や `reactions:read` が有効になりません。
 
 ## 6. スラッシュコマンド登録（オプション）
 
@@ -101,6 +150,10 @@ SLACK_ALLOWED_USER=U01234567
 
 # 任意: 特定チャンネルだけスレッドではなくチャンネル直下に返信
 SLACK_REPLY_IN_CHANNELS=C01234567
+
+# 任意: `:wastebasket:` / `:x:` リアクションで bot 投稿を削除（デフォルト有効）
+SLACK_REACTION_DELETE_ENABLED=true
+SLACK_DELETE_REACTIONS=wastebasket,x
 ```
 
 > **⚠️ Slack のみで使用する場合は `.env` から `DISCORD_TOKEN` を削除（またはコメントアウト）してください。**
@@ -124,6 +177,7 @@ Slack で以下を試す：
 - DM を送信
 - `/new` コマンド
 - `/skills` コマンド
+- bot 投稿に `:wastebasket:` または `:x:` リアクションを付けて削除
 
 ## IDの調べ方
 

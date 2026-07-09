@@ -163,6 +163,12 @@ fi
 if [ "$1" = "describe" ]; then
   exit "\${PM2_DESCRIBE_EXIT:-0}"
 fi
+if [ "$1" = "startup" ]; then
+  if [ -n "$PM2_STARTUP_OUTPUT" ]; then
+    echo "$PM2_STARTUP_OUTPUT"
+  fi
+  exit "\${PM2_STARTUP_EXIT:-0}"
+fi
 exit 0
 `
     );
@@ -213,6 +219,44 @@ exit 0
     const log = readFileSync(fakePm2.logFile, 'utf8');
     expect(log).toContain('describe xangi-dev');
     expect(log).toContain('start ecosystem.config.cjs');
+  });
+
+  it('saves the PM2 process list and prints startup guidance for service autostart', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
+    writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
+
+    const result = await runCli(['service', 'autostart', '--dir', xangiDir], {
+      PM2_LOG: fakePm2.logFile,
+      PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('If pm2 printed a sudo command');
+    const log = readFileSync(fakePm2.logFile, 'utf8');
+    expect(log).toContain('save');
+    expect(log).toContain('startup');
+  });
+
+  it('accepts PM2 startup sudo guidance even when pm2 exits non-zero', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
+    writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
+
+    const result = await runCli(['service', 'autostart', '--dir', xangiDir], {
+      PM2_LOG: fakePm2.logFile,
+      PM2_STARTUP_EXIT: '1',
+      PM2_STARTUP_OUTPUT:
+        'sudo env PATH=$PATH:/node/bin /node/lib/node_modules/pm2/bin/pm2 startup systemd -u karaage --hp /home/karaage',
+      PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('sudo env PATH=');
+    expect(result.stdout).toContain('If pm2 printed a sudo command');
+    const log = readFileSync(fakePm2.logFile, 'utf8');
+    expect(log).toContain('save');
+    expect(log).toContain('startup');
   });
 
   it('loads token from XANGI_ENV_PATH when no token flag is provided', async () => {
