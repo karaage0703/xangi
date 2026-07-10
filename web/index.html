@@ -1469,6 +1469,19 @@
         });
       }
 
+      // 描画済みコンテナ内の外部リンク (http/https) を新しいタブで開く。
+      // marked.js は既定でリンクに target を付けないため、innerHTML 代入後に
+      // 付与する。内部リンク (/inter-chat 等) は個別対応済みなので対象外。
+      function addLinkTargets(container) {
+        container.querySelectorAll('a').forEach(function (a) {
+          var href = a.getAttribute('href') || '';
+          if (/^https?:\/\//i.test(href)) {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+          }
+        });
+      }
+
       function formatTime(isoStr) {
         if (!isoStr) return '';
         const d = new Date(isoStr);
@@ -1707,6 +1720,7 @@
             div.innerHTML = renderMarkdown(cleaned);
             div.style.whiteSpace = 'normal';
             addCodeCopyButtons(div);
+            addLinkTargets(div);
           } else {
             div.textContent = cleaned;
           }
@@ -2156,6 +2170,7 @@
                       assistantDiv.style.whiteSpace = 'normal';
                       assistantDiv.innerHTML = renderMarkdown(d.response || '');
                       addCodeCopyButtons(assistantDiv);
+                      addLinkTargets(assistantDiv);
                       var t = document.createElement('div');
                       t.className = 'msg-time';
                       t.textContent = formatTime(new Date().toISOString());
