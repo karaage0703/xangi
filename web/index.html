@@ -191,6 +191,14 @@
         color: var(--ink);
         box-shadow: inset 2px 0 0 var(--primary);
       }
+      /* フォーカス中のペインが開いているセッション（＝現在のペイン） */
+      .session-item.current,
+      .session-item.current:hover {
+        background: var(--focus-ring);
+        color: var(--ink);
+        font-weight: 600;
+        box-shadow: inset 3px 0 0 var(--primary-hover);
+      }
       /* メインエリア（ペイン群コンテナ） */
       #main {
         flex: 1;
@@ -2469,6 +2477,7 @@
           this.panes.forEach((p) => p.el.classList.toggle('active', p === pane));
           this.activePane = pane;
           this._renderTabs();
+          if (typeof updateSessionHighlights === 'function') updateSessionHighlights();
         }
 
         layout() {
@@ -2580,9 +2589,22 @@
         } catch (e) {}
       }
 
+      // フォーカス中ペインのセッションだけ「current」を付け替える（全再描画は不要）
+      function updateSessionHighlights() {
+        var openIds = paneManager.openSessionIds();
+        var currentId = paneManager.activePane ? paneManager.activePane.sessionId : null;
+        var items = sessionListEl.querySelectorAll('.session-item');
+        items.forEach(function (item) {
+          var id = item.getAttribute('data-id');
+          item.classList.toggle('active', openIds.has(id));
+          item.classList.toggle('current', !!currentId && id === currentId);
+        });
+      }
+
       function renderSessions(sessions) {
         sessionListEl.innerHTML = '';
         var openIds = paneManager.openSessionIds();
+        var currentId = paneManager.activePane ? paneManager.activePane.sessionId : null;
         var lastDate = '';
         for (var i = 0; i < sessions.length; i++) {
           var s = sessions[i];
@@ -2595,7 +2617,10 @@
             sessionListEl.appendChild(g);
           }
           var item = document.createElement('div');
-          item.className = 'session-item session-row' + (openIds.has(s.id) ? ' active' : '');
+          item.className =
+            'session-item session-row' +
+            (openIds.has(s.id) ? ' active' : '') +
+            (currentId && s.id === currentId ? ' current' : '');
           var icon =
             s.platform === 'web' ? '\u{1F310}' : s.platform === 'slack' ? '\u{1F4AC}' : '\u{1F48E}';
           var active = s.isActive ? '\u{1F7E2} ' : '';
