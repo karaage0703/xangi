@@ -78,11 +78,13 @@ const busySessions = new Set<string>();
 interface WebChatOptions {
   agentRunner: AgentRunner;
   port?: number;
+  host?: string;
 }
 
 export function startWebChat(options: WebChatOptions): void {
   const { agentRunner } = options;
   const port = options.port || parseInt(process.env.WEB_CHAT_PORT || String(DEFAULT_PORT), 10);
+  const host = options.host || process.env.WEB_CHAT_HOST || '0.0.0.0';
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
 
   // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
@@ -1072,7 +1074,7 @@ export function startWebChat(options: WebChatOptions): void {
     res.end('Not found');
   });
 
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, host, () => {
     console.log(`[web-chat] Chat UI: http://localhost:${port}`);
     // Tailscale が動いてれば LAN/Tailnet 経由のアクセス URL も出す（best-effort）
     resolveAccessUrls(port)
