@@ -1633,7 +1633,10 @@
 
         _handleKey(e) {
           if (e.isComposing || e.keyCode === 229) return;
-          if (e.key === 'Enter' && !e.shiftKey) {
+          // スマホ幅では Enter を改行に使えるよう、送信はボタンのみに限定する。
+          // ソフトキーボードでは Shift+Enter が事実上打てず、改行が入れられないため。
+          var isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+          if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
             e.preventDefault();
             this.send();
           }
