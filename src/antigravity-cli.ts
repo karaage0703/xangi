@@ -14,6 +14,10 @@ export interface AntigravityOptions extends BaseRunnerOptions {
 }
 
 interface AntigravityJsonResponse {
+  status?: string;
+  duration_seconds?: number;
+  num_turns?: number;
+  usage?: unknown;
   result?: string;
   text?: string;
   content?: string;
@@ -29,6 +33,12 @@ interface AntigravityJsonResponse {
 }
 
 type ConversationSnapshot = Map<string, number>;
+type OutputCapability = 'unknown' | 'json' | 'legacy';
+
+interface AntigravityOutputError extends Error {
+  antigravityStdout?: string;
+  antigravityStderr?: string;
+}
 
 export class AntigravityRunner extends CliRunnerBase {
   protected readonly command = 'agy';
@@ -37,6 +47,8 @@ export class AntigravityRunner extends CliRunnerBase {
 
   private systemPrompt: string;
   private readonly printTimeout: string;
+  /** Capability is intentionally per runner: different agy binaries may be used by different runners. */
+  private outputCapability: OutputCapability = 'unknown';
 
   constructor(options?: AntigravityOptions) {
     super(options);
@@ -44,7 +56,7 @@ export class AntigravityRunner extends CliRunnerBase {
     this.printTimeout = process.env.ANTIGRAVITY_PRINT_TIMEOUT || '5m';
   }
 
-  private buildArgs(prompt: string, options?: RunOptions): string[] {
+  private buildArgs(prompt: string, options?: RunOptions, outputFormat?: 'json'): string[] {
     const args: string[] = [];
 
     const skip = options?.skipPermissions ?? this.skipPermissions;
@@ -60,7 +72,15 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--conversation', options.sessionId);
     }
 
+    // CliRunnerBase already sets cwd. agy resolves this relative directory as the same workspace.
+    if (this.workdir) {
+      args.push('--add-dir', '.');
+    }
+
     args.push('--print-timeout', this.printTimeout);
+    if (outputFormat) {
+      args.push('--output-format', outputFormat);
+    }
     args.push('-p', prompt);
     return args;
   }
@@ -70,13 +90,25 @@ export class AntigravityRunner extends CliRunnerBase {
     channelId: string | undefined
   ): Promise<{ stdout: string; stderr: string }> {
     let stderr = '';
-    const stdout = await this.collectOutput(args, channelId, {
-      encoding: 'utf8',
-      onStderr: (output) => {
-        stderr = output;
-      },
-    });
-    return { stdout, stderr };
+    let stdoutOnError = '';
+    try {
+      const stdout = await this.collectOutput(args, channelId, {
+        encoding: 'utf8',
+        exitErrorDetail: (output) => {
+          stdoutOnError = output;
+          return this.extractExitErrorDetail(output);
+        },
+        onStderr: (output) => {
+          stderr = output;
+        },
+      });
+      return { stdout, stderr };
+    } catch (error) {
+      const outputError = error as AntigravityOutputError;
+      outputError.antigravityStdout = stdoutOnError;
+      outputError.antigravityStderr = stderr;
+      throw outputError;
+    }
   }
 
   private buildFullPrompt(rawPrompt: string): string {
@@ -96,8 +128,6 @@ export class AntigravityRunner extends CliRunnerBase {
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
     const fullPrompt = this.buildFullPrompt(prompt);
-    const args = this.buildArgs(fullPrompt, options);
-    const conversationsBefore = this.snapshotConversations();
 
     this.logExecution('Executing', options);
 
@@ -105,24 +135,47 @@ export class AntigravityRunner extends CliRunnerBase {
       logPrompt(this.workdir, options.appSessionId, fullPrompt);
     }
 
-    const { stdout, stderr } = await this.collectAntigravityOutput(args, options?.channelId);
-    const response = this.parseResponse(stdout);
-    const result = this.extractText(response) || stdout.trim();
-    const sessionId =
-      this.extractSessionId(response) || this.findChangedConversationId(conversationsBefore);
+    const wantsJson = this.outputCapability !== 'legacy';
+    // Unknown runners need a pre-run snapshot in case they return legacy plain text.
+    // Confirmed JSON runners never consult the conversation database.
+    const conversationsBefore =
+      this.outputCapability === 'json' ? new Map<string, number>() : this.snapshotConversations();
+    let usedJson = wantsJson;
+    let execution: { stdout: string; stderr: string };
 
-    if (response && (response.is_error || response.error)) {
-      throw new Error(this.extractErrorMessage(response) ?? 'Antigravity CLI returned error');
-    }
+    try {
+      execution = await this.collectAntigravityOutput(
+        this.buildArgs(fullPrompt, options, wantsJson ? 'json' : undefined),
+        options?.channelId
+      );
+    } catch (error) {
+      const outputError = error as AntigravityOutputError;
+      const errorJson = this.parseResponse(outputError.antigravityStdout ?? '');
+      if (this.isErrorStatus(errorJson)) {
+        this.outputCapability = 'json';
+        throw error;
+      }
 
-    if (!result) {
-      const detail = stderr.trim();
-      throw new Error(
-        detail
-          ? `Antigravity CLI returned no output: ${detail}`
-          : 'Antigravity CLI returned no output. Check ~/.gemini/antigravity-cli/log/ for quota, auth, or model errors.'
+      if (!wantsJson || !this.isUnsupportedOutputFormat(error)) {
+        throw error;
+      }
+
+      // An old agy has rejected --output-format before running the prompt. Retry exactly once.
+      this.outputCapability = 'legacy';
+      usedJson = false;
+      execution = await this.collectAntigravityOutput(
+        this.buildArgs(fullPrompt, options),
+        options?.channelId
       );
     }
+
+    const { result, sessionId } = this.interpretOutput(
+      execution.stdout,
+      execution.stderr,
+      usedJson,
+      conversationsBefore,
+      options?.sessionId
+    );
 
     if (options?.appSessionId && this.workdir) {
       logResponse(this.workdir, options.appSessionId, { result, sessionId });
@@ -151,14 +204,124 @@ export class AntigravityRunner extends CliRunnerBase {
     };
   }
 
+  private interpretOutput(
+    stdout: string,
+    stderr: string,
+    requestedJson: boolean,
+    conversationsBefore: ConversationSnapshot,
+    priorSessionId?: string
+  ): RunResult {
+    const response = this.parseResponse(stdout);
+    const wasConfirmedJson = this.outputCapability === 'json';
+
+    if (requestedJson) {
+      if (!response) {
+        if (wasConfirmedJson || this.looksLikeNativeJsonEnvelope(stdout)) {
+          throw new Error('Antigravity CLI returned malformed JSON output');
+        }
+        this.outputCapability = 'legacy';
+        return this.buildLegacyResult(stdout, stderr, null, conversationsBefore, priorSessionId);
+      }
+
+      // Older agy versions may ignore --output-format and return an ordinary JSON answer.
+      // Native Agy envelopes always have status, so user JSON must not confirm capability.
+      if (response.status === undefined && !wasConfirmedJson) {
+        this.outputCapability = 'legacy';
+        return this.buildLegacyResult(stdout, stderr, null, conversationsBefore, priorSessionId);
+      }
+
+      this.outputCapability = 'json';
+      if (response.status === 'SUCCESS') {
+        const result = typeof response.response === 'string' ? response.response : '';
+        if (!result) {
+          throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
+        }
+        return { result, sessionId: response.conversation_id ?? priorSessionId ?? '' };
+      }
+      if (response.status === 'ERROR') {
+        throw new Error(this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR');
+      }
+      throw new Error(
+        `Antigravity CLI returned unknown JSON status${response.status ? `: ${response.status}` : ''}`
+      );
+    }
+
+    return this.buildLegacyResult(stdout, stderr, response, conversationsBefore, priorSessionId);
+  }
+
+  private buildLegacyResult(
+    stdout: string,
+    stderr: string,
+    response: AntigravityJsonResponse | null,
+    conversationsBefore: ConversationSnapshot,
+    priorSessionId?: string
+  ): RunResult {
+    if (response && (response.is_error || response.error)) {
+      throw new Error(this.extractErrorMessage(response) ?? 'Antigravity CLI returned error');
+    }
+
+    const result = this.extractText(response) || stdout.trim();
+    if (!result) {
+      const detail = stderr.trim();
+      throw new Error(
+        detail
+          ? `Antigravity CLI returned no output: ${detail}`
+          : 'Antigravity CLI returned no output. Check ~/.gemini/antigravity-cli/log/ for quota, auth, or model errors.'
+      );
+    }
+
+    return {
+      result,
+      sessionId:
+        this.extractSessionId(response) ||
+        this.findChangedConversationId(conversationsBefore) ||
+        priorSessionId ||
+        '',
+    };
+  }
+
   private parseResponse(output: string): AntigravityJsonResponse | null {
     const trimmed = output.trim();
     if (!trimmed) return null;
     try {
-      return JSON.parse(trimmed) as AntigravityJsonResponse;
+      const parsed = JSON.parse(trimmed) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as AntigravityJsonResponse)
+        : null;
     } catch {
       return null;
     }
+  }
+
+  private extractExitErrorDetail(output: string): string | undefined {
+    const response = this.parseResponse(output);
+    if (response?.status !== 'ERROR') return undefined;
+    return this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR';
+  }
+
+  private isErrorStatus(response: AntigravityJsonResponse | null): boolean {
+    return response?.status === 'ERROR';
+  }
+
+  private isUnsupportedOutputFormat(error: unknown): boolean {
+    const outputError = error as AntigravityOutputError;
+    const detail = [
+      error instanceof Error ? error.message : String(error),
+      outputError.antigravityStdout,
+      outputError.antigravityStderr,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const mentionsOutputFormat = /-{1,2}output-format/i.test(detail);
+    const reportsUnsupported =
+      /(?:unknown|unrecognized|undefined|unexpected)\s+(?:option|flag|argument)/i.test(detail) ||
+      /(?:option|flag|argument)s?\s+provided\s+but\s+not\s+defined/i.test(detail) ||
+      /(?:option|flag|argument)s?\s+(?:is|are)\s+not\s+defined/i.test(detail);
+    return mentionsOutputFormat && reportsUnsupported;
+  }
+
+  private looksLikeNativeJsonEnvelope(output: string): boolean {
+    return /^\s*\{[\s\S]{0,200}"status"\s*:/.test(output);
   }
 
   private extractText(event: AntigravityJsonResponse | null): string {
@@ -256,6 +419,8 @@ export class AntigravityRunner extends CliRunnerBase {
     if (typeof error === 'string') return error;
     if (error?.message) return error.message;
     if (typeof event.message === 'string' && event.is_error) return event.message;
+    if (typeof event.message === 'string' && event.status === 'ERROR') return event.message;
+    if (typeof event.response === 'string' && event.status === 'ERROR') return event.response;
     return undefined;
   }
 }

@@ -1281,13 +1281,15 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--always-approve` to a
 
 The Antigravity backend uses Google's `agy` command. Install it with `curl -fsSL https://antigravity.google/cli/install.sh | bash` and complete the first-run `agy` authentication flow.
 
-Non-interactive execution uses `agy --print-timeout <timeout> -p ...`. Set `ANTIGRAVITY_PRINT_TIMEOUT` (default: `5m`) to control agy's own print-mode timeout. xangi passes `--model` when `AGENT_MODEL` is set and `--conversation` when a provider session id is available.
+Non-interactive execution uses `agy --print-timeout <timeout> --output-format json -p ...`. xangi reads `status`, `response`, and `conversation_id` from Agy CLI 1.1.2 final JSON and returns `conversation_id` as the provider session. Set `ANTIGRAVITY_PRINT_TIMEOUT` (default: `5m`) to control agy's own print-mode timeout. xangi passes `--model` when `AGENT_MODEL` is set and `--conversation` when a provider session id is available. When a workdir is configured, it also passes `--add-dir .` for that same child-process cwd.
+
+If an older agy explicitly reports that `--output-format` is unsupported, xangi retries once in legacy plain-output mode and caches that mode for the runner. It does not retry ordinary execution errors such as timeouts, authentication or quota errors, or an invalid model.
 
 If agy exits successfully with empty stdout, xangi surfaces timeout, quota, authentication, or other details written to stderr as the error message.
 
 When `SKIP_PERMISSIONS=true` (the default), xangi passes `--dangerously-skip-permissions` to avoid blocking on permission prompts in non-interactive chat operation. Use this only for trusted personal workspaces.
 
-Because Antigravity CLI does not currently expose a stable JSON/stream-json contract, xangi emits the final response once as a streaming fallback. The runner can be extended to incremental display when `agy` adds a machine-readable stream output.
+True incremental Antigravity streaming (`stream-json`) is not implemented. `runStream` emits the final response once.
 
 ### Local LLM (when `AGENT_BACKEND=local-llm`)
 

@@ -254,7 +254,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | codex-cli.ts         | Codex CLI                | Made by OpenAI, 0.98.0 compatible, cancel support                                      |
 | cursor-cli.ts        | Cursor CLI               | `cursor-agent` command, JSON/stream-json, tool call display support                    |
 | grok-cli.ts          | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
-| antigravity-cli.ts   | Antigravity CLI          | Google `agy` command, headless `-p`, final-response streaming fallback                 |
+| antigravity-cli.ts   | Antigravity CLI          | Google `agy` command, Agy 1.1.2 final JSON with legacy plain-output fallback           |
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)

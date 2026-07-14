@@ -263,7 +263,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | codex-cli.ts         | Codex CLI           | OpenAI製、0.98.0対応、cancel対応                                                |
 | cursor-cli.ts        | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                    |
 | grok-cli.ts          | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                     |
-| antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、headless `-p` 対応、最終応答フォールバック               |
+| antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.2最終JSONと旧版プレーン出力フォールバック        |
 | local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
