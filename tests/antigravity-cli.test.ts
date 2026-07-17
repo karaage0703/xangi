@@ -569,24 +569,51 @@ describe('AntigravityRunner', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts Agy 1.1.2 plain output without re-running the prompt', async () => {
+  it('recovers a new sessionId from Agy 1.1.2 plain output without re-running', async () => {
     const { spawn } = await import('child_process');
+    const home = mkdtempSync(join(tmpdir(), 'agy-home-'));
+    tempHomes.push(home);
+    process.env.HOME = home;
+    const conversationsDir = join(home, '.gemini', 'antigravity-cli', 'conversations');
+    const conversationId = '12345678-1234-1234-1234-123456789abc';
     const runner = new AntigravityRunner({});
     const onText = vi.fn();
-    const promise = runner.runStream('hello', { onText });
+    const onComplete = vi.fn();
+    const promise = runner.runStream('hello', { onText, onComplete });
     const mockProcess = await waitForProcess();
+    mkdirSync(conversationsDir, { recursive: true });
+    writeFileSync(join(conversationsDir, `${conversationId}.db`), '');
     mockProcess.stdout.emit('data', Buffer.from('legacy line 1\n\nlegacy line 2\n'));
     mockProcess.emit('close', 0);
 
-    await expect(promise).resolves.toEqual({
+    const expected = {
       result: 'legacy line 1\n\nlegacy line 2',
-      sessionId: '',
-    });
+      sessionId: conversationId,
+    };
+    await expect(promise).resolves.toEqual(expected);
     expect(spawn).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith(expected);
     expect(onText).toHaveBeenCalledWith(
       'legacy line 1\n\nlegacy line 2',
       'legacy line 1\n\nlegacy line 2'
     );
+  });
+
+  it('preserves a resumed sessionId for Agy 1.1.2 plain output without re-running', async () => {
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({});
+    const onComplete = vi.fn();
+    const promise = runner.runStream('hello again', { onComplete }, { sessionId: 'conv-existing' });
+    const mockProcess = await waitForProcess();
+    mockProcess.stdout.emit('data', Buffer.from('continued answer\n'));
+    mockProcess.emit('close', 0);
+
+    const expected = { result: 'continued answer', sessionId: 'conv-existing' };
+    await expect(promise).resolves.toEqual(expected);
+    expect(onComplete).toHaveBeenCalledWith(expected);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const args = (spawn as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(args[args.indexOf('--conversation') + 1]).toBe('conv-existing');
   });
 
   it('preserves an ordinary JSON answer returned as Agy 1.1.2 plain output', async () => {

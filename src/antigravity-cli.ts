@@ -229,7 +229,18 @@ export class AntigravityRunner extends CliRunnerBase {
       logPrompt(this.workdir, options.appSessionId, fullPrompt);
     }
 
+    // Unknown stream capability may be Agy 1.1.2 returning plain output while ignoring
+    // --output-format. Snapshot before execution so its conversation ID can be recovered.
+    const conversationsBefore =
+      this.streamOutputCapability === 'stream-json'
+        ? new Map<string, number>()
+        : this.snapshotConversations();
+
     const onComplete = (result: RunResult) => {
+      if (!result.sessionId && this.streamOutputCapability === 'legacy') {
+        result.sessionId =
+          this.findChangedConversationId(conversationsBefore) || options?.sessionId || '';
+      }
       if (options?.appSessionId && this.workdir) {
         logResponse(this.workdir, options.appSessionId, {
           result: result.result,
