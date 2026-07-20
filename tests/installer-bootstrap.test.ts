@@ -142,15 +142,17 @@ esac
 async function runInstaller(
   installer: string,
   data: Awaited<ReturnType<typeof fixture>>,
-  overrides: Record<string, string> = {}
+  overrides: Record<string, string> = {},
+  includeCommandDir = false
 ) {
   const fakeBin = await fakeHostCommands(data.root, data.platform);
   const home = join(data.root, 'home');
   await mkdir(home, { recursive: true });
+  const commandPath = includeCommandDir ? `${join(home, '.local', 'bin')}:` : '';
   return exec('bash', [installer], {
     env: {
       ...process.env,
-      PATH: `${fakeBin}:${process.env.PATH}`,
+      PATH: `${fakeBin}:${commandPath}${process.env.PATH}`,
       HOME: home,
       FIXTURE_MANIFEST: data.manifest,
       FIXTURE_ARTIFACT: data.artifact,
@@ -192,6 +194,9 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
       'XANGI_INSTALLATION_KIND=managed'
     );
+    await expect(
+      readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))
+    ).resolves.toBe(join(app, 'bin', 'xangi'));
     await expect(readFile(join(app, 'trust', 'release-public-key.pem'), 'utf8')).resolves.toContain(
       'BEGIN PUBLIC KEY'
     );
@@ -210,10 +215,33 @@ describe('authenticated macOS bootstrap installer', () => {
       )
     ).resolves.toBe('{"manifestUrl":"https://releases.example/manifest.json"}\n');
     expect(result.stdout).toContain('Setup and service activation complete');
+    expect(result.stdout).toContain('Command: ');
+    expect(result.stdout).toContain('Add xangi to this shell: export PATH=');
     expect(result.stdout).toContain('Verify: "');
     expect(result.stdout).toContain(' doctor');
     expect(result.stdout).toContain('Token settings: "');
     expect(result.stdout).toContain(' settings');
+  });
+
+  it('refuses to overwrite an unrelated command at ~/.local/bin/xangi', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const commandDir = join(data.root, 'home', '.local', 'bin');
+    await mkdir(commandDir, { recursive: true });
+    await writeFile(join(commandDir, 'xangi'), 'unrelated command');
+
+    await expect(runInstaller(installer, data)).rejects.toMatchObject({ code: 1 });
+    await expect(readFile(join(commandDir, 'xangi'), 'utf8')).resolves.toBe('unrelated command');
+  });
+
+  it('prints bare xangi commands when ~/.local/bin is already on PATH', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const result = await runInstaller(installer, data, {}, true);
+
+    expect(result.stdout).toContain('Verify: xangi doctor');
+    expect(result.stdout).toContain('Token settings: xangi settings');
+    expect(result.stdout).not.toContain('Add xangi to this shell:');
   });
 
   it('installs a Linux bundle into XDG paths without Git or Node', async () => {
@@ -318,5 +346,6 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(
       readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi.js'))
     ).rejects.toThrow();
+    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).rejects.toThrow();
   });
 });

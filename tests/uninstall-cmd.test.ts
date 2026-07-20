@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
@@ -11,7 +11,6 @@ import type { UpdateSchedulerAdapter } from '../src/installer/platform/update-sc
 const roots: string[] = [];
 
 afterEach(async () => {
-  const { rm } = await import('node:fs/promises');
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -52,6 +51,7 @@ async function fixture() {
     mkdir(layout.configDir, { recursive: true }),
     mkdir(layout.stateDir, { recursive: true }),
     mkdir(layout.workspaceDir, { recursive: true }),
+    mkdir(join(root, '.local', 'bin'), { recursive: true }),
   ]);
   await Promise.all([
     writeFile(join(layout.appRoot, 'version.txt'), '1.0.0'),
@@ -59,7 +59,8 @@ async function fixture() {
     writeFile(join(layout.stateDir, 'session.json'), '{"kept":true}'),
     writeFile(join(layout.workspaceDir, 'AGENTS.md'), 'my workspace'),
   ]);
-  return { layout, service: fakeService(), scheduler: fakeScheduler() };
+  await symlink(join(layout.appRoot, 'bin', 'xangi'), join(root, '.local', 'bin', 'xangi'));
+  return { root, layout, service: fakeService(), scheduler: fakeScheduler() };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -73,16 +74,24 @@ async function exists(path: string): Promise<boolean> {
 
 describe('managed uninstall command', () => {
   it('removes the service, scheduler, and app while preserving reinstall data', async () => {
-    const { layout, service, scheduler } = await fixture();
+    const { root, layout, service, scheduler } = await fixture();
 
     const output = await uninstallCmd(
       {},
-      { layout, service, updateScheduler: scheduler, platform: 'linux', arch: 'x64' }
+      {
+        layout,
+        service,
+        updateScheduler: scheduler,
+        platform: 'linux',
+        arch: 'x64',
+        homeDir: root,
+      }
     );
 
     expect(service.uninstalls).toBe(1);
     expect(scheduler.uninstalls).toBe(1);
     expect(await exists(layout.appRoot)).toBe(false);
+    expect(await exists(join(root, '.local', 'bin', 'xangi'))).toBe(false);
     expect(await readFile(join(layout.configDir, 'secrets.json'), 'utf8')).toBe('{"kept":true}');
     expect(await readFile(join(layout.stateDir, 'session.json'), 'utf8')).toBe('{"kept":true}');
     expect(await readFile(join(layout.workspaceDir, 'AGENTS.md'), 'utf8')).toBe('my workspace');
@@ -105,6 +114,28 @@ describe('managed uninstall command', () => {
     expect(await exists(layout.appRoot)).toBe(true);
     expect(await exists(layout.configDir)).toBe(true);
     expect(await exists(layout.stateDir)).toBe(true);
+  });
+
+  it('preserves a ~/.local/bin/xangi symlink that it does not own', async () => {
+    const { root, layout, service, scheduler } = await fixture();
+    const commandLink = join(root, '.local', 'bin', 'xangi');
+    await rm(commandLink);
+    const unrelatedTarget = join(root, 'another-xangi');
+    await symlink(unrelatedTarget, commandLink);
+
+    await uninstallCmd(
+      {},
+      {
+        layout,
+        service,
+        updateScheduler: scheduler,
+        platform: 'linux',
+        arch: 'x64',
+        homeDir: root,
+      }
+    );
+
+    await expect(readlink(commandLink)).resolves.toBe(unrelatedTarget);
   });
 
   it('purges config and state but never removes the workspace', async () => {

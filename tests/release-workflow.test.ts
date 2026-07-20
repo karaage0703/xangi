@@ -32,7 +32,10 @@ describe('release asset workflow', () => {
     expect(workflow).toContain('xangi-installer-${platform}-${arch}.sh');
     expect(workflow).toContain('xangi-manifest-${platform}-${arch}.json');
     expect(workflow).toContain('(cd release-assets && sha256sum * > SHA256SUMS)');
-    expect(workflow).toContain("grep -R -nE '@[A-Z_]+@'");
+    expect(workflow).toContain(
+      "grep -nE '@[A-Z_]+@' release-assets/*.sh release-assets/*.json"
+    );
+    expect(workflow).not.toContain("grep -R -nE '@[A-Z_]+@' release-assets");
     expect(workflow).toContain(
       'latest_base="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"'
     );

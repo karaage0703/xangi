@@ -212,7 +212,7 @@ Use the same command on macOS, Linux, and WSL2:
 curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
 ```
 
-The common `install.sh` detects the operating system and CPU, then selects a target installer from the same GitHub Release. WSL2 follows the Linux path.
+The common `install.sh` detects the operating system and CPU, then selects a target installer from the same GitHub Release. WSL2 follows the Linux path. A managed install creates `~/.local/bin/xangi`; when that directory is not on PATH, the installer prints an `export PATH=...` command for the current shell and zsh persistence instructions.
 
 ## Terminal CLI (xangi)
 

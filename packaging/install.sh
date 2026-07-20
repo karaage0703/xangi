@@ -204,6 +204,20 @@ if [[ $setup_pending -eq 0 && "${XANGI_INSTALL_SKIP_ACTIVATE:-0}" != '1' ]]; the
   "$launcher" install
 fi
 
+# Publish the managed launcher only after setup and service activation succeed.
+# The target stays stable across updates because it points to app/bin/xangi,
+# which dispatches through the atomic current symlink.
+command_dir="$HOME/.local/bin"
+command_link="$command_dir/xangi"
+mkdir -p -- "$command_dir"
+if [[ -e "$command_link" && ! -L "$command_link" ]]; then
+  fail "$command_link already exists and is not a symbolic link"
+fi
+next_command_link="$command_dir/.xangi.$$"
+rm -f -- "$next_command_link"
+ln -s -- "$launcher" "$next_command_link"
+mv -f -- "$next_command_link" "$command_link"
+
 # The new version is committed only after setup and service activation succeed.
 # Until here the EXIT trap can restore both the previous current link and a
 # replaced same-version directory.
@@ -215,11 +229,30 @@ current_switched=0
 
 echo "Installed xangi $RELEASE_VERSION."
 echo "Launcher: $launcher"
+echo "Command: $command_link"
+case ":${PATH:-}:" in
+  *":$command_dir:"*) command_on_path=1 ;;
+  *) command_on_path=0 ;;
+esac
 if [[ $setup_pending -eq 1 ]]; then
   echo 'xangi is installed. AI setup and service activation are pending.'
-  printf 'Continue after installing and authenticating an AI CLI: "%s" setup\n' "$launcher"
+  if [[ $command_on_path -eq 1 ]]; then
+    echo 'Continue after installing and authenticating an AI CLI: xangi setup'
+  else
+    printf 'Continue after installing and authenticating an AI CLI: "%s" setup\n' "$launcher"
+  fi
 else
-  echo "Setup and service activation complete. No directory change is required."
-  printf 'Verify: "%s" doctor\n' "$launcher"
+  echo 'Setup and service activation complete.'
+  if [[ $command_on_path -eq 1 ]]; then
+    echo 'Verify: xangi doctor'
+  else
+    printf 'Verify: "%s" doctor\n' "$launcher"
+  fi
 fi
-printf 'Token settings: "%s" settings\n' "$launcher"
+if [[ $command_on_path -eq 1 ]]; then
+  echo 'Token settings: xangi settings'
+else
+  printf 'Token settings: "%s" settings\n' "$launcher"
+  printf 'Add xangi to this shell: export PATH="%s:$PATH"\n' "$command_dir"
+  printf 'For zsh, add that export line to "%s/.zshrc".\n' "$HOME"
+fi

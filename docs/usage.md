@@ -212,7 +212,7 @@ macOS、Linux、WSL2で共通のコマンドです。
 curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
 ```
 
-共通`install.sh`がOSとCPUを判定し、同じGitHub Releaseにあるtarget installerを選択します。WSL2はLinuxとして扱います。
+共通`install.sh`がOSとCPUを判定し、同じGitHub Releaseにあるtarget installerを選択します。WSL2はLinuxとして扱います。managed版は`~/.local/bin/xangi`を作成し、そのdirectoryがPATHに無い場合は現在のshell用の`export PATH=...`とzshへの永続設定方法を表示します。
 
 ## Terminal CLI（xangi）
 

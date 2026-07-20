@@ -56,7 +56,7 @@ Paste the same command into a terminal on macOS, Linux, or WSL2:
 curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
 ```
 
-The installer detects the operating system and CPU, installs xangi, starts AI-guided setup, and starts the service. Run it from any directory. If the AI tool is not installed or authenticated yet, the installer keeps xangi installed and stops safely; continue later with `xangi setup`.
+The installer detects the operating system and CPU, installs xangi, creates `~/.local/bin/xangi`, starts AI-guided setup, and starts the service. Run it from any directory. If the AI tool is not installed or authenticated yet, the installer keeps xangi installed and stops safely; continue later with `xangi setup`. When `~/.local/bin` is not on PATH, the installer prints an `export PATH=...` command for the current shell and instructions for persisting it in zsh.
 
 ### Minimum flow and recovery commands
 
@@ -86,7 +86,7 @@ After setup, xangi runs as a service, so no additional start command is required
 - Discord and other chat platforms: message the bot configured during setup
 - Health check: run `xangi doctor`
 
-If `xangi` is not on PATH, use the absolute Launcher path printed by the installer.
+If the current shell still cannot find `xangi`, run the printed `export PATH=...` command or use the absolute Launcher path.
 
 ### Installing multiple xangi instances on one machine
 

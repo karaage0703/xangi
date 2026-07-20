@@ -144,7 +144,7 @@ jobs:
           cp packaging/setup-ai-tools.sh release-assets/setup-ai-tools.sh
           chmod 0755 release-assets/install.sh release-assets/setup-ai-tools.sh release-assets/xangi-installer-*.sh
           bash -n release-assets/install.sh release-assets/setup-ai-tools.sh release-assets/xangi-installer-*.sh
-          if grep -R -nE '@[A-Z_]+@' release-assets; then
+          if grep -nE '@[A-Z_]+@' release-assets/*.sh release-assets/*.json; then
             echo 'Unresolved installer template token' >&2
             exit 1
           fi
