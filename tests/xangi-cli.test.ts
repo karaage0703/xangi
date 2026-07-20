@@ -1,7 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { spawn } from 'child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -193,6 +201,39 @@ exit 0
     expect(result.stdout).toContain('setup --apply');
     expect(result.stdout).toContain('--workspace-mode');
     expect(result.stdout).not.toContain('--browser');
+  });
+
+  it('starts when the CLI path includes the managed current symlink', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-cli-symlink-'));
+    const projectRoot = join(__dirname, '..');
+    const currentLink = join(root, 'current');
+    symlinkSync(projectRoot, currentLink, 'dir');
+    try {
+      const result = await new Promise<{ stdout: string; stderr: string; code: number }>(
+        (resolve) => {
+          const proc = spawn(
+            join(projectRoot, 'node_modules', '.bin', 'tsx'),
+            [join(currentLink, 'src', 'cli', 'xangi.ts'), 'help'],
+            { env: { ...process.env, XANGI_SKIP_ENV_FILE: 'true' } }
+          );
+          let stdout = '';
+          let stderr = '';
+          proc.stdout.on('data', (data) => {
+            stdout += data.toString();
+          });
+          proc.stderr.on('data', (data) => {
+            stderr += data.toString();
+          });
+          proc.on('close', (code) => resolve({ stdout, stderr, code: code ?? 1 }));
+        }
+      );
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain('xangi — terminal client for xangi sessions');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('applies AI-guided setup choices through the deterministic CLI path', async () => {

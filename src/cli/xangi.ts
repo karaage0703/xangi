@@ -5,7 +5,7 @@
  * This CLI talks to xangi's public Web Chat / Even Terminal compatible API.
  * Keep it separate from xangi-cmd, which is an internal management/tool CLI.
  */
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { arch, homedir, platform } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -572,7 +572,16 @@ export async function run(argv = process.argv): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isMainModule(argvPath: string | undefined): boolean {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url === pathToFileURL(argvPath).href;
+  }
+}
+
+if (isMainModule(process.argv[1])) {
   run().catch((err) => {
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(err instanceof SetupPrerequisiteError ? err.exitCode : 1);
