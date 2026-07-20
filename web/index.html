@@ -492,6 +492,14 @@
         background: none;
         border: none;
         font-size: 13px !important;
+        /* 既定は折り返し（モバイル/狭幅で読みやすく） */
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      /* 言語指定つき（language-xxx）は桁揃えのため折り返さない */
+      .msg.assistant pre code[class*="language-"] {
+        white-space: pre;
+        overflow-wrap: normal;
       }
       .msg.assistant ul,
       .msg.assistant ol {
@@ -534,9 +542,13 @@
         background: var(--surface-2);
         font-weight: 600;
       }
-      /* コードブロック右上のコピーボタン */
-      .msg.assistant pre {
+      /* コピーボタンの位置基準は横スクロールしないラッパ側（<pre>基準だと被るため） */
+      .msg.assistant .code-block {
         position: relative;
+        margin: 8px 0;
+      }
+      .msg.assistant .code-block > pre {
+        margin: 0;
       }
       .code-copy-btn {
         position: absolute;
@@ -557,7 +569,7 @@
            選択範囲に含まれないようにする（opacity:0 でも選択対象になるため）。 */
         user-select: none;
       }
-      .msg.assistant pre:hover .code-copy-btn {
+      .msg.assistant .code-block:hover .code-copy-btn {
         opacity: 1;
       }
       .code-copy-btn:hover {
@@ -1514,10 +1526,16 @@
 
       // renderMarkdown() が生成した <pre><code> ブロックそれぞれに
       // コピー ボタンを差し込む。innerHTML 代入後に呼ぶ想定。
+      // <pre> をスクロールしないラッパ (.code-block) で包み、その中にボタンを固定
       function addCodeCopyButtons(container) {
         var blocks = container.querySelectorAll('pre');
         blocks.forEach(function (pre) {
-          if (pre.querySelector('.code-copy-btn')) return;
+          var wrap = pre.parentElement;
+          if (wrap && wrap.classList.contains('code-block')) return; // 処理済み
+          wrap = document.createElement('div');
+          wrap.className = 'code-block';
+          pre.parentNode.insertBefore(wrap, pre);
+          wrap.appendChild(pre);
           var btn = document.createElement('button');
           btn.className = 'code-copy-btn';
           btn.textContent = 'Copy';
@@ -1538,7 +1556,7 @@
               }, 1200);
             });
           });
-          pre.appendChild(btn);
+          wrap.appendChild(btn);
         });
       }
 
