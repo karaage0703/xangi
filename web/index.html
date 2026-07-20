@@ -2383,7 +2383,10 @@
             clearInterval(thinkingTimer);
             this._setProcessing(false);
             this.abortController = null;
-            this.inputEl.focus();
+            // 裏で完了したペインが手前の入力からフォーカスを奪わないよう、アクティブなペインのみ復帰
+            if (typeof paneManager === 'undefined' || paneManager.activePane === this) {
+              this.inputEl.focus();
+            }
           }
         }
 
