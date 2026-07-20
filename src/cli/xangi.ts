@@ -5,10 +5,10 @@
  * This CLI talks to xangi's public Web Chat / Even Terminal compatible API.
  * Keep it separate from xangi-cmd, which is an internal management/tool CLI.
  */
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { arch, homedir, platform } from 'os';
 import { dirname, join } from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import { serviceCmd } from './service-cmd.js';
@@ -19,7 +19,6 @@ import {
   detectGuidedBackends,
   guidedSetupCmd,
   launcherCommand,
-  SetupPrerequisiteError,
   writeOnboardingState,
 } from '../setup/guided-onboarding.js';
 import { installCmd } from './install-cmd.js';
@@ -570,20 +569,4 @@ export async function run(argv = process.argv): Promise<void> {
     default:
       throw new Error(`Unknown command: ${parsed.command}`);
   }
-}
-
-function isMainModule(argvPath: string | undefined): boolean {
-  if (!argvPath) return false;
-  try {
-    return realpathSync(argvPath) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return import.meta.url === pathToFileURL(argvPath).href;
-  }
-}
-
-if (isMainModule(process.argv[1])) {
-  run().catch((err) => {
-    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(err instanceof SetupPrerequisiteError ? err.exitCode : 1);
-  });
 }

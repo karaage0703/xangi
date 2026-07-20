@@ -152,7 +152,7 @@ mkdir -p -- "$staging"
 tar -xzf "$archive" -C "$staging"
 unpacked="$staging/$ARCHIVE_ROOT"
 [[ -x "$unpacked/runtime/bin/node" ]] || fail 'bundle is missing its Node.js runtime'
-[[ -f "$unpacked/dist/cli/xangi.js" ]] || fail 'bundle is missing the xangi CLI'
+[[ -f "$unpacked/dist/cli/xangi-main.js" ]] || fail 'bundle is missing the xangi CLI entrypoint'
 
 if [[ -e "$target" ]]; then
   backup="$versions_dir/.${RELEASE_VERSION}.backup.$$"
@@ -164,7 +164,9 @@ installed_target=1
 
 next_link="$app_root/.current.$$"
 ln -s -- "$target" "$next_link"
-mv -f -- "$next_link" "$app_root/current"
+"$target/runtime/bin/node" -e \
+  'require("node:fs").renameSync(process.argv[1], process.argv[2])' \
+  "$next_link" "$app_root/current"
 current_switched=1
 
 launcher="$app_root/bin/xangi"
@@ -175,7 +177,7 @@ app_root="${XANGI_APP_ROOT:-$HOME/Library/Application Support/xangi/app}"
 if [ "$(uname -s)" = Linux ]; then
   app_root="${XANGI_APP_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/xangi/app}"
 fi
-XANGI_INSTALLATION_KIND=managed exec "$app_root/current/runtime/bin/node" "$app_root/current/dist/cli/xangi.js" "$@"
+XANGI_INSTALLATION_KIND=managed exec "$app_root/current/runtime/bin/node" "$app_root/current/dist/cli/xangi-main.js" "$@"
 LAUNCHER
 chmod 0755 "$launcher"
 
@@ -188,25 +190,9 @@ chmod 0644 "$app_root/trust/release-public-key.pem"
 printf '{"manifestUrl":"%s"}\n' "$MANIFEST_URL" >"$config_dir/release.json"
 chmod 0600 "$config_dir/release.json"
 
-setup_pending=0
-if [[ "${XANGI_INSTALL_SKIP_SETUP:-0}" != '1' ]]; then
-  set +e
-  XANGI_INSTALL_ACTIVATES_AFTER_SETUP=1 "$launcher" setup
-  setup_status=$?
-  set -e
-  case "$setup_status" in
-    0) ;;
-    3) setup_pending=1 ;;
-    *) exit "$setup_status" ;;
-  esac
-fi
-if [[ $setup_pending -eq 0 && "${XANGI_INSTALL_SKIP_ACTIVATE:-0}" != '1' ]]; then
-  "$launcher" install
-fi
-
-# Publish the managed launcher only after setup and service activation succeed.
-# The target stays stable across updates because it points to app/bin/xangi,
-# which dispatches through the atomic current symlink.
+# Publish the verified CLI before starting interactive AI onboarding. AI tools
+# are external processes and may fail independently; their failure must not
+# roll back xangi or leave a dangling command.
 command_dir="$HOME/.local/bin"
 command_link="$command_dir/xangi"
 mkdir -p -- "$command_dir"
@@ -218,14 +204,32 @@ rm -f -- "$next_command_link"
 ln -s -- "$launcher" "$next_command_link"
 mv -f -- "$next_command_link" "$command_link"
 
-# The new version is committed only after setup and service activation succeed.
-# Until here the EXIT trap can restore both the previous current link and a
-# replaced same-version directory.
+# The verified application and stable command are now committed. Subsequent
+# setup/service failures remain recoverable through `xangi setup` or
+# `xangi install` and must not trigger bundle rollback.
 [[ -z "$backup" ]] || rm -rf -- "$backup"
 backup=''
 staging=''
 installed_target=0
 current_switched=0
+
+setup_pending=0
+if [[ "${XANGI_INSTALL_DEFER_SETUP:-0}" == '1' ]]; then
+  setup_pending=1
+  echo 'No interactive terminal is available; AI setup was deferred.' >&2
+elif [[ "${XANGI_INSTALL_SKIP_SETUP:-0}" != '1' ]]; then
+  set +e
+  XANGI_INSTALL_ACTIVATES_AFTER_SETUP=1 "$launcher" setup
+  setup_status=$?
+  set -e
+  if [[ $setup_status -ne 0 ]]; then
+    setup_pending=1
+    echo "xangi setup did not complete (exit $setup_status). The installation was kept." >&2
+  fi
+fi
+if [[ $setup_pending -eq 0 && "${XANGI_INSTALL_SKIP_ACTIVATE:-0}" != '1' ]]; then
+  "$launcher" install
+fi
 
 echo "Installed xangi $RELEASE_VERSION."
 echo "Launcher: $launcher"

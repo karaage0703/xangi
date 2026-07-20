@@ -19,7 +19,7 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "typecheck": "tsc --noEmit",
-    "xangi": "node dist/cli/xangi.js",
+    "xangi": "node dist/cli/xangi-main.js",
     "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js",
     "prepare": "husky"
   },

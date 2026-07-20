@@ -43,7 +43,7 @@ cp "$FIXTURE_INSTALLER" "$output"
   );
   await writeFile(
     fixtureInstaller,
-    '#!/bin/sh\nprintf "%s\\n" ran > "$FIXTURE_RUN_LOG"\n'
+    '#!/bin/sh\nprintf "defer=%s tty=%s\\n" "${XANGI_INSTALL_DEFER_SETUP:-0}" "$([ -t 0 ] && echo yes || echo no)" > "$FIXTURE_RUN_LOG"\n'
   );
   await Promise.all([chmod(join(bin, 'uname'), 0o755), chmod(join(bin, 'curl'), 0o755)]);
 
@@ -78,7 +78,15 @@ describe('cross-platform release bootstrap', () => {
 
     expect(result.stderr).toBe('');
     expect(result.requestedUrl).toBe(`https://releases.example/latest/download/${asset}\n`);
-    expect(result.installerRan).toBe('ran\n');
+    expect(result.installerRan).toBe('defer=1 tty=no\n');
+  });
+
+  it('reconnects a piped bootstrap to the controlling terminal when one exists', async () => {
+    const bootstrap = await readFile('packaging/bootstrap.sh', 'utf8');
+
+    expect(bootstrap).toContain('exec 3</dev/tty');
+    expect(bootstrap).toContain('bash "$installer" <&3');
+    expect(bootstrap).toContain('XANGI_INSTALL_DEFER_SETUP=1 bash "$installer"');
   });
 
   it('rejects unsupported operating systems', async () => {
