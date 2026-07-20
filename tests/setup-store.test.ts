@@ -9,6 +9,7 @@ describe('typed setup config', () => {
     backend: 'codex',
     workspacePath: '/Users/example/xangi-workspace',
     webChatEnabled: true,
+    webChatAccess: 'local',
     notionSyncEnabled: false,
   };
 
@@ -16,6 +17,9 @@ describe('typed setup config', () => {
     expect(parseSetupConfig(valid)).toEqual(valid);
     expect(() => parseSetupConfig({ ...valid, admin: true })).toThrow(SetupValidationError);
     expect(() => parseSetupConfig({ ...valid, backend: 'shell' })).toThrow(SetupValidationError);
+    expect(() => parseSetupConfig({ ...valid, webChatAccess: 'public' })).toThrow(
+      SetupValidationError
+    );
   });
 
   it('requires an absolute workspace path and all typed fields', () => {
@@ -28,7 +32,11 @@ describe('typed setup config', () => {
   });
 
   it('migrates existing setup config to Notion sync disabled', () => {
-    const { notionSyncEnabled: _notionSyncEnabled, ...legacy } = valid;
+    const {
+      notionSyncEnabled: _notionSyncEnabled,
+      webChatAccess: _webChatAccess,
+      ...legacy
+    } = valid;
     expect(parseSetupConfig(legacy)).toEqual(valid);
   });
 });
@@ -56,6 +64,7 @@ describe('SetupStore', () => {
         backend: 'codex',
         workspacePath: '/Users/example/workspace',
         webChatEnabled: true,
+        webChatAccess: 'local',
         notionSyncEnabled: false,
         unexpected: 'not allowed',
       })
@@ -71,6 +80,7 @@ describe('SetupStore', () => {
       backend: 'claude-code',
       workspacePath: '/Users/example/My Workspace',
       webChatEnabled: true,
+      webChatAccess: 'tailscale',
       notionSyncEnabled: true,
     });
 
@@ -78,6 +88,7 @@ describe('SetupStore', () => {
       backend: 'claude-code',
       workspacePath: '/Users/example/My Workspace',
       webChatEnabled: true,
+      webChatAccess: 'tailscale',
       notionSyncEnabled: true,
     });
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);

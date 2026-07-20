@@ -61,6 +61,11 @@ interface SendResult {
 
 const DEFAULT_URL = 'http://127.0.0.1:18888';
 
+function configuredWebChatPort(): number {
+  const value = Number.parseInt(process.env.WEB_CHAT_PORT ?? '18888', 10);
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : 18888;
+}
+
 function loadEnvFiles(): void {
   if (process.env.XANGI_SKIP_ENV_FILE === 'true') return;
 
@@ -105,7 +110,7 @@ Usage:
   xangi status --session ID
   xangi doctor [--dir XANGI_CHECKOUT] [--url WEB_CHAT_URL]
   xangi setup
-  xangi setup --apply --backend BACKEND --workspace PATH --workspace-mode MODE
+  xangi setup --apply --backend BACKEND --workspace PATH --workspace-mode MODE --web-chat-access ACCESS
   xangi setup --complete
   xangi install [--manifest URL] [--public-key PATH]
   xangi uninstall [--purge --yes]
@@ -136,6 +141,7 @@ Options:
   --complete      Mark the minimum BOOTSTRAP onboarding complete
   --workspace P   Absolute workspace path for setup --apply
   --workspace-mode M  existing, template, or blank
+  --web-chat-access A  local, tailscale, or lan (default: local)
 
 Config:
   ~/.config/xangi/config.json may contain url, token, provider, sessionId.
@@ -467,12 +473,17 @@ export async function run(argv = process.argv): Promise<void> {
         typeof parsed.flags.workspace === 'string' ? parsed.flags.workspace : '';
       const workspaceMode =
         typeof parsed.flags['workspace-mode'] === 'string' ? parsed.flags['workspace-mode'] : '';
+      const webChatAccess =
+        typeof parsed.flags['web-chat-access'] === 'string'
+          ? parsed.flags['web-chat-access']
+          : 'local';
       console.log(
         await applyGuidedSetup(
           {
             backend,
             workspacePath,
             workspaceMode,
+            webChatAccess,
             notionSyncEnabled: parsed.flags['notion-sync'] === true,
           },
           {
@@ -504,6 +515,7 @@ export async function run(argv = process.argv): Promise<void> {
         installationKind: managedInstallation ? 'managed' : 'checkout',
         managedActivationAfterSetup:
           managedInstallation && process.env.XANGI_INSTALL_ACTIVATES_AFTER_SETUP === '1',
+        webChatPort: configuredWebChatPort(),
         onSelected: (backend) =>
           writeOnboardingState(layout, {
             schemaVersion: 1,

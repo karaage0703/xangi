@@ -69,7 +69,8 @@ Prepare an AI tool → install xangi → setup → start the service → doctor
 If the flow stops partway through, resume in this order:
 
 1. `xangi setup`
-   - Interactively saves the workspace, selected AI, and initial xangi configuration.
+   - Interactively saves the workspace, selected AI, and Web Chat access scope.
+   - Web Chat defaults to this device only. Tailscale keeps the app on loopback and uses Tailscale Serve to expose it only inside the tailnet. LAN access is enabled only after warning that Web Chat has no application-level authentication.
    - Resume here after waiting for AI tool installation or authentication, or after leaving setup midway.
 2. `xangi install`
    - Registers and starts the managed OS service.
@@ -82,7 +83,7 @@ If the flow stops partway through, resume in this order:
 
 After setup, xangi runs as a service, so no additional start command is required.
 
-- Browser: open `http://127.0.0.1:18888`
+- Browser: open `http://127.0.0.1:18888` for local-only access, or `http://<Tailscale IP>:18888` when Tailscale access was selected
 - Discord and other chat platforms: message the bot configured during setup
 - Health check: run `xangi doctor`
 

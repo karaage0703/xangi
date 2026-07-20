@@ -153,6 +153,7 @@ describe('notionSyncCmd', () => {
       backend: 'claude-code',
       workspacePath,
       webChatEnabled: false,
+      webChatAccess: 'local',
       notionSyncEnabled: true,
     });
     await expect(notionSyncCmd('disable', {}, dependencies)).resolves.toBe('Notion sync: disabled');

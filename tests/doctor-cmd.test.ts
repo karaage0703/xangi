@@ -140,6 +140,49 @@ describe('collectDoctorChecks', () => {
     );
   });
 
+  it('verifies the selected Tailscale Serve forwarding port', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    Object.defineProperty(process, 'arch', { value: 'x64' });
+    const homeDir = join(tmpdir(), `xangi-doctor-tailscale-${process.pid}-${Date.now()}`);
+    const configPath = join(homeDir, 'config.json');
+    const workspacePath = join(homeDir, 'workspace');
+    const binPath = join(homeDir, 'bin');
+    await mkdir(workspacePath, { recursive: true });
+    await mkdir(binPath);
+    await writeFile(join(binPath, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        backend: 'codex',
+        workspacePath,
+        webChatEnabled: true,
+        webChatAccess: 'tailscale',
+      })
+    );
+    await chmod(configPath, 0o600);
+    const tailscaleServeCheck = vi.fn(async (port: number) => ({
+      name: 'tailscale-serve',
+      level: 'ok' as const,
+      detail: `port ${port}`,
+    }));
+
+    const checks = await collectDoctorChecks({
+      homeDir,
+      configPath,
+      pathEnv: binPath,
+      serviceCheck: async () => ({ name: 'service', level: 'ok', detail: 'running' }),
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 })),
+      tailscaleServeCheck,
+    });
+
+    expect(tailscaleServeCheck).toHaveBeenCalledWith(18888);
+    expect(checks).toContainEqual({
+      name: 'tailscale-serve',
+      level: 'ok',
+      detail: 'port 18888',
+    });
+  });
+
   it('checks checkout PM2 instead of LaunchAgent on macOS', async () => {
     const homeDir = join(tmpdir(), `xangi-doctor-pm2-${process.pid}-${Date.now()}`);
     const checkoutDir = join(homeDir, 'checkout');

@@ -21,6 +21,7 @@ describe('setup runtime config bridge', () => {
         backend: 'codex',
         workspacePath: join(root, 'workspace'),
         webChatEnabled: true,
+        webChatAccess: 'tailscale',
         notionSyncEnabled: true,
       })
     );
@@ -53,6 +54,24 @@ describe('setup runtime config bridge', () => {
     });
     await runConfiguredRuntime(configPath, join(root, 'state'), join(root, 'index.js'), importer);
     expect(importer).toHaveBeenCalledOnce();
+  });
+
+  it('binds all interfaces only for an explicit LAN setup choice', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-runtime-lan-'));
+    const configPath = join(root, 'config', 'xangi.json');
+    await mkdir(join(root, 'config'));
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        backend: 'codex',
+        workspacePath: root,
+        webChatEnabled: true,
+        webChatAccess: 'lan',
+      })
+    );
+    await expect(loadSetupRuntimeEnv(configPath, join(root, 'state'))).resolves.toMatchObject({
+      WEB_CHAT_HOST: '0.0.0.0',
+    });
   });
 
   it('uses the explicit XDG state directory instead of deriving it from config', async () => {

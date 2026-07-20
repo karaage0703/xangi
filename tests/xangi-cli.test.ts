@@ -215,6 +215,8 @@ exit 0
         workspace,
         '--workspace-mode',
         'blank',
+        '--web-chat-access',
+        'tailscale',
       ],
       {
         HOME: homeDir,
@@ -231,6 +233,7 @@ exit 0
       {
         backend: 'codex',
         workspacePath: workspace,
+        webChatAccess: 'tailscale',
         notionSyncEnabled: false,
       }
     );

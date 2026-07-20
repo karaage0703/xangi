@@ -27,6 +27,7 @@ export interface OnboardingStatus {
   backend?: string;
   workspacePath?: string;
   workspaceMode?: string;
+  webChatAccess?: string;
   notionSyncEnabled?: boolean;
   updatedAt?: string;
 }
@@ -250,7 +251,9 @@ export function buildOnboardingPrompt(options: {
   managedActivationAfterSetup?: boolean;
   homeDir: string;
   workspaceCandidates: string[];
+  webChatPort?: number;
 }): string {
+  const webChatPort = options.webChatPort ?? 18888;
   const candidates =
     options.workspaceCandidates.length > 0
       ? options.workspaceCandidates.map((path) => `- ${path}`).join('\n')
@@ -266,9 +269,9 @@ export function buildOnboardingPrompt(options: {
   const startupFlow =
     options.installationKind === 'managed'
       ? options.managedActivationAfterSetup
-        ? `8. これは配布版の初回installerから起動されたAI sessionです。session終了後にinstallerがxangiのOS serviceを登録して起動します。AI自身で\`${options.launcherCommand} install\`やcheckout用のPM2 commandを実行しないでください。terminalへ戻った後にinstallerの完了表示を確認し、\`${options.launcherCommand} doctor\`で状態を確認する方法を日本語で伝えてください。`
-        : `8. これはインストール済み配布版の再開セットアップです。最低限のセットアップ完了後に\`${options.launcherCommand} install\`を実行してOS serviceを登録・起動し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。`
-      : `8. これはGit checkout版です。終了前に${readmePath}の起動手順を読み、xangiを今起動するか確認してください。起動する場合は\`${options.launcherCommand} service start\`を実行し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。今は起動しない場合は、この2つのcommandと、起動後にdoctorで確認する必要があることを日本語で案内してください。PM2など必要softwareが無い場合は勝手にinstallせず、公式手順を説明して許可を得てください。`;
+        ? `10. これは配布版の初回installerから起動されたAI sessionです。session終了後にinstallerがxangiのOS serviceを登録して起動します。AI自身で\`${options.launcherCommand} install\`やcheckout用のPM2 commandを実行しないでください。terminalへ戻った後にinstallerの完了表示を確認し、\`${options.launcherCommand} doctor\`で状態を確認する方法を日本語で伝えてください。`
+        : `10. これはインストール済み配布版の再開セットアップです。最低限のセットアップ完了後に\`${options.launcherCommand} install\`を実行してOS serviceを登録・起動し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。`
+      : `10. これはGit checkout版です。終了前に${readmePath}の起動手順を読み、xangiを今起動するか確認してください。起動する場合は\`${options.launcherCommand} service start\`を実行し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。今は起動しない場合は、この2つのcommandと、起動後にdoctorで確認する必要があることを日本語で案内してください。PM2など必要softwareが無い場合は勝手にinstallせず、公式手順を説明して許可を得てください。`;
   return `あなたはxangiの初回セットアップを案内します。利用者への質問、説明、確認、要約はすべて日本語にしてください。短い質問を一度に一つだけ行い、回答を決めつけないでください。
 
 ルールベースの事前確認で${options.backend.label}が選択されました。設定内容の検証と保存はあなたではなくxangiが行います。
@@ -278,14 +281,20 @@ ${candidates}
 
 必須の進行順:
 ${workspaceFlow}
-2. 利用者がworkspaceの絶対pathと方式を選んだら、placeholderを置き換えて次のコマンドだけを実行してください:
-   ${options.launcherCommand} setup --apply --backend ${options.backend.id} --workspace <ABSOLUTE_PATH> --workspace-mode <existing|template|blank>
-3. 選んだworkspaceへ移動してください。BOOTSTRAP.mdがあれば読み、その指示に従ってください。空の新規workspaceではxangiが安全なBOOTSTRAP.mdを作成します。
-4. 最初は名前、AIの人格、重要なルールなど最低限だけを設定してください。
-5. 最低限のセットアップが終わり、BOOTSTRAP.mdの指示に従って同ファイルが削除されたら次を実行してください:
+2. Web Chatをどこから使うか、次の3択を一問だけで確認してください。回答を決めつけないでください:
+   - この端末のみ（既定・推奨）: 127.0.0.1
+   - Tailscale経由: Web Chatはloopbackのまま、Tailscale Serveでtailnet内だけへ転送する
+   - LAN内の他端末: 0.0.0.0。Web Chat自体には認証がなく、同じLANの到達可能な端末からアクセスできると事前に警告する
+3. 利用者がworkspaceの絶対path・方式・Web Chatのアクセス範囲を選んだら、placeholderを置き換えて次のコマンドだけを実行してください:
+   ${options.launcherCommand} setup --apply --backend ${options.backend.id} --workspace <ABSOLUTE_PATH> --workspace-mode <existing|template|blank> --web-chat-access <local|tailscale|lan>
+4. Web Chatの公開経路を安全に揃えてください。Tailscaleを選んだ場合は、\`tailscale status\`で利用可能と確認し、\`tailscale serve status --json\`でTCP ${webChatPort}が別の転送先に使われていないことを確認してから次を実行してください。設定後はTCP ${webChatPort}から127.0.0.1:${webChatPort}への転送を確認し、Funnelは使わないでください。localまたはlanを選んだ場合は、tailscale commandが利用できる時だけServe statusを確認し、同じxangi向け転送が残っている場合だけ\`tailscale serve --tcp=${webChatPort} off\`でそのportを解除してください。Tailscale未導入はlocal/lanのエラーにしません。別の転送先や他のServe/Funnel設定は変更しないでください。失敗したら別方式へ勝手に切り替えず、エラーを説明してください:
+   tailscale serve --bg --tcp=${webChatPort} tcp://127.0.0.1:${webChatPort}
+5. 選んだworkspaceへ移動してください。BOOTSTRAP.mdがあれば読み、その指示に従ってください。空の新規workspaceではxangiが安全なBOOTSTRAP.mdを作成します。
+6. 最初は名前、AIの人格、重要なルールなど最低限だけを設定してください。
+7. 最低限のセットアップが終わり、BOOTSTRAP.mdの指示に従って同ファイルが削除されたら次を実行してください:
    ${options.launcherCommand} setup --complete
-6. その後、すぐxangiを使い始めるか、追加設定を続けるか日本語で確認してください。
-7. Discord、Notion同期、他のchat platform、schedule、skillなどxangi自体の設定では、workspace内にxangiのオンボーディング手順を探してはいけません。workspaceはAIの人格、BOOTSTRAP、利用者データのための場所です。必ずxangi本体に同梱された次の公式documentを必要な範囲だけ読んでから、一問ずつ案内してください:
+8. その後、すぐxangiを使い始めるか、追加設定を続けるか日本語で確認してください。
+9. Discord、Notion同期、他のchat platform、schedule、skillなどxangi自体の設定では、workspace内にxangiのオンボーディング手順を探してはいけません。workspaceはAIの人格、BOOTSTRAP、利用者データのための場所です。必ずxangi本体に同梱された次の公式documentを必要な範囲だけ読んでから、一問ずつ案内してください:
    - README: ${readmePath}
    - CLIと設定のusage: ${usagePath}
    - Discord設定: ${discordSetupPath}
@@ -304,6 +313,7 @@ export interface GuidedSetupOptions extends DetectBackendsOptions {
   documentationRoot: string;
   installationKind: 'checkout' | 'managed';
   managedActivationAfterSetup?: boolean;
+  webChatPort?: number;
   selectBackend?: (backends: DetectedBackend[]) => Promise<DetectedBackend>;
   onSelected?: (backend: DetectedBackend) => Promise<void>;
   launch?: (backend: DetectedBackend, prompt: string, cwd: string) => Promise<number>;
@@ -376,6 +386,7 @@ export async function guidedSetupCmd(options: GuidedSetupOptions): Promise<strin
     documentationRoot: options.documentationRoot,
     installationKind: options.installationKind,
     managedActivationAfterSetup: options.managedActivationAfterSetup,
+    webChatPort: options.webChatPort,
     homeDir,
     workspaceCandidates,
   });
@@ -394,6 +405,7 @@ export interface ApplySetupOptions {
   workspaceMode: string;
   notionSyncEnabled?: boolean;
   webChatEnabled?: boolean;
+  webChatAccess?: string;
 }
 
 export interface ApplySetupDependencies {
@@ -457,6 +469,7 @@ export async function readOnboardingStatus(layout: AppLayout): Promise<Onboardin
       backend: typeof value.backend === 'string' ? value.backend : undefined,
       workspacePath: typeof value.workspacePath === 'string' ? value.workspacePath : undefined,
       workspaceMode: typeof value.workspaceMode === 'string' ? value.workspaceMode : undefined,
+      webChatAccess: typeof value.webChatAccess === 'string' ? value.webChatAccess : undefined,
       notionSyncEnabled:
         typeof value.notionSyncEnabled === 'boolean' ? value.notionSyncEnabled : undefined,
       updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : undefined,
@@ -508,6 +521,7 @@ export async function applyGuidedSetup(
       backend,
       workspacePath: options.workspacePath,
       webChatEnabled: options.webChatEnabled ?? true,
+      webChatAccess: options.webChatAccess ?? 'local',
       notionSyncEnabled: options.notionSyncEnabled ?? false,
     });
     if (mode === 'template') {
@@ -526,6 +540,7 @@ export async function applyGuidedSetup(
       backend,
       workspacePath: options.workspacePath,
       workspaceMode: mode,
+      webChatAccess: options.webChatAccess ?? 'local',
       updatedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -561,6 +576,7 @@ export async function completeGuidedSetup(layout: AppLayout): Promise<string> {
     phase: 'minimum_ready',
     backend: setup.backend,
     workspacePath: setup.workspacePath,
+    webChatAccess: setup.webChatAccess,
     notionSyncEnabled: setup.notionSyncEnabled,
     updatedAt: new Date().toISOString(),
   });

@@ -30,6 +30,7 @@ export interface DoctorOptions {
   serviceCheck?: () => Promise<DoctorCheck>;
   checkoutDir?: string | false;
   runtimeInfoUrl?: string;
+  tailscaleServeCheck?: (port: number) => Promise<DoctorCheck>;
 }
 
 async function checkConfig(
@@ -83,6 +84,64 @@ async function checkBackend(config: SetupConfig, pathEnv: string): Promise<Docto
     level: 'error',
     detail: `${command} is not on PATH; install or authenticate the selected backend CLI`,
   };
+}
+
+function checkWebChatBind(config: SetupConfig): DoctorCheck {
+  if (!config.webChatEnabled) {
+    return { name: 'web-chat-bind', level: 'ok', detail: 'Web Chat is disabled' };
+  }
+  if (config.webChatAccess === 'local') {
+    return { name: 'web-chat-bind', level: 'ok', detail: 'loopback only' };
+  }
+  if (config.webChatAccess === 'lan') {
+    return {
+      name: 'web-chat-bind',
+      level: 'warn',
+      detail: 'all interfaces; Web Chat has no application-level authentication',
+    };
+  }
+  return {
+    name: 'web-chat-bind',
+    level: 'ok',
+    detail: 'loopback with tailnet-only Tailscale Serve forwarding',
+  };
+}
+
+async function checkTailscaleServe(port: number): Promise<DoctorCheck> {
+  const result = spawnSync('tailscale', ['serve', 'status', '--json'], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    return {
+      name: 'tailscale-serve',
+      level: 'error',
+      detail: 'Tailscale Serve is unavailable; run xangi setup again or configure Serve',
+    };
+  }
+  try {
+    const status = JSON.parse(String(result.stdout ?? '{}')) as {
+      TCP?: Record<string, { TCPForward?: string }>;
+    };
+    const target = status.TCP?.[String(port)]?.TCPForward;
+    return target === `127.0.0.1:${port}`
+      ? {
+          name: 'tailscale-serve',
+          level: 'ok',
+          detail: `TCP ${port} forwards to loopback Web Chat`,
+        }
+      : {
+          name: 'tailscale-serve',
+          level: 'error',
+          detail: `TCP ${port} does not forward to 127.0.0.1:${port}`,
+        };
+  } catch {
+    return {
+      name: 'tailscale-serve',
+      level: 'error',
+      detail: 'Tailscale Serve status is not valid JSON',
+    };
+  }
 }
 
 async function checkLaunchAgent(): Promise<DoctorCheck> {
@@ -231,6 +290,7 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
       checks.push({ name: 'workspace', level: 'error', detail: 'configured path is unavailable' });
     }
     checks.push(await checkBackend(configResult.config, options.pathEnv ?? process.env.PATH ?? ''));
+    checks.push(checkWebChatBind(configResult.config));
   }
 
   const checkoutDir =
@@ -238,6 +298,10 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
   const healthUrl =
     options.healthUrl ??
     (checkoutDir ? await checkoutHealthUrl(checkoutDir) : 'http://127.0.0.1:18888/health');
+  if (configResult.config?.webChatEnabled && configResult.config.webChatAccess === 'tailscale') {
+    const port = Number.parseInt(new URL(healthUrl).port || '80', 10);
+    checks.push(await (options.tailscaleServeCheck ?? checkTailscaleServe)(port));
+  }
   checks.push(
     await (
       options.serviceCheck ??

@@ -11,10 +11,14 @@ export const SETUP_BACKENDS = [
 
 export type SetupBackend = (typeof SETUP_BACKENDS)[number];
 
+export const SETUP_WEB_CHAT_ACCESS = ['local', 'tailscale', 'lan'] as const;
+export type SetupWebChatAccess = (typeof SETUP_WEB_CHAT_ACCESS)[number];
+
 export interface SetupConfig {
   backend: SetupBackend;
   workspacePath: string;
   webChatEnabled: boolean;
+  webChatAccess: SetupWebChatAccess;
   notionSyncEnabled: boolean;
 }
 
@@ -22,6 +26,7 @@ const ALLOWED_KEYS = new Set<string>([
   'backend',
   'workspacePath',
   'webChatEnabled',
+  'webChatAccess',
   'notionSyncEnabled',
 ]);
 
@@ -46,7 +51,13 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     throw new SetupValidationError();
   }
 
-  const { backend, workspacePath, webChatEnabled, notionSyncEnabled = false } = value;
+  const {
+    backend,
+    workspacePath,
+    webChatEnabled,
+    webChatAccess = 'local',
+    notionSyncEnabled = false,
+  } = value;
   if (
     typeof backend !== 'string' ||
     !(SETUP_BACKENDS as readonly string[]).includes(backend) ||
@@ -56,6 +67,8 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     workspacePath.includes('\0') ||
     !isAbsolute(workspacePath) ||
     typeof webChatEnabled !== 'boolean' ||
+    typeof webChatAccess !== 'string' ||
+    !(SETUP_WEB_CHAT_ACCESS as readonly string[]).includes(webChatAccess) ||
     typeof notionSyncEnabled !== 'boolean'
   ) {
     throw new SetupValidationError();
@@ -65,6 +78,7 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     backend: backend as SetupBackend,
     workspacePath,
     webChatEnabled,
+    webChatAccess: webChatAccess as SetupWebChatAccess,
     notionSyncEnabled,
   };
 }

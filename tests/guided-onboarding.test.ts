@@ -177,6 +177,12 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('ai-assistant-workspace');
     expect(prompt).toContain('BOOTSTRAP.md');
     expect(prompt).toContain('setup --apply --backend claude-code');
+    expect(prompt).toContain('--web-chat-access');
+    expect(prompt).toContain('Tailscale経由');
+    expect(prompt).toContain('tailscale serve --bg --tcp=18888');
+    expect(prompt).toContain('tailscale serve --tcp=18888 off');
+    expect(prompt).toContain('他のServe/Funnel設定は変更しない');
+    expect(prompt).toContain('Web Chat自体には認証がなく');
     expect(prompt).toContain('Discord');
     expect(prompt).toContain('Notion同期はOFFのまま');
     expect(prompt).toContain('setup --complete');
@@ -227,6 +233,24 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('runtime-workspace');
     expect(prompt).toContain('/Users/tester/xangi/README.md');
   });
+
+  it('uses the configured Web Chat port in Tailscale Serve guidance', () => {
+    const prompt = buildOnboardingPrompt({
+      backend: {
+        ...GUIDED_BACKENDS[0]!,
+        executable: '/agents/codex',
+        version: 'test-version',
+      },
+      launcherCommand: 'xangi',
+      documentationRoot: '/xangi',
+      installationKind: 'managed',
+      homeDir: '/Users/tester',
+      workspaceCandidates: [],
+      webChatPort: 19991,
+    });
+    expect(prompt).toContain('tailscale serve --bg --tcp=19991');
+    expect(prompt).toContain('tailscale serve --tcp=19991 off');
+  });
 });
 
 describe('guided setup deterministic apply and completion', () => {
@@ -245,6 +269,7 @@ describe('guided setup deterministic apply and completion', () => {
       backend: 'codex',
       workspacePath,
       webChatEnabled: true,
+      webChatAccess: 'local',
       notionSyncEnabled: false,
     });
     expect(await readFile(join(workspacePath, 'BOOTSTRAP.md'), 'utf8')).toContain(
@@ -252,7 +277,11 @@ describe('guided setup deterministic apply and completion', () => {
     );
     expect(
       JSON.parse(await readFile(join(layout.configDir, 'onboarding.json'), 'utf8'))
-    ).toMatchObject({ phase: 'bootstrap_in_progress', workspaceMode: 'blank' });
+    ).toMatchObject({
+      phase: 'bootstrap_in_progress',
+      workspaceMode: 'blank',
+      webChatAccess: 'local',
+    });
   });
 
   it('uses the repository template initializer only for template mode', async () => {
@@ -326,6 +355,7 @@ describe('guided setup deterministic apply and completion', () => {
       phase: 'minimum_ready',
       backend: 'codex',
       workspacePath,
+      webChatAccess: 'local',
       notionSyncEnabled: false,
     });
   });
