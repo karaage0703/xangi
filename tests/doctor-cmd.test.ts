@@ -173,6 +173,7 @@ describe('collectDoctorChecks', () => {
       serviceCheck: async () => ({ name: 'service', level: 'ok', detail: 'running' }),
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 })),
       tailscaleServeCheck,
+      checkoutDir: false,
     });
 
     expect(tailscaleServeCheck).toHaveBeenCalledWith(18888);

@@ -17,7 +17,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-source_cli="$ROOT_DIR/src/cli/xangi.ts"
+source_cli="$ROOT_DIR/src/cli/xangi-main.ts"
 local_tsx="$ROOT_DIR/node_modules/.bin/tsx"
 checkout_updater="$ROOT_DIR/packaging/update-checkout.sh"
 
@@ -57,8 +57,8 @@ if [ "${XANGI_USE_TSX:-}" = "true" ] && [ -f "$source_cli" ]; then
   exec "$local_tsx" "$source_cli" "$@"
 fi
 
-if [ -f "$ROOT_DIR/dist/cli/xangi.js" ]; then
-  exec node "$ROOT_DIR/dist/cli/xangi.js" "$@"
+if [ -f "$ROOT_DIR/dist/cli/xangi-main.js" ]; then
+  exec node "$ROOT_DIR/dist/cli/xangi-main.js" "$@"
 fi
 
 if [ -f "$source_cli" ] && [ -x "$local_tsx" ]; then

@@ -42,10 +42,10 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
   await mkdir(join(payload, 'dist', 'cli'), { recursive: true });
   await writeFile(
     join(payload, 'runtime', 'bin', 'node'),
-    '#!/bin/sh\n[ -z "${XANGI_FIXTURE_NODE_LOG:-}" ] || printf "%s\\n" "$*" >> "$XANGI_FIXTURE_NODE_LOG"\n[ "${XANGI_FIXTURE_FAIL_INSTALL:-0}" = 1 ] && [ "${2:-}" = install ] && exit 9\n[ "${XANGI_FIXTURE_SETUP_EXIT:-0}" != 0 ] && [ "${2:-}" = setup ] && exit "$XANGI_FIXTURE_SETUP_EXIT"\nexit 0\n'
+    '#!/bin/sh\nif [ "${1:-}" = -e ]; then rm -f -- "$4"; mv -- "$3" "$4"; exit 0; fi\n[ -z "${XANGI_FIXTURE_NODE_LOG:-}" ] || printf "NODE_OPTIONS=%s ARGS=%s\\n" "${NODE_OPTIONS:-}" "$*" >> "$XANGI_FIXTURE_NODE_LOG"\n[ "${XANGI_FIXTURE_FAIL_INSTALL:-0}" = 1 ] && [ "${2:-}" = install ] && exit 9\n[ "${XANGI_FIXTURE_SETUP_EXIT:-0}" != 0 ] && [ "${2:-}" = setup ] && exit "$XANGI_FIXTURE_SETUP_EXIT"\nexit 0\n'
   );
   await chmod(join(payload, 'runtime', 'bin', 'node'), 0o755);
-  await writeFile(join(payload, 'dist', 'cli', 'xangi.js'), '// fixture\n');
+  await writeFile(join(payload, 'dist', 'cli', 'xangi-main.js'), '// fixture\n');
   const artifact = join(root, 'bundle.tar.gz');
   await exec('tar', ['-czf', artifact, '-C', root, archiveRoot]);
   const artifactBytes = await readFile(artifact);
@@ -186,13 +186,16 @@ describe('authenticated macOS bootstrap installer', () => {
 
     const app = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
     await expect(
-      readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi.js'), 'utf8')
+      readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi-main.js'), 'utf8')
     ).resolves.toContain('fixture');
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
       'runtime/bin/node'
     );
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
       'XANGI_INSTALLATION_KIND=managed'
+    );
+    await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
+      'dist/cli/xangi-main.js'
     );
     await expect(
       readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))
@@ -256,7 +259,7 @@ describe('authenticated macOS bootstrap installer', () => {
 
     const app = join(data.root, 'home', '.local', 'share', 'xangi', 'app');
     await expect(
-      readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi.js'), 'utf8')
+      readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi-main.js'), 'utf8')
     ).resolves.toContain('fixture');
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain('XDG_DATA_HOME');
     await expect(
@@ -274,7 +277,9 @@ describe('authenticated macOS bootstrap installer', () => {
       XANGI_FIXTURE_NODE_LOG: nodeLog,
     });
 
-    await expect(readFile(nodeLog, 'utf8')).resolves.toMatch(/dist\/cli\/xangi\.js setup/);
+    const log = await readFile(nodeLog, 'utf8');
+    expect(log).toMatch(/dist\/cli\/xangi-main\.js setup/);
+    expect(log).toContain('NODE_OPTIONS=');
   });
 
   it('AI CLI準備待ちではinstall済みversionを保持してservice起動を保留する', async () => {
@@ -290,10 +295,60 @@ describe('authenticated macOS bootstrap installer', () => {
 
     const app = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
     await expect(readlink(join(app, 'current'))).resolves.toBe(join(app, 'versions', '1.2.3'));
-    await expect(readFile(nodeLog, 'utf8')).resolves.toMatch(/dist\/cli\/xangi\.js setup/);
-    await expect(readFile(nodeLog, 'utf8')).resolves.not.toMatch(/dist\/cli\/xangi\.js install/);
+    await expect(readFile(nodeLog, 'utf8')).resolves.toMatch(/dist\/cli\/xangi-main\.js setup/);
+    await expect(readFile(nodeLog, 'utf8')).resolves.not.toMatch(
+      /dist\/cli\/xangi-main\.js install/
+    );
     expect(result.stdout).toContain('AI setup and service activation are pending');
     expect(result.stdout).toContain('setup');
+  });
+
+  it('対話端末がない場合はinstall済みCLIを保持してsetupを延期する', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const nodeLog = join(data.root, 'bundled-node.log');
+    const result = await runInstaller(installer, data, {
+      XANGI_INSTALL_SKIP_SETUP: '0',
+      XANGI_INSTALL_SKIP_ACTIVATE: '0',
+      XANGI_INSTALL_DEFER_SETUP: '1',
+      XANGI_FIXTURE_NODE_LOG: nodeLog,
+    });
+
+    const app = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
+    await expect(readlink(join(app, 'current'))).resolves.toBe(join(app, 'versions', '1.2.3'));
+    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).resolves.toBe(
+      join(app, 'bin', 'xangi')
+    );
+    await expect(readFile(nodeLog, 'utf8')).rejects.toThrow();
+    expect(result.stderr).toContain('AI setup was deferred');
+    expect(result.stdout).toContain('AI setup and service activation are pending');
+    expect(result.stdout).toMatch(/xangi(?:"|')? setup/);
+  });
+
+  it('AI onboarding失敗でもinstall済みCLIを保持してsetup再実行を可能にする', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const nodeLog = join(data.root, 'bundled-node.log');
+    const result = await runInstaller(installer, data, {
+      XANGI_INSTALL_SKIP_SETUP: '0',
+      XANGI_INSTALL_SKIP_ACTIVATE: '0',
+      XANGI_FIXTURE_SETUP_EXIT: '9',
+      XANGI_FIXTURE_NODE_LOG: nodeLog,
+    });
+
+    const app = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
+    await expect(readlink(join(app, 'current'))).resolves.toBe(join(app, 'versions', '1.2.3'));
+    await expect(
+      readFile(join(app, 'current', 'dist', 'cli', 'xangi-main.js'), 'utf8')
+    ).resolves.toContain('fixture');
+    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).resolves.toBe(
+      join(app, 'bin', 'xangi')
+    );
+    await expect(readFile(nodeLog, 'utf8')).resolves.not.toMatch(
+      /dist\/cli\/xangi-main\.js install/
+    );
+    expect(result.stderr).toContain('The installation was kept');
+    expect(result.stdout).toContain('AI setup and service activation are pending');
   });
 
   it('改ざんmanifestを展開前に拒否する', async () => {
@@ -325,7 +380,7 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(buildInstaller(data)).rejects.toThrow(/signature verification failed/);
   });
 
-  it('service activation failure restores the previously working version', async () => {
+  it('service activation failure keeps the verified CLI for a later retry', async () => {
     const data = await fixture();
     const installer = await buildInstaller(data);
     const app = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
@@ -341,11 +396,12 @@ describe('authenticated macOS bootstrap installer', () => {
       })
     ).rejects.toBeDefined();
 
-    await expect(readlink(join(app, 'current'))).resolves.toBe(previous);
-    await expect(readFile(join(app, 'current', 'marker'), 'utf8')).resolves.toBe('working');
+    await expect(readlink(join(app, 'current'))).resolves.toBe(join(app, 'versions', '1.2.3'));
     await expect(
-      readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi.js'))
-    ).rejects.toThrow();
-    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).rejects.toThrow();
+      readFile(join(app, 'current', 'dist', 'cli', 'xangi-main.js'), 'utf8')
+    ).resolves.toContain('fixture');
+    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).resolves.toBe(
+      join(app, 'bin', 'xangi')
+    );
   });
 });

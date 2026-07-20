@@ -213,7 +213,7 @@ exit 0
         (resolve) => {
           const proc = spawn(
             join(projectRoot, 'node_modules', '.bin', 'tsx'),
-            [join(currentLink, 'src', 'cli', 'xangi.ts'), 'help'],
+            [join(currentLink, 'src', 'cli', 'xangi-main.ts'), 'help'],
             { env: { ...process.env, XANGI_SKIP_ENV_FILE: 'true' } }
           );
           let stdout = '';

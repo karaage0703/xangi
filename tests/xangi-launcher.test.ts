@@ -31,14 +31,14 @@ describe('bin/xangi', () => {
     await mkdir(join(root, 'src', 'cli'), { recursive: true });
     await mkdir(join(root, 'dist', 'cli'), { recursive: true });
     await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
-    await writeFile(join(root, 'src', 'cli', 'xangi.ts'), '// current source\n');
-    await writeFile(join(root, 'dist', 'cli', 'xangi.js'), 'console.log("stale-dist")\n');
+    await writeFile(join(root, 'src', 'cli', 'xangi-main.ts'), '// current source\n');
+    await writeFile(join(root, 'dist', 'cli', 'xangi-main.js'), 'console.log("stale-dist")\n');
     const tsx = join(root, 'node_modules', '.bin', 'tsx');
     await writeFile(tsx, '#!/bin/sh\nprintf "tsx:%s\\n" "$*"\n');
     await chmod(tsx, 0o755);
 
     const { stdout } = await exec(join(root, 'bin', 'xangi'), ['setup']);
-    expect(stdout.trim()).toBe(`tsx:${join(root, 'src', 'cli', 'xangi.ts')} setup`);
+    expect(stdout.trim()).toBe(`tsx:${join(root, 'src', 'cli', 'xangi-main.ts')} setup`);
     expect(stdout).not.toContain('stale-dist');
   });
 
@@ -47,8 +47,8 @@ describe('bin/xangi', () => {
     await mkdir(join(root, '.git'));
     await mkdir(join(root, 'src', 'cli'), { recursive: true });
     await mkdir(join(root, 'dist', 'cli'), { recursive: true });
-    await writeFile(join(root, 'src', 'cli', 'xangi.ts'), '// current source\n');
-    await writeFile(join(root, 'dist', 'cli', 'xangi.js'), 'console.log("stale-dist")\n');
+    await writeFile(join(root, 'src', 'cli', 'xangi-main.ts'), '// current source\n');
+    await writeFile(join(root, 'dist', 'cli', 'xangi-main.js'), 'console.log("stale-dist")\n');
 
     await expect(exec(join(root, 'bin', 'xangi'), ['setup'])).rejects.toMatchObject({
       stderr: expect.stringContaining('Run npm ci first'),
@@ -59,7 +59,7 @@ describe('bin/xangi', () => {
     const root = await fixture();
     await mkdir(join(root, 'dist', 'cli'), { recursive: true });
     await writeFile(
-      join(root, 'dist', 'cli', 'xangi.js'),
+      join(root, 'dist', 'cli', 'xangi-main.js'),
       'console.log(`dist:${process.argv.slice(2).join(",")}`)\n'
     );
 
@@ -83,12 +83,12 @@ describe('bin/xangi', () => {
     await mkdir(join(root, '.git'));
     await mkdir(join(root, 'src', 'cli'), { recursive: true });
     await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
-    await writeFile(join(root, 'src', 'cli', 'xangi.ts'), '// current source\n');
+    await writeFile(join(root, 'src', 'cli', 'xangi-main.ts'), '// current source\n');
     const tsx = join(root, 'node_modules', '.bin', 'tsx');
     await writeFile(tsx, '#!/bin/sh\nprintf "tsx:%s\\n" "$*"\n');
     await chmod(tsx, 0o755);
 
     const { stdout } = await exec(join(root, 'bin', 'xangi'), ['update', '--managed']);
-    expect(stdout.trim()).toBe(`tsx:${join(root, 'src', 'cli', 'xangi.ts')} update --managed`);
+    expect(stdout.trim()).toBe(`tsx:${join(root, 'src', 'cli', 'xangi-main.ts')} update --managed`);
   });
 });
