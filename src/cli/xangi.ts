@@ -117,7 +117,8 @@ Usage:
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi notion-sync <status|enable|disable|run> [--sync-config PATH] [--once]
   xangi settings
-  xangi service <start|stop|restart|status|autostart> [--name NAME] [--dir DIR]
+  xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
+  xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
 
 Options:
   --url URL       xangi Web Chat URL (default: ${DEFAULT_URL})
@@ -432,7 +433,9 @@ export async function run(argv = process.argv): Promise<void> {
   }
 
   if (parsed.command === 'service') {
-    console.log(await serviceCmd(parsed.positionals[0] || 'help', parsed.flags));
+    console.log(
+      await serviceCmd(parsed.positionals[0] || 'help', parsed.flags, {}, parsed.positionals[1])
+    );
     return;
   }
 
@@ -522,8 +525,6 @@ export async function run(argv = process.argv): Promise<void> {
         launcherCommand: launcherCommand(selectedLauncher),
         documentationRoot,
         installationKind: managedInstallation ? 'managed' : 'checkout',
-        managedActivationAfterSetup:
-          managedInstallation && process.env.XANGI_INSTALL_ACTIVATES_AFTER_SETUP === '1',
         webChatPort: configuredWebChatPort(),
         onSelected: (backend) =>
           writeOnboardingState(layout, {

@@ -185,7 +185,8 @@ function createDefaultService(layout: AppLayout, homeDir: string, wsl?: boolean)
     stdoutPath: join(logsDir, 'xangi.log'),
     stderrPath: join(logsDir, 'xangi.error.log'),
     path: servicePath,
-    plistPath: join(homeDir, 'Library', 'LaunchAgents', 'dev.xangi.app.plist'),
+    plistPath: join(layout.configDir, 'service', 'dev.xangi.app.plist'),
+    autostartPlistPath: join(homeDir, 'Library', 'LaunchAgents', 'dev.xangi.app.plist'),
   });
 }
 

@@ -88,7 +88,8 @@ describe('Darwin service adapter', () => {
       stdoutPath: join(root, 'logs', 'out', 'xangi.log'),
       stderrPath: join(root, 'logs', 'err', 'xangi.log'),
       path: '/usr/local/bin:/usr/bin:/bin',
-      plistPath: join(root, 'LaunchAgents', 'dev.xangi.app.plist'),
+      plistPath: join(root, 'config', 'service', 'dev.xangi.app.plist'),
+      autostartPlistPath: join(root, 'LaunchAgents', 'dev.xangi.app.plist'),
     };
   }
 
@@ -123,5 +124,58 @@ describe('Darwin service adapter', () => {
       'open',
       'launchctl',
     ]);
+  });
+
+  it('starts and stops a registered LaunchAgent without enabling autostart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-darwin-lifecycle-'));
+    const calls: Array<[string, string[], boolean | undefined]> = [];
+    let running = false;
+    const commands: DarwinCommandRunner = {
+      run: vi.fn((command, args, allowFailure) => {
+        calls.push([command, args, allowFailure]);
+        if (command === 'launchctl' && args[0] === 'bootstrap') running = true;
+        if (command === 'launchctl' && args[0] === 'bootout') running = false;
+        return '';
+      }),
+      status: vi.fn(() => ({ status: running ? 0 : 1, output: running ? 'running' : '' })),
+    };
+    const options = fixture(root);
+    const adapter = createDarwinServiceAdapter(options, commands);
+    await adapter.install();
+    await adapter.stop();
+    await adapter.stop();
+    await adapter.start();
+    await adapter.start();
+
+    await expect(access(options.plistPath)).resolves.toBeUndefined();
+    await expect(access(options.autostartPlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(calls.map(([, args]) => args[0])).toEqual([
+      'bootout',
+      'bootstrap',
+      'bootout',
+      'bootstrap',
+    ]);
+  });
+
+  it('enables and disables autostart without stopping the current service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-darwin-autostart-'));
+    const commands: DarwinCommandRunner = {
+      run: vi.fn(() => ''),
+      status: vi.fn(() => ({ status: 0, output: 'running' })),
+    };
+    const options = fixture(root);
+    const adapter = createDarwinServiceAdapter(options, commands);
+
+    await adapter.install();
+    await expect(access(options.autostartPlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await adapter.autostart(true);
+    expect(await readFile(options.autostartPlistPath, 'utf8')).toContain('dev.xangi.app');
+    await adapter.autostart(false);
+    await expect(access(options.autostartPlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(commands.run).toHaveBeenCalledTimes(2);
+    await adapter.autostart(true);
+    await adapter.uninstall();
+    await expect(access(options.plistPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(options.autostartPlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

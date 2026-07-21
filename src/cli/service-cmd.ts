@@ -14,6 +14,13 @@ export interface ServiceCommandDependencies {
   managedService?: ServiceAdapter;
 }
 
+const SERVICE_USAGE = [
+  'Usage: xangi service <start|stop|restart|status> [--name <process-name>] [--dir <xangi-dir>]',
+  '       xangi service autostart <enable|disable> [--name <process-name>] [--dir <xangi-dir>]',
+  'Tip: run ./bin/xangi from the target clone, or use named symlinks such as xangi-dev / xangi-prod.',
+  '--dir is an escape hatch for controlling another clone from a PATH-level xangi.',
+].join('\n');
+
 function stringFlag(flags: Record<string, string | boolean>, key: string): string | undefined {
   const value = flags[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -127,6 +134,10 @@ function isPm2StartupGuidance(output: string): boolean {
   return /\bsudo\s+env\b/.test(output) && /\bpm2\s+startup\b/.test(output);
 }
 
+function isPm2UnstartupGuidance(output: string): boolean {
+  return /\bsudo\b/.test(output) && /\bpm2\s+unstartup\b/.test(output);
+}
+
 function replacePm2ProcessFromConfig(
   flags: Record<string, string | boolean>,
   name: string
@@ -152,21 +163,33 @@ function replacePm2ProcessFromConfig(
 export async function serviceCmd(
   action: string,
   flags: Record<string, string | boolean>,
-  dependencies: ServiceCommandDependencies = {}
+  dependencies: ServiceCommandDependencies = {},
+  subaction = ''
 ): Promise<string> {
-  if (!action || action === 'help') {
-    return [
-      'Usage: xangi service <start|stop|restart|status|autostart> [--name <process-name>] [--dir <xangi-dir>]',
-      'Tip: run ./bin/xangi from the target clone, or use named symlinks such as xangi-dev / xangi-prod.',
-      '--dir is an escape hatch for controlling another clone from a PATH-level xangi.',
-    ].join('\n');
-  }
-
   const installationKind =
     dependencies.installationKind ??
     (process.env.XANGI_INSTALLATION_KIND === 'managed' ? 'managed' : 'checkout');
+  if (!action || action === 'help') {
+    return SERVICE_USAGE;
+  }
+  if (action === 'autostart' && subaction !== 'enable' && subaction !== 'disable') {
+    throw new Error('Usage: xangi service autostart <enable|disable>');
+  }
   if (installationKind === 'managed') {
     const service = dependencies.managedService ?? (await resolveManagedLifecycle()).service;
+    if (action === 'start') {
+      await service.start();
+      return 'Started xangi service';
+    }
+    if (action === 'stop') {
+      await service.stop();
+      return 'Stopped xangi service';
+    }
+    if (action === 'autostart') {
+      const enabled = subaction === 'enable';
+      await service.autostart(enabled);
+      return `${enabled ? 'Enabled' : 'Disabled'} xangi service autostart`;
+    }
     if (action === 'restart') {
       await service.restart();
       return 'Restarted xangi service';
@@ -175,7 +198,7 @@ export async function serviceCmd(
       const status = await service.status();
       return `${status.running ? 'running' : 'stopped'}${status.detail ? `: ${status.detail}` : ''}`;
     }
-    throw new Error('Usage for managed xangi: xangi service <restart|status>');
+    throw new Error(SERVICE_USAGE);
   }
 
   ensurePm2();
@@ -194,29 +217,26 @@ export async function serviceCmd(
       result = runPm2(['describe', name], flags);
       break;
     case 'autostart': {
-      const save = runPm2(['save'], flags);
-      const startup = runPm2(['startup'], flags);
+      const enabling = subaction === 'enable';
+      const save = enabling ? runPm2(['save'], flags) : undefined;
+      const startup = runPm2([enabling ? 'startup' : 'unstartup'], flags);
       const output = [
-        '$ pm2 save',
-        save.output || '(no output)',
-        '',
-        '$ pm2 startup',
+        ...(save ? ['$ pm2 save', save.output || '(no output)', ''] : []),
+        `$ pm2 ${enabling ? 'startup' : 'unstartup'}`,
         startup.output || '(no output)',
         '',
-        'If pm2 printed a sudo command above, run it once to register the OS startup service.',
+        `If pm2 printed a sudo command above, run it once to ${enabling ? 'register' : 'remove'} the OS startup service.`,
       ].join('\n');
-      if (save.status !== 0 || (startup.status !== 0 && !isPm2StartupGuidance(startup.output))) {
+      const guidance = enabling
+        ? isPm2StartupGuidance(startup.output)
+        : isPm2UnstartupGuidance(startup.output);
+      if ((save?.status ?? 0) !== 0 || (startup.status !== 0 && !guidance)) {
         throw new Error(output);
       }
       return output;
     }
     default:
-      throw new Error(
-        [
-          'Usage: xangi service <start|stop|restart|status|autostart> [--name <process-name>] [--dir <xangi-dir>]',
-          'Tip: run ./bin/xangi from the target clone, or use named symlinks such as xangi-dev / xangi-prod.',
-        ].join('\n')
-      );
+      throw new Error(SERVICE_USAGE);
   }
 
   if (result.status !== 0) {

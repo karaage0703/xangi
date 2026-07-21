@@ -41,6 +41,9 @@ export async function installCmd(
         status: () => runtime.service.status(),
         openBrowser: (url) => runtime.service.openBrowser(url),
         install: () => runtime.service.install(),
+        start: () => runtime.service.start(),
+        stop: () => runtime.service.stop(),
+        autostart: (enabled) => runtime.service.autostart(enabled),
         uninstall: () => runtime.service.uninstall(),
         async restart() {
           if (!hadService && !installAttempted) {

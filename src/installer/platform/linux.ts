@@ -167,7 +167,16 @@ export function createLinuxServiceAdapter(
       chmodSync(temporary, 0o644);
       renameSync(temporary, options.unitPath);
       commands.run('systemctl', ['--user', 'daemon-reload']);
-      commands.run('systemctl', ['--user', 'enable', '--now', options.unitName]);
+      commands.run('systemctl', ['--user', 'start', options.unitName]);
+    },
+    async start(): Promise<void> {
+      commands.run('systemctl', ['--user', 'start', options.unitName]);
+    },
+    async stop(): Promise<void> {
+      commands.run('systemctl', ['--user', 'stop', options.unitName]);
+    },
+    async autostart(enabled: boolean): Promise<void> {
+      commands.run('systemctl', ['--user', enabled ? 'enable' : 'disable', options.unitName]);
     },
     async uninstall(): Promise<void> {
       commands.run('systemctl', ['--user', 'disable', '--now', options.unitName], true);

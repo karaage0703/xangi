@@ -36,7 +36,34 @@ flowchart LR
     class External ext;
 ```
 
-## For users
+## Quickstart
+
+The same flow works on macOS, Linux, and WSL2. First prepare one supported AI tool, then install xangi.
+
+```bash
+# Example: prepare Codex (claude-code / cursor / grok / antigravity are also available)
+bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
+
+# Install xangi
+curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
+```
+
+After installation, open a normal terminal and run:
+
+```bash
+xangi setup
+```
+
+The AI guiding `xangi setup` confirms the workspace and Web Chat access scope, registers and starts the OS service, and runs `xangi doctor`. You do not need to run `xangi install` or `xangi doctor` manually afterward. Automatic startup after login or reboot is asked separately and is enabled only with explicit consent. You can change it later with:
+
+```bash
+xangi service autostart enable
+xangi service autostart disable
+```
+
+Run `xangi doctor` later whenever you want to check the current state.
+
+## Detailed setup for users
 
 ### 1. Set up an AI coding tool
 
@@ -60,21 +87,21 @@ The installer detects the operating system and CPU, installs xangi, and creates 
 
 ### Minimum flow and recovery commands
 
-After the installer completes, run `xangi setup` from a normal terminal. The guided setup starts the service when configuration is complete; finish by checking the result with `doctor`.
+After the installer completes, run `xangi setup` from a normal terminal. The installer has already placed the xangi application. The AI guiding setup runs `xangi install` when needed to register and start the OS service, asks separately whether to enable automatic startup, and finishes by checking the result with `doctor`.
 
 ```text
 Prepare an AI tool → install xangi → setup → start the service → doctor
 ```
 
-If the flow stops partway through, resume in this order:
+If the flow stops partway through, resume from the relevant command below. Normally, you only run `xangi setup` manually; its AI guide continues through service activation and diagnostics.
 
 1. `xangi setup`
    - Interactively saves the workspace, selected AI, and Web Chat access scope.
    - Web Chat defaults to this device only. Tailscale keeps the app on loopback and uses Tailscale Serve to expose it only inside the tailnet. LAN access is enabled only after warning that Web Chat has no application-level authentication.
    - Resume here after waiting for AI tool installation or authentication, or after leaving setup midway.
 2. `xangi install`
-   - Registers and starts the managed OS service.
-   - The installer normally runs this automatically; use it only after resuming `setup` manually.
+   - Registers the managed OS service and starts it for the current session. It does not enable startup after login or reboot.
+   - The AI launched by `xangi setup` normally runs it. Run it manually only when configuration succeeded but service activation failed.
 3. `xangi doctor`
    - Diagnoses the service, Web Chat, and whether the configured workspace matches the running workspace.
    - Run this first when you are unsure where the flow stopped.
@@ -112,9 +139,17 @@ xangi settings
 xangi setup
 xangi doctor
 xangi update
+xangi service start
+xangi service stop
+xangi service restart
+xangi service status
+xangi service autostart enable
+xangi service autostart disable
 xangi uninstall
 xangi notion-sync enable
 ```
+
+`start|stop|restart|status` and `autostart enable|disable` are shared by managed and checkout installations. Only `autostart enable` registers startup after login or reboot. `autostart disable` removes that registration without stopping the currently running process. Neither `install` nor `service start` enables automatic startup implicitly.
 
 For Notion sync, save the token and destination parent page with `xangi settings`, then enable it. See the [usage guide](docs/en/usage.md) for detailed commands, update and rollback behavior, and OS-specific paths.
 
@@ -203,10 +238,10 @@ To start xangi automatically after an OS reboot, run the following once from the
 
 ```bash
 ./bin/xangi service start
-./bin/xangi service autostart
+./bin/xangi service autostart enable
 ```
 
-`autostart` saves the current PM2 process list with `pm2 save`, then runs `pm2 startup` to show or register the OS startup integration. If `pm2 startup` prints a command such as `sudo env ... pm2 startup ...`, run that command once.
+Run `./bin/xangi service autostart disable` to remove automatic startup. Enabling runs `pm2 save` and `pm2 startup`; disabling runs `pm2 unstartup`. If PM2 prints a `sudo ...` command, run it once.
 
 When running multiple clones, run `./bin/xangi` from each target directory. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
 

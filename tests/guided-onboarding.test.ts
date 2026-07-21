@@ -158,7 +158,6 @@ describe('guided setup backend preflight', () => {
       launcherCommand: "'/Applications/Xangi/xangi'",
       documentationRoot: '/Applications/Xangi/current',
       installationKind: 'managed',
-      managedActivationAfterSetup: true,
       pathEnv: '/agents',
       canExecute: async (path) => path === '/agents/codex' || path === '/agents/claude',
       version: () => 'test-version',
@@ -194,8 +193,10 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('/Applications/Xangi/current/docs/usage.md');
     expect(prompt).toContain('/Applications/Xangi/current/docs/discord-setup.md');
     expect(prompt).toContain('workspace内にxangiのオンボーディング手順を探してはいけません');
-    expect(prompt).toContain('installerがxangiのOS serviceを登録して起動');
-    expect(prompt).toContain("AI自身で`'/Applications/Xangi/xangi' install`");
+    expect(prompt).toContain("`'/Applications/Xangi/xangi' install`");
+    expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart enable`");
+    expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart disable`");
+    expect(prompt).toContain('利用者が明確に希望した場合だけ');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('今回の選択肢から除外'));
     log.mockRestore();
   });
@@ -211,11 +212,12 @@ describe('guided setup backend preflight', () => {
       launcherCommand: "'/Applications/Xangi/xangi'",
       documentationRoot: '/Applications/Xangi/current',
       installationKind: 'managed',
-      managedActivationAfterSetup: false,
       homeDir: '/Users/tester',
       workspaceCandidates: [],
     });
     expect(prompt).toContain("'/Applications/Xangi/xangi' install");
+    expect(prompt).toContain("'/Applications/Xangi/xangi' service autostart enable");
+    expect(prompt).toContain("'/Applications/Xangi/xangi' service autostart disable");
     expect(prompt).toContain("'/Applications/Xangi/xangi' doctor");
   });
 
@@ -233,6 +235,8 @@ describe('guided setup backend preflight', () => {
       workspaceCandidates: [],
     });
     expect(prompt).toContain("'/Users/tester/xangi/bin/xangi' service start");
+    expect(prompt).toContain("'/Users/tester/xangi/bin/xangi' service autostart enable");
+    expect(prompt).toContain("'/Users/tester/xangi/bin/xangi' service autostart disable");
     expect(prompt).toContain("'/Users/tester/xangi/bin/xangi' doctor");
     expect(prompt).toContain('runtime-workspace');
     expect(prompt).toContain('/Users/tester/xangi/README.md');

@@ -178,6 +178,12 @@ if [ "$1" = "startup" ]; then
   fi
   exit "\${PM2_STARTUP_EXIT:-0}"
 fi
+if [ "$1" = "unstartup" ]; then
+  if [ -n "$PM2_UNSTARTUP_OUTPUT" ]; then
+    echo "$PM2_UNSTARTUP_OUTPUT"
+  fi
+  exit "\${PM2_UNSTARTUP_EXIT:-0}"
+fi
 exit 0
 `
     );
@@ -399,7 +405,7 @@ exit 0
     const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
-    const result = await runCli(['service', 'autostart', '--dir', xangiDir], {
+    const result = await runCli(['service', 'autostart', 'enable', '--dir', xangiDir], {
       PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
@@ -416,7 +422,7 @@ exit 0
     const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
-    const result = await runCli(['service', 'autostart', '--dir', xangiDir], {
+    const result = await runCli(['service', 'autostart', 'enable', '--dir', xangiDir], {
       PM2_LOG: fakePm2.logFile,
       PM2_STARTUP_EXIT: '1',
       PM2_STARTUP_OUTPUT:
@@ -430,6 +436,41 @@ exit 0
     const log = readFileSync(fakePm2.logFile, 'utf8');
     expect(log).toContain('save');
     expect(log).toContain('startup');
+  });
+
+  it('removes the PM2 startup hook without stopping the current process', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
+    writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
+
+    const result = await runCli(['service', 'autostart', 'disable', '--dir', xangiDir], {
+      PM2_LOG: fakePm2.logFile,
+      PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+    });
+
+    expect(result.code).toBe(0);
+    const log = readFileSync(fakePm2.logFile, 'utf8');
+    expect(log).toContain('unstartup');
+    expect(log).not.toContain('stop');
+    expect(log).not.toContain('save');
+  });
+
+  it('accepts PM2 unstartup sudo guidance even when pm2 exits non-zero', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
+    writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
+
+    const result = await runCli(['service', 'autostart', 'disable', '--dir', xangiDir], {
+      PM2_LOG: fakePm2.logFile,
+      PM2_UNSTARTUP_EXIT: '1',
+      PM2_UNSTARTUP_OUTPUT:
+        'sudo env PATH=$PATH:/node/bin /node/lib/node_modules/pm2/bin/pm2 unstartup systemd -u karaage --hp /home/karaage',
+      PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('pm2 unstartup');
+    expect(result.stdout).toContain('sudo env PATH=');
   });
 
   it('loads token from XANGI_ENV_PATH when no token flag is provided', async () => {

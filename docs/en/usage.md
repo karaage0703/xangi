@@ -605,7 +605,7 @@ The above response is sent as two separate messages to Discord.
 
 ### Restart Mechanism
 
-`xangi service restart|status` controls the managed installation's OS service. In a checkout, `./bin/xangi service start|stop|restart|status` controls PM2 and targets the process named by `XANGI_PROCESS_NAME` in that clone's `.env`.
+`xangi service start|stop|restart|status` and `xangi service autostart enable|disable` have the same actions in managed and checkout installations. Managed installations control the OS service, while checkouts control PM2. `stop` temporarily stops the service without removing an existing automatic-start registration, and `start` runs it again. `autostart enable` registers startup after login or reboot, while `autostart disable` removes that registration without stopping the currently running xangi process. `xangi install` and `service start` never enable it implicitly. In a checkout, the target is the process named by `XANGI_PROCESS_NAME` in that clone's `.env`.
 
 `/restart` and `xangi-cmd system_restart` are low-level operations that ask the running xangi process to gracefully shut down. The external supervisor, such as Docker, pm2, or systemd, is responsible for starting xangi again.
 
@@ -640,14 +640,14 @@ flowchart TD
 ./bin/xangi service stop
 ```
 
-To start xangi automatically after an OS reboot, run the following once from the target clone:
+To start xangi automatically after login or an OS reboot, explicitly run the following once. Use `xangi` for a managed installation or the target clone's `./bin/xangi` for a checkout:
 
 ```bash
-./bin/xangi service start
-./bin/xangi service autostart
+xangi service start
+xangi service autostart enable
 ```
 
-`autostart` saves the current PM2 process list with `pm2 save`, then runs `pm2 startup` to show or register the OS startup integration. If `pm2 startup` prints a command such as `sudo env ... pm2 startup ...`, run that command once.
+Run `xangi service autostart disable` to remove automatic startup. In managed installations this only adds or removes the macOS LaunchAgent or Linux systemd user-service startup registration. In checkouts, enabling runs `pm2 save` and `pm2 startup`, while disabling runs `pm2 unstartup`. If PM2 prints a `sudo ...` command, run it once.
 
 When running multiple clones, run `./bin/xangi service ...` from the target clone. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
 

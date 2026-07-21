@@ -68,6 +68,9 @@ function fakeService(
     async install() {
       this.installs += 1;
     },
+    async start() {},
+    async stop() {},
+    async autostart(_enabled: boolean) {},
     async restart() {
       this.restarts += 1;
     },

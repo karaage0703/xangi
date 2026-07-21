@@ -18,6 +18,9 @@ function fakeService(): ServiceAdapter & { uninstalls: number } {
   return {
     uninstalls: 0,
     async install() {},
+    async start() {},
+    async stop() {},
+    async autostart(_enabled: boolean) {},
     async restart() {},
     async uninstall() {
       this.uninstalls += 1;

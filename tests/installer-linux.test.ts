@@ -102,7 +102,7 @@ describe('WSL detection and browser opening', () => {
 });
 
 describe('Linux systemd user service adapter', () => {
-  it('installs, restarts, reports status, and uninstalls the user unit', async () => {
+  it('installs, starts, stops, restarts, reports status, and uninstalls the user unit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-linux-'));
     const calls: Array<[string, string[], boolean | undefined]> = [];
     const commands: LinuxCommandRunner = {
@@ -123,13 +123,21 @@ describe('Linux systemd user service adapter', () => {
     await adapter.install();
     expect(await readFile(options.unitPath, 'utf8')).toContain('xangi AI assistant');
     expect((await stat(options.unitPath)).mode & 0o777).toBe(0o644);
+    await adapter.stop();
+    await adapter.start();
+    await adapter.autostart(true);
+    await adapter.autostart(false);
     await adapter.restart();
     expect(await adapter.status()).toEqual({ running: true, detail: 'active' });
     await adapter.uninstall();
     await expect(access(options.unitPath)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(calls).toEqual([
       ['systemctl', ['--user', 'daemon-reload'], undefined],
-      ['systemctl', ['--user', 'enable', '--now', 'xangi.service'], undefined],
+      ['systemctl', ['--user', 'start', 'xangi.service'], undefined],
+      ['systemctl', ['--user', 'stop', 'xangi.service'], undefined],
+      ['systemctl', ['--user', 'start', 'xangi.service'], undefined],
+      ['systemctl', ['--user', 'enable', 'xangi.service'], undefined],
+      ['systemctl', ['--user', 'disable', 'xangi.service'], undefined],
       ['systemctl', ['--user', 'restart', 'xangi.service'], undefined],
       ['systemctl', ['--user', 'disable', '--now', 'xangi.service'], true],
       ['systemctl', ['--user', 'daemon-reload'], true],

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ServiceAdapter, ServiceStatus } from './service.js';
 
@@ -20,6 +20,7 @@ export interface LaunchAgentOptions {
 
 export interface DarwinServiceOptions extends LaunchAgentOptions {
   plistPath: string;
+  autostartPlistPath: string;
 }
 
 export interface DarwinCommandRunner {
@@ -111,24 +112,50 @@ export function createDarwinServiceAdapter(
   commands: DarwinCommandRunner = defaultCommandRunner
 ): ServiceAdapter {
   const domain = launchctlDomain();
+  const writePlist = (path: string): void => {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = path + '.tmp-' + process.pid;
+    writeFileSync(temporary, renderLaunchAgentPlist(options), { mode: 0o644 });
+    chmodSync(temporary, 0o644);
+    renameSync(temporary, path);
+  };
+  const activePlistPath = (): string =>
+    existsSync(options.autostartPlistPath) ? options.autostartPlistPath : options.plistPath;
   return {
     async install(): Promise<void> {
-      mkdirSync(dirname(options.plistPath), { recursive: true });
       mkdirSync(dirname(options.stdoutPath), { recursive: true });
       mkdirSync(dirname(options.stderrPath), { recursive: true });
-      const temporary = options.plistPath + '.tmp-' + process.pid;
-      writeFileSync(temporary, renderLaunchAgentPlist(options), { mode: 0o644 });
-      chmodSync(temporary, 0o644);
-      renameSync(temporary, options.plistPath);
-      commands.run('launchctl', ['bootout', domain, options.plistPath], true);
-      commands.run('launchctl', ['bootstrap', domain, options.plistPath]);
+      writePlist(options.plistPath);
+      if (existsSync(options.autostartPlistPath)) writePlist(options.autostartPlistPath);
+      commands.run('launchctl', ['bootout', domain + '/' + options.label], true);
+      commands.run('launchctl', ['bootstrap', domain, activePlistPath()]);
+    },
+    async start(): Promise<void> {
+      const result = commands.status('launchctl', ['print', domain + '/' + options.label]);
+      if (result.status !== 0) {
+        commands.run('launchctl', ['bootstrap', domain, activePlistPath()]);
+      }
+    },
+    async stop(): Promise<void> {
+      const result = commands.status('launchctl', ['print', domain + '/' + options.label]);
+      if (result.status === 0) {
+        commands.run('launchctl', ['bootout', domain + '/' + options.label]);
+      }
+    },
+    async autostart(enabled: boolean): Promise<void> {
+      if (enabled) {
+        writePlist(options.autostartPlistPath);
+      } else {
+        rmSync(options.autostartPlistPath, { force: true });
+      }
     },
     async restart(): Promise<void> {
       commands.run('launchctl', ['kickstart', '-k', domain + '/' + options.label]);
     },
     async uninstall(): Promise<void> {
-      commands.run('launchctl', ['bootout', domain, options.plistPath], true);
+      commands.run('launchctl', ['bootout', domain + '/' + options.label], true);
       rmSync(options.plistPath, { force: true });
+      rmSync(options.autostartPlistPath, { force: true });
     },
     async status(): Promise<ServiceStatus> {
       const result = commands.status('launchctl', ['print', domain + '/' + options.label]);

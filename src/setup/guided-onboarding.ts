@@ -251,7 +251,6 @@ export function buildOnboardingPrompt(options: {
   launcherCommand: string;
   documentationRoot: string;
   installationKind: 'checkout' | 'managed';
-  managedActivationAfterSetup?: boolean;
   homeDir: string;
   workspaceCandidates: string[];
   webChatPort?: number;
@@ -269,12 +268,11 @@ export function buildOnboardingPrompt(options: {
   const readmePath = join(options.documentationRoot, 'README.md');
   const usagePath = join(options.documentationRoot, 'docs', 'usage.md');
   const discordSetupPath = join(options.documentationRoot, 'docs', 'discord-setup.md');
-  const startupFlow =
+  const startCommand =
     options.installationKind === 'managed'
-      ? options.managedActivationAfterSetup
-        ? `10. これは配布版の初回installerから起動されたAI sessionです。session終了後にinstallerがxangiのOS serviceを登録して起動します。AI自身で\`${options.launcherCommand} install\`やcheckout用のPM2 commandを実行しないでください。terminalへ戻った後にinstallerの完了表示を確認し、\`${options.launcherCommand} doctor\`で状態を確認する方法を日本語で伝えてください。`
-        : `10. これはインストール済み配布版の再開セットアップです。最低限のセットアップ完了後に\`${options.launcherCommand} install\`を実行してOS serviceを登録・起動し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。`
-      : `10. これはGit checkout版です。終了前に${readmePath}の起動手順を読み、xangiを今起動するか確認してください。起動する場合は\`${options.launcherCommand} service start\`を実行し、続けて\`${options.launcherCommand} doctor\`を実行してください。doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。今は起動しない場合は、この2つのcommandと、起動後にdoctorで確認する必要があることを日本語で案内してください。PM2など必要softwareが無い場合は勝手にinstallせず、公式手順を説明して許可を得てください。`;
+      ? `${options.launcherCommand} install`
+      : `${options.launcherCommand} service start`;
+  const startupFlow = `10. 終了前に${readmePath}の起動手順を読み、xangiを今起動するか確認してください。起動する場合は\`${startCommand}\`を実行してください。次に、OSへのログインまたはOS起動時にもxangiを自動起動するかを別の質問として明示的に確認してください。利用者が明確に希望した場合だけ\`${options.launcherCommand} service autostart enable\`を実行し、希望しない場合や回答が曖昧な場合は自動起動を登録しないでください。後から解除するcommandは\`${options.launcherCommand} service autostart disable\`だと案内してください。その後\`${options.launcherCommand} doctor\`を実行し、doctorのservice、health、runtime-workspaceが正常になり、実際のworkspaceが設定値と一致したことを確認してからだけ「セットアップ完了」と伝えてください。今は起動しない場合は、起動commandとdoctorで確認する必要があることを日本語で案内してください。PM2など必要softwareが無い場合は勝手にinstallせず、公式手順を説明して許可を得てください。`;
   return `あなたはxangiの初回セットアップを案内します。利用者への質問、説明、確認、要約はすべて日本語にしてください。短い質問を一度に一つだけ行い、回答を決めつけないでください。
 
 ルールベースの事前確認で${options.backend.label}が選択されました。設定内容の検証と保存はあなたではなくxangiが行います。
@@ -315,7 +313,6 @@ export interface GuidedSetupOptions extends DetectBackendsOptions {
   launcherCommand: string;
   documentationRoot: string;
   installationKind: 'checkout' | 'managed';
-  managedActivationAfterSetup?: boolean;
   webChatPort?: number;
   selectBackend?: (backends: DetectedBackend[]) => Promise<DetectedBackend>;
   onSelected?: (backend: DetectedBackend) => Promise<void>;
@@ -388,7 +385,6 @@ export async function guidedSetupCmd(options: GuidedSetupOptions): Promise<strin
     launcherCommand: options.launcherCommand,
     documentationRoot: options.documentationRoot,
     installationKind: options.installationKind,
-    managedActivationAfterSetup: options.managedActivationAfterSetup,
     webChatPort: options.webChatPort,
     homeDir,
     workspaceCandidates,
