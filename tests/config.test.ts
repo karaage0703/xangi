@@ -43,6 +43,40 @@ describe('config', () => {
     expect(config.discord.allowedUsers).toContain('123456789');
   });
 
+  it('loads safe Telegram media defaults and explicit overrides', async () => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    delete process.env.TELEGRAM_MEDIA_ENABLED;
+    delete process.env.TELEGRAM_MEDIA_MAX_DOWNLOAD_MB;
+    delete process.env.TELEGRAM_MEDIA_RETENTION_HOURS;
+    delete process.env.TELEGRAM_MEDIA_ALLOWED_MIME;
+    delete process.env.TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const defaults = loadConfig().telegram;
+    expect(defaults.mediaEnabled).toBe(false);
+    expect(defaults.mediaMaxDownloadMb).toBe(20);
+    expect(defaults.mediaRetentionHours).toBe(24);
+    expect(defaults.mediaAllowedMimeTypes).toEqual([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'video/mp4',
+    ]);
+    expect(defaults.mediaGroupDebounceMs).toBe(750);
+
+    process.env.TELEGRAM_MEDIA_ENABLED = 'true';
+    process.env.TELEGRAM_MEDIA_MAX_DOWNLOAD_MB = '8';
+    process.env.TELEGRAM_MEDIA_RETENTION_HOURS = '12';
+    process.env.TELEGRAM_MEDIA_ALLOWED_MIME = 'image/*, video/mp4';
+    process.env.TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS = '1000';
+    const overridden = loadConfig().telegram;
+    expect(overridden.mediaEnabled).toBe(true);
+    expect(overridden.mediaMaxDownloadMb).toBe(8);
+    expect(overridden.mediaRetentionHours).toBe(12);
+    expect(overridden.mediaAllowedMimeTypes).toEqual(['image/*', 'video/mp4']);
+    expect(overridden.mediaGroupDebounceMs).toBe(1000);
+  });
+
   it('disables Discord reply suggestions by default and supports overrides', async () => {
     process.env.DISCORD_TOKEN = 'test-discord-token';
     delete process.env.DISCORD_REPLY_SUGGESTIONS;

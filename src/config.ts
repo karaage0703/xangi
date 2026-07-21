@@ -178,6 +178,11 @@ export interface Config {
     idleResetHours?: number;
     resetTextPatterns?: string[];
     forceIpv4?: boolean;
+    mediaEnabled?: boolean;
+    mediaMaxDownloadMb?: number;
+    mediaRetentionHours?: number;
+    mediaAllowedMimeTypes?: string[];
+    mediaGroupDebounceMs?: number;
   };
   agent: {
     backend: AgentBackend;
@@ -455,6 +460,18 @@ export function loadConfig(): Config {
       idleResetEnabled: process.env.TELEGRAM_IDLE_RESET_ENABLED !== 'false',
       idleResetHours: v.float('TELEGRAM_IDLE_RESET_HOURS', 4, { min: 0 }),
       forceIpv4: process.env.TELEGRAM_FORCE_IPV4 === 'true',
+      mediaEnabled: process.env.TELEGRAM_MEDIA_ENABLED === 'true',
+      mediaMaxDownloadMb: v.int('TELEGRAM_MEDIA_MAX_DOWNLOAD_MB', 20, { min: 1, max: 20 }),
+      mediaRetentionHours: v.float('TELEGRAM_MEDIA_RETENTION_HOURS', 24, { min: 0 }),
+      mediaAllowedMimeTypes: process.env.TELEGRAM_MEDIA_ALLOWED_MIME
+        ? process.env.TELEGRAM_MEDIA_ALLOWED_MIME.split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean)
+        : ['image/jpeg', 'image/png', 'image/webp', 'video/mp4'],
+      mediaGroupDebounceMs: v.int('TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS', 750, {
+        min: 100,
+        max: 5000,
+      }),
       resetTextPatterns: process.env.TELEGRAM_RESET_TEXT_PATTERNS
         ? process.env.TELEGRAM_RESET_TEXT_PATTERNS.split(',')
             .map((s) => s.trim())

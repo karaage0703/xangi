@@ -3,6 +3,7 @@ import {
   buildPromptWithContext,
   buildTelegramWebhookUrl,
   cleanMention,
+  downloadTelegramMediaBatch,
   formatTelegramError,
   getTelegramRetryDelayMs,
   hasBotMention,
@@ -16,7 +17,127 @@ import {
   shouldProcessMessage,
   shouldStreamTelegramResponse,
   TelegramBotLoopGuard,
+  TelegramChatQueue,
+  telegramMediaDownloadContext,
+  telegramMediaDownloadFailureNotice,
 } from '../src/telegram.js';
+
+describe('Telegram chat queue generation boundaries', () => {
+  it('drops slow preprocessing after reset and preserves the next message order', async () => {
+    const queue = new TelegramChatQueue();
+    const contextKey = 'telegram:dm:111';
+    const firstGeneration = queue.getGeneration(contextKey);
+    const events: string[] = [];
+    let releaseDownload!: () => void;
+    let markDownloadStarted!: () => void;
+    const downloadStarted = new Promise<void>((resolve) => {
+      markDownloadStarted = resolve;
+    });
+    const downloadGate = new Promise<void>((resolve) => {
+      releaseDownload = resolve;
+    });
+    const candidate = {
+      fileId: 'slow-file',
+      fileUniqueId: 'slow-file-u',
+      kind: 'document' as const,
+      mimeType: 'application/pdf',
+    };
+
+    const first = queue.enqueue(contextKey, async () => {
+      const batch = await downloadTelegramMediaBatch(
+        [candidate],
+        async () => {
+          events.push('first-download-started');
+          markDownloadStarted();
+          await downloadGate;
+          events.push('first-download-finished');
+          return '/tmp/xangi-stale-telegram-test.pdf';
+        },
+        () => queue.getGeneration(contextKey) === firstGeneration
+      );
+      if (batch.stale) {
+        events.push('first-reset-notice');
+        return;
+      }
+      events.push('first-agent-started');
+    });
+
+    await downloadStarted;
+    queue.nextGeneration(contextKey);
+    const secondGeneration = queue.getGeneration(contextKey);
+    const second = queue.enqueue(contextKey, async () => {
+      events.push('second-download-started');
+      if (queue.getGeneration(contextKey) === secondGeneration) {
+        events.push('second-agent-started');
+      }
+    });
+
+    expect(events).toEqual(['first-download-started']);
+    releaseDownload();
+    await Promise.all([first, second]);
+
+    expect(events).toEqual([
+      'first-download-started',
+      'first-download-finished',
+      'first-reset-notice',
+      'second-download-started',
+      'second-agent-started',
+    ]);
+    expect(events).not.toContain('first-agent-started');
+  });
+});
+
+describe('Telegram media download notices', () => {
+  it('reports one successful and one failed download to the user and agent context', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const candidates = [
+      {
+        fileId: 'ok',
+        fileUniqueId: 'ok-u',
+        kind: 'document' as const,
+        mimeType: 'application/pdf',
+      },
+      {
+        fileId: 'failed',
+        fileUniqueId: 'failed-u',
+        kind: 'document' as const,
+        mimeType: 'application/pdf',
+      },
+    ];
+
+    let batch!: Awaited<ReturnType<typeof downloadTelegramMediaBatch>>;
+    try {
+      batch = await downloadTelegramMediaBatch(
+        candidates,
+        async (candidate) => {
+          if (candidate.fileId === 'failed') throw new Error('download failed');
+          return '/tmp/xangi-partial-telegram-test.pdf';
+        },
+        () => true
+      );
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(batch.attachmentPaths).toEqual(['/tmp/xangi-partial-telegram-test.pdf']);
+    expect(batch.mediaErrors).toEqual(['Telegramからファイルを取得できませんでした。']);
+    const notice = telegramMediaDownloadFailureNotice(
+      candidates.length,
+      batch.attachmentPaths.length,
+      batch.mediaErrors
+    );
+    const context = telegramMediaDownloadContext(
+      candidates.length,
+      batch.attachmentPaths.length,
+      batch.mediaErrors
+    );
+
+    expect(notice).toContain('添付ファイル 2 件中 1 件を取得できませんでした。');
+    expect(notice).toContain('取得できた 1 件のみで処理を続けます。');
+    expect(context).toContain('2件中1件を取得、1件が失敗');
+    expect(context).toContain('取得できた添付だけを対象に回答してください。');
+  });
+});
 
 describe('Telegram webhook URL', () => {
   it('normalizes paths with and without a leading slash', () => {
