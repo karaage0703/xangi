@@ -328,7 +328,9 @@ describe('authenticated macOS bootstrap installer', () => {
       join(app, 'bin', 'xangi')
     );
     await expect(readFile(nodeLog, 'utf8')).rejects.toThrow();
-    expect(result.stderr).toContain('AI setup was deferred');
+    expect(result.stderr).toContain(
+      'AI setup was deferred. Run xangi setup from an interactive terminal after installation.'
+    );
     expect(result.stdout).toContain('AI setup and service activation are pending');
     expect(result.stdout).toMatch(/xangi(?:"|')? setup/);
   });

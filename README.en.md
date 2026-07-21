@@ -56,11 +56,11 @@ Paste the same command into a terminal on macOS, Linux, or WSL2:
 curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
 ```
 
-The installer detects the operating system and CPU, installs xangi, creates `~/.local/bin/xangi`, starts AI-guided setup, and starts the service. Run it from any directory. AI selection still reads from the terminal when the installer itself is piped. If no controlling terminal is available, the AI tool is not installed or authenticated, or AI setup fails, the installer keeps xangi installed and stops safely; continue later with `xangi setup`. When `~/.local/bin` is not on PATH, the installer prints an `export PATH=...` command for the current shell and instructions for persisting it in zsh.
+The installer detects the operating system and CPU, installs xangi, and creates `~/.local/bin/xangi`. It does not launch an interactive AI UI inside the `curl ... | bash` pipe. After installation, it tells you to run `xangi setup` from a normal terminal. This avoids platform-specific terminal handoff failures in TUI applications such as Codex. Run the installer from any directory. When `~/.local/bin` is not on PATH, it prints an `export PATH=...` command for the current shell and instructions for persisting it in zsh.
 
 ### Minimum flow and recovery commands
 
-Normally, the installer runs setup and starts the service automatically. Finish by checking the result with `doctor`.
+After the installer completes, run `xangi setup` from a normal terminal. The guided setup starts the service when configuration is complete; finish by checking the result with `doctor`.
 
 ```text
 Prepare an AI tool → install xangi → setup → start the service → doctor

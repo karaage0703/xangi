@@ -53,17 +53,9 @@ curl --fail --silent --show-error --location \
 
 if [[ -t 0 ]]; then
   bash "$installer"
-elif { exec 3</dev/tty; } 2>/dev/null; then
-  # `curl ... | bash` uses stdin for the bootstrap script itself. Reconnect the
-  # downloaded interactive installer to the controlling terminal so its setup
-  # prompt reads the user's input instead of the exhausted script pipe.
-  set +e
-  bash "$installer" <&3
-  status=$?
-  set -e
-  exec 3<&-
-  exit "$status"
 else
-  # Headless callers still get a usable CLI and can resume setup later.
+  # A piped bootstrap cannot safely hand the terminal from shell/readline to an
+  # interactive AI TUI on every platform. Install the verified CLI only and let
+  # the user start onboarding from a fresh terminal command.
   XANGI_INSTALL_DEFER_SETUP=1 bash "$installer"
 fi

@@ -220,7 +220,7 @@ current_switched=0
 setup_pending=0
 if [[ "${XANGI_INSTALL_DEFER_SETUP:-0}" == '1' ]]; then
   setup_pending=1
-  echo 'No interactive terminal is available; AI setup was deferred.' >&2
+  echo 'AI setup was deferred. Run xangi setup from an interactive terminal after installation.' >&2
 elif [[ "${XANGI_INSTALL_SKIP_SETUP:-0}" != '1' ]]; then
   set +e
   XANGI_INSTALL_ACTIVATES_AFTER_SETUP=1 "$launcher" setup

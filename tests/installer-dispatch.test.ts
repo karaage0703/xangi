@@ -81,12 +81,12 @@ describe('cross-platform release bootstrap', () => {
     expect(result.installerRan).toBe('defer=1 tty=no\n');
   });
 
-  it('reconnects a piped bootstrap to the controlling terminal when one exists', async () => {
+  it('defers interactive setup for every piped bootstrap', async () => {
     const bootstrap = await readFile('packaging/bootstrap.sh', 'utf8');
 
-    expect(bootstrap).toContain('exec 3</dev/tty');
-    expect(bootstrap).toContain('bash "$installer" <&3');
+    expect(bootstrap).toContain('if [[ -t 0 ]]');
     expect(bootstrap).toContain('XANGI_INSTALL_DEFER_SETUP=1 bash "$installer"');
+    expect(bootstrap).not.toContain('/dev/tty');
   });
 
   it('rejects unsupported operating systems', async () => {

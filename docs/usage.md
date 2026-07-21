@@ -212,7 +212,7 @@ macOS、Linux、WSL2で共通のコマンドです。
 curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
 ```
 
-共通`install.sh`がOSとCPUを判定し、同じGitHub Releaseにあるtarget installerを選択します。WSL2はLinuxとして扱います。`curl ... | bash`のpipeから起動した場合も、AI選択などの対話入力は制御端末から読みます。SSHやCIなど制御端末が無い環境ではxangi本体の配置だけを完了してsetupとservice起動を延期し、表示された`xangi setup`から再開できます。managed版は`~/.local/bin/xangi`を作成し、そのdirectoryがPATHに無い場合は現在のshell用の`export PATH=...`とzshへの永続設定方法を表示します。
+共通`install.sh`がOSとCPUを判定し、同じGitHub Releaseにあるtarget installerを選択します。WSL2はLinuxとして扱います。`curl ... | bash`のpipeから起動した場合はxangi本体の配置だけを完了し、AI setupとservice起動を延期します。installer終了後、通常のTerminalから表示された`xangi setup`を実行してください。pipe内のshell/readlineからCodexなどのTUIへ端末を引き継がないことで、platform固有の端末初期化エラーを避けます。managed版は`~/.local/bin/xangi`を作成し、そのdirectoryがPATHに無い場合は現在のshell用の`export PATH=...`とzshへの永続設定方法を表示します。
 
 ## Terminal CLI（xangi）
 
@@ -305,7 +305,7 @@ Discord、Slack、LINE、Telegram、Notionのtokenと、Notion同期先の親ペ
 
 Notion同期はデフォルトOFFです。`xangi settings`でtokenと親ページを保存し、`xangi notion-sync enable`を実行するとONになります。`xangi notion-sync run`はworkspace内のMarkdownを自動検出し、workspaceを正本、Notionを閲覧用ミラーとしてフォルダ階層ごと作成・更新します。`.git`、`.xangi`、依存物、build成果物、logs、hidden pathは対象外です。個別ファイルpath、方向選択、`notion-sync.yaml`は標準利用では不要です。OFF中の`status` / `disable`はNotionへ接続せず、通常の`run`も通信前に拒否されます。`run --once`だけはOFFのまま一度実行できます。
 
-GitHub Releaseでは共通入口を`install.sh`として公開します。`packaging/bootstrap.sh`がOSとCPUを検出し、同じReleaseにある`xangi-installer-<darwin|linux>-<arm64|x64>.sh`を選びます。pipe起動時はtarget installerのstdinを`/dev/tty`へ接続し、制御端末が無ければsetupを延期します。target installerは`packaging/build-installer.mjs`で生成し、xangi本体のEd25519署名済みmanifest/artifactを照合します。検証前にarchiveを展開せず、公開鍵と`releases/latest`の更新確認用manifest URLをversion領域外へ保存し、検証済みbundle、`current`、launcher、`~/.local/bin/xangi`を確定してから同梱Node runtimeで`xangi setup`を開始します。setupやservice起動が失敗してもxangi本体はrollbackせず、`xangi setup`または`xangi install`で再開できます。artifact URLはrelease versionへ固定し、更新時はlatest manifestの署名を検証してから新しいartifactを取得します。AIコーディングツールはRelease assetの`setup-ai-tools.sh`でxangiとは独立して導入・認証できます。初回install時にAI CLIが未導入・未認証ならxangi本体を保持してservice起動前に終了コード3で停止し、AIツール準備後の`xangi setup`で再開します。初回install後はLaunchAgentまたはsystemd user timerが6時間ごとに`xangi update`を実行します。workspaceテンプレートは選択時にrepositoryの最新commitを取得して空の初回だけ適用し、利用者の編集を更新・merge・上書きしません。
+GitHub Releaseでは共通入口を`install.sh`として公開します。`packaging/bootstrap.sh`がOSとCPUを検出し、同じReleaseにある`xangi-installer-<darwin|linux>-<arm64|x64>.sh`を選びます。pipe起動時はtarget installerへ`XANGI_INSTALL_DEFER_SETUP=1`を渡し、署名検証済みCLIの配置だけを完了して、AI setupとservice起動を別の`xangi setup`へ分離します。target installerは`packaging/build-installer.mjs`で生成し、xangi本体のEd25519署名済みmanifest/artifactを照合します。検証前にarchiveを展開せず、公開鍵と`releases/latest`の更新確認用manifest URLをversion領域外へ保存し、検証済みbundle、`current`、launcher、`~/.local/bin/xangi`を確定します。setupやservice起動が失敗してもxangi本体はrollbackせず、`xangi setup`または`xangi install`で再開できます。artifact URLはrelease versionへ固定し、更新時はlatest manifestの署名を検証してから新しいartifactを取得します。AIコーディングツールはRelease assetの`setup-ai-tools.sh`でxangiとは独立して導入・認証できます。通常のTerminalから実行した`xangi setup`が対話型オンボーディングを担当し、完了後にserviceを起動します。初回install後はLaunchAgentまたはsystemd user timerが6時間ごとに`xangi update`を実行します。workspaceテンプレートは選択時にrepositoryの最新commitを取得して空の初回だけ適用し、利用者の編集を更新・merge・上書きしません。
 
 主なオプション:
 
