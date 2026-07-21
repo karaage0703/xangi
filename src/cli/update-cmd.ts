@@ -160,7 +160,7 @@ function createDefaultService(layout: AppLayout, homeDir: string, wsl?: boolean)
       unitName: 'xangi.service',
       unitPath: join(dirname(layout.configDir), 'systemd', 'user', 'xangi.service'),
       nodePath: join(layout.currentLink, 'runtime', 'bin', 'node'),
-      configLoaderPath: join(layout.currentLink, 'dist', 'installer', 'runtime-config.js'),
+      configLoaderPath: join(layout.currentLink, 'dist', 'installer', 'runtime-config-main.js'),
       configPath: layout.configFile,
       stateDir: layout.stateDir,
       entrypoint: join(layout.currentLink, 'dist', 'index.js'),
@@ -172,7 +172,7 @@ function createDefaultService(layout: AppLayout, homeDir: string, wsl?: boolean)
   return createDarwinServiceAdapter({
     label: 'dev.xangi.app',
     nodePath: join(layout.currentLink, 'runtime', 'bin', 'node'),
-    configLoaderPath: join(layout.currentLink, 'dist', 'installer', 'runtime-config.js'),
+    configLoaderPath: join(layout.currentLink, 'dist', 'installer', 'runtime-config-main.js'),
     configPath: layout.configFile,
     stateDir: layout.stateDir,
     entrypoint: join(layout.currentLink, 'dist', 'index.js'),

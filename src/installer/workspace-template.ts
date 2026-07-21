@@ -55,6 +55,8 @@ export type WorkspaceTemplateResult =
 export interface WorkspaceTemplateInstallerOptions {
   workspaceDir: string;
   stateDir: string;
+  /** Allow an explicit setup choice to repair a missing or empty workspace. */
+  reapplyIfEmpty?: boolean;
   repository?: string;
   ref?: string;
   resolveCommit?: (repository: string, ref: string) => Promise<string>;
@@ -107,11 +109,11 @@ export async function installWorkspaceTemplate(
 
   let stagingDir: string | undefined;
   try {
-    if (await hasAppliedState(statePath)) {
-      return { status: 'skipped', reason: 'already-applied' };
-    }
     if (!(await isMissingOrEmptyDirectory(workspaceDir))) {
       return { status: 'skipped', reason: 'workspace-not-empty' };
+    }
+    if (!options.reapplyIfEmpty && (await hasAppliedState(statePath))) {
+      return { status: 'skipped', reason: 'already-applied' };
     }
 
     const commitSha = await (options.resolveCommit ?? resolveGitHubCommit)(repository, ref);

@@ -487,7 +487,8 @@ export async function run(argv = process.argv): Promise<void> {
           },
           {
             layout,
-            initializeTemplate: installConfiguredWorkspaceTemplate,
+            initializeTemplate: (selectedLayout) =>
+              installConfiguredWorkspaceTemplate(selectedLayout, { reapplyIfEmpty: true }),
             backendAvailable: async (selected) =>
               (await detectGuidedBackends()).some((candidate) => candidate.id === selected),
           }

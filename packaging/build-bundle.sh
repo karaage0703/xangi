@@ -77,6 +77,10 @@ NODE
 [[ -f "$project_root/README.md" ]] || { echo "Missing README.md" >&2; exit 2; }
 [[ -f "$project_root/README.en.md" ]] || { echo "Missing README.en.md" >&2; exit 2; }
 [[ -d "$project_root/docs" ]] || { echo "Missing docs directory" >&2; exit 2; }
+[[ -f "$project_root/src/approval-patterns.json" ]] || { echo "Missing src/approval-patterns.json" >&2; exit 2; }
+for web_asset in index.html monitor.html inter-chat.html; do
+  [[ -f "$project_root/web/$web_asset" ]] || { echo "Missing web/$web_asset" >&2; exit 2; }
+done
 [[ -d "$project_root/node_modules" ]] || { echo "Missing node_modules directory" >&2; exit 2; }
 [[ -f "$node_binary" && -x "$node_binary" ]] || {
   echo "--node-binary must point to an executable file" >&2
@@ -112,9 +116,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 bundle_root="$work_dir/$bundle_name"
-mkdir -p -- "$bundle_root/runtime/bin" "$bundle_root/node_modules"
+mkdir -p -- "$bundle_root/runtime/bin" "$bundle_root/node_modules" "$bundle_root/web"
 cp -R -- "$project_root/dist" "$bundle_root/dist"
+cp -- "$project_root/src/approval-patterns.json" "$bundle_root/dist/approval-patterns.json"
 cp -R -- "$project_root/docs" "$bundle_root/docs"
+cp -- "$project_root/web/index.html" "$bundle_root/web/index.html"
+cp -- "$project_root/web/monitor.html" "$bundle_root/web/monitor.html"
+cp -- "$project_root/web/inter-chat.html" "$bundle_root/web/inter-chat.html"
 cp -- "$project_root/README.md" "$bundle_root/README.md"
 cp -- "$project_root/README.en.md" "$bundle_root/README.en.md"
 cp -- "$project_root/package.json" "$bundle_root/package.json"

@@ -54,17 +54,3 @@ export async function runConfiguredRuntime(
   Object.assign(process.env, await loadSetupRuntimeEnv(configPath, stateDir));
   await importModule(pathToFileURL(entrypoint).href);
 }
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [configPath, stateDir, entrypoint] = process.argv.slice(2);
-  if (!configPath || !stateDir || !entrypoint) {
-    console.error('Usage: runtime-config <setup.json> <state-dir> <runtime-entrypoint>');
-    process.exit(2);
-  }
-  runConfiguredRuntime(configPath, stateDir, entrypoint).catch((error) => {
-    console.error(
-      `Failed to start xangi: ${error instanceof Error ? error.message : String(error)}`
-    );
-    process.exit(1);
-  });
-}

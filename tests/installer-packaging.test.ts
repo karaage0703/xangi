@@ -21,7 +21,10 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   const nodeBinary = join(root, 'node-fixture');
 
   await mkdir(join(project, 'dist'), { recursive: true });
+  await mkdir(join(project, 'src'), { recursive: true });
   await mkdir(join(project, 'docs', 'en'), { recursive: true });
+  await mkdir(join(project, 'web'), { recursive: true });
+  await mkdir(join(project, 'web', 'node_modules'), { recursive: true });
   await mkdir(join(project, 'node_modules', 'prod-pkg'), { recursive: true });
   await mkdir(join(project, 'node_modules', 'prod-pkg', 'node_modules', 'transitive-prod'), {
     recursive: true,
@@ -40,11 +43,20 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await writeFile(join(project, 'dist', 'index.js'), 'console.log("xangi")\n');
   await writeFile(join(project, 'dist', '.env'), 'TOKEN=do-not-package\n');
   await writeFile(join(project, 'dist', 'server.pem'), 'private material\n');
+  await writeFile(
+    join(project, 'src', 'approval-patterns.json'),
+    JSON.stringify([{ command: 'rm ', description: 'delete', category: 'filesystem' }])
+  );
   await writeFile(join(project, 'README.md'), '# xangi\n');
   await writeFile(join(project, 'README.en.md'), '# xangi\n');
   await writeFile(join(project, 'docs', 'usage.md'), '# 使い方\n');
   await writeFile(join(project, 'docs', 'discord-setup.md'), '# Discord\n');
   await writeFile(join(project, 'docs', 'en', 'usage.md'), '# Usage\n');
+  await writeFile(join(project, 'web', 'index.html'), '<main>Web Chat</main>\n');
+  await writeFile(join(project, 'web', 'monitor.html'), '<main>Monitor</main>\n');
+  await writeFile(join(project, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
+  await writeFile(join(project, 'web', '.env'), 'WEB_SECRET=no\n');
+  await writeFile(join(project, 'web', 'node_modules', 'ignored.js'), 'not shipped\n');
   await writeFile(
     join(project, 'package.json'),
     JSON.stringify({
@@ -151,7 +163,12 @@ describe('packaging/build-bundle.sh', () => {
     const root = 'xangi-1.2.3-darwin-arm64';
 
     expect(entries).toContain(`${root}/dist/index.js`);
-    expect(entries.some((entry) => entry.startsWith(`${root}/web/`))).toBe(false);
+    expect(entries).toContain(`${root}/dist/approval-patterns.json`);
+    expect(entries).toContain(`${root}/web/index.html`);
+    expect(entries).toContain(`${root}/web/monitor.html`);
+    expect(entries).toContain(`${root}/web/inter-chat.html`);
+    expect(entries.some((entry) => entry.startsWith(`${root}/web/node_modules/`))).toBe(false);
+    expect(entries).not.toContain(`${root}/web/.env`);
     expect(entries).toContain(`${root}/README.md`);
     expect(entries).toContain(`${root}/README.en.md`);
     expect(entries).toContain(`${root}/docs/usage.md`);

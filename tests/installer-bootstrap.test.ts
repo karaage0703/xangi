@@ -40,12 +40,17 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
   const payload = join(root, archiveRoot);
   await mkdir(join(payload, 'runtime', 'bin'), { recursive: true });
   await mkdir(join(payload, 'dist', 'cli'), { recursive: true });
+  await mkdir(join(payload, 'web'), { recursive: true });
   await writeFile(
     join(payload, 'runtime', 'bin', 'node'),
     '#!/bin/sh\nif [ "${1:-}" = -e ]; then rm -f -- "$4"; mv -- "$3" "$4"; exit 0; fi\n[ -z "${XANGI_FIXTURE_NODE_LOG:-}" ] || printf "NODE_OPTIONS=%s ARGS=%s\\n" "${NODE_OPTIONS:-}" "$*" >> "$XANGI_FIXTURE_NODE_LOG"\n[ "${XANGI_FIXTURE_FAIL_INSTALL:-0}" = 1 ] && [ "${2:-}" = install ] && exit 9\n[ "${XANGI_FIXTURE_SETUP_EXIT:-0}" != 0 ] && [ "${2:-}" = setup ] && exit "$XANGI_FIXTURE_SETUP_EXIT"\nexit 0\n'
   );
   await chmod(join(payload, 'runtime', 'bin', 'node'), 0o755);
   await writeFile(join(payload, 'dist', 'cli', 'xangi-main.js'), '// fixture\n');
+  await writeFile(join(payload, 'dist', 'approval-patterns.json'), '[]\n');
+  await writeFile(join(payload, 'web', 'index.html'), '<main>Web Chat</main>\n');
+  await writeFile(join(payload, 'web', 'monitor.html'), '<main>Monitor</main>\n');
+  await writeFile(join(payload, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
   const artifact = join(root, 'bundle.tar.gz');
   await exec('tar', ['-czf', artifact, '-C', root, archiveRoot]);
   const artifactBytes = await readFile(artifact);
@@ -188,6 +193,9 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(
       readFile(join(app, 'versions', '1.2.3', 'dist', 'cli', 'xangi-main.js'), 'utf8')
     ).resolves.toContain('fixture');
+    await expect(
+      readFile(join(app, 'versions', '1.2.3', 'web', 'index.html'), 'utf8')
+    ).resolves.toContain('Web Chat');
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
       'runtime/bin/node'
     );

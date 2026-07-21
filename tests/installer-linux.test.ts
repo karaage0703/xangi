@@ -20,7 +20,7 @@ function fixture(root: string, wsl = false): SystemdUserServiceOptions {
     unitPath: join(root, '.config', 'systemd', 'user', 'xangi.service'),
     nodePath: '/home/Test User/.local/share/xangi/app/current/runtime/bin/node',
     configLoaderPath:
-      '/home/Test User/.local/share/xangi/app/current/dist/installer/runtime-config.js',
+      '/home/Test User/.local/share/xangi/app/current/dist/installer/runtime-config-main.js',
     configPath: '/home/Test User/.config/xangi/xangi.json',
     stateDir: '/home/Test User/.local/state/xangi',
     entrypoint: '/home/Test User/.local/share/xangi/app/current/dist/index.js',

@@ -131,6 +131,42 @@ describe('Git-free workspace repository installer', () => {
     });
   });
 
+  it('reapplies after an explicit setup choice when the workspace is missing or empty', async () => {
+    const { workspaceDir, stateDir } = await fixture();
+    const resolveCommit = vi.fn(latest);
+    const download = vi.fn(async () => artifact);
+    const options = { workspaceDir, stateDir, resolveCommit, download, extract };
+    await installWorkspaceTemplate(options);
+    await rm(workspaceDir, { recursive: true });
+
+    await expect(
+      installWorkspaceTemplate({ ...options, reapplyIfEmpty: true })
+    ).resolves.toMatchObject({ status: 'installed', commitSha });
+    expect(resolveCommit).toHaveBeenCalledTimes(2);
+    expect(download).toHaveBeenCalledTimes(2);
+    await expect(readFile(join(workspaceDir, 'AGENTS.md'), 'utf8')).resolves.toBe('# Assistant\n');
+  });
+
+  it('never overwrites user files when explicit template reapplication is requested', async () => {
+    const { workspaceDir, stateDir } = await fixture();
+    const options = {
+      workspaceDir,
+      stateDir,
+      resolveCommit: vi.fn(latest),
+      download: vi.fn(async () => artifact),
+      extract,
+    };
+    await installWorkspaceTemplate(options);
+    await writeFile(join(workspaceDir, 'USER-NOTE.md'), 'keep me\n');
+
+    await expect(
+      installWorkspaceTemplate({ ...options, reapplyIfEmpty: true })
+    ).resolves.toEqual({ status: 'skipped', reason: 'workspace-not-empty' });
+    expect(options.resolveCommit).toHaveBeenCalledTimes(1);
+    expect(options.download).toHaveBeenCalledTimes(1);
+    await expect(readFile(join(workspaceDir, 'USER-NOTE.md'), 'utf8')).resolves.toBe('keep me\n');
+  });
+
   it('treats a workspace symlink as existing and never follows it', async () => {
     const { root, workspaceDir, stateDir } = await fixture();
     const outside = join(root, 'outside');
