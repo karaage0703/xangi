@@ -11,6 +11,10 @@ const DOWNLOAD_DIR = path.join(
   'attachments'
 );
 
+export function getAttachmentDownloadDir(): string {
+  return DOWNLOAD_DIR;
+}
+
 // ダウンロードディレクトリを作成
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });

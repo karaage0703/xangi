@@ -114,6 +114,13 @@ TELEGRAM_SHOW_THINKING=true
 TELEGRAM_IDLE_RESET_ENABLED=true
 TELEGRAM_IDLE_RESET_HOURS=4
 # TELEGRAM_RESET_TEXT_PATTERNS=/reset,/new,/clear  # override only if needed
+
+# Optional: images and videos
+TELEGRAM_MEDIA_ENABLED=true
+# TELEGRAM_MEDIA_MAX_DOWNLOAD_MB=20
+# TELEGRAM_MEDIA_RETENTION_HOURS=24
+# TELEGRAM_MEDIA_ALLOWED_MIME=image/jpeg,image/png,image/webp,video/mp4
+# TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS=750
 ```
 
 ## 5. Start and verify
@@ -168,7 +175,19 @@ No changes to Group Privacy, Allow Groups, or Bot to Bot Communication are neede
 | `/stop`                  | Stop the currently running task                |
 | `/help`                  | Show usage instructions                        |
 
-## 9. Telegram API connection timeouts
+## 9. Images and videos
+
+Set `TELEGRAM_MEDIA_ENABLED=true` to receive photos, videos, and documents whose MIME type is allowed in DMs and groups. A caption becomes the instruction; without one, xangi asks the agent to inspect the attachment. Items in the same Telegram album are collected for 750ms by default and processed in one agent turn.
+
+Files are downloaded only after the sender, chat allowlists, and group trigger rules pass. They are stored under `.xangi/media/attachments/telegram`. The default and maximum download size is 20MB, matching the Telegram Bot API `getFile` limit. Files are removed after 24 hours by default; set `TELEGRAM_MEDIA_RETENTION_HOURS=0` to disable automatic cleanup.
+
+`TELEGRAM_MEDIA_ALLOWED_MIME` checks sender-declared MIME metadata reported by Telegram. After download, xangi also verifies the leading file signature for JPEG, PNG, WebP, MP4, PDF, and ZIP files and does not pass mismatches to the agent. Custom MIME types do not receive content verification, so enable them only for trusted allowlisted senders.
+
+When the agent returns an image, MP4 video, or another file as an attachment, xangi sends it as a Telegram photo, video, or document. A failed attachment is not retried because Telegram may already have accepted the upload and retrying could create duplicates. For multiple attachments, xangi still attempts later unsent files and reports how many results could not be confirmed.
+
+Videos are currently passed directly to the agent. No keyframe extraction or audio transcription is performed, so the selected agent backend must support video input.
+
+## 10. Telegram API connection timeouts
 
 If you see `ETIMEDOUT` or `Network request for 'getMe' failed`, test the route from the Raspberry Pi:
 
@@ -189,7 +208,7 @@ An `editMessageText` timeout is ambiguous: Telegram may have applied the edit ev
 
 Telegram errors can contain the Bot API URL. xangi redacts the token before logging these errors. If a token appeared in an older log, revoke it with BotFather's `/revoke` command and issue a new one.
 
-## 10. `409 Conflict`
+## 11. `409 Conflict`
 
 This means that multiple long-polling processes are using the same bot token. The Telegram Bot API permits only one long-polling process per token.
 
