@@ -15,6 +15,7 @@ import { prefetchSlackHistory } from './slack-history-prefetch.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
+import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
 import { addToolHistory, appendToolHistory, formatToolHistoryDisclosure } from './tool-history.js';
 import { ensureSession, getActiveSessionId, getProviderSessionId } from './sessions.js';
 import { createSchedulerRunId } from './scheduler-run.js';
@@ -331,6 +332,8 @@ async function sendSlackResult(
   result: string,
   blocks?: KnownBlock[]
 ): Promise<void> {
+  // Claude出力のMarkdownをSlack mrkdwn記法へ変換してから送信する
+  result = markdownToSlackMrkdwn(result);
   const text = sliceByBytes(result, SLACK_MAX_TEXT_BYTES);
   const textBytes = new TextEncoder().encode(text).length;
   console.log(
