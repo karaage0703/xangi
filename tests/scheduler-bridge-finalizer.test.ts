@@ -177,4 +177,94 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('同じDiscordチャンネルのscheduled turnを直列に実行する', async () => {
+    const resolvers: Array<(value: AgentRunResult) => void> = [];
+    let started = 0;
+    const { runner } = buildBridge(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          started += 1;
+          resolvers.push(resolve);
+        })
+    );
+
+    const first = runner('first prompt', 'channel-1');
+    const second = runner('second prompt', 'channel-1');
+    await flush();
+
+    expect(started).toBe(1);
+
+    resolvers[0]({ result: 'first done', sessionId: 's1' });
+    await first;
+    await flush();
+
+    expect(started).toBe(2);
+    resolvers[1]({ result: 'second done', sessionId: 's2' });
+    await second;
+  });
+
+  it('異なるDiscordチャンネルのscheduled turnは並列に実行する', async () => {
+    const resolvers: Array<(value: AgentRunResult) => void> = [];
+    let started = 0;
+    const { runner } = buildBridge(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          started += 1;
+          resolvers.push(resolve);
+        })
+    );
+
+    const first = runner('first prompt', 'channel-1');
+    const second = runner('second prompt', 'channel-2');
+    await flush();
+
+    expect(started).toBe(2);
+
+    resolvers[0]({ result: 'first done', sessionId: 's1' });
+    resolvers[1]({ result: 'second done', sessionId: 's2' });
+    await Promise.all([first, second]);
+  });
+
+  it('先行turnが失敗しても同じチャンネルの次のturnを実行する', async () => {
+    let attempt = 0;
+    const { runner } = buildBridge(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('first failed');
+      return { result: 'second done', sessionId: 's2' };
+    });
+
+    const first = runner('first prompt', 'channel-1');
+    const second = runner('second prompt', 'channel-1');
+
+    await expect(first).rejects.toThrow('first failed');
+    await expect(second).resolves.toBe('second done');
+    expect(attempt).toBe(2);
+  });
+
+  it('本文もsession IDもない終了を成功扱いしない', async () => {
+    const { runner, thinkingMsg } = buildBridge(async () => ({
+      result: '',
+      sessionId: '',
+    }));
+
+    await expect(runner('test prompt', 'channel-1')).rejects.toThrow(
+      'Agent process ended without a response or session ID'
+    );
+    expect(thinkingMsg.delete).not.toHaveBeenCalled();
+    expect(thinkingMsg.edit).toHaveBeenCalledWith({
+      content: expect.stringContaining('Agent process ended without a response or session ID'),
+      components: [],
+    });
+  });
+
+  it('session IDがある空応答は従来どおり投稿を省略する', async () => {
+    const { runner, thinkingMsg } = buildBridge(async () => ({
+      result: '',
+      sessionId: 's1',
+    }));
+
+    await expect(runner('test prompt', 'channel-1')).resolves.toBe('');
+    expect(thinkingMsg.delete).toHaveBeenCalledOnce();
+  });
 });
