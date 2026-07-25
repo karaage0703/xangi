@@ -81,6 +81,15 @@ describe('markdownToSlackMrkdwn', () => {
     ).toBe('<https://en.wikipedia.org/wiki/Function_(mathematics)|wiki>');
   });
 
+  it('山括弧で囲まれたリンク先を保持する', () => {
+    expect(markdownToSlackMrkdwn('[Google](<https://google.com>)')).toBe(
+      '<https://google.com|Google>'
+    );
+    expect(
+      markdownToSlackMrkdwn('[wiki](<https://en.wikipedia.org/wiki/Function_(mathematics)>)')
+    ).toBe('<https://en.wikipedia.org/wiki/Function_(mathematics)|wiki>');
+  });
+
   it('参照形式リンクを変換する', () => {
     expect(markdownToSlackMrkdwn('[ref][id]\n\n[id]: https://example.com')).toBe(
       '<https://example.com|ref>'

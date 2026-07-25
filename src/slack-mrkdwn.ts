@@ -34,6 +34,12 @@ class CodeVault {
   }
 }
 
+// CommonMark で有効な [text](<url>) 形式を、slackify-markdown が扱える
+// [text](url) 形式へ正規化する。コード内は protectCode で先に退避済み。
+function normalizeAngleBracketLinkDestinations(text: string): string {
+  return text.replace(/(!?\[[^\]\n]*\])\(<((?:https?:\/\/|ftp:\/\/|mailto:)[^>\n]+)>\)/g, '$1($2)');
+}
+
 // フェンス付きコードブロックとインラインコードを退避する。
 function protectCode(text: string, vault: CodeVault): string {
   // ```lang\n ... ``` （Slackはフェンス対応。中身は一切変換しない）
@@ -143,6 +149,7 @@ export function markdownToSlackMrkdwn(markdown: string): string {
   if (!markdown) return markdown;
   const vault = new CodeVault();
   let text = protectCode(markdown, vault);
+  text = normalizeAngleBracketLinkDestinations(text);
   text = protectTables(text, vault);
   text = protectSlackMrkdwn(text, vault);
   text = convertBlocks(text, vault);
