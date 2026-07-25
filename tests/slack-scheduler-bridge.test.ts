@@ -41,7 +41,10 @@ describe('registerSlackSchedulerBridge', () => {
       runStream: vi.fn(async (_prompt, callbacks) => {
         callbacks.onToolUse?.('Read', { file_path: 'skills/xs-example/SKILL.md' });
         callbacks.onToolUse?.('Bash', { command: 'uv run example.py' });
-        const result = { result: 'done', sessionId: 'provider-1' };
+        const result = {
+          result: '**done** [Docs](https://example.com)',
+          sessionId: 'provider-1',
+        };
         callbacks.onComplete?.(result);
         return result;
       }),
@@ -57,7 +60,7 @@ describe('registerSlackSchedulerBridge', () => {
 
     const result = await runner?.('trigger payload', 'C123');
 
-    expect(result).toBe('done');
+    expect(result).toBe('**done** [Docs](https://example.com)');
     expect(postMessage).toHaveBeenCalledWith({
       channel: 'C123',
       text: '🤔 考え中...',
@@ -75,12 +78,21 @@ describe('registerSlackSchedulerBridge', () => {
         appSessionId: expect.stringMatching(/^scheduler-run-slack-/),
       })
     );
-    expect(update).toHaveBeenCalledWith({
+    const completedPayload = update.mock.calls.at(-1)?.[0] as {
+      channel: string;
+      ts: string;
+      text: string;
+      blocks: unknown[];
+    };
+    expect(completedPayload).toEqual({
       channel: 'C123',
       ts: '1700000000.000100',
-      text: 'done',
+      text: expect.any(String),
       blocks: [],
     });
+    expect(completedPayload.text.replaceAll('\u200B', '')).toBe(
+      '*done* <https://example.com|Docs>'
+    );
 
     const activity = await import('../src/activity-store.js');
     const snapshot = activity.getActivity('slack-schedule:C123');

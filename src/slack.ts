@@ -15,6 +15,7 @@ import { prefetchSlackHistory } from './slack-history-prefetch.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
+import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
 import { addToolHistory, appendToolHistory, formatToolHistoryDisclosure } from './tool-history.js';
 import { ensureSession, getActiveSessionId, getProviderSessionId } from './sessions.js';
 import { createSchedulerRunId } from './scheduler-run.js';
@@ -331,6 +332,8 @@ async function sendSlackResult(
   result: string,
   blocks?: KnownBlock[]
 ): Promise<void> {
+  // result は呼び出し側で mrkdwn へ変換済みの前提（ここでは変換しない）。
+  // 変換は「finalテキスト確定時に一度だけ」行う（冪等でないため二重変換を避ける）。
   const text = sliceByBytes(result, SLACK_MAX_TEXT_BYTES);
   const textBytes = new TextEncoder().encode(text).length;
   console.log(
@@ -542,7 +545,14 @@ export function registerSlackSchedulerBridge(deps: {
       );
 
       const { displayText } = buildAttachmentResult(result, attachments);
-      await sendSlackResult(client, channelId, messageTs, undefined, displayText || '✅', []);
+      await sendSlackResult(
+        client,
+        channelId,
+        messageTs,
+        undefined,
+        markdownToSlackMrkdwn(displayText || '✅'),
+        []
+      );
       return result;
     } catch (error) {
       await client.chat
@@ -1193,7 +1203,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       });
 
       sessions.set(channelId, newSessionId);
-      await respond({ text: sliceByBytes(result, SLACK_MAX_TEXT_BYTES) });
+      await respond({
+        text: sliceByBytes(markdownToSlackMrkdwn(result), SLACK_MAX_TEXT_BYTES),
+      });
     } catch (error) {
       console.error('[slack] Error:', error);
       await respond({ text: 'エラーが発生しました' });
@@ -1427,7 +1439,9 @@ export async function processMessage(
           view.phase === 'thinking'
             ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
             : sliceByBytes(
-                appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌'),
+                markdownToSlackMrkdwn(
+                  appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')
+                ),
                 SLACK_MAX_TEXT_BYTES
               );
         // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、
@@ -1564,6 +1578,8 @@ export async function processMessage(
       extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
     }
     const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
+    // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
+    const renderedText = markdownToSlackMrkdwn(displayText || '✅');
     const showToolsButton = toolHistory.length > 0;
     if (showToolsButton) {
       slackToolHistoryByMessageKey.set(slackMessageKey(channelId, messageTs), [...toolHistory]);
@@ -1576,7 +1592,7 @@ export async function processMessage(
     }
 
     // 最終結果を更新（長い場合は分割送信）
-    await sendSlackResult(client, channelId, messageTs, threadTs, displayText || '✅');
+    await sendSlackResult(client, channelId, messageTs, threadTs, renderedText);
 
     // 完了後: StopボタンをNewボタンに切り替え
     // ただしタイムアウト UI ([+5m][⏱ MM:SS]) が表示された直後だと一瞬で
@@ -1593,13 +1609,13 @@ export async function processMessage(
         .update({
           channel: channelId,
           ts: messageTs,
-          text: sliceByBytes(displayText || '✅', SLACK_MAX_TEXT_BYTES),
+          text: sliceByBytes(renderedText, SLACK_MAX_TEXT_BYTES),
           blocks: [
             {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: sliceByBytes(displayText || '✅', SLACK_MAX_TEXT_BYTES),
+                text: sliceByBytes(renderedText, SLACK_MAX_TEXT_BYTES),
               },
             },
             ...createSlackCompletedBlocks({

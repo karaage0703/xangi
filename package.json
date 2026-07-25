@@ -50,6 +50,7 @@
     "grammy": "^1.45.1",
     "node-cron": "^4.6.0",
     "proper-lockfile": "^4.1.2",
+    "slackify-markdown": "^5.0.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
