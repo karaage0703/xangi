@@ -1203,7 +1203,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       });
 
       sessions.set(channelId, newSessionId);
-      await respond({ text: sliceByBytes(result, SLACK_MAX_TEXT_BYTES) });
+      await respond({
+        text: sliceByBytes(markdownToSlackMrkdwn(result), SLACK_MAX_TEXT_BYTES),
+      });
     } catch (error) {
       console.error('[slack] Error:', error);
       await respond({ text: 'エラーが発生しました' });
@@ -1437,7 +1439,9 @@ export async function processMessage(
           view.phase === 'thinking'
             ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
             : sliceByBytes(
-                appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌'),
+                markdownToSlackMrkdwn(
+                  appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')
+                ),
                 SLACK_MAX_TEXT_BYTES
               );
         // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、

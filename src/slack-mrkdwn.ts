@@ -1,3 +1,5 @@
+import { slackifyMarkdown } from 'slackify-markdown';
+
 // Markdown（エージェントの出力）を Slack の mrkdwn 記法へ変換する。
 // Slack のメッセージ text は既定で mrkdwn として描画されるため、記法の差分を吸収すれば
 // 太字・斜体・リンク・箇条書き・見出し・表がそのまま整形表示される。
@@ -14,7 +16,6 @@
 
 const PLACEHOLDER_OPEN = '\uE000';
 const PLACEHOLDER_CLOSE = '\uE001';
-const BOLD_MARK = '\uE002';
 
 // 保護したいコード片（フェンス/インライン/整形済み表）を退避し、プレースホルダに置換する。
 class CodeVault {
@@ -40,6 +41,14 @@ function protectCode(text: string, vault: CodeVault): string {
   // `inline code`
   out = out.replace(/`[^`\n]+`/g, (m) => vault.stash(m));
   return out;
+}
+
+// エージェントがすでに出力した Slack 固有リンク・mention・日付記法を退避する。
+// slackify-markdown は Markdown の autolink として再解釈するため、変換前の保護が必要。
+function protectSlackMrkdwn(text: string, vault: CodeVault): string {
+  return text.replace(/<(?:https?:\/\/|ftp:\/\/|mailto:|[@#!])[^>\n]+>/g, (match) =>
+    vault.stash(match)
+  );
 }
 
 // Markdownの表を等幅整形し、コードブロックとして退避する。
@@ -109,8 +118,8 @@ function displayWidth(text: string): number {
   return width;
 }
 
-// 行単位の変換（見出し・水平線・箇条書き）。
-function convertBlocks(text: string): string {
+// slackify-markdown が表現を変える水平線とネスト箇条書きだけ先に整える。
+function convertBlocks(text: string, vault: CodeVault): string {
   return text
     .split('\n')
     .map((line) => {
@@ -118,47 +127,15 @@ function convertBlocks(text: string): string {
       if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(line)) {
         return '──────────';
       }
-      // 見出し: # 〜 ###### → 太字
-      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
-      if (heading) {
-        // 太字マーカー経由にして後段の斜体変換に巻き込まれないようにする
-        return `${BOLD_MARK}${heading[2]}${BOLD_MARK}`;
-      }
       // 箇条書き: -, *, + → •（インデント維持）
       const bullet = line.match(/^(\s*)[-*+]\s+(.*)$/);
       if (bullet) {
-        return `${bullet[1]}• ${bullet[2]}`;
+        const indent = bullet[1] ? vault.stash(bullet[1]) : '';
+        return `${indent}• ${bullet[2]}`;
       }
       return line;
     })
     .join('\n');
-}
-
-// インライン装飾の変換（太字・斜体・打ち消し・リンク）。
-function convertInline(text: string): string {
-  let out = text;
-  // 画像 ![alt](url) → <url|alt>
-  out = out.replace(
-    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
-    (_, alt, url) => `<${url}|${alt || url}>`
-  );
-  // リンク [text](url) → <url|text>
-  out = out.replace(
-    /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
-    (_, label, url) => `<${url}|${label}>`
-  );
-  // 太字斜体 ***x*** → *_x_*
-  out = out.replace(/\*\*\*([^\n]+?)\*\*\*/g, `${BOLD_MARK}_$1_${BOLD_MARK}`);
-  // 太字 **x** / __x__ → 一時マーク
-  out = out.replace(/\*\*([^\n]+?)\*\*/g, `${BOLD_MARK}$1${BOLD_MARK}`);
-  out = out.replace(/__([^\n_]+?)__/g, `${BOLD_MARK}$1${BOLD_MARK}`);
-  // 打ち消し ~~x~~ → ~x~
-  out = out.replace(/~~([^\n]+?)~~/g, '~$1~');
-  // 斜体 *x* → _x_（前後が空白/記号のときのみ。箇条書きの残骸を巻き込まない）
-  out = out.replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])/g, '$1_$2_');
-  // 太字マークを復元
-  out = out.split(BOLD_MARK).join('*');
-  return out;
 }
 
 // Markdown文字列を Slack mrkdwn へ変換する。
@@ -167,8 +144,11 @@ export function markdownToSlackMrkdwn(markdown: string): string {
   const vault = new CodeVault();
   let text = protectCode(markdown, vault);
   text = protectTables(text, vault);
-  text = convertBlocks(text);
-  text = convertInline(text);
+  text = protectSlackMrkdwn(text, vault);
+  text = convertBlocks(text, vault);
+  text = slackifyMarkdown(text);
+  // slackify-markdown は非空入力の末尾へ改行を1つ追加する。
+  if (text.endsWith('\n')) text = text.slice(0, -1);
   text = vault.restore(text);
   return text;
 }

@@ -410,9 +410,9 @@ describe('processMessage', () => {
     } as unknown as WebClient;
     const runStream = vi.fn().mockImplementation(async (_prompt, callbacks, _options) => {
       callbacks.onToolUse?.('Bash', { command: 'pwd' });
-      callbacks.onText?.('ok', 'ok');
-      callbacks.onComplete?.({ result: 'ok', sessionId: 'provider-1' });
-      return { result: 'ok', sessionId: 'provider-1' };
+      callbacks.onText?.('**ok**', '**ok**');
+      callbacks.onComplete?.({ result: '**ok**', sessionId: 'provider-1' });
+      return { result: '**ok**', sessionId: 'provider-1' };
     });
     const agentRunner = {
       runStream,
@@ -454,7 +454,7 @@ describe('processMessage', () => {
       text?: string;
       blocks?: Array<{ type?: string; elements?: Array<{ action_id?: string }> }>;
     };
-    expect(lastUpdate.text).toBe('ok');
+    expect(lastUpdate.text?.replaceAll('\u200B', '')).toBe('*ok*');
     expect(lastUpdate.text).not.toContain('Bash実行');
     expect(
       lastUpdate.blocks?.some((block) =>

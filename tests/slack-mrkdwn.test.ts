@@ -1,22 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { markdownToSlackMrkdwn } from '../src/slack-mrkdwn.js';
 
+const visibleText = (text: string): string => text.replaceAll('\u200B', '');
+
 describe('markdownToSlackMrkdwn', () => {
   it('太字 ** / __ を * へ変換する', () => {
-    expect(markdownToSlackMrkdwn('これは **太字** です')).toBe('これは *太字* です');
-    expect(markdownToSlackMrkdwn('__bold__ text')).toBe('*bold* text');
+    expect(visibleText(markdownToSlackMrkdwn('これは **太字** です'))).toBe('これは *太字* です');
+    expect(visibleText(markdownToSlackMrkdwn('__bold__ text'))).toBe('*bold* text');
   });
 
   it('斜体 * を _ へ変換する', () => {
-    expect(markdownToSlackMrkdwn('これは *斜体* です')).toBe('これは _斜体_ です');
+    expect(visibleText(markdownToSlackMrkdwn('これは *斜体* です'))).toBe('これは _斜体_ です');
   });
 
   it('太字と斜体が混在しても壊れない', () => {
-    expect(markdownToSlackMrkdwn('**太字**と*斜体*')).toBe('*太字*と_斜体_');
+    expect(visibleText(markdownToSlackMrkdwn('**太字**と*斜体*'))).toBe('*太字*と_斜体_');
   });
 
   it('打ち消し線 ~~ を ~ へ変換する', () => {
-    expect(markdownToSlackMrkdwn('~~消す~~')).toBe('~消す~');
+    expect(visibleText(markdownToSlackMrkdwn('~~消す~~'))).toBe('~消す~');
   });
 
   it('見出しを太字に変換する', () => {
@@ -56,7 +58,7 @@ describe('markdownToSlackMrkdwn', () => {
 
   it('コードブロックの外だけ変換する', () => {
     const src = '**外**\n```\n**中**\n```\n[x](http://y)';
-    expect(markdownToSlackMrkdwn(src)).toBe('*外*\n```\n**中**\n```\n<http://y|x>');
+    expect(visibleText(markdownToSlackMrkdwn(src))).toBe('*外*\n```\n**中**\n```\n<http://y|x>');
   });
 
   it('表をコードブロックで囲んで整形する', () => {
@@ -71,6 +73,32 @@ describe('markdownToSlackMrkdwn', () => {
 
   it('箇条書きの * を斜体と誤変換しない', () => {
     expect(markdownToSlackMrkdwn('* 項目')).toBe('• 項目');
+  });
+
+  it('括弧を含むURLを壊さない', () => {
+    expect(
+      markdownToSlackMrkdwn('[wiki](https://en.wikipedia.org/wiki/Function_(mathematics))')
+    ).toBe('<https://en.wikipedia.org/wiki/Function_(mathematics)|wiki>');
+  });
+
+  it('参照形式リンクを変換する', () => {
+    expect(markdownToSlackMrkdwn('[ref][id]\n\n[id]: https://example.com')).toBe(
+      '<https://example.com|ref>'
+    );
+  });
+
+  it('Slackの制御文字をプレーンテキストではエスケープする', () => {
+    expect(markdownToSlackMrkdwn('5 > 3 & 2 < 4')).toBe('5 &gt; 3 &amp; 2 &lt; 4');
+  });
+
+  it('既存のSlackリンク・mention・日付記法を保持する', () => {
+    const src =
+      '<https://example.com|label> <@U123456> <#C123456> <!date^1392734382^{date}|fallback>';
+    expect(markdownToSlackMrkdwn(src)).toBe(src);
+  });
+
+  it('ネストした箇条書きのインデントを保持する', () => {
+    expect(markdownToSlackMrkdwn('- 親\n  - 子\n    - 孫')).toBe('• 親\n  • 子\n    • 孫');
   });
 
   it('空文字はそのまま返す', () => {
