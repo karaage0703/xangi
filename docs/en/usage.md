@@ -536,7 +536,7 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 #### effort Option
 
-Claude Code, Codex, and Grok support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. Cursor encodes effort in model IDs, so select an effort-specific model such as `gpt-5.6-sol-low` with `--model` instead. Local LLM does not support graded effort. xangi rejects effort for Cursor and Local LLM, and rejects `max` for Antigravity, without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
+Claude Code, Codex, and Grok support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM does not support graded effort. xangi rejects effort for Local LLM and rejects `max` for Antigravity without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
 
 ## Autonomous AI Operations
 
