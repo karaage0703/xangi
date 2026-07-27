@@ -14,6 +14,11 @@ import {
   type DiscordCompletionNotifyMode,
 } from '../config.js';
 import { getBackendDisplayName, type AgentRunner } from '../agent-runner.js';
+import {
+  getSupportedEffortLevels,
+  requiresExplicitModelForEffort,
+  supportsEffort,
+} from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
@@ -229,7 +234,7 @@ export function buildSlashCommands(
           .addStringOption((opt) =>
             opt
               .setName('effort')
-              .setDescription('effortレベル（Claude Code用）')
+              .setDescription('effortレベル（対応バックエンド用）')
               .addChoices(
                 { name: 'デフォルト', value: 'none' },
                 { name: 'low', value: 'low' },
@@ -877,6 +882,24 @@ export function createInteractionHandler(
         if (modelValue && !resolver.isModelAllowed(modelValue)) {
           await interaction.reply({
             content: `❌ モデル \`${modelValue}\` は許可されていません`,
+            ephemeral: true,
+          });
+          return;
+        }
+        if (effortValue && !supportsEffort(backendValue, effortValue)) {
+          const supported = getSupportedEffortLevels(backendValue);
+          await interaction.reply({
+            content:
+              supported.length > 0
+                ? `❌ バックエンド \`${backendValue}\` は effort \`${effortValue}\` に対応していません\n対応: ${supported.map((effort) => `\`${effort}\``).join(', ')}`
+                : `❌ バックエンド \`${backendValue}\` は effort に対応していません`,
+            ephemeral: true,
+          });
+          return;
+        }
+        if (effortValue && requiresExplicitModelForEffort(backendValue) && !modelValue) {
+          await interaction.reply({
+            content: `❌ バックエンド \`${backendValue}\` で effort を指定するにはモデルの明示指定が必要です`,
             ephemeral: true,
           });
           return;

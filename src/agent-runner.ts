@@ -20,7 +20,7 @@ export interface RunOptions {
   defaultBackend?: AgentBackend; // 実行経路ごとの backend default（CHANNEL_OVERRIDES が優先）
   defaultModel?: string; // 実行経路ごとの model default
   defaultLocalLlmMode?: LocalLlmMode; // 実行経路ごとの Local LLM mode default
-  effort?: EffortLevel; // Claude Code の --effort オプション
+  effort?: EffortLevel; // Claude Code / Codex のreasoning effort
   /** Local LLM の動作モード override（per-channel override 由来）。Local LLM 以外では無視される */
   localLlmMode?: LocalLlmMode;
 }

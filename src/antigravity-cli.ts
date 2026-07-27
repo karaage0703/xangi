@@ -97,6 +97,10 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--model', this.model);
     }
 
+    if (options?.effort) {
+      args.push('--effort', options.effort);
+    }
+
     if (options?.sessionId) {
       args.push('--conversation', options.sessionId);
     }
@@ -141,7 +145,7 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   private buildFullPrompt(rawPrompt: string): string {
-    const promptWithRuntime = prependRuntimeContext(rawPrompt);
+    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
     return this.systemPrompt
       ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${promptWithRuntime}`
       : promptWithRuntime;

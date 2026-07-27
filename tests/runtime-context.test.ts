@@ -19,12 +19,14 @@ describe('runtime-context', () => {
     originalCwd = process.cwd();
     _resetRuntimeContextCache();
     delete process.env.XANGI_RUNTIME_CONTEXT_ENABLED;
+    delete process.env.WORKSPACE_PATH;
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
     _resetRuntimeContextCache();
     delete process.env.XANGI_RUNTIME_CONTEXT_ENABLED;
+    delete process.env.WORKSPACE_PATH;
     for (const dir of tempDirs) {
       try {
         rmSync(dir, { recursive: true, force: true });
@@ -46,6 +48,29 @@ describe('runtime-context', () => {
     it('returns the current cwd', () => {
       const ctx = getRuntimeContext();
       expect(ctx.cwd).toBe(process.cwd());
+    });
+
+    it('uses the process cwd when the runner workdir is omitted', () => {
+      const workspace = mkTemp('xangi-agent-workspace-');
+      process.env.WORKSPACE_PATH = workspace;
+      _resetRuntimeContextCache();
+
+      const ctx = getRuntimeContext();
+
+      expect(ctx.cwd).toBe(process.cwd());
+      expect(ctx.cwd).not.toBe(workspace);
+    });
+
+    it('prefers the runner workdir over WORKSPACE_PATH', () => {
+      const workspace = mkTemp('xangi-agent-workspace-');
+      const runnerWorkdir = mkTemp('xangi-runner-workdir-');
+      process.env.WORKSPACE_PATH = workspace;
+      _resetRuntimeContextCache();
+
+      const ctx = getRuntimeContext(runnerWorkdir);
+
+      expect(ctx.cwd).toBe(runnerWorkdir);
+      expect(ctx.repo).toBeUndefined();
     });
 
     it('returns repo info when cwd is inside a git repo', () => {
@@ -81,6 +106,29 @@ describe('runtime-context', () => {
       expect(block).toContain(`cwd=${process.cwd()}`);
     });
 
+    it('does not let WORKSPACE_PATH override an omitted runner workdir', () => {
+      const workspace = mkTemp('xangi-runtime-workspace-');
+      process.env.WORKSPACE_PATH = workspace;
+      _resetRuntimeContextCache();
+
+      const block = buildRuntimeContextBlock();
+
+      expect(block).toContain(`cwd=${process.cwd()}`);
+      expect(block).not.toContain(`cwd=${workspace}`);
+    });
+
+    it('reports the runner workdir instead of WORKSPACE_PATH', () => {
+      const workspace = mkTemp('xangi-runtime-workspace-');
+      const runnerWorkdir = mkTemp('xangi-runtime-runner-');
+      process.env.WORKSPACE_PATH = workspace;
+      _resetRuntimeContextCache();
+
+      const block = buildRuntimeContextBlock(runnerWorkdir);
+
+      expect(block).toContain(`cwd=${runnerWorkdir}`);
+      expect(block).not.toContain(`cwd=${workspace}`);
+    });
+
     it('contains the repo in `repo=name@branch` format when in a git repo', () => {
       const block = buildRuntimeContextBlock();
       // xangi-dev リポ内で動かす想定
@@ -103,7 +151,7 @@ describe('runtime-context', () => {
     it('returns empty block when env=false', () => {
       process.env.XANGI_RUNTIME_CONTEXT_ENABLED = 'false';
       expect(buildRuntimeContextBlock()).toBe('');
-      expect(prependRuntimeContext('hello')).toBe('hello');
+      expect(prependRuntimeContext('hello', undefined)).toBe('hello');
     });
 
     it('returns empty block when env=0', () => {
@@ -136,19 +184,31 @@ describe('runtime-context', () => {
 
   describe('prependRuntimeContext', () => {
     it('prepends the context block before the prompt', () => {
-      const result = prependRuntimeContext('hello');
+      const result = prependRuntimeContext('hello', undefined);
       expect(result.endsWith('hello')).toBe(true);
       expect(result.startsWith('[runtime] ')).toBe(true);
     });
 
     it('preserves multi-line prompts intact', () => {
       const original = 'line1\nline2\nline3';
-      const result = prependRuntimeContext(original);
+      const result = prependRuntimeContext(original, undefined);
       expect(result.endsWith(original)).toBe(true);
     });
 
+    it('uses the workdir passed by the runner', () => {
+      const workspace = mkTemp('xangi-prompt-workspace-');
+      const runnerWorkdir = mkTemp('xangi-prompt-runner-');
+      process.env.WORKSPACE_PATH = workspace;
+      _resetRuntimeContextCache();
+
+      const result = prependRuntimeContext('hello', runnerWorkdir);
+
+      expect(result).toContain(`cwd=${runnerWorkdir}`);
+      expect(result).not.toContain(`cwd=${workspace}`);
+    });
+
     it('returns prompt unchanged-or-prepended (defensive on empty cwd)', () => {
-      const out = prependRuntimeContext('x');
+      const out = prependRuntimeContext('x', undefined);
       expect(out).toContain('x');
     });
   });

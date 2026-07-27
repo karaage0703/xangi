@@ -106,4 +106,25 @@ describe('DynamicRunnerManager platform routing', () => {
       })
     );
   });
+
+  it('passes the resolved effort to the selected runner', async () => {
+    const config = makeConfig('discord');
+    const resolved = { backend: 'codex' as const, model: 'gpt-5.6-sol', effort: 'max' as const };
+    const resolver = {
+      resolve: vi.fn().mockReturnValue(resolved),
+      getDefault: vi.fn().mockReturnValue(resolved),
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver);
+    const run = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+
+    (
+      manager as unknown as {
+        defaultRunner: { run: typeof run };
+      }
+    ).defaultRunner = { run };
+
+    await manager.run('prompt');
+
+    expect(run).toHaveBeenCalledWith('prompt', { effort: 'max' });
+  });
 });

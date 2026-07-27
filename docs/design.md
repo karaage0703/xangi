@@ -245,6 +245,8 @@ BackendResolverの優先順位:
 1. `/backend set` で設定されたchannelOverrides（メモリ上、`.env`のCHANNEL_OVERRIDESに永続化。Discord スレッドでは親チャンネルIDで解決）
 2. `.env` のデフォルト（`AGENT_BACKEND`, `AGENT_MODEL`）
 
+`backend-effort.ts`がbackendごとの対応effortを一元管理する。`/backend set`と`CHANNEL_OVERRIDES`読み込み時に組み合わせを検証し、非対応値は保存・適用しない。解決済みeffortは各runnerが実CLI引数へ変換する。
+
 ### システムプロンプト（base-runner.ts）
 
 xangiがAI CLIに注入するシステムプロンプトを管理：
@@ -267,7 +269,7 @@ xangiがAI CLIに注入するシステムプロンプトを管理：
 ```
 
 - **目的**: Bash tool の cwd 持続はメッセージ受信を跨いで保証されないため、AI が借りリポと本体リポを取り違えて `git push` する事故を構造的に減らす
-- **取得**: `process.cwd()`（同期）+ `git rev-parse --show-toplevel` / `git branch --show-current`（5 秒キャッシュ）
+- **取得**: 各runnerが実際に使う`workdir`（未指定時は子プロセスと同じ`process.cwd()`）+ `git rev-parse --show-toplevel` / `git branch --show-current`（5 秒キャッシュ）。通常はconfigが`WORKSPACE_PATH`をrunnerのworkdirへ設定する。xangi本体のcloneとagent workspaceが別でも、またrunnerごとにworkdirが異なっても、AIが実際に操作するcwdを表示する
 - **注入タイミング**: 全 backend の `run()` / `runStream()` 入口で `prependRuntimeContext()`。常駐プロセス（`persistent-runner.ts`）は `--append-system-prompt` が起動時固定なので user message 本文に注入する
 - **無効化**: `XANGI_RUNTIME_CONTEXT_ENABLED=false`（既定 true）で注入をオフにできる。雑談中心のインスタンスや、cwd ブレが事故に繋がらない用途で
 - **ツール呼び出し表示**: Discord のツール履歴表示は `DISCORD_TOOL_HISTORY_MODE=button|inline|off` で制御する。既定は `button` で、完了後の通常メッセージには履歴を混ぜず、`Tools` ボタン押下時に押した本人だけへ ephemeral で表示する。Slack も同じ `Tools` ボタン方式を使い、完了後の本文へツール履歴を直出ししない。`DISCORD_SHOW_TOOL_BUTTON=false` なら Discord の `button` モードでも `Tools` ボタンを出さない。`inline` は従来どおり本文上部に表示、`off` は完全非表示。互換設定として `DISCORD_SHOW_TOOL_USE=false` は `off`、`true` は `inline` として扱う。実行中は `DISCORD_SHOW_LIVE_TOOL_USE=false` で無効化しない限り、実コマンドが分かる raw 表示を出す。完了後は `workspace-RAG検索` などの短い履歴ラベルへ正規化し、Bash/exec は `/bin/bash -lc` などの wrapper を落として短縮表示する。実行中の Bash/exec ツール呼び出しの引数表示の最大長は 200 文字で、env `XANGI_TOOL_DISPLAY_MAX` で変更可。

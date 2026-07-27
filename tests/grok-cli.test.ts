@@ -49,9 +49,14 @@ describe('GrokRunner', () => {
     vi.clearAllMocks();
   });
 
-  async function getSpawnArgs(runner: GrokRunner, mode: 'run' | 'stream') {
+  async function getSpawnArgs(
+    runner: GrokRunner,
+    mode: 'run' | 'stream',
+    options?: { effort?: 'low' | 'medium' | 'high' | 'max' }
+  ) {
     const { spawn, getMockProcess } = await import('child_process');
-    const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+    const promise =
+      mode === 'run' ? runner.run('hello', options) : runner.runStream('hello', {}, options);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     const spawnMock = spawn as ReturnType<typeof vi.fn>;
@@ -101,6 +106,13 @@ describe('GrokRunner', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('grok-build-0.1');
     expect(args[args.indexOf('--cwd') + 1]).toBe('/tmp/project');
     expect(args[args.indexOf('--resume') + 1]).toBe('sess-prev');
+  });
+
+  it('passes effort to Grok CLI', async () => {
+    const runner = new GrokRunner({});
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'max' });
+
+    expect(args[args.indexOf('--effort') + 1]).toBe('max');
   });
 
   it('passes XAI_API_KEY only to the Grok child process when set', async () => {

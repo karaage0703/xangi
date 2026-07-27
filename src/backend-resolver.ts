@@ -3,6 +3,7 @@ import type { AgentBackend, Config, EffortLevel } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
 import { resolveEnvFilePath } from './env-persist.js';
 import { validateChannelOverrides } from './config-validate.js';
+import { requiresExplicitModelForEffort, supportsEffort } from './backend-effort.js';
 
 /**
  * Local LLM の動作モード
@@ -75,7 +76,25 @@ export class BackendResolver {
       }
       if (overrides) {
         for (const [channelId, override] of Object.entries(overrides)) {
-          this.channelOverrides.set(channelId, override as ChannelOverride);
+          const typedOverride = override as ChannelOverride;
+          const effectiveBackend = typedOverride.backend ?? this.defaultBackend;
+          if (typedOverride.effort && !supportsEffort(effectiveBackend, typedOverride.effort)) {
+            console.error(
+              `[backend-resolver] CHANNEL_OVERRIDES ${channelId}: backend '${effectiveBackend}' は effort '${typedOverride.effort}' に対応していません。このエントリは無視します`
+            );
+            continue;
+          }
+          if (
+            typedOverride.effort &&
+            requiresExplicitModelForEffort(effectiveBackend) &&
+            !typedOverride.model
+          ) {
+            console.error(
+              `[backend-resolver] CHANNEL_OVERRIDES ${channelId}: backend '${effectiveBackend}' で effort を指定するには model の明示指定が必要です。このエントリは無視します`
+            );
+            continue;
+          }
+          this.channelOverrides.set(channelId, typedOverride);
         }
         console.log(
           `[backend-resolver] Loaded ${this.channelOverrides.size} channel override(s) from CHANNEL_OVERRIDES`
@@ -133,6 +152,13 @@ export class BackendResolver {
    * チャンネルオーバーライドを設定し、.envに永続化
    */
   setChannelOverride(channelId: string, override: ChannelOverride): void {
+    const effectiveBackend = override.backend ?? this.defaultBackend;
+    if (override.effort && !supportsEffort(effectiveBackend, override.effort)) {
+      throw new Error(`backend '${effectiveBackend}' does not support effort '${override.effort}'`);
+    }
+    if (override.effort && requiresExplicitModelForEffort(effectiveBackend) && !override.model) {
+      throw new Error(`backend '${effectiveBackend}' requires an explicit model for effort`);
+    }
     this.channelOverrides.set(channelId, override);
     this.persistToEnv();
     console.log(

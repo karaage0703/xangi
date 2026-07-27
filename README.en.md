@@ -2,6 +2,10 @@
 
 # xangi
 
+[![CI Build](https://github.com/karaage0703/xangi/actions/workflows/ci.yml/badge.svg)](https://github.com/karaage0703/xangi/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/karaage0703/xangi)](https://github.com/karaage0703/xangi/releases)
+[![License](https://img.shields.io/github/license/karaage0703/xangi)](LICENSE)
+
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
 An AI assistant for Discord / Slack / Telegram / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
@@ -322,6 +326,7 @@ A starter kit with pre-configured skills (note-taking, diary, transcription, Not
 
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - A resident bridge that makes a Stack-chan (M5Stack) speak xangi's responses with facial expressions and head movement, by subscribing to the [external event stream](docs/en/events.md) (SSE)
 - [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - An Even Hub app, bridge, and local Whisper STT server for browsing xangi sessions, sending voice input, and viewing responses on Even Realities G2
+- [xangi-pets](https://github.com/karaage0703/xangi-pets) - A desktop companion that animates with xangi's state, displays responses in speech bubbles, and lets you send messages to xangi
 
 ## Book
 

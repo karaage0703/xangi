@@ -5,7 +5,8 @@
  * 「いま観測されている cwd」をプロンプトに差し込み、AI が借りリポと本体リポを
  * 取り違えて push する事故を構造的に減らす。
  *
- * - cwd: `process.cwd()` の同期取得
+ * - cwd: runner が実際に使う workdir。未指定時は、子プロセスが継承する
+ *   `process.cwd()`
  * - repo: `git rev-parse --show-toplevel` + `git branch --show-current`
  *   （5 秒キャッシュ）
  *
@@ -35,8 +36,8 @@ const REPO_CACHE_TTL_MS = 5_000;
 let repoCache: RepoCacheEntry | null = null;
 
 /** runtime context を取得する（同期、テストでも安定）。 */
-export function getRuntimeContext(): RuntimeContext {
-  const cwd = safeCwd();
+export function getRuntimeContext(workdir?: string): RuntimeContext {
+  const cwd = workdir ?? safeCwd();
   return {
     cwd,
     repo: getRepoInfo(cwd),
@@ -58,12 +59,12 @@ function isEnabled(): boolean {
  * プロンプト先頭に prepend する 1 行ブロックを返す。
  * 環境変数で無効化されている場合や、context 取得に失敗した場合は空文字列を返す。
  */
-export function buildRuntimeContextBlock(): string {
+export function buildRuntimeContextBlock(workdir?: string): string {
   if (!isEnabled()) return '';
 
   let ctx: RuntimeContext;
   try {
-    ctx = getRuntimeContext();
+    ctx = getRuntimeContext(workdir);
   } catch {
     return '';
   }
@@ -78,8 +79,8 @@ export function buildRuntimeContextBlock(): string {
 }
 
 /** prompt 先頭に runtime context ブロックを差し込む。空文字列なら何もしない。 */
-export function prependRuntimeContext(prompt: string): string {
-  const block = buildRuntimeContextBlock();
+export function prependRuntimeContext(prompt: string, workdir: string | undefined): string {
+  const block = buildRuntimeContextBlock(workdir);
   if (!block) return prompt;
   return block + prompt;
 }

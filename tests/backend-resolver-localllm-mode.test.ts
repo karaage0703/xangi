@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -130,6 +130,45 @@ describe('BackendResolver localLlmMode', () => {
     const resolver = new BackendResolver(makeConfig());
     const r = resolver.resolve('ch1');
     expect(r.localLlmMode).toBe('lite');
+  });
+
+  it('default backend が非対応なら effort のみの環境設定を読み込まない', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.CHANNEL_OVERRIDES = JSON.stringify({
+      ch1: { effort: 'high' },
+    });
+
+    const resolver = new BackendResolver(makeConfig());
+
+    expect(resolver.getChannelOverride('ch1')).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('effort'));
+    errorSpy.mockRestore();
+  });
+
+  it('非対応backendのeffortをsetChannelOverrideで保存しない', () => {
+    const resolver = new BackendResolver(makeConfig());
+
+    expect(() =>
+      resolver.setChannelOverride('ch1', { backend: 'local-llm', effort: 'high' })
+    ).toThrow(/does not support effort/);
+    expect(resolver.getChannelOverride('ch1')).toBeUndefined();
+  });
+
+  it('Cursor effort は明示モデルなしでは保存しない', () => {
+    const resolver = new BackendResolver(makeConfig());
+
+    expect(() => resolver.setChannelOverride('ch1', { backend: 'cursor', effort: 'high' })).toThrow(
+      /requires an explicit model/
+    );
+    expect(resolver.getChannelOverride('ch1')).toBeUndefined();
+
+    expect(() =>
+      resolver.setChannelOverride('ch1', {
+        backend: 'cursor',
+        model: 'claude-opus-4-8',
+        effort: 'high',
+      })
+    ).not.toThrow();
   });
 
   it('request default を CHANNEL_OVERRIDES より低い優先度で適用できる', () => {

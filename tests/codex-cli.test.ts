@@ -53,7 +53,11 @@ describe('CodexRunner buildArgs', () => {
   async function getSpawnArgs(
     runner: CodexRunner,
     prompt: string,
-    options?: { sessionId?: string; skipPermissions?: boolean }
+    options?: {
+      sessionId?: string;
+      skipPermissions?: boolean;
+      effort?: 'low' | 'medium' | 'high' | 'max';
+    }
   ) {
     const { spawn, getMockProcess } = await import('child_process');
 
@@ -113,6 +117,28 @@ describe('CodexRunner buildArgs', () => {
     const modelIndex = args.indexOf('--model');
     expect(modelIndex).toBeGreaterThan(-1);
     expect(args[modelIndex + 1]).toBe('o3');
+  });
+
+  it('should pass effort as model_reasoning_effort config', async () => {
+    const runner = new CodexRunner({});
+    const { args } = await getSpawnArgs(runner, 'hello', { effort: 'max' });
+
+    const configIndex = args.indexOf('--config');
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(args[configIndex + 1]).toBe('model_reasoning_effort="max"');
+  });
+
+  it('should place effort config before resume subcommand', async () => {
+    const runner = new CodexRunner({});
+    const { args } = await getSpawnArgs(runner, 'hello', {
+      sessionId: 'abc-123',
+      effort: 'high',
+    });
+
+    const configIndex = args.indexOf('--config');
+    const resumeIndex = args.indexOf('resume');
+    expect(configIndex).toBeLessThan(resumeIndex);
+    expect(args[configIndex + 1]).toBe('model_reasoning_effort="high"');
   });
 
   it('should include --cd when workdir is set', async () => {

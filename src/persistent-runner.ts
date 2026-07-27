@@ -468,7 +468,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
       type: 'user',
       message: {
         role: 'user',
-        content: prependRuntimeContext(sanitizeSurrogates(this.currentItem.prompt)),
+        content: prependRuntimeContext(sanitizeSurrogates(this.currentItem.prompt), this.workdir),
       },
     };
 

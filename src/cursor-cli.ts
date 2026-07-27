@@ -54,7 +54,11 @@ export class CursorRunner extends CliRunnerBase {
       args.push('--trust');
     }
 
-    args.push('--model', this.model ?? 'auto');
+    if (options?.effort && !this.model) {
+      throw new Error('Cursor effort requires an explicit model');
+    }
+    const model = this.model ?? 'auto';
+    args.push('--model', options?.effort ? this.withEffort(model, options.effort) : model);
 
     if (this.workdir) {
       args.push('--workspace', this.workdir);
@@ -67,9 +71,23 @@ export class CursorRunner extends CliRunnerBase {
     return args;
   }
 
+  private withEffort(model: string, effort: NonNullable<RunOptions['effort']>): string {
+    const bracketStart = model.indexOf('[');
+    const hasParameters = bracketStart > 0 && model.endsWith(']');
+    const baseModel = hasParameters ? model.slice(0, bracketStart) : model;
+    const rawParameters = hasParameters ? model.slice(bracketStart + 1, -1) : '';
+    const parameters = rawParameters
+      .split(',')
+      .map((parameter) => parameter.trim())
+      .filter((parameter) => parameter && !parameter.startsWith('effort='));
+
+    parameters.push(`effort=${effort}`);
+    return `${baseModel}[${parameters.join(',')}]`;
+  }
+
   private buildFullPrompt(rawPrompt: string): string {
     const systemPrompt = buildSystemPrompt();
-    const promptWithRuntime = prependRuntimeContext(rawPrompt);
+    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
     return systemPrompt ? `${systemPrompt}\n\n---\n\n${promptWithRuntime}` : promptWithRuntime;
   }
 

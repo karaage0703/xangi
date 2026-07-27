@@ -53,13 +53,15 @@ describe('CursorRunner', () => {
   async function getSpawnArgs(
     runner: CursorRunner,
     mode: 'run' | 'stream',
-    options?: { sessionId?: string; skipPermissions?: boolean }
+    options?: {
+      sessionId?: string;
+      skipPermissions?: boolean;
+      effort?: 'low' | 'medium' | 'high' | 'max';
+    }
   ) {
     const { spawn, getMockProcess } = await import('child_process');
     const promise =
-      mode === 'run'
-        ? runner.run('hello', options)
-        : runner.runStream('hello', {}, options);
+      mode === 'run' ? runner.run('hello', options) : runner.runStream('hello', {}, options);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     const spawnMock = spawn as ReturnType<typeof vi.fn>;
@@ -127,6 +129,32 @@ describe('CursorRunner', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('gpt-5.5');
     expect(args[args.indexOf('--workspace') + 1]).toBe('/tmp/project');
     expect(args[args.indexOf('--resume') + 1]).toBe('chat-123');
+  });
+
+  it('adds effort as a parameter to an explicit model', async () => {
+    const runner = new CursorRunner({ model: 'claude-opus-4-8' });
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'high' });
+
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4-8[effort=high]');
+  });
+
+  it('preserves model parameters and replaces an existing effort parameter', async () => {
+    const runner = new CursorRunner({
+      model: 'claude-opus-4-8[context=1m,effort=low,fast=false]',
+    });
+    const { args } = await getSpawnArgs(runner, 'stream', { effort: 'max' });
+
+    expect(args[args.indexOf('--model') + 1]).toBe(
+      'claude-opus-4-8[context=1m,fast=false,effort=max]'
+    );
+  });
+
+  it('rejects effort without an explicit model instead of parameterizing auto', async () => {
+    const runner = new CursorRunner({});
+
+    await expect(runner.run('hello', { effort: 'low' })).rejects.toThrow(
+      'Cursor effort requires an explicit model'
+    );
   });
 
   it('builds stream-json args with partial output', async () => {
