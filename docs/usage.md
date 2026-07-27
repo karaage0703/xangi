@@ -521,6 +521,10 @@ docker build -t myapp . && \
 | `/backend set antigravity`                       | Antigravity CLIに切り替え          |
 | `/backend set local-llm --model nemotron-3-nano` | Local LLM + モデル指定             |
 | `/backend set claude-code --effort high`         | effort指定付きで切り替え           |
+| `/backend set codex --effort max`                | Codexをmax effortで実行             |
+| `/backend set cursor --model claude-opus-4-8 --effort high` | Cursorを明示モデル + high effortで実行 |
+| `/backend set grok --effort max`                 | Grokをmax effortで実行              |
+| `/backend set antigravity --effort high`         | Antigravityをhigh effortで実行      |
 | `/backend reset`                                 | デフォルト（.env設定）に戻す       |
 | `/backend list`                                  | 利用可能なバックエンド・モデル一覧 |
 
@@ -546,9 +550,9 @@ Discord スレッド内では、`/backend` と `/llmmode` は親チャンネル�
 
 Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code等）から変更されることはありません。
 
-#### effort オプション（Claude Code用）
+#### effort オプション
 
-Claude Code の `--effort` オプション（`low` / `medium` / `high` / `max`）をチャンネルごとに設定可能。persistent モードではプロセス再起動が必要なため、切り替え時にセッションがリセットされます。`/backend set claude-code --effort デフォルト` で未指定状態に戻せます。
+Claude Code、Codex、Grokでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMは段階的なeffortに対応していません。Local LLMでeffortを指定した場合と、Antigravityで`max`を指定した場合は、設定を保存せずエラーを返します。Claude Codeのpersistentモードではプロセス再起動が必要なため、切り替え時にセッションがリセットされます。`--effort デフォルト`で未指定状態に戻せます。
 
 ## AIによる自律操作
 

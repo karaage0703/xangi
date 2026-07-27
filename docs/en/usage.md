@@ -506,6 +506,9 @@ You can switch the backend, model, and effort level per channel.
 | `/backend set grok`                              | Switch to Grok CLI                        |
 | `/backend set local-llm --model nemotron-3-nano` | Switch to Local LLM with a specific model |
 | `/backend set claude-code --effort high`         | Switch with a specific effort level       |
+| `/backend set codex --effort max`                | Run Codex with max effort                  |
+| `/backend set grok --effort max`                 | Run Grok with max effort                   |
+| `/backend set antigravity --effort high`         | Run Antigravity with high effort           |
 | `/backend reset`                                 | Reset to the default (.env settings)      |
 | `/backend list`                                  | List available backends and models        |
 
@@ -531,9 +534,9 @@ Inside Discord threads, `/backend` and `/llmmode` read and write the parent chan
 
 In a Docker environment, `.env` lives outside the container and cannot be modified by the AI (Claude Code, etc.).
 
-#### effort Option (Claude Code Only)
+#### effort Option
 
-The Claude Code `--effort` option (`low` / `medium` / `high` / `max`) can be configured per channel. Because a process restart is required in persistent mode, the session resets on each switch. Use `/backend set claude-code --effort default` to clear the effort setting.
+Claude Code, Codex, and Grok support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM does not support graded effort. xangi rejects effort for Local LLM and rejects `max` for Antigravity without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
 
 ## Autonomous AI Operations
 

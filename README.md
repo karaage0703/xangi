@@ -2,6 +2,10 @@
 
 # xangi
 
+[![CI Build](https://github.com/karaage0703/xangi/actions/workflows/ci.yml/badge.svg)](https://github.com/karaage0703/xangi/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/karaage0703/xangi)](https://github.com/karaage0703/xangi/releases)
+[![License](https://img.shields.io/github/license/karaage0703/xangi)](LICENSE)
+
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
 Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLMをバックエンドに、Discord / Slack / Telegram / ブラウザ / LINE から利用できる AI アシスタント。Discord 推奨、ブラウザ単独でも動作可。
@@ -323,6 +327,7 @@ docker compose up xangi-gpu -d --build
 
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - xangi の応答をスタックチャン（M5Stack）に喋らせる・表情/首振り連動させる常駐ブリッジ。[外部イベントストリーム](docs/events.md)の SSE を購読して動作
 - [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Realities G2からxangiのセッションを操作し、音声入力・応答表示を行うEven Hubアプリ、bridge、ローカルWhisper STTサーバー
+- [xangi-pets](https://github.com/karaage0703/xangi-pets) - xangiの状態に合わせてアニメーションし、応答を吹き出し表示。ペットからxangiへメッセージも送れるデスクトップ常駐ペット
 
 ## 書籍
 

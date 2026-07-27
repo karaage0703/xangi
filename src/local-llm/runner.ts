@@ -915,7 +915,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const llmTools = callFlags.tools ? toLLMTools(tools) : [];
 
     // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
-    const prompt = prependRuntimeContext(rawPrompt);
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
 
     // ユーザーメッセージ追加（画像添付があればマルチモーダルメッセージにする）
     const userMsg = this.buildUserMessage(prompt);
@@ -1068,7 +1068,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const llmTools = callFlags.tools ? toLLMTools(tools) : [];
 
     // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
-    const prompt = prependRuntimeContext(rawPrompt);
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
 
     const userMsg = this.buildUserMessage(prompt);
     session.messages.push(userMsg);

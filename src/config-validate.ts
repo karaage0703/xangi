@@ -9,6 +9,13 @@
  * - 外部依存なし（zod 等は追加しない）
  */
 
+import type { AgentBackend, EffortLevel } from './config.js';
+import {
+  getSupportedEffortLevels,
+  requiresExplicitModelForEffort,
+  supportsEffort,
+} from './backend-effort.js';
+
 export interface ConfigIssue {
   /** 環境変数名 */
   key: string;
@@ -253,6 +260,37 @@ export function validateChannelOverrides(raw: string): {
         });
         valid = false;
       }
+    }
+
+    if (
+      valid &&
+      entry.backend &&
+      entry.effort &&
+      !supportsEffort(entry.backend as AgentBackend, entry.effort as EffortLevel)
+    ) {
+      const supported = getSupportedEffortLevels(entry.backend as AgentBackend);
+      issues.push({
+        channelId,
+        message:
+          supported.length > 0
+            ? `backend '${entry.backend}' は effort '${entry.effort}' に対応していません（対応: ${supported.join(' / ')}）。このエントリは無視します`
+            : `backend '${entry.backend}' は effort に対応していません。このエントリは無視します`,
+      });
+      valid = false;
+    }
+
+    if (
+      valid &&
+      entry.backend &&
+      entry.effort &&
+      requiresExplicitModelForEffort(entry.backend as AgentBackend) &&
+      !entry.model
+    ) {
+      issues.push({
+        channelId,
+        message: `backend '${entry.backend}' で effort を指定するには model の明示指定が必要です。このエントリは無視します`,
+      });
+      valid = false;
     }
 
     if (valid) {

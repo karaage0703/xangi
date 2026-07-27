@@ -108,7 +108,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt));
+    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt), this.workdir);
     const args = this.buildArgs(prompt, 'json', options);
 
     this.logExecution('Executing', options);
@@ -184,7 +184,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt));
+    const prompt = prependRuntimeContext(sanitizeSurrogates(rawPrompt), this.workdir);
     const args = this.buildArgs(prompt, 'stream-json', options);
 
     this.logExecution('Streaming', options);

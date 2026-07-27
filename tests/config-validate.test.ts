@@ -168,6 +168,25 @@ describe('validateChannelOverrides', () => {
     expect(issues).toHaveLength(2);
   });
 
+  it('backend が対応しない effort はエントリ除外', () => {
+    const raw = JSON.stringify({
+      '111': { backend: 'local-llm', effort: 'high' },
+      '222': { backend: 'antigravity', effort: 'max' },
+      '333': { backend: 'antigravity', effort: 'high' },
+      '444': { backend: 'grok', effort: 'max' },
+      '555': { backend: 'cursor', effort: 'low' },
+      '666': { backend: 'cursor', model: 'claude-opus-4-8', effort: 'high' },
+    });
+    const { overrides, issues } = validateChannelOverrides(raw);
+
+    expect(overrides).toEqual({
+      '333': { backend: 'antigravity', effort: 'high' },
+      '444': { backend: 'grok', effort: 'max' },
+      '666': { backend: 'cursor', model: 'claude-opus-4-8', effort: 'high' },
+    });
+    expect(issues).toHaveLength(3);
+  });
+
   it('チャンネル ID が数値でない場合は警告するが読み込む', () => {
     const raw = JSON.stringify({ 'not-a-channel': { backend: 'codex' } });
     const { overrides, issues } = validateChannelOverrides(raw);

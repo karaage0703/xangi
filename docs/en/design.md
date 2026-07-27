@@ -249,6 +249,8 @@ BackendResolver priority:
 1. channelOverrides set via `/backend set` (in-memory, persisted to CHANNEL_OVERRIDES in `.env`; Discord threads resolve through the parent channel ID)
 2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`)
 
+`backend-effort.ts` centralizes the effort levels supported by each backend. `/backend set` and `CHANNEL_OVERRIDES` loading validate the backend/effort pair and never save or apply unsupported values. Each runner translates a resolved effort into effective CLI arguments.
+
 ### System Prompt (base-runner.ts)
 
 Manages the system prompts that xangi injects into AI CLIs:
@@ -263,6 +265,18 @@ Manages the system prompts that xangi injects into AI CLIs:
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
 - **Tool-use display** — Discord tool-use history is controlled by `DISCORD_TOOL_HISTORY_MODE=button|inline|off`. The default is `button`: completed messages do not include the history inline, and a `Tools` button shows it only to the user who clicked it via an ephemeral response. Slack uses the same `Tools` button pattern and does not inline tool history in the completed message. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Tools button for Discord even in `button` mode. `inline` keeps the previous top-of-message display, and `off` disables tool history display. For compatibility, `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. While a turn is running, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. After completion it normalizes internal context tools into short labels such as `workspace-RAG検索`; Bash/exec final history strips wrappers such as `/bin/bash -lc` and shows a shorter command summary. Live Bash/exec tool argument display is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
 - **Reply suggestions** — Discord, Slack, and Web Chat generate suggestions in a dedicated JSON block within the same AI response and remove that block before display. Discord and Slack expose one public `返信候補` button and reveal choices ephemerally to the requesting user. Web Chat uses a collapsed control below the response. Selecting a choice continues the same session. Discord's `/replysuggestions` command persists a global override in `settings.json`; every platform checks it immediately before processing a message. OFF skips suggestion prompt injection. Session titles and transcript views also remove history-prefetch and suggestion-generation metadata.
+
+#### Runtime context injection (`runtime-context.ts`)
+
+Each turn prepends one line containing the agent workspace and Git repository:
+
+```text
+[runtime] cwd=/home/user/workspace repo=workspace@main
+```
+
+- `cwd` comes from the workdir used by that runner. When omitted, it falls back to `process.cwd()`, matching the directory inherited by the child process. The normal config path sets the runner workdir from `WORKSPACE_PATH`.
+- Git information is resolved from that same workspace and cached for five seconds.
+- This keeps the prompt aligned with the directory passed to the AI CLI even when the xangi checkout and agent workspace are different.
 
 AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to each AI CLI's auto-loading feature:
 

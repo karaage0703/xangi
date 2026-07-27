@@ -88,6 +88,10 @@ export class CodexRunner extends CliRunnerBase {
       args.push('--model', this.model);
     }
 
+    if (options?.effort) {
+      args.push('--config', `model_reasoning_effort="${options.effort}"`);
+    }
+
     if (this.workdir) {
       args.push('--cd', this.workdir);
     }
@@ -229,7 +233,7 @@ export class CodexRunner extends CliRunnerBase {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    const prompt = prependRuntimeContext(rawPrompt);
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
     const args = this.buildArgs(prompt, options);
 
     this.logExecution('Executing', options);
@@ -301,7 +305,7 @@ export class CodexRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const prompt = prependRuntimeContext(rawPrompt);
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
     const args = this.buildArgs(prompt, options);
 
     this.logExecution('Streaming', options);

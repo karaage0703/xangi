@@ -146,6 +146,13 @@ describe('AntigravityRunner', () => {
     expect(cwd).toBe('/tmp/project');
   });
 
+  it('passes supported effort to Antigravity CLI', async () => {
+    const runner = new AntigravityRunner({});
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'high' });
+
+    expect(args[args.indexOf('--effort') + 1]).toBe('high');
+  });
+
   it('passes account hiding env by default', async () => {
     const runner = new AntigravityRunner({});
     const { env } = await getSpawnArgs(runner, 'run');
