@@ -302,7 +302,10 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * 指定チャンネルのランナーがプールに存在するか
    */
   hasRunner(channelId: string): boolean {
-    if (this.channelRunners.has(channelId)) return true;
+    const channelEntry = this.channelRunners.get(channelId);
+    if (channelEntry) {
+      return channelEntry.runner.hasRunner?.(channelId) ?? false;
+    }
     return this.defaultRunner.hasRunner?.(channelId) ?? false;
   }
 

@@ -41,6 +41,7 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
   await mkdir(join(payload, 'runtime', 'bin'), { recursive: true });
   await mkdir(join(payload, 'dist', 'cli'), { recursive: true });
   await mkdir(join(payload, 'web'), { recursive: true });
+  await mkdir(join(payload, 'web', 'app', 'assets'), { recursive: true });
   await writeFile(
     join(payload, 'runtime', 'bin', 'node'),
     '#!/bin/sh\nif [ "${1:-}" = -e ]; then rm -f -- "$4"; mv -- "$3" "$4"; exit 0; fi\n[ -z "${XANGI_FIXTURE_NODE_LOG:-}" ] || printf "NODE_OPTIONS=%s ARGS=%s\\n" "${NODE_OPTIONS:-}" "$*" >> "$XANGI_FIXTURE_NODE_LOG"\n[ "${XANGI_FIXTURE_FAIL_INSTALL:-0}" = 1 ] && [ "${2:-}" = install ] && exit 9\n[ "${XANGI_FIXTURE_SETUP_EXIT:-0}" != 0 ] && [ "${2:-}" = setup ] && exit "$XANGI_FIXTURE_SETUP_EXIT"\nexit 0\n'
@@ -51,6 +52,12 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
   await writeFile(join(payload, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(payload, 'web', 'monitor.html'), '<main>Monitor</main>\n');
   await writeFile(join(payload, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
+  await writeFile(
+    join(payload, 'web', 'app', 'index.html'),
+    '<script src="/app/assets/app.js"></script><link rel="stylesheet" href="/app/assets/app.css"><main>React Web Chat</main>\n'
+  );
+  await writeFile(join(payload, 'web', 'app', 'assets', 'app.js'), 'console.log("xangi");\n');
+  await writeFile(join(payload, 'web', 'app', 'assets', 'app.css'), 'body { color: black; }\n');
   const artifact = join(root, 'bundle.tar.gz');
   await exec('tar', ['-czf', artifact, '-C', root, archiveRoot]);
   const artifactBytes = await readFile(artifact);
@@ -205,9 +212,9 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(readFile(join(app, 'bin', 'xangi'), 'utf8')).resolves.toContain(
       'dist/cli/xangi-main.js'
     );
-    await expect(
-      readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))
-    ).resolves.toBe(join(app, 'bin', 'xangi'));
+    await expect(readlink(join(data.root, 'home', '.local', 'bin', 'xangi'))).resolves.toBe(
+      join(app, 'bin', 'xangi')
+    );
     await expect(readFile(join(app, 'trust', 'release-public-key.pem'), 'utf8')).resolves.toContain(
       'BEGIN PUBLIC KEY'
     );
@@ -280,9 +287,7 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(readFile(join(data.root, 'home', '.bashrc'), 'utf8')).resolves.toContain(
       'export PATH="$HOME/.local/bin:$PATH"'
     );
-    expect(result.stdout).toContain(
-      'The installer added ~/.local/bin to your shell startup files'
-    );
+    expect(result.stdout).toContain('The installer added ~/.local/bin to your shell startup files');
     const shellResult = await exec('bash', ['-c', '. "$HOME/.bashrc"; command -v xangi'], {
       env: { HOME: join(data.root, 'home'), PATH: '/usr/bin:/bin' },
     });

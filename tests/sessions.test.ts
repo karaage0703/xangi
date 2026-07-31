@@ -93,15 +93,29 @@ describe('sessions', () => {
         activeByContext: { 'channel-1': 'app1', 'channel-2': 'app2' },
         sessions: {
           app1: {
-            id: 'app1', title: '', platform: 'discord', contextKey: 'channel-1',
-            scope: 'interactive', bootId: 'boot-old', createdAt: '2026-03-18T00:00:00Z',
-            updatedAt: '2026-03-18T00:00:00Z', messageCount: 0, archived: false,
+            id: 'app1',
+            title: '',
+            platform: 'discord',
+            contextKey: 'channel-1',
+            scope: 'interactive',
+            bootId: 'boot-old',
+            createdAt: '2026-03-18T00:00:00Z',
+            updatedAt: '2026-03-18T00:00:00Z',
+            messageCount: 0,
+            archived: false,
             agent: { backend: 'claude-code', providerSessionId: 'session-abc' },
           },
           app2: {
-            id: 'app2', title: '', platform: 'discord', contextKey: 'channel-2',
-            scope: 'scheduler', bootId: 'boot-old', createdAt: '2026-03-18T00:00:00Z',
-            updatedAt: '2026-03-18T00:00:00Z', messageCount: 0, archived: false,
+            id: 'app2',
+            title: '',
+            platform: 'discord',
+            contextKey: 'channel-2',
+            scope: 'scheduler',
+            bootId: 'boot-old',
+            createdAt: '2026-03-18T00:00:00Z',
+            updatedAt: '2026-03-18T00:00:00Z',
+            messageCount: 0,
+            archived: false,
             agent: { backend: 'claude-code', providerSessionId: 'session-def' },
           },
         },
@@ -252,6 +266,15 @@ describe('sessions', () => {
       expect(getActiveSessionId(entryA.contextKey)).toBe(a);
       expect(getActiveSessionId(entryB.contextKey)).toBe(b);
       expect(entryB.title).toBe('second');
+    });
+
+    it('stores an optional logical Web Project without changing the context key', () => {
+      initSessions(testDir);
+      const appId = createWebSession({ projectId: 'project-1' });
+      const entry = getSessionEntry(appId)!;
+
+      expect(entry.projectId).toBe('project-1');
+      expect(entry.contextKey).toBe(`${WEB_CHAT_CONTEXT_PREFIX}${appId}`);
     });
   });
 
@@ -431,9 +454,9 @@ describe('hasSessionGoneIdle', () => {
   const fourHoursMs = 4 * 3600 * 1000;
 
   it('returns true at or beyond the idle threshold', () => {
-    expect(
-      hasSessionGoneIdle(new Date(now - fourHoursMs).toISOString(), fourHoursMs, now)
-    ).toBe(true);
+    expect(hasSessionGoneIdle(new Date(now - fourHoursMs).toISOString(), fourHoursMs, now)).toBe(
+      true
+    );
   });
 
   it('returns false before the threshold or for invalid inputs', () => {

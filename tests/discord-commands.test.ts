@@ -228,6 +228,23 @@ describe('Discord Commands', () => {
     });
   });
 
+  describe('/skill command registration', () => {
+    it('uses one optional-name command for both listing and execution', () => {
+      const config = {
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {},
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const names = commands.map((command) => command.name);
+      const skill = commands.find((command) => command.name === 'skill') as any;
+      const nameOption = skill.options.find((option: any) => option.name === 'name');
+
+      expect(names).not.toContain('skills');
+      expect(nameOption.required).toBe(false);
+    });
+  });
+
   describe('/replysuggestions command registration', () => {
     it('registers the global on/off/show/default choices', () => {
       const config = {

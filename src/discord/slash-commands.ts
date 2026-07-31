@@ -59,7 +59,7 @@ import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { formatNumberedSuggestions } from '../reply-suggestions.js';
 
-/** スキル一覧を保持する可変参照。`/skills` での再読込を呼び出し元と共有する */
+/** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
   current: Skill[];
 }
@@ -130,14 +130,10 @@ export function buildSlashCommands(
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
     new SlashCommandBuilder().setName('stop').setDescription('実行中のタスクを停止する').toJSON(),
     new SlashCommandBuilder()
-      .setName('skills')
-      .setDescription('利用可能なスキル一覧を表示')
-      .toJSON(),
-    new SlashCommandBuilder()
       .setName('skill')
-      .setDescription('スキルを実行する')
+      .setDescription('利用可能なスキルを表示・実行する')
       .addStringOption((option) =>
-        option.setName('name').setDescription('スキル名').setRequired(true).setAutocomplete(true)
+        option.setName('name').setDescription('スキル名').setRequired(false).setAutocomplete(true)
       )
       .addStringOption((option) => option.setName('args').setDescription('引数').setRequired(false))
       .toJSON(),
@@ -1370,15 +1366,13 @@ export function createInteractionHandler(
       return;
     }
 
-    if (interaction.commandName === 'skills') {
-      // スキルを再読み込み
-      skillsRef.current = loadSkills(workdir);
-      await interaction.reply(formatSkillList(skillsRef.current));
-      return;
-    }
-
     if (interaction.commandName === 'skill') {
-      const skillName = interaction.options.getString('name', true);
+      const skillName = interaction.options.getString('name');
+      skillsRef.current = loadSkills(workdir);
+      if (!skillName) {
+        await interaction.reply(formatSkillList(skillsRef.current));
+        return;
+      }
       await handleSkillCommand(
         interaction,
         agentRunner,

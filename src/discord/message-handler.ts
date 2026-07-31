@@ -35,6 +35,7 @@ import {
   incrementMessageCount,
   getActiveSessionId,
   getSessionEntry,
+  activateSession,
   updateSessionTitle,
 } from '../sessions.js';
 import { stripPromptMetadata } from '../session-title.js';
@@ -47,6 +48,7 @@ import {
 } from './thread-context.js';
 import {
   attachPlatformMessageIdToLast,
+  ensureVisibleAssistantResponse,
   findEntryByPlatformMessageId,
   updateMessageContent as updateTranscriptContent,
   deleteMessage as deleteTranscriptMessage,
@@ -179,7 +181,14 @@ export async function processPrompt(
   channelId: string,
   config: Config,
   target: DiscordMessageTarget,
-  actor?: { id: string; name: string; messageId: string; react?: boolean }
+  actor?: {
+    id: string;
+    name: string;
+    messageId: string;
+    react?: boolean;
+    userText?: string;
+    completionUserId?: string | null;
+  }
 ): Promise<string | null> {
   const startedAt = Date.now();
   let replyMessage: Message | null = null;
@@ -301,7 +310,7 @@ export async function processPrompt(
       turnId,
       threadLabel,
       platform: 'discord' as const,
-      userText: message.content || undefined,
+      userText: actor?.userText ?? (message.content || undefined),
     };
 
     const sessionId = existingProviderSessionId;
@@ -349,7 +358,20 @@ export async function processPrompt(
       const visibleText = stripReplySuggestionMarkup(view.text);
       const body = visibleText ? `${visibleText}\n\n${note}` : note;
       const content = appendToolHistory(body, view.toolLines).slice(0, DISCORD_MAX_LENGTH);
-      await replyMessage.edit({ content, components: [] }).catch(() => {});
+      const updated = await replyMessage
+        .edit({ content, components: [] })
+        .then(() => true)
+        .catch(() => false);
+      if (!updated) return;
+      const tWorkdir = config.agent.config.workdir || process.cwd();
+      attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', sourceMessageId);
+      ensureVisibleAssistantResponse(
+        tWorkdir,
+        appSessionId,
+        replyMessage.id,
+        content,
+        replyMessage.createdAt?.toISOString()
+      );
     });
 
     let result: string;
@@ -533,15 +555,21 @@ export async function processPrompt(
       }
     }
 
+    const configuredCompletionMode = getChannelCompletionNotifyMode(
+      settings,
+      settingsChannelId,
+      config.discord.completionNotifyMode ?? 'message'
+    );
+    const completionUserId =
+      actor?.completionUserId === undefined ? message.author.id : actor.completionUserId;
     const completionNotification = buildCompletionNotification({
-      mode: getChannelCompletionNotifyMode(
-        settings,
-        settingsChannelId,
-        config.discord.completionNotifyMode ?? 'message'
-      ),
+      mode:
+        configuredCompletionMode === 'mention' && completionUserId === null
+          ? 'message'
+          : configuredCompletionMode,
       elapsedMs: Date.now() - startedAt,
       thresholdMs: config.discord.completionNotifyAfterMs ?? 10_000,
-      userId: message.author.id,
+      userId: completionUserId ?? '',
     });
     if (completionNotification && 'send' in outputChannel) {
       await (
@@ -700,12 +728,21 @@ export interface MessageHandlerDeps {
   workdir: string;
 }
 
+export interface DiscordRemoteInput {
+  appSessionId: string;
+  message: string;
+}
+
+export interface DiscordRemoteInputBridge {
+  continueSession(input: DiscordRemoteInput): Promise<{ response: string | null }>;
+}
+
 /**
  * Discord のメッセージ系イベントハンドラを client に登録する。
  * - MessageCreate: メンション / DM / チャンネル別メンションなし応答設定のメッセージを processPrompt に流す
  * - MessageUpdate / MessageDelete: ユーザ操作を transcript jsonl に同期する
  */
-export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
+export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): DiscordRemoteInputBridge {
   const { client, config, agentRunner, workdir } = deps;
 
   // 実行キー単位の処理中ロック。Discord のスレッド返信モードでは、親チャンネルに
@@ -933,4 +970,90 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): void {
       processingRuns.delete(runKey);
     }
   });
+
+  return {
+    async continueSession({ appSessionId, message: inputMessage }) {
+      const text = inputMessage.trim();
+      if (!text) throw new Error('メッセージを入力してください');
+
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'discord') {
+        throw new Error('Discordセッションが見つかりません');
+      }
+
+      const channel = await client.channels.fetch(entry.contextKey);
+      if (!channel || !('send' in channel) || typeof channel.send !== 'function') {
+        throw new Error('Discordの投稿先を取得できません');
+      }
+      if (processingRuns.has(entry.contextKey)) {
+        throw new Error('このDiscordセッションは処理中です');
+      }
+
+      const sourceChannel = channel as unknown as {
+        isThread?: () => boolean;
+        parentId?: string | null;
+        name?: string;
+        parent?: { name?: string } | null;
+        send: (options: unknown) => Promise<Message>;
+      };
+      const isThread = typeof sourceChannel.isThread === 'function' && sourceChannel.isThread();
+      const settingsChannelId = resolveDiscordSettingsChannelId(entry.contextKey, sourceChannel);
+
+      processingRuns.add(entry.contextKey);
+      try {
+        activateSession(entry.contextKey, appSessionId);
+        const mirroredMessage = await sourceChannel.send({
+          content: `🌐 Webから: ${text}`,
+          allowedMentions: { parse: [] },
+        });
+        let prompt = await fetchDiscordLinkContent(client, text);
+        prompt = annotateChannelMentions(prompt);
+        prompt = await fetchChannelMessages(client, prompt);
+        if (config.discord.injectChannelTopic !== false) {
+          const topic = getDiscordChannelTopic(sourceChannel);
+          if (topic) {
+            prompt += `\n\n[チャンネルルール（必ず従うこと）]\n${topic}`;
+          }
+        }
+        if (config.discord.injectTimestamp !== false) {
+          const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+          const day = new Date().toLocaleDateString('ja-JP', {
+            timeZone: 'Asia/Tokyo',
+            weekday: 'short',
+          });
+          prompt = `[現在時刻: ${now}(${day})]\n${prompt}`;
+        }
+        const target: DiscordMessageTarget = {
+          conversationChannelId: entry.contextKey,
+          settingsChannelId,
+          createdThreadName: null,
+          threadName: isThread ? (sourceChannel.name ?? null) : null,
+          parentChannelName: isThread ? (sourceChannel.parent?.name ?? null) : null,
+          isThread,
+          outputChannel: sourceChannel,
+          sendInitial: (options) => mirroredMessage.reply(options),
+        };
+        const response = await processPrompt(
+          mirroredMessage,
+          agentRunner,
+          prompt,
+          config.agent.config.skipPermissions ?? false,
+          entry.contextKey,
+          config,
+          target,
+          {
+            id: 'web',
+            name: 'Web',
+            messageId: mirroredMessage.id,
+            react: false,
+            userText: text,
+            completionUserId: null,
+          }
+        );
+        return { response };
+      } finally {
+        processingRuns.delete(entry.contextKey);
+      }
+    },
+  };
 }

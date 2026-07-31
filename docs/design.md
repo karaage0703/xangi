@@ -91,12 +91,16 @@ flowchart LR
 
 `http.createServer` ベースの軽量サーバー（Express 依存なし）。
 
-- ペイン単位でセッション分離（`contextKey = web:<paneId>`）、`WEB_CHAT_PORT` で公開
-- SSE で streaming response + timeout イベント (`timeout-started/extended/cleared`) をフロントへ push
-- フロントエンドの tick で残り時間表示を毎秒更新（追加 API 呼び出しなし）
-- ファイル添付・ダウンロードは `WEB_CHAT_UPLOAD_ACCEPT` / `WEB_CHAT_DOWNLOAD_ACCEPT` で許可拡張子を制御
-- `GET /api/sessions` はセッション一覧に `activity` を含める。`activity-store.ts` が現在ターンの状態、要約、直近ツール行、経過秒をプロセスメモリで保持する
-- `/monitor` は読み取り専用のセッション監視ページ。Web Chat と同じ `/api/sessions` を 2 秒ポーリングし、実行中セッションを上に並べる。スマホ・Even G2 からの閲覧を想定して行高と文字サイズを大きめにしている
+- React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
+- Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける
+- 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
+- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前と追加promptを保存し、sessionの`projectId`で関連付ける。Project作成時にdirectory・Git repository・instruction fileは作成しない
+- `GET /api/sessions` は最新100件と`activity`だけを返す。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
+- Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
+- `/monitor` は同じReactアプリの読み取り専用モード。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
+- `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけをworkspace相対pathで列挙・読込し、hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超を拒否する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部更新時は409を返し、UIが再読込を促す
+- Chat / Workspace / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える
+- Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
 ### macOS・Linux・WSL2セットアップ・更新コア
 
@@ -551,11 +555,11 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 
 `isSafeForRescue(name, args)` は擬似 tool_call の救済実行可否を判定する。denylist (`rm/curl/git` 等を弾く) は抜け道が多いため使わず、明示的な allowlist のみを許可:
 
-| カテゴリ                       | 対象                                                                                                                                                                                         |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| カテゴリ                       | 対象                                                                                                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
-| `exec` / `bash` のサブコマンド | `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}` のいずれかで始まる場合のみ                 |
-| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                          |
+| `exec` / `bash` のサブコマンド | `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}` のいずれかで始まる場合のみ                     |
+| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                              |
 
 それ以外は `{safe: false, reason}` を返し、`unsafe_tool_in_pseudo_format` 構造化エラーで LLM に proper function_calling 構造への切替を促す。
 

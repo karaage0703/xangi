@@ -80,7 +80,7 @@ docker compose up -d --build
 docker compose logs -f xangi
 ```
 
-Discord サーバーで `/new` や `/skills` を試す、または Bot をメンションして話しかける：
+Discord サーバーで `/new` や `/skill` を試す、または Bot をメンションして話しかける：
 
 ```
 @xangi こんにちは！

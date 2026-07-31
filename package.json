@@ -9,26 +9,27 @@
     "xangi-cmd": "./bin/xangi-cmd"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && vite build",
+    "build:web": "vite build",
     "dev": "tsx watch src/index.ts",
     "start": "node --env-file=.env dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix",
-    "format": "prettier --write src/",
-    "format:check": "prettier --check src/",
-    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ web-ui/src/ vite.config.ts",
+    "lint:fix": "eslint src/ web-ui/src/ vite.config.ts --fix",
+    "format": "prettier --write src/ web-ui/src/ vite.config.ts",
+    "format:check": "prettier --check src/ web-ui/src/ vite.config.ts",
+    "typecheck": "tsc --noEmit && tsc -p web-ui/tsconfig.json",
     "xangi": "node dist/cli/xangi-main.js",
     "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js",
     "prepare": "husky"
   },
   "lint-staged": {
-    "src/**/*.ts": [
+    "{src,web-ui/src}/**/*.{ts,tsx}": [
       "eslint --fix",
       "prettier --write"
     ],
-    "{src,tests}/**/*.ts": [
+    "{src,tests,web-ui/src}/**/*.{ts,tsx}": [
       "bash -c 'unset DATA_DIR WORKSPACE_PATH GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE; npx vitest run'",
       "bash -c 'npx tsc --noEmit'"
     ]
@@ -50,6 +51,8 @@
     "grammy": "^1.45.1",
     "node-cron": "^4.6.0",
     "proper-lockfile": "^4.1.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "slackify-markdown": "^5.0.0",
     "yaml": "^2.9.0"
   },
@@ -58,16 +61,22 @@
     "@types/dotenv": "^6.1.1",
     "@types/node": "^22.20.1",
     "@types/proper-lockfile": "^4.1.4",
-    "@typescript-eslint/eslint-plugin": "^8.64.0",
-    "@typescript-eslint/parser": "^8.64.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "@vitejs/plugin-react": "^6.0.4",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.9.5",
+    "prettier": "^3.9.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tsx": "^4.23.1",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.64.0",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   },
   "engines": {

@@ -506,9 +506,9 @@ You can switch the backend, model, and effort level per channel.
 | `/backend set grok`                              | Switch to Grok CLI                        |
 | `/backend set local-llm --model nemotron-3-nano` | Switch to Local LLM with a specific model |
 | `/backend set claude-code --effort high`         | Switch with a specific effort level       |
-| `/backend set codex --effort max`                | Run Codex with max effort                  |
-| `/backend set grok --effort max`                 | Run Grok with max effort                   |
-| `/backend set antigravity --effort high`         | Run Antigravity with high effort           |
+| `/backend set codex --effort max`                | Run Codex with max effort                 |
+| `/backend set grok --effort max`                 | Run Grok with max effort                  |
+| `/backend set antigravity --effort high`         | Run Antigravity with high effort          |
 | `/backend reset`                                 | Reset to the default (.env settings)      |
 | `/backend list`                                  | List available backends and models        |
 
@@ -1251,17 +1251,33 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 
 ### Web Chat UI
 
-| Variable                      | Description                                                                                                                                                                                           | Default             |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `WEB_CHAT_ENABLED`            | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>`                                                                                                                                 | `false`             |
-| `WEB_REPLY_SUGGESTIONS`       | Show collapsed reply suggestions below responses                                                                                                                                                      | `false`             |
-| `WEB_REPLY_SUGGESTIONS_COUNT` | Number of reply suggestions (1-5)                                                                                                                                                                     | `3`                 |
-| `WEB_CHAT_PORT`               | Web Chat UI port                                                                                                                                                                                      | `18888`             |
-| `WEB_CHAT_HOST`               | Bind host. `127.0.0.1` is reachable only from the same device; remote access requires SSH port forwarding or Tailscale Serve. `0.0.0.0` exposes all interfaces. The Web UI itself has no authentication | `0.0.0.0`           |
-| `WEB_CHAT_UPLOAD_ACCEPT`      | Upload allowlist (HTML `accept` syntax). Empty = allow all. `.ext` entries are also enforced server-side                                                                                              | (unset / allow all) |
-| `WEB_CHAT_DOWNLOAD_ACCEPT`    | Download allowlist of extensions (e.g. `.html,.txt,.md`). Empty = allow all. Known extensions are served inline with proper Content-Type; unknown ones fall back to `Content-Disposition: attachment` | (unset / allow all) |
+| Variable                    | Description                                                                                                                                                                                             | Default             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `WEB_CHAT_ENABLED`          | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>`                                                                                                                                   | `false`             |
+| `WEB_CHAT_PORT`             | Web Chat UI port                                                                                                                                                                                        | `18888`             |
+| `WEB_CHAT_HOST`             | Bind host. `127.0.0.1` is reachable only from the same device; remote access requires SSH port forwarding or Tailscale Serve. `0.0.0.0` exposes all interfaces. The Web UI itself has no authentication | `0.0.0.0`           |
+| `WEB_CHAT_UPLOAD_MAX_BYTES` | Maximum bytes per Web Chat upload request, including multipart headers                                                                                                                                  | `26214400` (25 MiB) |
 
-When Web Chat is enabled, the same server also exposes `http://localhost:<WEB_CHAT_PORT>/monitor`. `/monitor` is a read-only session monitor that lists Web / Discord / Slack sessions with the current turn summary, recent tool lines, elapsed seconds, and runner state.
+Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, auto-talk, and the slash-command/skill GUI. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. The auto-talk control is shown only for Web sessions when `INTER_INSTANCE_CHAT_ENABLED=true`. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions remain read-only and can only branch into a Web session.
+
+Web Projects are logical conversation groups equivalent to Discord channels. Each Project can define an extra prompt. The `Projects` link in the sidebar opens a dedicated list for creating, configuring, and filtering by Project; Project names are not expanded in the sidebar itself. All Projects use the same `WORKSPACE_PATH`; creating one does not create a directory, Git repository, or `AGENTS.md`. Project definitions are stored in `DATA_DIR/web-projects.json`, while the Project association is stored with each session.
+
+The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits Markdown, text, JSON/YAML/TOML, and common code formats up to 1 MiB. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views.
+
+Chat, Workspace, and Monitor share one header so navigation and the `表示` menu stay in the same position. The system, light, or dark choice is stored in the browser.
+
+- Hidden paths, `.git`, `.xangi`, `.workspace_rag`, dependencies, build/coverage outputs, and symbolic links are rejected for listing, reading, and saving
+- The UI does not create, delete, rename, or run Git operations; it saves existing viewable files only
+- Saves compare the SHA-256 version captured at read time and stop with HTTP 409 after an external update. Successful writes use an atomic rename from a temporary file in the same directory
+- The Web UI has no application-level authentication. Binding `WEB_CHAT_HOST=0.0.0.0` exposes Workspace reads and writes to the same LAN scope
+
+Workspace API:
+
+- `GET /api/workspace/entries?path=<relative-directory>` — safe immediate child directories/files
+- `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
+- `PUT /api/workspace/file` — `{path, content, version}`; returns 409 on conflict
+
+The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It initially fetches the latest 150 sessions, then receives turn start, progress, and completion updates from `GET /api/sessions/stream` over SSE instead of polling the session list.
 
 ### External Event Stream and Device Input
 
@@ -1396,17 +1412,17 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--dangerously-skip-per
 
 ### Slack
 
-| Variable                           | Description                                                                                                |
+| Variable | Description |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------- |
-| `SLACK_BOT_TOKEN`                  | Slack Bot Token (xoxb-...)                                                                                 |
-| `SLACK_APP_TOKEN`                  | Slack App Token (xapp-...)                                                                                 |
-| `SLACK_ALLOWED_USER`               | Allowed user ID                                                                                            |
-| `SLACK_AUTO_REPLY_CHANNELS`        | Channel IDs to respond without mention                                                                     |
-| `SLACK_REPLY_IN_THREAD`            | Reply in threads (default: `true`)                                                                         |
-| `SLACK_REPLY_IN_CHANNELS`          | Channel IDs to post replies directly in the channel even when thread replies are enabled (comma-separated) |
-| `SLACK_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notice for non-thread Slack turns (ms)                    | `10000` |
-| `SLACK_REPLY_SUGGESTIONS`          | Show a user-only `返信候補` button for reply suggestions                                                   | `false` |
-| `SLACK_REPLY_SUGGESTIONS_COUNT`    | Number of reply suggestions (1-5)                                                                          | `3`     |
+| `SLACK_BOT_TOKEN` | Slack Bot Token (xoxb-...) |
+| `SLACK_APP_TOKEN` | Slack App Token (xapp-...) |
+| `SLACK_ALLOWED_USER` | Allowed user ID |
+| `SLACK_AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention |
+| `SLACK_REPLY_IN_THREAD` | Reply in threads (default: `true`) |
+| `SLACK_REPLY_IN_CHANNELS` | Channel IDs to post replies directly in the channel even when thread replies are enabled (comma-separated) |
+| `SLACK_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notice for non-thread Slack turns (ms) | `10000` |
+| `SLACK_REPLY_SUGGESTIONS` | Show a user-only `返信候補` button for reply suggestions | `false` |
+| `SLACK_REPLY_SUGGESTIONS_COUNT` | Number of reply suggestions (1-5) | `3` |
 
 ## Running Multiple Instances
 

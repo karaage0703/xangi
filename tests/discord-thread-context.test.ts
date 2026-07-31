@@ -14,7 +14,7 @@ import {
   resolveDiscordSettingsChannelId,
 } from '../src/discord/thread-context.js';
 import { clearSettingsCache, initSettings, saveSettings } from '../src/settings.js';
-import { clearSessions, initSessions } from '../src/sessions.js';
+import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
 
 let tempDir: string | undefined;
 
@@ -93,9 +93,7 @@ describe('buildDiscordChannelContextLine', () => {
         threadName: 'thread title',
         parentChannelName: 'dev_xangi',
       })
-    ).toBe(
-      '[チャンネル: #dev_xangi (ID: parent-123) / thread: thread title (ID: thread-456)]'
-    );
+    ).toBe('[チャンネル: #dev_xangi (ID: parent-123) / thread: thread title (ID: thread-456)]');
   });
 
   it('親チャンネル名が取得できなくても親IDを表示する', () => {
@@ -107,9 +105,7 @@ describe('buildDiscordChannelContextLine', () => {
         threadName: 'thread title',
         parentChannelName: null,
       })
-    ).toBe(
-      '[チャンネル: 親チャンネル (ID: parent-123) / thread: thread title (ID: thread-456)]'
-    );
+    ).toBe('[チャンネル: 親チャンネル (ID: parent-123) / thread: thread title (ID: thread-456)]');
   });
 
   it('通常チャンネルでは従来のチャンネル表示を使う', () => {
@@ -391,6 +387,101 @@ describe('Discord thread run lock', () => {
     expect(
       (message.channel as unknown as { send: ReturnType<typeof vi.fn> }).send
     ).not.toHaveBeenCalled();
+  });
+});
+
+describe('Discord remote input bridge', () => {
+  it('Web入力を元スレッドへ表示し、指定されたappSessionIdで処理する', async () => {
+    const threadId = 'remote-thread-123';
+    const appSessionId = createSession(threadId, { platform: 'discord' });
+    const replyMessage = {
+      id: 'remote-reply-1',
+      edit: vi.fn().mockResolvedValue(undefined),
+      channel: { send: vi.fn().mockResolvedValue(undefined) },
+    };
+    const mirroredMessage = {
+      id: 'remote-source-1',
+      content: '🌐 Webから: 続きをお願いします',
+      createdTimestamp: Date.now(),
+      channelId: threadId,
+      client: null as unknown as Client,
+      author: {
+        id: '999',
+        bot: true,
+        username: 'xangi',
+        displayName: 'xangi',
+      },
+      channel: null as unknown,
+      reply: vi.fn().mockResolvedValue(replyMessage),
+      react: vi.fn().mockResolvedValue(undefined),
+      reactions: {
+        cache: {
+          find: vi.fn().mockReturnValue({
+            emoji: { name: '👀' },
+            users: { remove: vi.fn().mockResolvedValue(undefined) },
+          }),
+        },
+      },
+    } as unknown as Message;
+    const thread = {
+      id: threadId,
+      name: '既存スレッド',
+      parentId: 'parent-123',
+      parent: { name: 'dev_xangi' },
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(mirroredMessage),
+    };
+    const client = {
+      user: { id: '999' },
+      on: vi.fn().mockReturnThis(),
+      channels: { fetch: vi.fn().mockResolvedValue(thread) },
+    } as unknown as Client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).client = client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).channel = thread;
+
+    const runStream = vi
+      .fn()
+      .mockResolvedValue({ result: 'Discordで回答', sessionId: 'provider-remote-1' });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { backend: 'claude-code', config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+        completionNotifyAfterMs: 60_000,
+      },
+    } as Config;
+
+    const bridge = registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+    });
+    const result = await bridge.continueSession({
+      appSessionId,
+      message: '続きをお願いします',
+    });
+
+    expect(result).toEqual({ response: 'Discordで回答' });
+    expect(thread.send).toHaveBeenCalledWith({
+      content: '🌐 Webから: 続きをお願いします',
+      allowedMentions: { parse: [] },
+    });
+    expect(runStream).toHaveBeenCalledWith(
+      expect.stringContaining('[発言者: Web (ID: web)]'),
+      expect.any(Object),
+      expect.objectContaining({
+        channelId: threadId,
+        appSessionId,
+      })
+    );
+    expect(getActiveSessionId(threadId)).toBe(appSessionId);
   });
 });
 

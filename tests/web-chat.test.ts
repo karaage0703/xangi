@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   appendFileSync,
+  readFileSync,
   mkdtempSync,
   rmSync,
   existsSync,
@@ -22,7 +23,11 @@ import {
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src/agent-runner.js';
-import { clearActivities, startActivity } from '../src/activity-store.js';
+import { clearActivities, startActivity, updateActivityTool } from '../src/activity-store.js';
+import { events } from '../src/events-emitter.js';
+import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
+import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
+import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 
 /**
  * 任意のタイミングで完了させられる Fake AgentRunner。
@@ -31,6 +36,7 @@ import { clearActivities, startActivity } from '../src/activity-store.js';
 class FakeRunner implements AgentRunner {
   destroyed = new Set<string>();
   pending = new Map<string, () => void>();
+  callbacks = new Map<string, StreamCallbacks>();
   callOrder: string[] = [];
   prompts: string[] = [];
   nextResult = 'ok';
@@ -48,8 +54,10 @@ class FakeRunner implements AgentRunner {
     const channelId = options?.channelId || 'default';
     this.callOrder.push(channelId);
     this.prompts.push(prompt);
+    this.callbacks.set(channelId, callbacks);
     return new Promise<RunResult>((resolve) => {
       this.pending.set(channelId, () => {
+        this.callbacks.delete(channelId);
         callbacks.onText?.(this.nextResult, this.nextResult);
         const result: RunResult = {
           result: this.nextResult,
@@ -71,6 +79,13 @@ class FakeRunner implements AgentRunner {
         resolve(result);
       });
     });
+  }
+
+  emitText(channelId: string, fullText: string): boolean {
+    const callbacks = this.callbacks.get(channelId);
+    if (!callbacks) return false;
+    callbacks.onText?.(fullText, fullText);
+    return true;
   }
 
   release(channelId: string): boolean {
@@ -134,6 +149,26 @@ async function readSSEUntilDone(
   return { events };
 }
 
+async function readStreamUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  predicate: (text: string) => boolean
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = '';
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const chunk = await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timed out waiting for SSE event')), 2_000)
+      ),
+    ]);
+    if (chunk.done) break;
+    text += decoder.decode(chunk.value, { stream: true });
+    if (predicate(text)) return text;
+  }
+  throw new Error(`SSE predicate not reached: ${text}`);
+}
+
 async function freePort(): Promise<number> {
   // 0 を listen させて確保したポートを返す
   const { createServer } = await import('http');
@@ -156,15 +191,19 @@ describe('web-chat HTTP API', () => {
   let server: Server | null = null;
   let baseUrl = '';
   let runner: FakeRunner;
+  let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
   const prevWorkspace = process.env.WORKSPACE_PATH;
+  const prevDataDir = process.env.DATA_DIR;
 
   beforeEach(async () => {
     clearSessions();
     testDir = mkdtempSync(join(tmpdir(), 'web-chat-test-'));
     process.env.WORKSPACE_PATH = testDir;
+    process.env.DATA_DIR = join(testDir, '.xangi');
     initSessions(testDir);
 
     runner = new FakeRunner();
+    discordRemoteInputRef = {};
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
@@ -172,6 +211,7 @@ describe('web-chat HTTP API', () => {
       agentRunner: runner,
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
+      discordRemoteInputRef,
     });
     baseUrl = `http://127.0.0.1:${port}`;
 
@@ -203,6 +243,8 @@ describe('web-chat HTTP API', () => {
     }
     if (prevWorkspace == null) delete process.env.WORKSPACE_PATH;
     else process.env.WORKSPACE_PATH = prevWorkspace;
+    if (prevDataDir == null) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = prevDataDir;
   });
 
   it('POST /api/sessions creates a fresh web session without destroying others', async () => {
@@ -226,6 +268,313 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('creates logical Projects without directories and injects their prompt into Web turns', async () => {
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: '調査',
+        prompt: '一次情報を優先して回答してください',
+      }),
+    });
+    const { project } = (await projectResponse.json()) as {
+      project: { id: string; name: string; prompt: string };
+    };
+    expect(projectResponse.status).toBe(201);
+    expect(project.name).toBe('調査');
+    expect(existsSync(join(testDir, 'projects'))).toBe(false);
+
+    const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id }),
+    });
+    const { sessionId } = (await sessionResponse.json()) as { sessionId: string };
+    expect(getSessionEntry(sessionId)?.projectId).toBe(project.id);
+
+    const filteredResponse = await fetch(
+      `${baseUrl}/api/sessions?projectId=${encodeURIComponent(project.id)}`
+    );
+    const filtered = (await filteredResponse.json()) as {
+      sessions: Array<{ id: string; projectId?: string }>;
+    };
+    expect(filtered.sessions).toEqual([
+      expect.objectContaining({ id: sessionId, projectId: project.id }),
+    ]);
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: sessionId, message: '調べて' }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runner.prompts.at(-1)).toContain('一次情報を優先して回答してください');
+    expect(runner.prompts.at(-1)).toContain('調べて');
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+    await readSSEUntilDone((await send).body);
+  });
+
+  it('serves the workspace app route and browses workspace-relative files', async () => {
+    mkdirSync(join(testDir, 'notes'));
+    writeFileSync(join(testDir, 'notes', 'hello.md'), '# Hello\n');
+    writeFileSync(join(testDir, '.env'), 'SECRET=value\n');
+
+    const page = await fetch(`${baseUrl}/workspace`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('<div id="root"></div>');
+
+    const root = (await (await fetch(`${baseUrl}/api/workspace/entries?path=`)).json()) as {
+      entries: Array<{ name: string; type: string }>;
+    };
+    expect(root.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'notes', type: 'directory' })])
+    );
+    expect(root.entries.some((entry) => entry.name === '.env')).toBe(false);
+
+    const file = (await (
+      await fetch(`${baseUrl}/api/workspace/file?path=notes%2Fhello.md`)
+    ).json()) as { content: string; version: string };
+    expect(file.content).toBe('# Hello\n');
+    expect(file.version).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('saves workspace files and returns 409 for a stale editor version', async () => {
+    writeFileSync(join(testDir, 'memo.md'), 'before\n');
+    const opened = (await (await fetch(`${baseUrl}/api/workspace/file?path=memo.md`)).json()) as {
+      version: string;
+    };
+
+    const saved = await fetch(`${baseUrl}/api/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: 'memo.md',
+        content: 'after\n',
+        version: opened.version,
+      }),
+    });
+    expect(saved.status).toBe(200);
+    expect(readFileSync(join(testDir, 'memo.md'), 'utf8')).toBe('after\n');
+
+    const stale = await fetch(`${baseUrl}/api/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: 'memo.md',
+        content: 'stale\n',
+        version: opened.version,
+      }),
+    });
+    expect(stale.status).toBe(409);
+    expect(readFileSync(join(testDir, 'memo.md'), 'utf8')).toBe('after\n');
+  });
+
+  it('rejects workspace paths outside the configured workspace', async () => {
+    const traversal = await fetch(
+      `${baseUrl}/api/workspace/file?path=${encodeURIComponent('../secret.md')}`
+    );
+    expect(traversal.status).toBe(400);
+
+    const absolute = await fetch(
+      `${baseUrl}/api/workspace/file?path=${encodeURIComponent('/etc/hosts')}`
+    );
+    expect(absolute.status).toBe(400);
+  });
+
+  it('POST /api/sessions/:id/discord-continue forwards input to the Discord bridge', async () => {
+    const id = createSession('discord-thread-123', { platform: 'discord' });
+    const continueSession = vi.fn().mockResolvedValue({ response: 'Discord response' });
+    discordRemoteInputRef.current = { continueSession };
+
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/discord-continue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '同じ会話で続けて' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, response: 'Discord response' });
+    expect(continueSession).toHaveBeenCalledWith({
+      appSessionId: id,
+      message: '同じ会話で続けて',
+    });
+  });
+
+  it('POST /api/sessions/:id/discord-continue rejects non-Discord sessions', async () => {
+    const id = createSession('web-chat:test', { platform: 'web' });
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/discord-continue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '送信' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Discordセッションが見つかりません' });
+  });
+
+  it('POST /api/sessions/:id/discord-continue reports unavailable Discord bridge', async () => {
+    const id = createSession('discord-thread-456', { platform: 'discord' });
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/discord-continue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '送信' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Discordが起動していません' });
+  });
+
+  it('POST /api/sessions/:id/resume injects the source session history into the first Web turn', async () => {
+    const sourceId = createSession('discord-thread-1', {
+      platform: 'discord',
+      title: 'Discord source',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(
+      join(logsDir, `${sourceId}.jsonl`),
+      [
+        JSON.stringify({
+          id: 'source-user',
+          role: 'user',
+          content: '元のDiscordで話した質問',
+          createdAt: '2026-07-30T00:00:00.000Z',
+        }),
+        JSON.stringify({
+          id: 'source-assistant',
+          role: 'assistant',
+          content: { result: '元のDiscordで返した回答' },
+          createdAt: '2026-07-30T00:01:00.000Z',
+        }),
+      ].join('\n') + '\n'
+    );
+
+    const resumeResponse = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(sourceId)}/resume`,
+      { method: 'POST' }
+    );
+    const resumed = (await resumeResponse.json()) as { sessionId: string; sourceId: string };
+    expect(resumeResponse.status).toBe(200);
+    expect(resumed.sourceId).toBe(sourceId);
+    expect(getSessionEntry(resumed.sessionId)?.resumedFromSessionId).toBe(sourceId);
+
+    // クリック後、初回送信前にxangiが再起動しても引継ぎ元を失わない。
+    initSessions(testDir);
+    expect(getSessionEntry(resumed.sessionId)?.resumedFromSessionId).toBe(sourceId);
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appSessionId: resumed.sessionId,
+        message: '前の話を覚えてる？',
+      }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(runner.prompts[0]).toContain('<prefetched-history platform="Discord">');
+    expect(runner.prompts[0]).toContain('元のDiscordで話した質問');
+    expect(runner.prompts[0]).toContain('元のDiscordで返した回答');
+    expect(runner.prompts[0]).toContain('前の話を覚えてる？');
+    expect(getSessionEntry(resumed.sessionId)?.resumedFromSessionId).toBe(sourceId);
+
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${resumed.sessionId}`);
+    await readSSEUntilDone((await send).body);
+    expect(getSessionEntry(resumed.sessionId)?.resumedFromSessionId).toBeUndefined();
+  });
+
+  it('GET /api/web-commands exposes command metadata for the browser palette', async () => {
+    const res = await fetch(`${baseUrl}/api/web-commands`);
+    const data = (await res.json()) as {
+      commands: Array<{
+        name: string;
+        usage: string;
+        description: string;
+        options?: Array<{ name: string; choices?: Array<{ value: string }> }>;
+      }>;
+    };
+
+    expect(res.status).toBe(200);
+    expect(data.commands.find((command) => command.name === 'help')?.usage).toBe('/help');
+    expect(data.commands.find((command) => command.name === 'skill')?.description).toContain(
+      'スキル'
+    );
+    expect(
+      data.commands
+        .find((command) => command.name === 'llmmode')
+        ?.options?.[0].choices?.map((choice) => choice.value)
+    ).toEqual(['show', 'agent', 'lite', 'chat', 'default']);
+  });
+
+  it('POST /api/web-commands returns inline help without starting the agent', async () => {
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: '/help' }),
+    });
+    const data = (await res.json()) as { kind: string; message: string };
+
+    expect(res.status).toBe(200);
+    expect(data.kind).toBe('message');
+    expect(data.message).toContain('/skill [name] [args]');
+    expect(runner.prompts).toEqual([]);
+  });
+
+  it('POST /api/web-commands lists skills and converts a selected skill into a validated chat prompt', async () => {
+    const skillDir = join(testDir, 'skills', 'demo-skill');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      '---\nname: demo-skill\ndescription: Demo from Web UI\n---\n'
+    );
+
+    const listRes = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: '/skill' }),
+    });
+    const list = (await listRes.json()) as {
+      kind: string;
+      skills: Array<{ name: string; description: string }>;
+    };
+    expect(list.kind).toBe('skills');
+    expect(list.skills).toContainEqual({
+      name: 'demo-skill',
+      description: 'Demo from Web UI',
+    });
+
+    const runRes = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: '/skill demo-skill target-file.md' }),
+    });
+    const run = (await runRes.json()) as {
+      kind: string;
+      displayMessage: string;
+      message: string;
+    };
+    expect(run.kind).toBe('chat');
+    expect(run.displayMessage).toBe('/skill demo-skill target-file.md');
+    expect(run.message).toContain('スキル「demo-skill」');
+    expect(run.message).toContain('引数: target-file.md');
+  });
+
+  it('POST /api/web-commands returns a visible error for unknown commands', async () => {
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: '/does-not-exist' }),
+    });
+    const data = (await res.json()) as { error: string };
+
+    expect(res.status).toBe(400);
+    expect(data.error).toBe('Unknown command: /does-not-exist');
   });
 
   it('POST /api/chat enforces a busy lock per appSessionId (returns 409 on concurrent send to same session)', async () => {
@@ -315,11 +664,7 @@ describe('web-chat HTTP API', () => {
     }
     const assistant = detail?.messages.find((message) => message.role === 'assistant');
     expect(assistant?.content).toBe('回答本文');
-    expect(assistant?.replySuggestions).toEqual([
-      'そのまま進めて',
-      '詳細を教えて',
-      '別案を見せて',
-    ]);
+    expect(assistant?.replySuggestions).toEqual(['そのまま進めて', '詳細を教えて', '別案を見せて']);
     // inbox handler は 202 返却後に非同期実行されるため、finally まで完了させる。
     await new Promise((r) => setTimeout(r, 20));
   });
@@ -397,13 +742,12 @@ describe('web-chat HTTP API', () => {
     expect(getSessionEntry(id)).toBeDefined();
   });
 
-  it('GET /api/sessions reflects hasRunner in isActive (web sessions)', async () => {
+  it('GET /api/sessions marks only a running turn as active', async () => {
     const a = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
     const b = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
 
-    // a だけ runStream を呼ぶ → pool に入る
     const send = fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -412,14 +756,19 @@ describe('web-chat HTTP API', () => {
     for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
+
+    const runningList = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const sa = runningList.sessions.find((s: { id: string }) => s.id === a);
+    const sb = runningList.sessions.find((s: { id: string }) => s.id === b);
+    expect(sa.isActive).toBe(true);
+    expect(sb.isActive).toBe(false);
+
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${a}`);
     await readSSEUntilDone((await send).body);
 
-    const list = await (await fetch(`${baseUrl}/api/sessions`)).json();
-    const sa = list.sessions.find((s: { id: string }) => s.id === a);
-    const sb = list.sessions.find((s: { id: string }) => s.id === b);
-    expect(sa.isActive).toBe(true);
-    expect(sb.isActive).toBe(false);
+    const completedList = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const completed = completedList.sessions.find((s: { id: string }) => s.id === a);
+    expect(completed.isActive).toBe(false);
   });
 
   it('GET /api/sessions includes monitor source metadata', async () => {
@@ -430,6 +779,539 @@ describe('web-chat HTTP API', () => {
     expect(list.meta?.workdir).toBe(testDir);
     expect(list.meta?.processCwd).toBe(process.cwd());
     expect(typeof list.meta?.pid).toBe('number');
+  });
+
+  it('serves the React shell and exposes inter-chat state through config', async () => {
+    const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
+      interChatEnabled?: boolean;
+    };
+    const html = await (await fetch(baseUrl)).text();
+    const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
+
+    expect(config.interChatEnabled).toBe(false);
+    expect(html).toContain('<div id="root"></div>');
+    expect(html).toContain('/app/assets/');
+    expect(html).toContain('viewport-fit=cover');
+    expect(stylesheetPath).toBeTruthy();
+
+    const stylesheet = await (await fetch(`${baseUrl}${stylesheetPath}`)).text();
+    expect(stylesheet).toContain('safe-area-inset-top');
+    expect(stylesheet).toContain('safe-area-inset-right');
+    expect(stylesheet).toContain('safe-area-inset-bottom');
+    expect(stylesheet).toContain('safe-area-inset-left');
+    expect(stylesheet).toContain('(max-width:768px),(max-height:500px) and (hover:none)');
+
+    const sourceStylesheet = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'styles.css'),
+      'utf8'
+    );
+    const chatSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Chat.tsx'), 'utf8');
+    const workspaceSource = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'Workspace.tsx'),
+      'utf8'
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.app-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.sidebar\s*\{[^}]*height:\s*100%[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.session-list\s*\{[^}]*flex:\s*0 0 auto[^}]*overflow:\s*visible/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.app-shell\.sidebar-collapsed\s*\{[^}]*grid-template-columns:\s*0 minmax\(0,\s*1fr\)/s
+    );
+    expect(sourceStylesheet).toMatch(/\.session-project-tag\s*\{/);
+    expect(sourceStylesheet).toMatch(/\.workspace\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
+    expect(sourceStylesheet).toMatch(
+      /\.pane\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*overflow:\s*hidden/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.pane-title\s*\{[^}]*width:\s*0[^}]*min-width:\s*0[^}]*flex:\s*1 1 0/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.pane-tabs > span > button:first-child\s*\{[^}]*width:\s*0[^}]*min-width:\s*0[^}]*flex:\s*1 1 0/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.pane-tabs > span > button:last-child\s*\{[^}]*z-index:\s*1[^}]*flex:\s*0 0 28px/s
+    );
+    expect(sourceStylesheet).toMatch(/\.session-copy strong\s*\{[^}]*font-weight:\s*500/s);
+    expect(sourceStylesheet).toMatch(
+      /\.session-row\.current \.session-copy strong\s*\{[^}]*font-weight:\s*600/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /@media \(max-width: 900px\)[\s\S]*grid-auto-rows:\s*minmax\(260px,\s*1fr\)[\s\S]*overflow-y:\s*auto/
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.code-block > pre code\s*\{[^}]*white-space:\s*pre-wrap[^}]*overflow-wrap:\s*anywhere/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.code-block > pre code\[class\*='language-'\]\s*\{[^}]*white-space:\s*pre[^}]*overflow-wrap:\s*normal/s
+    );
+    expect(sourceStylesheet).toMatch(/\.plain-message\s*\{[^}]*white-space:\s*pre-wrap/s);
+    expect(sourceStylesheet).toMatch(/\.markdown-message\s*\{[^}]*white-space:\s*normal/s);
+    expect(chatSource).toMatch(
+      /if \(activeRef\.current\) \{\s*requestAnimationFrame\(\(\) => draftRef\.current\?\.focus\(\)\);\s*\}/
+    );
+    expect(chatSource).toContain('会話を読み込み中…');
+    expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
+    expect(chatSource).toContain('session-project-tag');
+    expect(chatSource).toContain('className="projects-link"');
+    expect(chatSource).toContain('className="project-view"');
+    expect(chatSource).toContain('＋ 新規Project');
+    expect(chatSource).not.toContain('Project内の会話');
+    expect(sourceStylesheet).toMatch(
+      /\.projects-link\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s
+    );
+    expect(sourceStylesheet).toMatch(/\.project-view-list\s*\{/);
+    expect(chatSource).toContain('SIDEBAR_COLLAPSED_KEY');
+    expect(chatSource).toContain('new ResizeObserver(scrollToBottom)');
+    expect(chatSource).toContain(
+      'mutationObserver?.observe(viewport, { childList: true, subtree: true })'
+    );
+    expect(sourceStylesheet).toMatch(
+      /@media \(max-width: 768px\)[\s\S]*\.workspace-markdown-preview\s*\{[^}]*font-size:\s*15px/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /@media \(max-width: 768px\)[\s\S]*\.workspace-editor-tabs button\s*\{[^}]*min-height:\s*32px[^}]*font-size:\s*13px/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.workspace-file-panel\s*\{[^}]*overflow-y:\s*auto/s
+    );
+    expect(sourceStylesheet).not.toMatch(/\.workspace-browser-header\s*\{/);
+    expect(sourceStylesheet).not.toMatch(/\.workspace-file-panel-title\s*\{/);
+    expect(workspaceSource).not.toContain('className="workspace-browser-header"');
+    expect(workspaceSource).not.toContain('className="workspace-file-panel-title"');
+    expect(workspaceSource).toMatch(
+      /className="workspace-editor-actions"[\s\S]*visibleSaveState !== 'idle'[\s\S]*workspace-save-status/
+    );
+    expect(chatSource).toContain('<SessionDeleteDialog');
+    expect(chatSource).toContain('dialog.showModal()');
+    expect(chatSource).not.toContain("window.confirm('このセッションを削除しますか？')");
+    expect(sourceStylesheet).toMatch(
+      /\.session-delete-dialog-actions button\s*\{[^}]*min-height:\s*44px/s
+    );
+  });
+
+  it('GET /api/sessions returns at most the latest 100 sessions', async () => {
+    for (let i = 0; i < 105; i++) {
+      createSession(`web-chat:limit-${i}`, {
+        platform: 'web',
+        title: `limit session ${i}`,
+      });
+    }
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string }>;
+      meta: { limit: number };
+    };
+    expect(list.sessions).toHaveLength(100);
+    expect(list.meta.limit).toBe(100);
+    expect(list.meta.total).toBe(105);
+    expect(list.meta.hasMore).toBe(true);
+    expect(list.meta.nextOffset).toBe(100);
+  });
+
+  it('GET /api/sessions pages and searches the complete session catalog', async () => {
+    for (let i = 0; i < 7; i++) {
+      createSession(`web-chat:page-${i}`, {
+        platform: 'web',
+        title: `pagination needle ${i}`,
+      });
+    }
+    createSession('web-chat:other', {
+      platform: 'web',
+      title: 'unrelated session',
+    });
+
+    const first = (await (
+      await fetch(`${baseUrl}/api/sessions?q=pagination%20needle&limit=3`)
+    ).json()) as {
+      sessions: Array<{ id: string }>;
+      meta: { total: number; hasMore: boolean; nextOffset: number | null };
+    };
+    const second = (await (
+      await fetch(`${baseUrl}/api/sessions?q=pagination%20needle&limit=3&offset=3`)
+    ).json()) as {
+      sessions: Array<{ id: string }>;
+      meta: { total: number; hasMore: boolean; nextOffset: number | null };
+    };
+    const last = (await (
+      await fetch(`${baseUrl}/api/sessions?q=pagination%20needle&limit=3&offset=6`)
+    ).json()) as {
+      sessions: Array<{ id: string }>;
+      meta: { total: number; hasMore: boolean; nextOffset: number | null };
+    };
+
+    expect(first.sessions).toHaveLength(3);
+    expect(first.meta).toMatchObject({ total: 7, hasMore: true, nextOffset: 3 });
+    expect(second.sessions).toHaveLength(3);
+    expect(second.meta).toMatchObject({ total: 7, hasMore: true, nextOffset: 6 });
+    expect(last.sessions).toHaveLength(1);
+    expect(last.meta).toMatchObject({ total: 7, hasMore: false, nextOffset: null });
+    expect(
+      new Set(
+        [...first.sessions, ...second.sessions, ...last.sessions].map((session) => session.id)
+      ).size
+    ).toBe(7);
+  });
+
+  it('GET /api/sessions cursor stays stable when a newer session is added', async () => {
+    for (let i = 0; i < 3; i++) {
+      createSession(`web-chat:stable-${i}`, {
+        platform: 'web',
+        title: `stable cursor ${i}`,
+      });
+    }
+    const first = (await (
+      await fetch(`${baseUrl}/api/sessions?q=stable%20cursor&limit=2`)
+    ).json()) as {
+      sessions: Array<{ id: string }>;
+      meta: { nextCursor: string };
+    };
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    createSession('web-chat:stable-new', {
+      platform: 'web',
+      title: 'stable cursor newly added',
+    });
+    const second = (await (
+      await fetch(
+        `${baseUrl}/api/sessions?q=stable%20cursor&limit=2&cursor=${encodeURIComponent(
+          first.meta.nextCursor
+        )}`
+      )
+    ).json()) as { sessions: Array<{ id: string; title: string }> };
+
+    expect(second.sessions).toHaveLength(1);
+    expect(second.sessions[0]?.title).not.toBe('stable cursor newly added');
+    expect(first.sessions.some((session) => session.id === second.sessions[0]?.id)).toBe(false);
+  });
+
+  it('GET /api/sessions keeps a running session visible outside the latest 100', async () => {
+    const oldId = createSession('old-running-channel', {
+      platform: 'discord',
+      title: 'old but running',
+    });
+    for (let i = 0; i < 105; i++) {
+      createSession(`newer-channel-${i}`, {
+        platform: 'discord',
+        title: `newer session ${i}`,
+      });
+    }
+    startActivity({
+      threadId: 'discord:old-running-channel',
+      turnId: 'old-running-turn',
+      platform: 'discord',
+      userText: 'still running',
+    });
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string; isActive: boolean }>;
+    };
+    expect(list.sessions).toHaveLength(100);
+    expect(list.sessions.find((session) => session.id === oldId)?.isActive).toBe(true);
+  });
+
+  it('GET /api/sessions/:id returns only the latest 50 messages', async () => {
+    const id = createSession('web-chat:message-limit', {
+      platform: 'web',
+      title: 'message limit',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      join(logsDir, `${id}.jsonl`),
+      Array.from({ length: 60 }, (_, index) =>
+        JSON.stringify({
+          id: `m${index}`,
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          content: `message ${index}`,
+          createdAt: new Date(2026, 0, 1, 0, 0, index).toISOString(),
+          platformMessageId: index === 10 ? 'platform-message-10' : undefined,
+        })
+      ).join('\n') + '\n'
+    );
+
+    const detail = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`)
+    ).json()) as {
+      messages: Array<{ content: string; platformMessageId?: string }>;
+      hasMore: boolean;
+      nextBefore: number | null;
+    };
+    expect(detail.messages).toHaveLength(50);
+    expect(detail.messages[0]?.content).toBe('message 10');
+    expect(detail.messages[0]?.platformMessageId).toBe('platform-message-10');
+    expect(detail.messages.at(-1)?.content).toBe('message 59');
+    expect(detail.hasMore).toBe(true);
+    expect(detail.nextBefore).toBe(50);
+
+    const newest = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}?limit=20`)
+    ).json()) as {
+      messages: Array<{ content: string }>;
+      hasMore: boolean;
+      nextBefore: number | null;
+    };
+    const middle = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}?limit=20&before=20`)
+    ).json()) as typeof newest;
+    const oldest = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}?limit=20&before=40`)
+    ).json()) as typeof newest;
+
+    expect(newest.messages.map((message) => message.content)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `message ${index + 40}`)
+    );
+    expect(newest).toMatchObject({ hasMore: true, nextBefore: 20 });
+    expect(middle.messages.map((message) => message.content)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `message ${index + 20}`)
+    );
+    expect(middle).toMatchObject({ hasMore: true, nextBefore: 40 });
+    expect(oldest.messages.map((message) => message.content)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `message ${index}`)
+    );
+    expect(oldest).toMatchObject({ hasMore: false, nextBefore: null });
+  });
+
+  it('GET /api/sessions/:id cursor does not shift when a message is appended', async () => {
+    const id = createSession('web-chat:stable-messages', {
+      platform: 'web',
+      title: 'stable messages',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    const logPath = join(logsDir, `${id}.jsonl`);
+    const entry = (index: number) =>
+      JSON.stringify({
+        id: `stable-m${index}`,
+        role: 'user',
+        content: `stable message ${index}`,
+        createdAt: new Date(2026, 0, 1, 0, 0, index).toISOString(),
+      });
+    writeFileSync(logPath, Array.from({ length: 6 }, (_, index) => entry(index)).join('\n') + '\n');
+
+    const first = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}?limit=2&cursor=tail`)
+    ).json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor: number;
+    };
+    appendFileSync(logPath, entry(6) + '\n');
+    const second = (await (
+      await fetch(
+        `${baseUrl}/api/sessions/${encodeURIComponent(id)}?limit=2&cursor=${first.nextCursor}`
+      )
+    ).json()) as typeof first;
+
+    expect(first.messages.map((message) => message.id)).toEqual(['stable-m4', 'stable-m5']);
+    expect(second.messages.map((message) => message.id)).toEqual(['stable-m2', 'stable-m3']);
+  });
+
+  it('GET /api/sessions/stream sends an initial snapshot without polling', async () => {
+    const id = createSession('web-chat:sse', { platform: 'web', title: 'SSE session' });
+    const response = await fetch(`${baseUrl}/api/sessions/stream`);
+    const reader = response.body?.getReader();
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const chunk = await reader?.read();
+    const text = new TextDecoder().decode(chunk?.value);
+    expect(text).toContain('event: sessions');
+    expect(text).toContain('SSE session');
+
+    await fetch(`${baseUrl}/api/sessions`, { method: 'POST' });
+    const invalidationChunk = await reader?.read();
+    const invalidationText = new TextDecoder().decode(invalidationChunk?.value);
+    expect(invalidationText).toContain('event: sessions');
+
+    events.turnStarted({
+      threadId: `web:${id}`,
+      turnId: 'web-sse-turn',
+      platform: 'web',
+      userText: 'SSE update',
+    });
+    const activityChunk = await reader?.read();
+    const activityText = new TextDecoder().decode(activityChunk?.value);
+    expect(activityText).toContain('event: activity');
+    expect(activityText).toContain('SSE update');
+
+    const activityContext = {
+      threadId: `web:${id}`,
+      turnId: 'web-sse-activity',
+      platform: 'web' as const,
+    };
+    startActivity(activityContext);
+    updateActivityTool(activityContext, 'test_tool', { q: 'live monitor' });
+    const snapshotChunk = await reader?.read();
+    const snapshotText = new TextDecoder().decode(snapshotChunk?.value);
+    expect(snapshotText).toContain('event: activity_snapshot');
+    expect(snapshotText).toContain('test_tool');
+    await reader?.cancel();
+  });
+
+  it('GET /api/sessions/stream publishes title and message count after chat completion', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const stream = await fetch(`${baseUrl}/api/sessions/stream`);
+    const reader = stream.body!.getReader();
+    await reader.read();
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'snapshot title' }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`);
+    await readSSEUntilDone((await send).body);
+
+    const updates = await readStreamUntil(
+      reader,
+      (text) =>
+        text.includes('event: sessions') &&
+        text.includes('snapshot title') &&
+        text.includes('"messageCount":1')
+    );
+    expect(updates).toContain(`"id":"${id}"`);
+    await reader.cancel();
+  });
+
+  it('persists and streams an interrupted assistant response during shutdown', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const responsePromise = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'restart now' }),
+    });
+
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runner.emitText(`${WEB_CHAT_CONTEXT_PREFIX}${id}`, '途中までの回答')).toBe(true);
+    logPrompt(testDir, id, 'restart now');
+
+    await finalizeActiveStreams();
+
+    const response = await responsePromise;
+    const messages = readSessionMessages(testDir, id);
+    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+    expect(messages[1]?.content).toEqual({
+      result: '途中までの回答\n\n⏸ プロセス再起動により中断されました',
+    });
+    expect(messages[1]?.platformMessageId).toBeUndefined();
+
+    const reader = response.body!.getReader();
+    const streamed = await readStreamUntil(
+      reader,
+      (text) =>
+        text.includes('event: done') && text.includes('プロセス再起動により中断されました')
+    );
+    expect(streamed).toContain('"replySuggestions":[]');
+    expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
+    while (!(await reader.read()).done) {
+      // Drain the normal completion emitted after the shutdown finalizer.
+    }
+  });
+
+  it('GET /api/sessions/:id separates uploaded file paths from user display text', async () => {
+    const id = createSession('web-chat:attachment-display', {
+      platform: 'web',
+      title: 'Attachment display',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    const uploadDir = join(testDir, 'tmp', 'web-uploads');
+    const receivedAttachmentDir = join(testDir, '.xangi', 'media', 'attachments');
+    mkdirSync(logsDir, { recursive: true });
+    mkdirSync(uploadDir, { recursive: true });
+    mkdirSync(receivedAttachmentDir, { recursive: true });
+    const imagePath = join(uploadDir, 'image.png');
+    const reportPath = join(uploadDir, 'report.pdf');
+    const receivedImagePath = join(receivedAttachmentDir, 'discord-image.png');
+    writeFileSync(imagePath, 'image');
+    writeFileSync(reportPath, 'report');
+    writeFileSync(receivedImagePath, 'discord image');
+    appendFileSync(
+      join(logsDir, `${id}.jsonl`),
+      JSON.stringify({
+        id: 'attachment-message',
+        role: 'user',
+        content: [
+          '<prefetched-history platform="Web">',
+          '[添付ファイル] /private/old-secret.png',
+          '</prefetched-history>',
+          '画像を見てください',
+          `[添付ファイル] ${imagePath}`,
+          `[添付ファイル] ${reportPath}`,
+          '[添付ファイル] /private/outside.pdf',
+          '[添付ファイル]',
+          `  - ${receivedImagePath}`,
+          '  - /private/outside-image.png',
+        ].join('\n'),
+        createdAt: new Date().toISOString(),
+      }) + '\n'
+    );
+
+    const detail = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`)
+    ).json()) as {
+      messages: Array<{ content: string; attachments: string[] }>;
+    };
+    expect(detail.messages[0]).toMatchObject({
+      content: '画像を見てください',
+      attachments: [imagePath, reportPath, receivedImagePath],
+    });
+
+    const receivedImage = await fetch(
+      `${baseUrl}/api/workspace-file?path=${encodeURIComponent(receivedImagePath)}`
+    );
+    expect(receivedImage.status).toBe(200);
+    expect(receivedImage.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('POST /api/upload rejects a request above the configured byte limit', async () => {
+    const previous = process.env.WEB_CHAT_UPLOAD_MAX_BYTES;
+    process.env.WEB_CHAT_UPLOAD_MAX_BYTES = '128';
+    try {
+      const form = new FormData();
+      form.append('file', new Blob(['x'.repeat(256)]), 'large.txt');
+      const response = await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({ error: 'Upload too large', maxBytes: 128 });
+    } finally {
+      if (previous === undefined) delete process.env.WEB_CHAT_UPLOAD_MAX_BYTES;
+      else process.env.WEB_CHAT_UPLOAD_MAX_BYTES = previous;
+    }
+  });
+
+  it('GET /api/workspace-file rejects sibling paths and downloads active content', async () => {
+    const inside = join(testDir, 'report.html');
+    const siblingDir = `${testDir}-sibling`;
+    const sibling = join(siblingDir, 'secret.txt');
+    writeFileSync(inside, '<script>fetch("/api/sessions",{method:"DELETE"})</script>');
+    mkdirSync(siblingDir, { recursive: true });
+    writeFileSync(sibling, 'secret');
+    try {
+      const allowed = await fetch(
+        `${baseUrl}/api/workspace-file?path=${encodeURIComponent(inside)}`
+      );
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get('content-disposition')).toContain('attachment');
+      expect(allowed.headers.get('x-content-type-options')).toBe('nosniff');
+
+      const denied = await fetch(
+        `${baseUrl}/api/workspace-file?path=${encodeURIComponent(sibling)}`
+      );
+      expect(denied.status).toBe(403);
+    } finally {
+      rmSync(siblingDir, { recursive: true });
+    }
   });
 
   it('GET /api/sessions includes current activity for running web sessions', async () => {
@@ -459,6 +1341,75 @@ describe('web-chat HTTP API', () => {
 
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`);
     await readSSEUntilDone((await send).body);
+  });
+
+  it('GET /api/sessions/:id/tool-history returns persisted tools for that session', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const activity = {
+      threadId: `web:${id}`,
+      turnId: 'web-turn-history',
+      platform: 'web' as const,
+      userText: 'ツール履歴を確認',
+    };
+    startActivity(activity);
+    updateActivityTool(activity, 'Bash', { command: 'pwd' });
+    updateActivityTool(activity, 'Read', { file_path: '/tmp/example.txt' });
+
+    const response = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(id)}/tool-history?limit=10`
+    );
+    const data = (await response.json()) as {
+      tools: Array<{
+        turnId: string;
+        toolName: string;
+        summary: string;
+        inputPreview?: string;
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(data.tools).toHaveLength(2);
+    expect(data.tools.map((tool) => tool.toolName)).toEqual(['Bash', 'Read']);
+    expect(data.tools[0]).toMatchObject({
+      turnId: 'web-turn-history',
+      summary: '実行中: Bash: pwd',
+      inputPreview: '{"command":"pwd"}',
+    });
+  });
+
+  it('GET /api/sessions/:id/tool-history resolves an unmanaged Discord thread transcript', async () => {
+    const id = 'unmanaged-tool-history';
+    const threadId = '1531821464939004026';
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      join(logsDir, `${id}.jsonl`),
+      JSON.stringify({
+        id: 'u1',
+        role: 'user',
+        content:
+          '[プラットフォーム: Discord]\n' +
+          '[チャンネル: #dev (ID: 1512834653877440683) / thread: 履歴テスト (ID: ' +
+          `${threadId})]\n履歴を見せて`,
+        createdAt: '2026-07-29T00:00:00Z',
+      }) + '\n'
+    );
+    const activity = {
+      threadId: `discord:${threadId}`,
+      turnId: 'discord-turn-history',
+      platform: 'discord' as const,
+      userText: '履歴を見せて',
+    };
+    startActivity(activity);
+    updateActivityTool(activity, 'Read', { file_path: '/tmp/history.txt' });
+
+    const response = await fetch(`${baseUrl}/api/sessions/${id}/tool-history`);
+    const data = (await response.json()) as { tools: Array<{ toolName: string }> };
+
+    expect(response.status).toBe(200);
+    expect(data.tools.map((tool) => tool.toolName)).toEqual(['Read']);
   });
 
   it('GET /api/sessions includes Discord sessions (channelId-based contextKey) as managed', async () => {
@@ -506,8 +1457,8 @@ describe('web-chat HTTP API', () => {
 
   it('GET /api/sessions/:id hides internal prompt metadata and reply suggestion markup', async () => {
     const id = createSession('web-chat:test-sanitize', {
-      platform: 'web',
-      title: '<prefetched-history platform="Web"> internal',
+      platform: 'discord',
+      title: '[システム注記: internal]',
     });
     const logsDir = join(testDir, 'logs', 'sessions');
     mkdirSync(logsDir, { recursive: true });
@@ -517,8 +1468,19 @@ describe('web-chat HTTP API', () => {
         {
           id: 'u1',
           role: 'user',
-          content:
-            '[プラットフォーム: Web]\n<prefetched-history platform="Web">internal</prefetched-history>\n初期文脈確認だけを目的に history コマンドを再実行しないでください。さらに古い履歴や追加件数が必要な場合だけ実行してください。\n本当の質問',
+          content: `[システム注記: xangi プロセスを再起動した。]
+[プラットフォーム: Discord]
+[チャンネル: #dev_xangi / thread: 表示確認 (ID: 123)]
+[発言者: からあげ (ID: 456)]
+[現在時刻: 2026/7/30 12:27:45(木)]
+---
+🧵 スレッド元 (karaage0703):
+最初の話題
+---
+本当の質問
+
+[チャンネルルール（必ず従うこと）]
+内部ルール`,
           createdAt: '2026-07-13T00:00:00Z',
         },
         {
@@ -631,6 +1593,26 @@ describe('web-chat HTTP API', () => {
       sessions: Array<{ id: string }>;
     };
     expect(list.sessions.some((s) => s.id === schedulerId)).toBe(false);
+  });
+
+  it('GET /api/sessions hides unmanaged transcripts without a user-derived title', async () => {
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    const internalId = 'unmanaged-without-user-title';
+    writeFileSync(
+      join(logsDir, `${internalId}.jsonl`),
+      JSON.stringify({
+        id: 'assistant-only',
+        role: 'assistant',
+        content: 'internal result',
+        createdAt: '2026-07-13T00:00:00.000Z',
+      }) + '\n'
+    );
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string }>;
+    };
+    expect(list.sessions.some((session) => session.id === internalId)).toBe(false);
   });
 
   it('GET /api/sessions falls back to contextKey when no title and no log can be derived', async () => {

@@ -149,12 +149,6 @@ jobs:
             exit 1
           fi
           (cd release-assets && sha256sum * > SHA256SUMS)
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-assets-${{ env.RELEASE_TAG }}
-          path: release-assets/
-          if-no-files-found: error
-          retention-days: 30
       - name: Attach assets to the public release
         env:
           GH_TOKEN: ${{ github.token }}

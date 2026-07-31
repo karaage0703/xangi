@@ -140,7 +140,12 @@ export type PublishedEvent = EventBody & {
 
 export type EventSubscriber = (payload: PublishedEvent) => void;
 
-const subscribers = new Set<EventSubscriber>();
+interface EventSubscription {
+  callback: EventSubscriber;
+  whenDisabled: boolean;
+}
+
+const subscribers = new Set<EventSubscription>();
 
 /**
  * 全イベントを購読する。返り値は unsubscribe 関数。
@@ -148,10 +153,17 @@ const subscribers = new Set<EventSubscriber>();
  * SSE ハンドラ / テスト / 内部の派生モジュールが使う。
  * subscriber が例外を投げても他の subscriber には影響しない。
  */
-export function subscribeEvents(cb: EventSubscriber): () => void {
-  subscribers.add(cb);
+export function subscribeEvents(
+  cb: EventSubscriber,
+  options: { whenDisabled?: boolean } = {}
+): () => void {
+  const subscription = {
+    callback: cb,
+    whenDisabled: options.whenDisabled === true,
+  };
+  subscribers.add(subscription);
   return () => {
-    subscribers.delete(cb);
+    subscribers.delete(subscription);
   };
 }
 
@@ -176,16 +188,16 @@ function baseFields(opts: CommonOpts): BaseBody {
 
 function publish(body: EventBody): void {
   const cfg = resolveConfig();
-  if (!cfg.enabled) return;
   if (subscribers.size === 0) return;
   const payload: PublishedEvent = {
     ...body,
     instance_id: cfg.instanceId,
     host_hint: cfg.hostHint,
   };
-  for (const cb of subscribers) {
+  for (const subscription of subscribers) {
+    if (!cfg.enabled && !subscription.whenDisabled) continue;
     try {
-      cb(payload);
+      subscription.callback(payload);
     } catch {
       // subscriber 側のエラーは握り潰す (本業を止めない)。
     }

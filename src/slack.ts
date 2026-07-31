@@ -1135,22 +1135,6 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     await respond({ text: '🆕 新しいセッションを開始しました' });
   });
 
-  // /skills コマンド
-  app.command('/skills', async ({ command, ack, respond }) => {
-    await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
-
-    skills = reloadSkills();
-    await respond({ text: formatSkillList(skills) });
-  });
-
   // /delete コマンド（Botメッセージを削除）
   // /delete → 直前のメッセージ
   // /delete <ts> → 指定のメッセージ（tsまたはメッセージリンクから抽出）
@@ -1181,12 +1165,14 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
-    const args = command.text.trim().split(/\s+/);
+    const text = command.text.trim();
+    const args = text ? text.split(/\s+/) : [];
     const skillName = args[0];
     const skillArgs = args.slice(1).join(' ');
 
     if (!skillName) {
-      await respond({ text: '使い方: `/skill <スキル名> [引数]`' });
+      skills = reloadSkills();
+      await respond({ text: formatSkillList(skills) });
       return;
     }
 

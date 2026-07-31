@@ -111,11 +111,7 @@ describe('events-emitter (pull-mode subscribers)', () => {
     events.turnStarted(c);
     events.messageDelta({ ...c, chunk: 'partial', fullText: 'partial' });
     events.turnAborted(c);
-    expect(received.map((e) => e.type)).toEqual([
-      'turn.started',
-      'message.delta',
-      'turn.aborted',
-    ]);
+    expect(received.map((e) => e.type)).toEqual(['turn.started', 'message.delta', 'turn.aborted']);
   });
 
   it('publishes agent.error on exception', async () => {
@@ -163,6 +159,22 @@ describe('events-emitter (pull-mode subscribers)', () => {
     expect(received).toHaveLength(0);
   });
 
+  it('can notify an internal subscriber when external events are disabled', async () => {
+    process.env.XANGI_EVENTS_ENABLED = 'false';
+    const { events, subscribeEvents } = await import('../src/events-emitter.js');
+    const received: ReceivedEvent[] = [];
+    subscribeEvents((event) => received.push(event as ReceivedEvent), { whenDisabled: true });
+
+    events.turnStarted({
+      threadId: 'web:internal',
+      turnId: 'turn-internal',
+      platform: 'web',
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.thread_id).toBe('web:internal');
+  });
+
   it('returns immediately and synchronously (does not block the caller)', async () => {
     const { events, subscribeEvents } = await import('../src/events-emitter.js');
     // 重い subscriber を 1 つ繋いでも publish は同期で帰ってくることを確認
@@ -190,9 +202,8 @@ describe('events-emitter (pull-mode subscribers)', () => {
   });
 
   it('broadcasts the same payload to every subscriber (fan-out)', async () => {
-    const { events, subscribeEvents, getSubscriberCount } = await import(
-      '../src/events-emitter.js'
-    );
+    const { events, subscribeEvents, getSubscriberCount } =
+      await import('../src/events-emitter.js');
     const a: ReceivedEvent[] = [];
     const b: ReceivedEvent[] = [];
     const c: ReceivedEvent[] = [];
@@ -227,9 +238,7 @@ describe('events-emitter (pull-mode subscribers)', () => {
 
   it('publish with zero subscribers is a no-op (does not throw)', async () => {
     const { events } = await import('../src/events-emitter.js');
-    expect(() =>
-      events.turnStarted({ threadId: 'discord:1', turnId: 'turn-empty' })
-    ).not.toThrow();
+    expect(() => events.turnStarted({ threadId: 'discord:1', turnId: 'turn-empty' })).not.toThrow();
   });
 
   it('threadIdFor / turnIdFor helpers', async () => {

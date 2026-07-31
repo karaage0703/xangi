@@ -169,6 +169,13 @@ export class BackendResolver {
     );
   }
 
+  /** チャンネル固有設定をすべて削除し、起動時デフォルトへ戻す。 */
+  clearChannelOverride(channelId: string): void {
+    this.channelOverrides.delete(channelId);
+    this.persistToEnv();
+    console.log(`[backend-resolver] Cleared override for ${channelId}`);
+  }
+
   /**
    * チャンネルの localLlmMode のみを更新（既存の backend/model/effort は保持）
    */

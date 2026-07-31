@@ -121,8 +121,7 @@ After adding or changing scopes/events, reinstall the app from **"Install App"**
 | Command   | Description                                     |
 | --------- | ----------------------------------------------- |
 | `/new`    | Start a new session                             |
-| `/skills` | List available skills                           |
-| `/skill`  | Run a skill (Usage Hint: `<skill-name> [args]`) |
+| `/skill`  | List or run a skill (Usage Hint: `[skill-name] [args]`) |
 
 > **Note**: Request URL is not needed in Socket Mode.
 
@@ -175,7 +174,7 @@ Try the following in Slack:
 - Mention the bot: `@xangi Hello!`
 - Send a DM
 - `/new` command
-- `/skills` command
+- `/skill` command
 - Add a `:wastebasket:` or `:x:` reaction to a bot message to delete it
 
 ## How to Find IDs

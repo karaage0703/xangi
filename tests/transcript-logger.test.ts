@@ -7,9 +7,11 @@ import {
   logPrompt,
   logResponse,
   readSessionMessages,
+  readSessionMessagesTail,
   updateMessageContent,
   deleteMessage,
   attachPlatformMessageIdToLast,
+  ensureVisibleAssistantResponse,
   findEntryByPlatformMessageId,
 } from '../src/transcript-logger.js';
 
@@ -88,6 +90,17 @@ describe('transcript-logger edit/delete', () => {
     expect(raw.endsWith('\n')).toBe(true);
   });
 
+  it('readSessionMessagesTail reads only the requested trailing entries', () => {
+    for (let index = 0; index < 70; index++) {
+      logPrompt(workdir, sessionId, `${index}:${'x'.repeat(2000)}`);
+    }
+
+    const tail = readSessionMessagesTail(workdir, sessionId, 50);
+    expect(tail).toHaveLength(50);
+    expect(String(tail[0]?.content).startsWith('20:')).toBe(true);
+    expect(String(tail.at(-1)?.content).startsWith('69:')).toBe(true);
+  });
+
   it('attachPlatformMessageIdToLast attaches Discord message id to last user entry', () => {
     logPrompt(workdir, sessionId, 'hello');
     logResponse(workdir, sessionId, { result: 'hi' });
@@ -117,6 +130,72 @@ describe('transcript-logger edit/delete', () => {
     logPrompt(workdir, sessionId, 'a');
     const found = findEntryByPlatformMessageId(workdir, sessionId, 'nope');
     expect(found).toBeNull();
+  });
+
+  it('stores a platform-visible assistant response when the last user turn is unfinished', () => {
+    logPrompt(workdir, sessionId, 'restart now');
+
+    const stored = ensureVisibleAssistantResponse(
+      workdir,
+      sessionId,
+      'discord-reply-1',
+      '⏸ プロセス再起動により中断されました',
+      '2026-07-31T04:00:00.000Z'
+    );
+
+    expect(stored).toEqual(
+      expect.objectContaining({
+        role: 'assistant',
+        content: { result: '⏸ プロセス再起動により中断されました' },
+        createdAt: '2026-07-31T04:00:00.000Z',
+        platformMessageId: 'discord-reply-1',
+      })
+    );
+    expect(readSessionMessages(workdir, sessionId)).toHaveLength(2);
+  });
+
+  it('keeps an existing runner response and only attaches the platform message id', () => {
+    logPrompt(workdir, sessionId, 'restart after finishing');
+    logResponse(workdir, sessionId, { result: 'finished answer' });
+
+    const stored = ensureVisibleAssistantResponse(
+      workdir,
+      sessionId,
+      'discord-reply-2',
+      '⏸ プロセス再起動により中断されました'
+    );
+
+    expect(stored?.content).toEqual({ result: 'finished answer' });
+    expect(stored?.platformMessageId).toBe('discord-reply-2');
+    expect(readSessionMessages(workdir, sessionId)).toHaveLength(2);
+  });
+
+  it('does not duplicate a platform-visible response on repeated finalization', () => {
+    logPrompt(workdir, sessionId, 'restart once');
+    ensureVisibleAssistantResponse(workdir, sessionId, 'discord-reply-3', 'interrupted');
+    ensureVisibleAssistantResponse(workdir, sessionId, 'discord-reply-3', 'interrupted');
+
+    expect(readSessionMessages(workdir, sessionId)).toHaveLength(2);
+  });
+
+  it('stores an interrupted Web response without a platform message id', () => {
+    logPrompt(workdir, sessionId, 'restart from Web');
+
+    const stored = ensureVisibleAssistantResponse(
+      workdir,
+      sessionId,
+      undefined,
+      '⏸ プロセス再起動により中断されました'
+    );
+
+    expect(stored).toEqual(
+      expect.objectContaining({
+        role: 'assistant',
+        content: { result: '⏸ プロセス再起動により中断されました' },
+      })
+    );
+    expect(stored?.platformMessageId).toBeUndefined();
+    expect(readSessionMessages(workdir, sessionId)).toHaveLength(2);
   });
 
   it('Discord edit flow: attach → findByPlatformMessageId → updateMessageContent', () => {

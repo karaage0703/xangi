@@ -4,11 +4,12 @@
  * Discord/Slack/Web のプロンプトにはメタデータ行（`[プラットフォーム: ...]` など）が
  * 先頭に付くため、UI に出すときはそれを剥がした最初の本文をタイトル候補として使う。
  */
-import { existsSync, readFileSync } from 'fs';
+import { closeSync, existsSync, openSync, readSync } from 'fs';
 import { join } from 'path';
 import { stripReplySuggestionMarkup } from './reply-suggestions.js';
 
 const PROMPT_METADATA_PATTERNS: RegExp[] = [
+  /^\[システム注記:[^\n]*\]\n?\n?/,
   /^\[runtime\][^\n]*\n?\n?/,
   /^\[プラットフォーム: [^\]]*\]\n?/,
   /^\[チャンネル: [^\]]*\]\n?/,
@@ -19,10 +20,42 @@ const PROMPT_METADATA_PATTERNS: RegExp[] = [
 
 const PREFETCHED_HISTORY_BLOCK = /<prefetched-history\b[^>]*>[\s\S]*?<\/prefetched-history>\s*/g;
 const PLATFORM_SYSTEM_CONTEXT_BLOCK = /<system-context\b[^>]*>[\s\S]*?<\/system-context>\s*/g;
+const WEB_PROJECT_CONTEXT_BLOCK = /<web-project-context\b[^>]*>[\s\S]*?<\/web-project-context>\s*/g;
+const DISCORD_CONTEXT_BLOCK = /^\s*---\n(?:🧵 スレッド元|💬 返信元) \([^\n]*\):\n[\s\S]*?\n---\n?/;
+const CHANNEL_RULE_CONTEXT = /\n{2,}\[チャンネルルール（必ず従うこと）\]\n[\s\S]*$/;
 const PREFETCH_FOLLOWUP =
   /初期文脈確認だけを目的に history コマンドを再実行しないでください。さらに古い履歴や追加件数が必要な場合だけ実行してください。\s*/g;
 const REPLY_SUGGESTION_CONTEXT =
   /\s*\[system-context\]\s*通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を\d+件生成してください。[\s\S]*?<\/xangi_reply_suggestions>\s*$/;
+
+function readFirstUserContent(workdir: string, sessionId: string): string {
+  let fd: number | undefined;
+  try {
+    const filePath = join(workdir, 'logs', 'sessions', `${sessionId}.jsonl`);
+    if (!existsSync(filePath)) return '';
+    fd = openSync(filePath, 'r');
+    const chunks: Buffer[] = [];
+    let position = 0;
+    while (true) {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newline = chunk.indexOf(0x0a);
+      chunks.push(newline >= 0 ? chunk.subarray(0, newline) : chunk);
+      position += bytesRead;
+      if (newline >= 0) break;
+    }
+    const firstLine = Buffer.concat(chunks).toString('utf-8');
+    if (!firstLine) return '';
+    const entry = JSON.parse(firstLine) as { role?: string; content?: unknown };
+    return entry.role === 'user' && typeof entry.content === 'string' ? entry.content : '';
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 /**
  * プロンプト先頭のメタデータ行を順に剥がして本文だけ返す。
@@ -32,6 +65,7 @@ const REPLY_SUGGESTION_CONTEXT =
 export function stripPromptMetadata(text: string): string {
   let s = text
     .replace(PLATFORM_SYSTEM_CONTEXT_BLOCK, '')
+    .replace(WEB_PROJECT_CONTEXT_BLOCK, '')
     .replace(PREFETCHED_HISTORY_BLOCK, '')
     .replace(PREFETCH_FOLLOWUP, '')
     .replace(REPLY_SUGGESTION_CONTEXT, '');
@@ -39,10 +73,11 @@ export function stripPromptMetadata(text: string): string {
   while (changed) {
     const before = s;
     for (const re of PROMPT_METADATA_PATTERNS) s = s.replace(re, '');
+    s = s.replace(DISCORD_CONTEXT_BLOCK, '');
     s = s.trimStart();
     changed = s !== before;
   }
-  return stripReplySuggestionMarkup(s).trim();
+  return stripReplySuggestionMarkup(s).replace(CHANNEL_RULE_CONTEXT, '').trim();
 }
 
 /**
@@ -50,15 +85,24 @@ export function stripPromptMetadata(text: string): string {
  * 表示用タイトルを生成する。50 文字に切り詰める。導出できなければ空文字。
  */
 export function deriveTitleFromFirstMessage(workdir: string, sessionId: string): string {
-  try {
-    const filePath = join(workdir, 'logs', 'sessions', `${sessionId}.jsonl`);
-    if (!existsSync(filePath)) return '';
-    const firstLine = readFileSync(filePath, 'utf-8').split('\n')[0];
-    if (!firstLine) return '';
-    const entry = JSON.parse(firstLine) as { role?: string; content?: unknown };
-    if (entry.role !== 'user' || typeof entry.content !== 'string') return '';
-    return stripPromptMetadata(entry.content).slice(0, 50);
-  } catch {
-    return '';
-  }
+  return stripPromptMetadata(readFirstUserContent(workdir, sessionId)).slice(0, 50);
+}
+
+/** セッション台帳から消えた古いログの activity thread ID を先頭プロンプトから復元する。 */
+export function deriveActivityThreadIdFromFirstMessage(
+  workdir: string,
+  sessionId: string
+): string | null {
+  const content = readFirstUserContent(workdir, sessionId);
+  const platform = content
+    .match(/^\[プラットフォーム:\s*([^\]]+)\]/m)?.[1]
+    ?.trim()
+    .toLowerCase();
+  if (platform === 'web') return `web:${sessionId}`;
+  if (platform !== 'discord' && platform !== 'slack') return null;
+
+  const threadId = content.match(/\/\s*thread:.*?\(ID:\s*([^)]+)\)/)?.[1]?.trim();
+  const channelId = content.match(/^\[チャンネル:.*?\(ID:\s*([^)]+)\)/m)?.[1]?.trim();
+  const contextId = threadId || channelId;
+  return contextId ? `${platform}:${contextId}` : null;
 }

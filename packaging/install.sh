@@ -157,6 +157,19 @@ unpacked="$staging/$ARCHIVE_ROOT"
 [[ -f "$unpacked/web/index.html" ]] || fail 'bundle is missing the Web Chat UI'
 [[ -f "$unpacked/web/monitor.html" ]] || fail 'bundle is missing the session monitor UI'
 [[ -f "$unpacked/web/inter-chat.html" ]] || fail 'bundle is missing the inter-instance chat UI'
+[[ -f "$unpacked/web/app/index.html" ]] || fail 'bundle is missing the React Web UI'
+web_app_refs="$(grep -oE '/app/[^"]+\.(js|css)' "$unpacked/web/app/index.html" || true)"
+[[ "$web_app_refs" == *".js"* && "$web_app_refs" == *".css"* ]] ||
+  fail 'bundle has incomplete React Web UI assets'
+while IFS= read -r web_app_ref; do
+  [[ -n "$web_app_ref" ]] || continue
+  web_app_relative="${web_app_ref#/app/}"
+  case "$web_app_relative" in
+    *..*|*\\*) fail 'bundle has unsafe React Web UI asset path' ;;
+  esac
+  [[ -f "$unpacked/web/app/$web_app_relative" ]] ||
+    fail 'bundle has incomplete React Web UI assets'
+done <<<"$web_app_refs"
 
 if [[ -e "$target" ]]; then
   backup="$versions_dir/.${RELEASE_VERSION}.backup.$$"
