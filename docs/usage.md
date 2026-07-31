@@ -512,21 +512,21 @@ docker build -t myapp . && \
 
 チャンネルごとにバックエンド・モデル・effortレベルを切り替えられます。
 
-| コマンド                                         | 説明                               |
-| ------------------------------------------------ | ---------------------------------- |
-| `/backend show`                                  | 現在のバックエンド・モデルを表示   |
-| `/backend set claude-code`                       | Claude Codeに切り替え              |
-| `/backend set cursor`                            | Cursor CLIに切り替え               |
-| `/backend set grok`                              | Grok CLIに切り替え                 |
-| `/backend set antigravity`                       | Antigravity CLIに切り替え          |
-| `/backend set local-llm --model nemotron-3-nano` | Local LLM + モデル指定             |
-| `/backend set claude-code --effort high`         | effort指定付きで切り替え           |
-| `/backend set codex --effort max`                | Codexをmax effortで実行             |
+| コマンド                                                    | 説明                                   |
+| ----------------------------------------------------------- | -------------------------------------- |
+| `/backend show`                                             | 現在のバックエンド・モデルを表示       |
+| `/backend set claude-code`                                  | Claude Codeに切り替え                  |
+| `/backend set cursor`                                       | Cursor CLIに切り替え                   |
+| `/backend set grok`                                         | Grok CLIに切り替え                     |
+| `/backend set antigravity`                                  | Antigravity CLIに切り替え              |
+| `/backend set local-llm --model nemotron-3-nano`            | Local LLM + モデル指定                 |
+| `/backend set claude-code --effort high`                    | effort指定付きで切り替え               |
+| `/backend set codex --effort max`                           | Codexをmax effortで実行                |
 | `/backend set cursor --model claude-opus-4-8 --effort high` | Cursorを明示モデル + high effortで実行 |
-| `/backend set grok --effort max`                 | Grokをmax effortで実行              |
-| `/backend set antigravity --effort high`         | Antigravityをhigh effortで実行      |
-| `/backend reset`                                 | デフォルト（.env設定）に戻す       |
-| `/backend list`                                  | 利用可能なバックエンド・モデル一覧 |
+| `/backend set grok --effort max`                            | Grokをmax effortで実行                 |
+| `/backend set antigravity --effort high`                    | Antigravityをhigh effortで実行         |
+| `/backend reset`                                            | デフォルト（.env設定）に戻す           |
+| `/backend list`                                             | 利用可能なバックエンド・モデル一覧     |
 
 切り替え時は自動的に新しいセッションが開始されます（会話履歴は引き継がれません）。
 
@@ -1242,6 +1242,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `TIMEOUT_MAX_MS`             | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`              |
 | `TIMEOUT_EXTEND_ENABLED`     | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                  |
 | `WEB_CHAT_UPLOAD_ACCEPT`     | Web Chat 受信ファイル許可リスト（カンマ区切り、HTML `<input accept>` 互換）                                             | 全許可                  |
+| `WEB_CHAT_UPLOAD_MAX_BYTES`  | Web Chatの1アップロード要求の上限byte数（multipartヘッダを含む）                                                        | `26214400` (25 MiB)     |
 | `WEB_CHAT_DOWNLOAD_ACCEPT`   | Web Chat ダウンロード許可拡張子リスト（`.html,.txt` 等）                                                                | 全許可                  |
 | `ALLOWED_BACKENDS`           | `/backend` で切り替え許可するバックエンド（カンマ区切り）。未設定なら全バックエンド許可                                 | 全バックエンド          |
 | `ALLOWED_MODELS`             | `/backend` で切り替え許可するモデル（カンマ区切り）                                                                     | -                       |
@@ -1275,16 +1276,32 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 ### WebチャットUI
 
-| 変数                          | 説明                                                                                                                                                                                                       | デフォルト        |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| `WEB_CHAT_ENABLED`            | WebチャットUIの有効化。`true` で `http://localhost:<WEB_CHAT_PORT>` を公開                                                                                                                                 | `false`           |
-| `WEB_REPLY_SUGGESTIONS`       | 回答下に折りたたみ返信候補を表示                                                                                                                                                                           | `false`           |
-| `WEB_REPLY_SUGGESTIONS_COUNT` | 返信候補数（1〜5）                                                                                                                                                                                         | `3`               |
-| `WEB_CHAT_PORT`               | WebチャットUIのポート                                                                                                                                                                                      | `18888`           |
-| `WEB_CHAT_HOST`               | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`         |
-| `WEB_CHAT_UPLOAD_ACCEPT`      | アップロード許可リスト (HTML `accept` 形式)。未設定なら全許可。`.ext` 部分はサーバでも検証される                                                                                                           | (未設定 / 全許可) |
+| 変数               | 説明                                                                                                                                                                                     | デフォルト |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `WEB_CHAT_ENABLED` | WebチャットUIの有効化。`true` で `http://localhost:<WEB_CHAT_PORT>` を公開                                                                                                               | `false`    |
+| `WEB_CHAT_PORT`    | WebチャットUIのポート                                                                                                                                                                    | `18888`    |
+| `WEB_CHAT_HOST`    | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`  |
 
-Webチャットを有効にすると、同じサーバで `http://localhost:<WEB_CHAT_PORT>/monitor` も利用できる。`/monitor` は読み取り専用のセッション監視ページで、Web / Discord / Slack セッションの実行状態、現在ターンの要約、直近ツール行、経過秒を一覧表示する。
+Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+
+Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトを設定できる。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
+
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。
+
+Chat / Workspace / Monitorは共通ヘッダーを使い、ナビゲーションと`表示`メニューの位置を揃える。端末設定・ライト・ダークの選択はブラウザに保存される。
+
+- hidden path、`.git`、`.xangi`、`.workspace_rag`、依存物、build/coverage成果物、symlinkは一覧・読込・保存のすべてで拒否する
+- ファイル作成・削除・rename・Git操作は行わず、既存の表示可能ファイルだけを保存する
+- 読込時のSHA-256を保存時に照合し、外部更新があればHTTP 409で停止する。保存は同じdirectory内の一時fileからatomic renameする
+- Web UI自体には認証がない。`WEB_CHAT_HOST=0.0.0.0`でLAN公開すると、Workspace画面も同じ範囲から読み書き可能になる
+
+Workspace API:
+
+- `GET /api/workspace/entries?path=<relative-directory>` — 直下の安全なdirectory/file一覧
+- `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
+- `PUT /api/workspace/file` — `{path, content, version}`。競合時は409
+
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。最初に最新150件を取得し、その後は`GET /api/sessions/stream`のSSEでターン開始・進捗・完了を受け取るため、セッション一覧を定期ポーリングしない。
 
 ### スケジューラ
 
@@ -1435,17 +1452,17 @@ Agy が成功終了しても stdout が空の場合、stderr に出力された 
 
 ### Slack
 
-| 変数                               | 説明                                                                               |
+| 変数 | 説明 |
 | ---------------------------------- | ---------------------------------------------------------------------------------- | ------- |
-| `SLACK_BOT_TOKEN`                  | Slack Bot Token（xoxb-...）                                                        |
-| `SLACK_APP_TOKEN`                  | Slack App Token（xapp-...）                                                        |
-| `SLACK_ALLOWED_USER`               | 許可ユーザーID                                                                     |
-| `SLACK_AUTO_REPLY_CHANNELS`        | メンションなしで応答するチャンネルID                                               |
-| `SLACK_REPLY_IN_THREAD`            | スレッド返信するか（デフォルト: `true`）                                           |
-| `SLACK_REPLY_IN_CHANNELS`          | スレッド返信が有効な場合でも、チャンネル直下に返信するチャンネルID（カンマ区切り） |
-| `SLACK_COMPLETION_NOTIFY_AFTER_MS` | スレッド返信しないSlackターンで完了通知を出す最短経過時間（ms）                    | `10000` |
-| `SLACK_REPLY_SUGGESTIONS`          | 本人だけに候補を展開する `返信候補` ボタンを表示                                   | `false` |
-| `SLACK_REPLY_SUGGESTIONS_COUNT`    | 返信候補数（1〜5）                                                                 | `3`     |
+| `SLACK_BOT_TOKEN` | Slack Bot Token（xoxb-...） |
+| `SLACK_APP_TOKEN` | Slack App Token（xapp-...） |
+| `SLACK_ALLOWED_USER` | 許可ユーザーID |
+| `SLACK_AUTO_REPLY_CHANNELS` | メンションなしで応答するチャンネルID |
+| `SLACK_REPLY_IN_THREAD` | スレッド返信するか（デフォルト: `true`） |
+| `SLACK_REPLY_IN_CHANNELS` | スレッド返信が有効な場合でも、チャンネル直下に返信するチャンネルID（カンマ区切り） |
+| `SLACK_COMPLETION_NOTIFY_AFTER_MS` | スレッド返信しないSlackターンで完了通知を出す最短経過時間（ms） | `10000` |
+| `SLACK_REPLY_SUGGESTIONS` | 本人だけに候補を展開する `返信候補` ボタンを表示 | `false` |
+| `SLACK_REPLY_SUGGESTIONS_COUNT` | 返信候補数（1〜5） | `3` |
 
 ## 複数インスタンスの運用
 

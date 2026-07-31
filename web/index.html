@@ -497,7 +497,7 @@
         overflow-wrap: anywhere;
       }
       /* 言語指定つき（language-xxx）は桁揃えのため折り返さない */
-      .msg.assistant pre code[class*="language-"] {
+      .msg.assistant pre code[class*='language-'] {
         white-space: pre;
         overflow-wrap: normal;
       }
@@ -599,8 +599,16 @@
         align-items: flex-end;
         flex-shrink: 0;
       }
-      .pane-composer {
+      /* Hallmark · component: command palette · genre: modern-minimal · theme: existing Linear
+       * states: default · hover · focus · active · disabled · loading · error · success
+       * contrast: pass
+       */
+      .pane-command-shell {
+        position: relative;
         flex: 1;
+        min-width: 0;
+      }
+      .pane-composer {
         display: flex;
         align-items: flex-end;
         gap: 6px;
@@ -612,6 +620,123 @@
           border-color 0.15s ease,
           box-shadow 0.15s ease;
         min-width: 0;
+      }
+      .pane-command-btn {
+        background: transparent;
+        border: none;
+        color: var(--ink-subtle);
+        width: 32px;
+        min-width: 32px;
+        height: 32px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font: 600 16px/1 var(--font-mono);
+      }
+      .pane-command-btn:hover,
+      .pane-command-btn[aria-expanded='true'] {
+        color: var(--ink);
+        background: var(--surface-2);
+      }
+      .pane-command-btn:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+      .pane-command-btn:active {
+        transform: translateY(1px);
+      }
+      .pane-command-btn:disabled {
+        color: var(--ink-tertiary);
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .pane-command-btn[data-state='loading'] {
+        color: var(--primary-hover);
+        background: var(--surface-2);
+      }
+      .pane-command-btn[data-state='error'] {
+        color: var(--danger);
+        background: var(--danger-bg);
+      }
+      .pane-command-btn[data-state='success'] {
+        color: var(--primary-hover);
+        background: var(--focus-ring);
+      }
+      .command-palette {
+        position: absolute;
+        z-index: 12;
+        left: 0;
+        right: 0;
+        bottom: calc(100% + 8px);
+        max-height: min(360px, 50dvh);
+        overflow-y: auto;
+        padding: 6px;
+        border: 1px solid var(--hairline-strong);
+        border-radius: var(--radius-lg);
+        background: var(--surface-1);
+        box-shadow: 0 14px 40px var(--canvas);
+      }
+      .command-palette[hidden] {
+        display: none;
+      }
+      .command-palette-title {
+        padding: 6px 9px;
+        color: var(--ink-tertiary);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .command-option {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px 12px;
+        padding: 9px;
+        border: 0;
+        border-radius: var(--radius-md);
+        background: transparent;
+        color: var(--ink);
+        text-align: left;
+        cursor: pointer;
+        font: inherit;
+      }
+      .command-option:hover,
+      .command-option.is-active,
+      .command-option:focus-visible {
+        background: var(--surface-2);
+        outline: none;
+      }
+      .command-option-name {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-family: var(--font-mono);
+        font-weight: 600;
+      }
+      .command-option-description {
+        grid-column: 1 / -1;
+        min-width: 0;
+        color: var(--ink-subtle);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .command-option-hint {
+        color: var(--ink-tertiary);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .command-empty {
+        padding: 14px 9px;
+        color: var(--ink-subtle);
+        font-size: 12px;
+      }
+      .command-error {
+        min-height: 18px;
+        padding: 3px 6px 0;
+        color: var(--danger);
+        font-size: 12px;
+      }
+      .command-error:empty {
+        display: none;
       }
       .pane-composer:focus-within {
         border-color: var(--primary-focus);
@@ -1267,17 +1392,17 @@
         <h1>xangi</h1>
         <span class="spacer"></span>
         <a
+          id="inter-chat-link"
           class="tool-link"
           href="/inter-chat"
           target="_blank"
           rel="noopener"
           title="inter-instance-chat 履歴ビューア (別タブで開く)"
+          hidden
         >
           🔁 inter-chat
         </a>
-        <a class="tool-link" href="/monitor" title="セッション監視">
-          ◉ monitor
-        </a>
+        <a class="tool-link" href="/monitor" title="セッション監視"> ◉ monitor </a>
         <span class="pane-count" id="pane-count">0 panes</span>
         <button
           class="add-pane-btn"
@@ -1303,6 +1428,7 @@
       const MAX_PANES = 8;
       const PANE_STATE_KEY = 'xangi_pane_state_v1';
       let allSessions = [];
+      let webCommands = [];
 
       // ─── タイムアウト管理 ───
       // sessionId → { timeoutAt, maxTimeoutAt, timeoutMs }
@@ -1333,9 +1459,7 @@
         var totalSec = Math.floor(ms / 1000);
         var m = Math.floor(totalSec / 60);
         var s = totalSec % 60;
-        return (
-          (m < 10 ? '0' + m : '' + m) + ':' + (s < 10 ? '0' + s : '' + s)
-        );
+        return (m < 10 ? '0' + m : '' + m) + ':' + (s < 10 ? '0' + s : '' + s);
       }
 
       // 1 秒ごとに session-row の timeout-display / extend-btn と、
@@ -1544,17 +1668,19 @@
             ev.stopPropagation();
             var codeEl = pre.querySelector('code') || pre;
             var txt = codeEl.innerText || codeEl.textContent || '';
-            copyText(txt).then(function () {
-              btn.textContent = 'Copied';
-              setTimeout(function () {
-                btn.textContent = 'Copy';
-              }, 1200);
-            }).catch(function () {
-              btn.textContent = 'Failed';
-              setTimeout(function () {
-                btn.textContent = 'Copy';
-              }, 1200);
-            });
+            copyText(txt)
+              .then(function () {
+                btn.textContent = 'Copied';
+                setTimeout(function () {
+                  btn.textContent = 'Copy';
+                }, 1200);
+              })
+              .catch(function () {
+                btn.textContent = 'Failed';
+                setTimeout(function () {
+                  btn.textContent = 'Copy';
+                }, 1200);
+              });
           });
           wrap.appendChild(btn);
         });
@@ -1659,6 +1785,14 @@
           inputArea.className = 'pane-input-area';
           var composer = document.createElement('div');
           composer.className = 'pane-composer';
+          var commandBtn = document.createElement('button');
+          commandBtn.type = 'button';
+          commandBtn.className = 'pane-command-btn';
+          commandBtn.textContent = '/';
+          commandBtn.title = 'コマンドとスキルを選択 (Ctrl+/)';
+          commandBtn.setAttribute('aria-label', 'コマンドとスキルを選択');
+          commandBtn.setAttribute('aria-expanded', 'false');
+          commandBtn.addEventListener('click', () => this._toggleCommandPalette());
           var attachBtn = document.createElement('button');
           attachBtn.className = 'pane-attach-btn';
           attachBtn.title = 'Attach file';
@@ -1681,10 +1815,30 @@
           this.inputEl.addEventListener('input', () => {
             this.inputEl.style.height = 'auto';
             this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + 'px';
+            this.commandErrorEl.textContent = '';
+            this._updateCommandPalette();
           });
+          composer.appendChild(commandBtn);
           composer.appendChild(attachBtn);
           composer.appendChild(this.fileInputEl);
           composer.appendChild(this.inputEl);
+          this.commandBtn = commandBtn;
+
+          var commandShell = document.createElement('div');
+          commandShell.className = 'pane-command-shell';
+          commandShell.appendChild(composer);
+          this.commandMenuEl = document.createElement('div');
+          this.commandMenuEl.className = 'command-palette';
+          this.commandMenuEl.hidden = true;
+          this.commandMenuEl.setAttribute('role', 'listbox');
+          commandShell.appendChild(this.commandMenuEl);
+          this.commandErrorEl = document.createElement('div');
+          this.commandErrorEl.className = 'command-error';
+          this.commandErrorEl.setAttribute('role', 'alert');
+          commandShell.appendChild(this.commandErrorEl);
+          this.commandOptions = [];
+          this.commandActiveIndex = 0;
+          this.webCommands = webCommands;
 
           this.sendBtn = document.createElement('button');
           this.sendBtn.className = 'pane-send action-btn';
@@ -1711,7 +1865,7 @@
           this.timeoutDisplay.className = 'pane-timeout';
           this.timeoutDisplay.style.display = 'none';
 
-          inputArea.appendChild(composer);
+          inputArea.appendChild(commandShell);
           inputArea.appendChild(this.sendBtn);
           inputArea.appendChild(this.stopBtn);
           inputArea.appendChild(this.extendBtn);
@@ -1721,12 +1875,341 @@
 
         _handleKey(e) {
           if (e.isComposing || e.keyCode === 229) return;
+          if (e.ctrlKey && e.key === '/') {
+            e.preventDefault();
+            this._toggleCommandPalette(true);
+            return;
+          }
+          if (!this.commandMenuEl.hidden) {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              this._closeCommandPalette();
+              return;
+            }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              var direction = e.key === 'ArrowDown' ? 1 : -1;
+              var count = this.commandOptions.length;
+              if (count > 0) {
+                this.commandActiveIndex = (this.commandActiveIndex + direction + count) % count;
+                this._paintCommandActive();
+              }
+              return;
+            }
+            if ((e.key === 'Tab' || e.key === 'Enter') && this.commandOptions.length > 0) {
+              e.preventDefault();
+              this._chooseCommandOption(this.commandOptions[this.commandActiveIndex]);
+              return;
+            }
+          }
           // スマホ幅では Enter を改行に使えるよう、送信はボタンのみに限定する。
           // ソフトキーボードでは Shift+Enter が事実上打てず、改行が入れられないため。
           var isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
           if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
             e.preventDefault();
             this.send();
+          }
+        }
+
+        _toggleCommandPalette(forceOpen) {
+          var shouldOpen = forceOpen === true || this.commandMenuEl.hidden;
+          if (!shouldOpen) {
+            this._closeCommandPalette();
+            return;
+          }
+          if (!this.inputEl.value.trim()) this.inputEl.value = '/';
+          this.commandMenuEl.hidden = false;
+          this.commandBtn.setAttribute('aria-expanded', 'true');
+          this._updateCommandPalette();
+          this._refreshCommandDefinitions();
+          this.inputEl.focus();
+        }
+
+        async _refreshCommandDefinitions() {
+          try {
+            var query = this.sessionId ? '?appSessionId=' + encodeURIComponent(this.sessionId) : '';
+            var response = await fetch('/api/web-commands' + query);
+            var data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Command metadata failed');
+            this.webCommands = data.commands || [];
+            if (!this.commandMenuEl.hidden) this._updateCommandPalette();
+          } catch (error) {
+            this.commandErrorEl.textContent = error.message || String(error);
+          }
+        }
+
+        _closeCommandPalette() {
+          this.commandMenuEl.hidden = true;
+          this.commandBtn.setAttribute('aria-expanded', 'false');
+          this.commandOptions = [];
+          this.commandActiveIndex = 0;
+        }
+
+        _updateCommandPalette() {
+          var value = this.inputEl.value;
+          if (!value.startsWith('/')) {
+            this._closeCommandPalette();
+            return;
+          }
+          var state = this._resolveCommandPalette(value);
+          if (state.done) {
+            this._closeCommandPalette();
+            return;
+          }
+          this._renderCommandOptions(state.options, state.title, state.emptyText);
+        }
+
+        _resolveCommandPalette(value) {
+          var trailingSpace = /\s$/.test(value);
+          var parts = value.trim().split(/\s+/);
+          var commandQuery = (parts.shift() || '').replace(/^\//, '').toLowerCase();
+          var commands = this.webCommands || webCommands;
+          var command = commands.find(function (candidate) {
+            return candidate.name.toLowerCase() === commandQuery;
+          });
+
+          if (!command || (parts.length === 0 && !trailingSpace)) {
+            return {
+              title: 'コマンドを選択',
+              options: commands
+                .filter(function (candidate) {
+                  return (
+                    !commandQuery ||
+                    candidate.name.toLowerCase().includes(commandQuery) ||
+                    candidate.description.toLowerCase().includes(commandQuery)
+                  );
+                })
+                .map(function (candidate) {
+                  return {
+                    type: 'command',
+                    name: '/' + candidate.name,
+                    description: candidate.description,
+                    hint: candidate.usage,
+                    usage: '/' + candidate.name + ' ',
+                  };
+                }),
+            };
+          }
+
+          var prefix = '/' + command.name;
+          var options = command.options || [];
+          var remaining = parts.slice();
+          while (options.length > 0) {
+            var subcommands = options.filter(function (option) {
+              return option.type === 'subcommand';
+            });
+            if (subcommands.length > 0) {
+              var subQuery = remaining[0] || '';
+              var subcommand = subcommands.find(function (option) {
+                return option.name.toLowerCase() === subQuery.toLowerCase();
+              });
+              if (!subcommand || (remaining.length === 1 && !trailingSpace)) {
+                return this._optionChoiceState(
+                  subcommands,
+                  subQuery,
+                  prefix,
+                  command.name + ' の操作を選択'
+                );
+              }
+              prefix += ' ' + subcommand.name;
+              remaining.shift();
+              options = subcommand.options || [];
+              if (options.length === 0) return { done: true };
+              continue;
+            }
+
+            var option = options[0];
+            var optionQuery = remaining[0] || '';
+            if (option.choices && option.choices.length > 0) {
+              var choice = option.choices.find(function (candidate) {
+                return candidate.value.toLowerCase() === optionQuery.toLowerCase();
+              });
+              if (!choice || (remaining.length === 1 && !trailingSpace)) {
+                return this._optionChoiceState(
+                  option.choices.map(function (candidate) {
+                    return {
+                      name: candidate.value,
+                      label: candidate.name,
+                      description: candidate.description || option.description,
+                      type: 'choice',
+                    };
+                  }),
+                  optionQuery,
+                  prefix,
+                  option.description
+                );
+              }
+              prefix += ' ' + choice.value;
+              remaining.shift();
+              options = options.slice(1);
+              if (options.length === 0) return { done: true };
+              continue;
+            }
+
+            if (!optionQuery) {
+              return {
+                title: option.description,
+                options: [],
+                emptyText: option.required
+                  ? option.description + 'を入力してください'
+                  : '必要なら' + option.description + 'を入力。省略して送信できます',
+              };
+            }
+            return { done: true };
+          }
+          return { done: true };
+        }
+
+        _optionChoiceState(options, query, prefix, title) {
+          var normalized = (query || '').toLowerCase();
+          return {
+            title: title,
+            options: options
+              .filter(function (option) {
+                var label = option.label || option.name;
+                return (
+                  !normalized ||
+                  option.name.toLowerCase().includes(normalized) ||
+                  label.toLowerCase().includes(normalized) ||
+                  (option.description || '').toLowerCase().includes(normalized)
+                );
+              })
+              .map(function (option) {
+                return {
+                  type: option.type || 'argument',
+                  name: option.label || option.name,
+                  description: option.description,
+                  hint: option.name,
+                  usage: prefix + ' ' + option.name + ' ',
+                };
+              }),
+          };
+        }
+
+        _renderCommandOptions(options, titleText, emptyText) {
+          this.commandMenuEl.hidden = false;
+          this.commandBtn.setAttribute('aria-expanded', 'true');
+          this.commandMenuEl.innerHTML = '';
+          var title = document.createElement('div');
+          title.className = 'command-palette-title';
+          title.textContent = titleText || 'コマンドを選択';
+          this.commandMenuEl.appendChild(title);
+          this.commandOptions = options;
+          this.commandActiveIndex = 0;
+          if (options.length === 0) {
+            var empty = document.createElement('div');
+            empty.className = 'command-empty';
+            empty.textContent = emptyText || '一致する候補がありません';
+            this.commandMenuEl.appendChild(empty);
+            return;
+          }
+          var self = this;
+          options.forEach(function (option, index) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'command-option' + (index === 0 ? ' is-active' : '');
+            button.setAttribute('role', 'option');
+            var name = document.createElement('span');
+            name.className = 'command-option-name';
+            name.textContent = option.name;
+            var hint = document.createElement('span');
+            hint.className = 'command-option-hint';
+            hint.textContent = option.hint || option.usage;
+            var description = document.createElement('span');
+            description.className = 'command-option-description';
+            description.textContent = option.description;
+            button.appendChild(name);
+            button.appendChild(hint);
+            button.appendChild(description);
+            button.addEventListener('mouseenter', function () {
+              self.commandActiveIndex = index;
+              self._paintCommandActive();
+            });
+            button.addEventListener('click', function () {
+              self._chooseCommandOption(option);
+            });
+            option.el = button;
+            self.commandMenuEl.appendChild(button);
+          });
+        }
+
+        _paintCommandActive() {
+          this.commandOptions.forEach(function (option, index) {
+            option.el.classList.toggle('is-active', index === this.commandActiveIndex);
+          }, this);
+          var active = this.commandOptions[this.commandActiveIndex];
+          if (active && active.el) active.el.scrollIntoView({ block: 'nearest' });
+        }
+
+        _chooseCommandOption(option) {
+          this.inputEl.value = option.usage;
+          this.inputEl.dispatchEvent(new Event('input'));
+          this.inputEl.focus();
+          this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+        }
+
+        async _executeCommand(input) {
+          this.commandBtn.disabled = true;
+          this.commandBtn.dataset.state = 'loading';
+          this.commandBtn.textContent = '…';
+          try {
+            var res = await fetch('/api/web-commands', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ appSessionId: this.sessionId, input: input }),
+            });
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Command failed');
+
+            if (data.kind === 'message') {
+              this.addMessage(input, 'user', { createdAt: new Date().toISOString() });
+              this.addMessage(data.message, 'assistant', { createdAt: new Date().toISOString() });
+            } else if (data.kind === 'skills') {
+              this.inputEl.value = '/skill ';
+              await this._refreshCommandDefinitions();
+              this._updateCommandPalette();
+              this.commandBtn.dataset.state = 'success';
+              return;
+            } else if (data.kind === 'chat') {
+              await this.send(data.message, data.displayMessage, {
+                commandResolved: true,
+                skipPermissions: data.skipPermissions === true,
+              });
+              this.commandBtn.dataset.state = 'success';
+              return;
+            } else if (data.kind === 'action') {
+              if (data.action === 'new') await this.newSession();
+              else if (data.action === 'stop') await this.stopChat();
+              else if (data.action === 'extend') await this.extendTimeout();
+              else if (data.action === 'restart') {
+                if (!confirm(data.message || 'xangiを再起動しますか？')) return;
+                var restartRes = await fetch('/api/web-commands', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    appSessionId: this.sessionId,
+                    input: input,
+                    confirm: true,
+                  }),
+                });
+                var restartData = await restartRes.json();
+                if (!restartRes.ok) throw new Error(restartData.error || 'Restart failed');
+                this.addMessage('再起動を開始しました。', 'assistant');
+              }
+            }
+            this.inputEl.value = '';
+            this._closeCommandPalette();
+            this.commandBtn.dataset.state = 'success';
+          } catch (error) {
+            this.commandErrorEl.textContent = error.message || String(error);
+            this.commandBtn.dataset.state = 'error';
+          } finally {
+            var commandBtn = this.commandBtn;
+            commandBtn.disabled = false;
+            commandBtn.textContent = '/';
+            setTimeout(function () {
+              delete commandBtn.dataset.state;
+            }, 1200);
           }
         }
 
@@ -1897,20 +2380,26 @@
             // 含まれる）。読み取りの間だけ display:none にして除外する。
             // clone せず display:none にすることで innerText の改行整形を維持する。
             var codeBtns = contentDiv.querySelectorAll('.code-copy-btn');
-            codeBtns.forEach(function (n) { n.style.display = 'none'; });
-            var txt = contentDiv.innerText || contentDiv.textContent || '';
-            codeBtns.forEach(function (n) { n.style.display = ''; });
-            copyText(txt).then(function () {
-              copyBtn.textContent = 'Copied';
-              setTimeout(function () {
-                copyBtn.textContent = 'Copy';
-              }, 1200);
-            }).catch(function () {
-              copyBtn.textContent = 'Failed';
-              setTimeout(function () {
-                copyBtn.textContent = 'Copy';
-              }, 1200);
+            codeBtns.forEach(function (n) {
+              n.style.display = 'none';
             });
+            var txt = contentDiv.innerText || contentDiv.textContent || '';
+            codeBtns.forEach(function (n) {
+              n.style.display = '';
+            });
+            copyText(txt)
+              .then(function () {
+                copyBtn.textContent = 'Copied';
+                setTimeout(function () {
+                  copyBtn.textContent = 'Copy';
+                }, 1200);
+              })
+              .catch(function () {
+                copyBtn.textContent = 'Failed';
+                setTimeout(function () {
+                  copyBtn.textContent = 'Copy';
+                }, 1200);
+              });
           });
           actions.appendChild(copyBtn);
 
@@ -2160,6 +2649,7 @@
           this.sendBtn.style.display = on ? 'none' : '';
           this.stopBtn.style.display = on ? 'inline-block' : 'none';
           this.inputEl.disabled = on;
+          this.commandBtn.disabled = on;
           // 処理 OFF になったら timeout UI も即剥がす (tick が走るまで待たない)
           if (!on) {
             if (this.timeoutDisplay) this.timeoutDisplay.style.display = 'none';
@@ -2171,10 +2661,18 @@
           extendSessionTimeout(this.sessionId, this.extendBtn);
         }
 
-        async send() {
-          var msg = this.inputEl.value.trim();
+        async send(messageOverride, displayOverride, commandOptions) {
+          commandOptions = commandOptions || {};
+          var msg =
+            typeof messageOverride === 'string'
+              ? messageOverride.trim()
+              : this.inputEl.value.trim();
           if (!msg || this.sending) return;
           if (this.platform !== 'web' && this.sessionId) return;
+          if (!commandOptions.commandResolved && msg.startsWith('/')) {
+            await this._executeCommand(msg);
+            return;
+          }
 
           var fullMsg = msg;
           if (this.pendingFiles.length > 0) {
@@ -2186,7 +2684,7 @@
             fullMsg = msg + '\n\n' + attachments;
           }
 
-          this.addMessage(msg, 'user', { createdAt: new Date().toISOString() });
+          this.addMessage(displayOverride || msg, 'user', { createdAt: new Date().toISOString() });
           var userWrapper = this.messagesEl.lastElementChild;
           if (this.pendingFiles.length > 0) {
             var lastWrapper = this.messagesEl.lastElementChild;
@@ -2253,7 +2751,11 @@
             var res = await fetch('/api/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ appSessionId: this.sessionId || undefined, message: fullMsg }),
+              body: JSON.stringify({
+                appSessionId: this.sessionId || undefined,
+                message: fullMsg,
+                skipPermissions: commandOptions.skipPermissions === true,
+              }),
               signal: this.abortController.signal,
             });
 
@@ -2540,7 +3042,10 @@
               return p.sessionId || null;
             });
             var activeIdx = this.panes.indexOf(this.activePane);
-            localStorage.setItem(PANE_STATE_KEY, JSON.stringify({ ids: ids, activeIdx: activeIdx }));
+            localStorage.setItem(
+              PANE_STATE_KEY,
+              JSON.stringify({ ids: ids, activeIdx: activeIdx })
+            );
           } catch (_) {
             // localStorage 不可 (プライベートブラウジング等) でも致命的ではないので無視
           }
@@ -2961,9 +3466,7 @@
           if (enabled) startAutoTalkPolling(id);
           else stopAutoTalkPolling(id);
           showToast(
-            enabled
-              ? '🤖 自走モード ON — agent がランダム間隔で発話します'
-              : '🤖 自走モード OFF',
+            enabled ? '🤖 自走モード ON — agent がランダム間隔で発話します' : '🤖 自走モード OFF',
             enabled ? 'success' : ''
           );
         } catch (e) {
@@ -3013,6 +3516,7 @@
 
       // ─── 初期化 ───
       window._uploadAccept = '';
+      window._webSkills = [];
       var timeoutExtendEnabled = true;
       (async function init() {
         try {
@@ -3022,8 +3526,18 @@
           if (typeof cfg.timeoutExtendEnabled === 'boolean') {
             timeoutExtendEnabled = cfg.timeoutExtendEnabled;
           }
+          if (cfg.interChatEnabled === true) {
+            document.getElementById('inter-chat-link')?.removeAttribute('hidden');
+          }
         } catch (e) {
           /* 失敗時はフィルタ無し (全許可) のまま */
+        }
+        try {
+          var commandsRes = await fetch('/api/web-commands');
+          var commandsData = await commandsRes.json();
+          webCommands = commandsData.commands || [];
+        } catch (e) {
+          webCommands = [];
         }
         loadSessions();
         // 前回開いていたペイン構成を localStorage から復元する。

@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <title>xangi monitor</title>
     <style>
+      /* Hallmark · pre-emit critique: P4 H5 E4 S5 R5 V4
+       * genre: modern-minimal · macrostructure: workbench · designed-as-app
+       */
       :root {
         color-scheme: dark;
         --canvas: #08090a;
@@ -49,6 +52,7 @@
       body {
         margin: 0;
         min-height: 100dvh;
+        overflow-x: clip;
         background: var(--canvas);
         color: var(--text);
         font-family: var(--font);
@@ -65,10 +69,12 @@
         top: 0;
         z-index: 2;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr);
         gap: 12px;
         align-items: center;
-        padding: 12px 16px;
+        padding:
+          12px max(16px, env(safe-area-inset-right)) 12px
+          max(16px, env(safe-area-inset-left));
         border-bottom: 1px solid var(--border);
         background: color-mix(in srgb, var(--canvas) 92%, transparent);
         backdrop-filter: blur(12px);
@@ -81,11 +87,35 @@
         font-weight: 650;
       }
 
+      .header-primary {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .back-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        padding: 8px 12px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
       .meta {
         display: flex;
+        min-width: 0;
         flex-wrap: wrap;
         gap: 6px;
-        justify-content: flex-end;
+        justify-content: flex-start;
         color: var(--muted);
         font-size: 12px;
       }
@@ -101,24 +131,30 @@
         white-space: nowrap;
       }
 
-      .toolbar {
-        display: flex;
-        gap: 8px;
-        padding: 10px 16px;
-        border-bottom: 1px solid var(--border);
-        overflow-x: auto;
+      #source {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
-      button,
-      a.nav {
-        min-height: 38px;
+      .toolbar {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        padding:
+          10px max(16px, env(safe-area-inset-right)) 10px
+          max(16px, env(safe-area-inset-left));
+        border-bottom: 1px solid var(--border);
+      }
+
+      button {
+        min-height: 42px;
         border: 1px solid var(--border);
         border-radius: var(--radius);
         background: var(--surface);
         color: var(--text);
         padding: 8px 12px;
         font: inherit;
-        text-decoration: none;
         white-space: nowrap;
       }
 
@@ -131,15 +167,39 @@
         background: color-mix(in srgb, var(--accent) 24%, var(--surface));
       }
 
+      button:hover,
+      .back-link:hover {
+        border-color: var(--border-strong);
+        background: var(--surface-alt);
+      }
+
+      button:focus-visible,
+      .back-link:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      button:active,
+      .back-link:active {
+        background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
       main {
         width: min(1120px, 100%);
         margin: 0 auto;
-        padding: 12px;
+        padding:
+          12px max(12px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
       }
 
       #summary {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
         margin-bottom: 12px;
       }
@@ -154,7 +214,8 @@
       }
 
       .metric {
-        min-height: 64px;
+        min-width: 0;
+        min-height: 76px;
         padding: 10px 12px;
       }
 
@@ -168,6 +229,8 @@
         margin-top: 6px;
         color: var(--muted);
         font-size: 12px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
       }
 
       .legend {
@@ -387,16 +450,25 @@
         text-align: center;
       }
 
-      @media (max-width: 680px) {
+      @media (min-width: 42.5rem) {
         header {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr) auto;
         }
 
         .meta {
-          justify-content: flex-start;
+          justify-content: flex-end;
         }
 
-        #summary,
+        .toolbar {
+          display: flex;
+        }
+
+        .toolbar button {
+          min-width: 84px;
+        }
+      }
+
+      @media (max-width: 42.499rem) {
         .row {
           grid-template-columns: 9px minmax(0, 1fr);
         }
@@ -408,21 +480,16 @@
         }
       }
 
-      @media (max-width: 420px) {
+      @media (max-width: 26.25rem) {
         h1 {
           font-size: 18px;
         }
 
-        main {
-          padding: 8px;
-        }
-
         .toolbar {
-          padding: 8px;
-        }
-
-        #summary {
-          grid-template-columns: 1fr;
+          gap: 6px;
+          padding-inline:
+            max(8px, env(safe-area-inset-left))
+            max(8px, env(safe-area-inset-right));
         }
 
         .title,
@@ -439,7 +506,10 @@
   </head>
   <body>
     <header>
-      <h1>xangi monitor</h1>
+      <div class="header-primary">
+        <a class="back-link" href="/" aria-label="チャットへ戻る">← チャット</a>
+        <h1>Monitor</h1>
+      </div>
       <div class="meta">
         <span class="pill" id="updated">--</span>
         <span class="pill" id="status">loading</span>
@@ -453,15 +523,13 @@
       <button data-filter="chat">Chat</button>
       <button data-filter="web">Web</button>
       <button data-filter="all">All</button>
-      <a class="nav" href="/">Open chat</a>
     </nav>
     <main>
       <section id="summary" aria-label="summary"></section>
       <section class="legend" aria-label="legend">
         <span>実行中: 返答・tool実行中</span>
-        <span>入力待ち: runnerあり、操作待ち</span>
         <span>履歴: 過去ログ</span>
-        <span>監視中: 実行中/入力待ち/直近履歴</span>
+        <span>監視中: 実行中/直近履歴</span>
         <span>内部イベント保存: logs/monitor-activity</span>
         <span>行をタップで詳細</span>
       </section>
@@ -494,7 +562,7 @@
       });
 
       function isRunning(s) {
-        return Boolean(s.activity && s.activity.active);
+        return s.isActive === true;
       }
 
       function isChatPlatform(s) {
@@ -507,7 +575,7 @@
       }
 
       function isWatchTarget(s) {
-        return isRunning(s) || s.isActive || isRecent(s);
+        return isRunning(s) || isRecent(s);
       }
 
       function platformLabel(p) {
@@ -518,25 +586,22 @@
       }
 
       function stateLabel(s) {
-        if (s.activity && s.activity.active) {
-          if (s.activity.state === 'tool') return 'tool実行中';
-          if (s.activity.state === 'streaming') return '応答中';
-          if (s.activity.state === 'thinking') return '考え中';
-          return s.activity.state;
+        if (isRunning(s)) {
+          if (s.activity && s.activity.state === 'tool') return 'tool実行中';
+          if (s.activity && s.activity.state === 'streaming') return '応答中';
+          if (s.activity && s.activity.state === 'thinking') return '考え中';
+          return (s.activity && s.activity.state) || '実行中';
         }
-        if (s.isActive) return '入力待ち';
         return '履歴';
       }
 
       function stateDescription(s) {
-        if (s.activity && s.activity.active) return '今このターンが動いている';
-        if (s.isActive) return 'このチャンネル/セッションのrunnerは残っていて、次の入力を待っている';
-        return '過去の会話ログ。現在の処理や待機runnerではない';
+        if (isRunning(s)) return '今このターンが動いている';
+        return '過去の会話ログ。現在の処理はない';
       }
 
       function sessionLine(s) {
         if (s.activity && s.activity.summary) return s.activity.summary;
-        if (s.isActive) return '入力待ち: runnerは残っているが現在の返答処理はない';
         return '履歴: 現在の処理なし';
       }
 
@@ -581,9 +646,7 @@
       function visibleSessions() {
         return filteredSessions()
           .sort(function (a, b) {
-            var ar = isRunning(a) ? 2 : a.isActive ? 1 : 0;
-            var br = isRunning(b) ? 2 : b.isActive ? 1 : 0;
-            if (ar !== br) return br - ar;
+            if (isRunning(a) !== isRunning(b)) return isRunning(b) ? 1 : -1;
             return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
           })
           .slice(0, filter === 'watch' ? watchRows : maxRows);
@@ -606,13 +669,9 @@
       function renderSummary() {
         summaryEl.textContent = '';
         var running = sessions.filter(isRunning).length;
-        var active = sessions.filter(function (s) {
-          return s.isActive;
-        }).length;
         var recent = sessions.filter(isRecent).length;
         var shown = visibleSessions().length;
         summaryEl.appendChild(metric(String(running), '実行中ターン'));
-        summaryEl.appendChild(metric(String(active), '入力待ちrunner'));
         summaryEl.appendChild(metric(String(recent), '24時間以内の更新'));
         summaryEl.appendChild(metric(String(shown), '表示中'));
       }
@@ -710,7 +769,7 @@
           empty.className = 'empty';
           empty.textContent =
             filter === 'watch'
-              ? '実行中または入力待ちのセッションはありません'
+              ? '実行中または最近のセッションはありません'
               : 'No sessions';
           sessionsEl.appendChild(empty);
           return;
@@ -731,7 +790,7 @@
 
           var dot = document.createElement('div');
           dot.className =
-            'dot' + (errored ? ' error' : running ? ' running' : s.isActive ? ' active' : '');
+            'dot' + (errored ? ' error' : running ? ' running' : '');
           row.appendChild(dot);
 
           var body = document.createElement('div');

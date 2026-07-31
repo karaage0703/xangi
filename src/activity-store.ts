@@ -1,5 +1,13 @@
 import type { Platform } from './events-emitter.js';
-import { appendFileSync, mkdirSync } from 'fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+} from 'fs';
 import { join } from 'path';
 
 export type ActivityState =
@@ -26,6 +34,14 @@ export interface ActivityHistoryEvent {
   state: ActivityState;
   summary: string;
   at: number;
+}
+
+export interface ToolHistoryEntry {
+  at: number;
+  turnId: string;
+  toolName: string;
+  summary: string;
+  inputPreview?: string;
 }
 
 interface ActivityRecord {
@@ -61,8 +77,25 @@ const maxUserChars = 80;
 const maxToolLines = 3;
 const maxHistoryEvents = 12;
 const monitorActivityDir = 'logs/monitor-activity';
+const maxToolHistoryReadBytes = 1024 * 1024;
 
 const activities = new Map<string, ActivityRecord>();
+const activityListeners = new Set<(threadId: string) => void>();
+
+function notifyActivity(threadId: string): void {
+  for (const listener of activityListeners) {
+    try {
+      listener(threadId);
+    } catch {
+      // An observer must not interrupt the activity lifecycle.
+    }
+  }
+}
+
+export function subscribeActivity(listener: (threadId: string) => void): () => void {
+  activityListeners.add(listener);
+  return () => activityListeners.delete(listener);
+}
 
 function now(): number {
   return Date.now();
@@ -105,6 +138,60 @@ function summarizeTool(toolName: string, toolInput: Record<string, unknown>): st
 
 function safeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 160) || 'unknown';
+}
+
+export function readToolHistory(threadId: string, requestedLimit = 100): ToolHistoryEntry[] {
+  const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit) || 100));
+  const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const file = join(workdir, monitorActivityDir, `${safeFilePart(threadId)}.jsonl`);
+  if (!existsSync(file)) return [];
+
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const bytesToRead = Math.min(size, maxToolHistoryReadBytes);
+    const offset = size - bytesToRead;
+    const buffer = Buffer.alloc(bytesToRead);
+    readSync(fd, buffer, 0, bytesToRead, offset);
+    let text = buffer.toString('utf8');
+    if (offset > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+
+    const result: ToolHistoryEntry[] = [];
+    const lines = text.trimEnd().split('\n');
+    for (let index = lines.length - 1; index >= 0 && result.length < limit; index -= 1) {
+      try {
+        const event = JSON.parse(lines[index]) as {
+          ts?: string;
+          state?: string;
+          turnId?: string;
+          toolName?: string;
+          summary?: string;
+          toolInputPreview?: string;
+        };
+        if (event.state !== 'tool' || !event.turnId || !event.toolName || !event.ts) continue;
+        const at = Date.parse(event.ts);
+        if (!Number.isFinite(at)) continue;
+        result.push({
+          at,
+          turnId: event.turnId,
+          toolName: event.toolName,
+          summary: event.summary || event.toolName,
+          inputPreview: event.toolInputPreview,
+        });
+      } catch {
+        // A partially written or old malformed line must not hide the remaining history.
+      }
+    }
+    return result.reverse();
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function appendActivityLog(
@@ -212,6 +299,7 @@ export function startActivity(ctx: ActivityContext): void {
   });
   const record = activities.get(ctx.threadId);
   if (record) appendActivityLog(record, record.state, record.summary, t);
+  notifyActivity(ctx.threadId);
 }
 
 export function updateActivityText(ctx: ActivityContext, fullText: string): void {
@@ -230,6 +318,7 @@ export function updateActivityText(ctx: ActivityContext, fullText: string): void
     t,
     { coalesceSameState: true, persist: false }
   );
+  notifyActivity(ctx.threadId);
 }
 
 export function updateActivityTool(
@@ -249,6 +338,7 @@ export function updateActivityTool(
     toolName,
     toolInputPreview: truncate(maskSensitive(JSON.stringify(toolInput)), maxToolInputChars),
   });
+  notifyActivity(ctx.threadId);
 }
 
 export function completeActivity(ctx: ActivityContext, resultText?: string): void {
@@ -262,6 +352,7 @@ export function completeActivity(ctx: ActivityContext, resultText?: string): voi
   record.updatedAt = t;
   record.active = false;
   pushHistory(record, record.state, historyPreview ? `完了: ${historyPreview}` : '完了', t);
+  notifyActivity(ctx.threadId);
 }
 
 export function abortActivity(ctx: ActivityContext): void {
@@ -272,6 +363,7 @@ export function abortActivity(ctx: ActivityContext): void {
   record.updatedAt = t;
   record.active = false;
   pushHistory(record, record.state, record.summary, t);
+  notifyActivity(ctx.threadId);
 }
 
 export function errorActivity(ctx: ActivityContext, message: string): void {
@@ -282,6 +374,7 @@ export function errorActivity(ctx: ActivityContext, message: string): void {
   record.updatedAt = t;
   record.active = false;
   pushHistory(record, record.state, record.summary, t);
+  notifyActivity(ctx.threadId);
 }
 
 export function getActivity(threadId: string, at: number = now()): ActivitySnapshot | undefined {

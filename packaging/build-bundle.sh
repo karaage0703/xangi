@@ -81,6 +81,26 @@ NODE
 for web_asset in index.html monitor.html inter-chat.html; do
   [[ -f "$project_root/web/$web_asset" ]] || { echo "Missing web/$web_asset" >&2; exit 2; }
 done
+[[ -f "$project_root/web/app/index.html" ]] || { echo "Missing web/app/index.html" >&2; exit 2; }
+node - "$project_root/web/app/index.html" "$project_root/web/app" <<'NODE' || {
+const fs = require('node:fs');
+const path = require('node:path');
+const [indexPath, appRoot] = process.argv.slice(2);
+const html = fs.readFileSync(indexPath, 'utf8');
+const refs = [...html.matchAll(/(?:src|href)="\/app\/([^"]+)"/g)].map((match) => match[1]);
+if (!refs.some((ref) => ref.endsWith('.js')) || !refs.some((ref) => ref.endsWith('.css'))) {
+  throw new Error('web/app/index.html must reference bundled JS and CSS');
+}
+for (const ref of refs) {
+  const resolved = path.resolve(appRoot, ref);
+  if (!resolved.startsWith(`${path.resolve(appRoot)}${path.sep}`) || !fs.statSync(resolved).isFile()) {
+    throw new Error(`Missing or unsafe web app asset: ${ref}`);
+  }
+}
+NODE
+  echo "Invalid web/app asset manifest" >&2
+  exit 2
+}
 [[ -d "$project_root/node_modules" ]] || { echo "Missing node_modules directory" >&2; exit 2; }
 [[ -f "$node_binary" && -x "$node_binary" ]] || {
   echo "--node-binary must point to an executable file" >&2
@@ -123,6 +143,7 @@ cp -R -- "$project_root/docs" "$bundle_root/docs"
 cp -- "$project_root/web/index.html" "$bundle_root/web/index.html"
 cp -- "$project_root/web/monitor.html" "$bundle_root/web/monitor.html"
 cp -- "$project_root/web/inter-chat.html" "$bundle_root/web/inter-chat.html"
+cp -R -- "$project_root/web/app" "$bundle_root/web/app"
 cp -- "$project_root/README.md" "$bundle_root/README.md"
 cp -- "$project_root/README.en.md" "$bundle_root/README.en.md"
 cp -- "$project_root/package.json" "$bundle_root/package.json"

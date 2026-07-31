@@ -36,8 +36,12 @@ export interface SessionEntry {
   messageCount: number;
   agent?: AgentInfo;
   archived: boolean;
+  /** Webへ引き継いだ元セッション。最初の発話で履歴を注入した後に消費する。 */
+  resumedFromSessionId?: string;
   /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
   autoTalk?: boolean;
+  /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
+  projectId?: string;
 }
 
 interface SessionsFile {
@@ -265,7 +269,14 @@ export const WEB_CHAT_CONTEXT_PREFIX = 'web-chat:';
  * Web 用のセッションを作成する。contextKey は `web-chat:<appSessionId>` で自動生成。
  * 同時に複数の Web セッションを保持・操作できる。
  */
-export function createWebSession(opts: { title?: string; backend?: string } = {}): string {
+export function createWebSession(
+  opts: {
+    title?: string;
+    backend?: string;
+    resumedFromSessionId?: string;
+    projectId?: string;
+  } = {}
+): string {
   const appId = generateAppSessionId();
   const ctxKey = `${WEB_CHAT_CONTEXT_PREFIX}${appId}`;
   const now = new Date().toISOString();
@@ -282,10 +293,22 @@ export function createWebSession(opts: { title?: string; backend?: string } = {}
     messageCount: 0,
     agent: opts.backend ? { backend: opts.backend } : undefined,
     archived: false,
+    resumedFromSessionId: opts.resumedFromSessionId,
+    projectId: opts.projectId,
   };
   data.activeByContext[ctxKey] = appId;
   saveSessionsToFile();
   return appId;
+}
+
+/**
+ * Web resume 元を消費済みにする。履歴は最初の発話にだけ注入する。
+ */
+export function clearResumedFromSessionId(appSessionId: string): void {
+  const entry = data.sessions[appSessionId];
+  if (!entry?.resumedFromSessionId) return;
+  delete entry.resumedFromSessionId;
+  saveSessionsToFile();
 }
 
 /**

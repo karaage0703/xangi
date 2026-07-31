@@ -27,6 +27,7 @@ import {
 import {
   processReplySuggestion,
   registerDiscordMessageHandlers,
+  type DiscordRemoteInputBridge,
 } from './discord/message-handler.js';
 import { finalizeActiveStreams } from './stream-finalizer.js';
 import { registerDiscordSchedulerBridge } from './discord/scheduler-bridge.js';
@@ -74,6 +75,7 @@ async function acquireDataDirLock(dataDir: string): Promise<(() => Promise<void>
 
 async function main() {
   const config = loadConfig();
+  const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
 
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
   const discordAllowed = config.discord.allowedUsers || [];
@@ -129,7 +131,7 @@ async function main() {
     `[xangi] Using ${backendName} as agent backend (platform: ${config.agent.platform ?? 'all'})`
   );
 
-  // スキルを読み込み（`/skills` 再読込と共有する可変参照）
+  // スキルを読み込み（`/skill` 再読込と共有する可変参照）
   const workdir = config.agent.config.workdir || process.cwd();
   const skillsRef: SkillsRef = { current: loadSkills(workdir) };
   console.log(`[xangi] Loaded ${skillsRef.current.length} skills from ${workdir}`);
@@ -174,6 +176,11 @@ async function main() {
       agentRunner,
       historyPrefetch: config.historyPrefetch,
       replySuggestions: config.web,
+      config,
+      resolver,
+      scheduler,
+      skillsRef,
+      discordRemoteInputRef,
     });
   }
 
@@ -345,7 +352,12 @@ async function main() {
     });
 
     // メッセージ系イベント (MessageCreate / MessageUpdate / MessageDelete) を登録
-    registerDiscordMessageHandlers({ client, config, agentRunner, workdir });
+    discordRemoteInputRef.current = registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir,
+    });
 
     // Discordボットを起動
     await client.login(config.discord.token);

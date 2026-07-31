@@ -127,4 +127,25 @@ describe('DynamicRunnerManager platform routing', () => {
 
     expect(run).toHaveBeenCalledWith('prompt', { effort: 'max' });
   });
+
+  it('delegates hasRunner to a channel-specific runner', () => {
+    const config = makeConfig('discord');
+    const manager = new DynamicRunnerManager(config, new BackendResolver(config));
+    const hasRunner = vi.fn().mockReturnValue(false);
+
+    (
+      manager as unknown as {
+        channelRunners: Map<string, { runner: { hasRunner: typeof hasRunner }; key: string }>;
+      }
+    ).channelRunners.set('web-chat:session-1', {
+      runner: { hasRunner },
+      key: 'codex:test:web:',
+    });
+
+    expect(manager.hasRunner('web-chat:session-1')).toBe(false);
+    expect(hasRunner).toHaveBeenCalledWith('web-chat:session-1');
+
+    hasRunner.mockReturnValue(true);
+    expect(manager.hasRunner('web-chat:session-1')).toBe(true);
+  });
 });

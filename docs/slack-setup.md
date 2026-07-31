@@ -119,8 +119,7 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | Command   | Description                                     |
 | --------- | ----------------------------------------------- |
 | `/new`    | 新しいセッションを開始                          |
-| `/skills` | 利用可能なスキル一覧                            |
-| `/skill`  | スキルを実行（Usage Hint: `<スキル名> [引数]`） |
+| `/skill`  | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`） |
 
 ⚠️ Socket Mode では Request URL は不要です。
 
@@ -173,7 +172,7 @@ Slack で以下を試す：
 - Bot をメンション: `@xangi こんにちは！`
 - DM を送信
 - `/new` コマンド
-- `/skills` コマンド
+- `/skill` コマンド
 - bot 投稿に `:wastebasket:` または `:x:` リアクションを付けて削除
 
 ## IDの調べ方

@@ -80,7 +80,7 @@ docker compose up -d --build
 docker compose logs -f xangi
 ```
 
-Try `/new` or `/skills` in your Discord server, or mention the bot:
+Try `/new` or `/skill` in your Discord server, or mention the bot:
 
 ```
 @xangi Hello!

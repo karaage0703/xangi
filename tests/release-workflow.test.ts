@@ -41,4 +41,18 @@ describe('release asset workflow', () => {
     );
     expect(workflow).toContain('--manifest-url "$latest_base/$(basename "$manifest")"');
   });
+
+  it('keeps release job inputs without duplicating published release assets', () => {
+    const buildJob = workflow.slice(
+      workflow.indexOf('  build-bundles:'),
+      workflow.indexOf('  publish-assets:')
+    );
+    const publishJob = workflow.slice(workflow.indexOf('  publish-assets:'));
+
+    expect(buildJob).toContain('uses: actions/upload-artifact@v7');
+    expect(buildJob).toContain('retention-days: 7');
+    expect(publishJob).toContain('gh release upload');
+    expect(publishJob).not.toContain('actions/upload-artifact');
+    expect(workflow).not.toContain('name: release-assets-${{ env.RELEASE_TAG }}');
+  });
 });

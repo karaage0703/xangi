@@ -25,6 +25,16 @@ describe('stripPromptMetadata', () => {
     expect(stripPromptMetadata(input)).toBe('web からの発話');
   });
 
+  it('Web Projectの追加プロンプトを表示用本文から剥がす', () => {
+    const input = `[プラットフォーム: Web]
+<web-project-context name="調査">
+一次情報を優先する
+</web-project-context>
+
+表示したい質問`;
+    expect(stripPromptMetadata(input)).toBe('表示したい質問');
+  });
+
   it('メタデータ無しの素のテキストはそのまま', () => {
     expect(stripPromptMetadata('生のメッセージ')).toBe('生のメッセージ');
   });
@@ -58,6 +68,35 @@ xangiが初期文脈確認用の直近履歴を先読み済みです。
 [発言者: からあげ]
 表示したい発言`;
     expect(stripPromptMetadata(input)).toBe('表示したい発言');
+  });
+
+  it('再起動注記とDiscordのスレッド文脈を剥がして実際の発言だけを返す', () => {
+    const input = `[システム注記: xangi プロセスは 2026/7/30 12:24:55 に起動（再起動）した。]
+[プラットフォーム: Discord]
+[チャンネル: #dev_xangi / thread: 表示確認 (ID: 123)]
+[発言者: からあげ (ID: 456)]
+[現在時刻: 2026/7/30 12:27:45(木)]
+
+---
+🧵 スレッド元 (karaage0703):
+最初の話題です
+---
+実際に表示したい発言です`;
+    expect(stripPromptMetadata(input)).toBe('実際に表示したい発言です');
+  });
+
+  it('返信元とチャンネルルールを表示用本文から剥がす', () => {
+    const input = `[プラットフォーム: Discord]
+[発言者: からあげ]
+---
+💬 返信元 (borot-xangi#8987):
+以前の回答です
+---
+この部分だけ表示します
+
+[チャンネルルール（必ず従うこと）]
+内部ルール`;
+    expect(stripPromptMetadata(input)).toBe('この部分だけ表示します');
   });
 });
 
@@ -97,6 +136,18 @@ describe('deriveTitleFromFirstMessage', () => {
     const longBody = 'あ'.repeat(100);
     writeLog('sess2', [{ id: 'm1', role: 'user', content: longBody, createdAt: '' }]);
     expect(deriveTitleFromFirstMessage(workdir, 'sess2')).toHaveLength(50);
+  });
+
+  it('先頭JSONL行が64KiBを超えてもタイトルを導出する', () => {
+    writeLog('sess-large', [
+      {
+        id: 'm1',
+        role: 'user',
+        content: '大'.repeat(70_000),
+        createdAt: '',
+      },
+    ]);
+    expect(deriveTitleFromFirstMessage(workdir, 'sess-large')).toBe('大'.repeat(50));
   });
 
   it('ログファイルが無いセッションは空文字', () => {

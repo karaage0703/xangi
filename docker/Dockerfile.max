@@ -7,8 +7,10 @@ COPY package*.json ./
 RUN npm ci
 
 COPY tsconfig.json ./
+COPY vite.config.ts ./
 COPY src/ ./src/
 COPY web/ ./web/
+COPY web-ui/ ./web-ui/
 RUN npm run build
 
 # Stage 2: Production (Full version with uv + Python)

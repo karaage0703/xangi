@@ -18,6 +18,8 @@ An AI assistant for Discord / Slack / Telegram / browser / LINE, powered by Clau
 - Skills, scheduler, and event triggers
 - Docker, pm2, and auto-restart support
 - Session persistence, timeout extension, and workspace hooks
+- Browse and edit workspace Markdown and code from Web Chat
+- Group conversations into logical Web Projects with an optional extra prompt (without creating directories)
 
 ## Architecture
 
@@ -218,6 +220,9 @@ npm start
 ```
 
 Open `http://localhost:18888` in your browser.
+The UI loads only the latest 100 sessions and the latest 50 messages in the selected session. Open `http://localhost:18888/workspace` to browse and edit Markdown and code inside the same `WORKSPACE_PATH`. Files can be sorted by name or modification time and filtered by Markdown frontmatter tags; on phones, the file list and editor switch as full-screen views. Chat, Workspace, and Monitor support system, light, and dark themes. Open `http://localhost:18888/monitor` to follow Web, Discord, and Slack activity over SSE.
+
+The Workspace screen excludes hidden files, `.git`, `.xangi`, dependencies, build outputs, files larger than 1 MiB, and symbolic links. It edits existing files only, detects external changes before saving, and replaces files atomically. The Web UI has no application-level authentication, so LAN access also exposes workspace editing to the same network scope.
 
 > 💡 The Web Chat UI is opt-in (`WEB_CHAT_ENABLED=true`) to avoid surprise port conflicts. Change the port with `WEB_CHAT_PORT`.
 > 💡 See [Slack Setup](docs/en/slack-setup.md) for Slack integration.

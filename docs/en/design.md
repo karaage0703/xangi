@@ -93,12 +93,16 @@ Based on `@slack/bolt`.
 
 Lightweight server based on `http.createServer` (no Express dependency).
 
-- Per-pane session isolation (`contextKey = web:<paneId>`), exposed on `WEB_CHAT_PORT`
-- SSE delivers streaming responses plus timeout events (`timeout-started/extended/cleared`) to the frontend
-- The frontend ticks every second to update the remaining time (no additional API calls)
-- File upload / download accepted extensions are gated by `WEB_CHAT_UPLOAD_ACCEPT` / `WEB_CHAT_DOWNLOAD_ACCEPT`
-- `GET /api/sessions` includes an `activity` snapshot for each managed session. `activity-store.ts` keeps the current turn state, summary, recent tool lines, and elapsed seconds in process memory
-- `/monitor` is a read-only session monitoring page. It polls the same `/api/sessions` endpoint every 2 seconds and sorts running sessions first. Rows and text are sized for phone and Even G2 viewing
+- A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
+- Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops
+- Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
+- Web Projects are logical namespaces equivalent to Discord channels. Names and extra prompts are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. Creating a Project never creates a directory, Git repository, or instruction file
+- `GET /api/sessions` returns only the latest 100 sessions plus `activity`; title derivation reads the first JSONL line in chunks instead of each complete log
+- Project filtering happens server-side in both `GET /api/sessions` and `GET /api/sessions/stream`. Typing in search no longer reconnects SSE, and the redundant initial search request is skipped
+- `/monitor` is a read-only mode of the same React app. It receives turn-boundary snapshots from `GET /api/sessions/stream` and does not poll
+- `/workspace` is the workspace browser/editor mode of the same React app. `workspace-browser.ts` accepts only workspace-relative paths below `WORKSPACE_PATH`; it excludes hidden/state/dependency/build paths, symlinks, non-text files, and files larger than 1 MiB. It extracts `tags` from Markdown YAML frontmatter so the UI can filter tags and sort by name or modification time. Saves compare the SHA-256 captured at read time and atomically rename a temporary file in the same directory. External changes return 409 so the UI can require a reload
+- Chat, Workspace, and Monitor share a common top bar and theme selector so navigation and display controls stay fixed. The system/light/dark preference is stored in localStorage and switches semantic color tokens through `data-theme`
+- React is bundled into static assets at build time, so distributed installations add no frontend runtime dependency beyond Node.js
 
 ### macOS, Linux, and WSL2 setup and update core
 
@@ -555,11 +559,11 @@ Design rationale: Step A's skill hinting is usually decisive — by surfacing "w
 
 `isSafeForRescue(name, args)` decides whether a parsed pseudo tool_call may be executed. We avoid a denylist approach (rejecting specific dangerous commands like `rm/curl/git`) because such lists are easy to bypass; instead, only an explicit allowlist is permitted:
 
-| Category                    | Allowed                                                                                                                                                                                      |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Category                    | Allowed                                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Direct read-only tools      | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
-| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}`                |
-| Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                     |
+| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}`                    |
+| Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                                         |
 
 Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pseudo_format` structured error that nudges the LLM toward the proper function_calling structure.
 

@@ -5,10 +5,19 @@
  * 同時に複数のセッションを保持・操作できる。
  */
 import { createServer } from 'http';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
-import { join, dirname, extname, basename } from 'path';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
+  mkdirSync,
+  realpathSync,
+} from 'fs';
+import { join, dirname, extname, basename, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
+import type { DiscordRemoteInputBridge } from './discord/message-handler.js';
 import {
   getSession,
   setSession,
@@ -19,6 +28,7 @@ import {
   updateSessionTitle,
   incrementMessageCount,
   createWebSession,
+  clearResumedFromSessionId,
   setProviderSessionId,
   removeSession,
   setAutoTalk,
@@ -26,14 +36,21 @@ import {
 } from './sessions.js';
 import {
   readSessionMessages,
+  readSessionMessagesPage,
+  readSessionMessagesTail,
   updateMessageContent,
   deleteMessage as deleteTranscriptMessage,
+  ensureVisibleAssistantResponse,
 } from './transcript-logger.js';
-import { threadIdFor, turnIdFor, events } from './events-emitter.js';
-import { getActivity } from './activity-store.js';
+import { threadIdFor, turnIdFor, events, subscribeEvents } from './events-emitter.js';
+import { getActivity, readToolHistory, subscribeActivity } from './activity-store.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
-import { deriveTitleFromFirstMessage, stripPromptMetadata } from './session-title.js';
+import {
+  deriveActivityThreadIdFromFirstMessage,
+  deriveTitleFromFirstMessage,
+  stripPromptMetadata,
+} from './session-title.js';
 import { isSchedulerRunId } from './scheduler-run.js';
 import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
 import { flowFromHostPlatform, getInterChatConfig } from './inter-instance-chat/index.js';
@@ -52,11 +69,105 @@ import {
 } from './reply-suggestions.js';
 import type { Config } from './config.js';
 import { loadReplySuggestionsEnabled } from './settings.js';
+import type { BackendResolver } from './backend-resolver.js';
+import type { Scheduler } from './scheduler.js';
+import type { Skill } from './skills.js';
+import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
+import { executeWebCommand, getWebCommandDefinitions } from './web-slash-commands.js';
+import { WorkspaceBrowser, WorkspaceBrowserError } from './workspace-browser.js';
+import { prependWebProjectPrompt, WebProjectError, WebProjectStore } from './web-projects.js';
+import { registerStreamFinalizer } from './stream-finalizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const DEFAULT_PORT = 18888;
+const SESSION_LIST_LIMIT = 100;
+const SESSION_LIST_MAX_LIMIT = 200;
+const SESSION_MESSAGE_LIMIT = 50;
+const SESSION_MESSAGE_MAX_LIMIT = 200;
+const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
+  '.html',
+  '.htm',
+  '.xhtml',
+  '.svg',
+  '.js',
+  '.mjs',
+  '.css',
+  '.xml',
+]);
+
+function isRealPathWithin(root: string, target: string): boolean {
+  try {
+    const realRoot = realpathSync(root);
+    const realTarget = realpathSync(target);
+    const fromRoot = relative(realRoot, realTarget);
+    return fromRoot === '' || (!fromRoot.startsWith('..') && !isAbsolute(fromRoot));
+  } catch {
+    return false;
+  }
+}
+
+function isRealFileWithin(root: string, target: string): boolean {
+  try {
+    return isAbsolute(target) && isRealPathWithin(root, target) && statSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function parseDisplayedUserAttachments(
+  content: string,
+  allowedRoots: string[]
+): { content: string; attachments: string[] } {
+  const attachments: string[] = [];
+  const displayLines: string[] = [];
+  const lines = content.split('\n');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const marker = line.match(/^\[添付ファイル\](?:[ \t]+(.+?))?[ \t]*$/);
+    if (!marker) {
+      displayLines.push(line);
+      continue;
+    }
+
+    const candidates: string[] = [];
+    if (marker[1]) candidates.push(marker[1].trim());
+
+    while (index + 1 < lines.length) {
+      const bullet = lines[index + 1].match(/^[ \t]*-[ \t]+(.+?)[ \t]*$/);
+      if (!bullet) break;
+      index += 1;
+      candidates.push(bullet[1].trim());
+    }
+
+    for (const candidate of candidates) {
+      if (
+        allowedRoots.some((root) => isRealFileWithin(root, candidate)) &&
+        !attachments.includes(candidate)
+      ) {
+        attachments.push(candidate);
+      }
+    }
+  }
+
+  return {
+    content: displayLines
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim(),
+    attachments,
+  };
+}
+
+function uploadMaxBytes(): number {
+  const configured = Number(process.env.WEB_CHAT_UPLOAD_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : DEFAULT_UPLOAD_MAX_BYTES;
+}
 
 /** appSessionId に対応する contextKey を返す */
 function webContextKey(appSessionId: string): string {
@@ -80,14 +191,13 @@ function sessionThreadId(session: {
   return null;
 }
 
-/** resume 後の最初のメッセージで履歴注入を行う対象 appSessionId */
-const pendingHistoryInjections = new Set<string>();
-
 /** 同一 appSessionId への並行送信を抑止するためのビジー集合 */
 const busySessions = new Set<string>();
 
 function hasInternalPromptMetadata(text: string): boolean {
-  return /\[runtime\]|<prefetched-history\b|(?:<|\[)system-context(?:>|\])|<xangi_reply/.test(text);
+  return /\[システム注記:|\[runtime\]|<prefetched-history\b|(?:<|\[)system-context(?:>|\])|<xangi_reply|(?:🧵 スレッド元|💬 返信元)|\[チャンネルルール（必ず従うこと）\]/.test(
+    text
+  );
 }
 
 interface WebChatOptions {
@@ -95,6 +205,11 @@ interface WebChatOptions {
   port?: number;
   historyPrefetch?: Config['historyPrefetch'];
   replySuggestions?: Config['web'];
+  config?: Config;
+  resolver?: BackendResolver;
+  scheduler?: Scheduler;
+  skillsRef?: { current: Skill[] };
+  discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
 }
 
@@ -108,6 +223,39 @@ export function startWebChat(options: WebChatOptions): void {
   const port = options.port || parseInt(process.env.WEB_CHAT_PORT || String(DEFAULT_PORT), 10);
   const host = options.host || process.env.WEB_CHAT_HOST || '0.0.0.0';
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
+  const workspaceBrowser = new WorkspaceBrowser(workdir);
+  const webProjects = WebProjectStore.fromDataDir(dataDir);
+
+  const resolveProject = (projectId: unknown) => {
+    if (typeof projectId !== 'string' || !projectId.trim()) return undefined;
+    const project = webProjects.get(projectId.trim());
+    if (!project) throw new WebProjectError('Projectが見つかりません', 404);
+    return project;
+  };
+
+  options.scheduler?.registerAgentRunner('web', async (prompt, appSessionId) => {
+    const entry = getSessionEntry(appSessionId);
+    if (!entry || entry.platform !== 'web') {
+      throw new Error(`Web session ${appSessionId} not found`);
+    }
+    const contextKey = webContextKey(appSessionId);
+    const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+    const result = await agentRunner.run(
+      `[プラットフォーム: Web]\n${prependWebProjectPrompt(project, prompt)}`,
+      {
+        sessionId: getSession(contextKey),
+        channelId: contextKey,
+        settingsChannelId: contextKey,
+        appSessionId,
+        platform: 'web',
+      }
+    );
+    setSession(contextKey, result.sessionId);
+    setProviderSessionId(appSessionId, result.sessionId);
+    incrementMessageCount(appSessionId);
+    return result.result;
+  });
 
   // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
   // バックエンドでも .ext 部分を抽出して拡張子検証する。MIME パターン (image/* など) は
@@ -132,8 +280,192 @@ export function startWebChat(options: WebChatOptions): void {
         .filter((s) => s.startsWith('.'))
     : [];
 
+  const interChatEnabled = getInterChatConfig().enabled;
+
   // 自走モード（auto-talk）の準備。inter-chat 有効時のみ実体起動。
-  const autoTalkHandle = getInterChatConfig().enabled ? setupAutoTalk({ agentRunner }) : null;
+  const autoTalkHandle = interChatEnabled ? setupAutoTalk({ agentRunner }) : null;
+
+  const buildSessionsResponse = (
+    query: {
+      limit?: number;
+      offset?: number;
+      cursor?: string;
+      q?: string;
+      projectId?: string;
+    } = {}
+  ) => {
+    const limit = Math.min(
+      SESSION_LIST_MAX_LIMIT,
+      Math.max(1, Math.floor(query.limit ?? SESSION_LIST_LIMIT))
+    );
+    const offset = Math.max(0, Math.floor(query.offset ?? 0));
+    const normalizedQuery = (query.q || '').trim().toLowerCase();
+
+    const allManaged = listAllSessions();
+    const managedIds = new Set(allManaged.map((session) => session.id));
+    const managed = allManaged.map((s) => {
+      const isCurrentSession = s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id;
+      const threadId = isCurrentSession ? sessionThreadId(s) : null;
+      const activity = threadId ? getActivity(threadId) : undefined;
+      const isActive = activity?.active === true;
+      const timeoutState =
+        isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
+      const storedTitle = s.title || '';
+      const transcriptPath = join(workdir, 'logs', 'sessions', `${s.id}.jsonl`);
+      const transcriptUpdatedAt = existsSync(transcriptPath)
+        ? statSync(transcriptPath).mtime.toISOString()
+        : undefined;
+      return {
+        id: s.id,
+        title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
+        platform: s.platform,
+        contextKey: s.contextKey,
+        createdAt: s.createdAt,
+        updatedAt: activity?.updatedAt
+          ? new Date(activity.updatedAt).toISOString()
+          : transcriptUpdatedAt || s.updatedAt,
+        messageCount: s.messageCount,
+        isActive,
+        autoTalk: s.autoTalk === true,
+        autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
+        timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
+        maxTimeoutAt: timeoutState?.active ? timeoutState.maxTimeoutAt : undefined,
+        timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
+        activity,
+        projectId: s.projectId,
+      };
+    });
+
+    const sessionsDir = join(workdir, 'logs', 'sessions');
+    const unmanagedCandidates: Array<{
+      id: string;
+      createdAt: string;
+      updatedAt: string;
+    }> = [];
+    if (existsSync(sessionsDir)) {
+      for (const file of readdirSync(sessionsDir)) {
+        if (!file.endsWith('.jsonl')) continue;
+        const id = file.replace('.jsonl', '');
+        if (managedIds.has(id) || isSchedulerRunId(id)) continue;
+        const stat = statSync(join(sessionsDir, file));
+        unmanagedCandidates.push({
+          id,
+          createdAt: stat.birthtime.toISOString(),
+          updatedAt: stat.mtime.toISOString(),
+        });
+      }
+    }
+
+    const unmanaged = unmanagedCandidates.flatMap((candidate) => {
+      const title = deriveTitleFromFirstMessage(workdir, candidate.id);
+      if (!title) return [];
+      return [
+        {
+          ...candidate,
+          title,
+          platform: 'discord',
+          contextKey: '',
+          messageCount: 0,
+          isActive: false,
+          autoTalk: false,
+          autoTalkActive: false,
+          timeoutAt: undefined,
+          maxTimeoutAt: undefined,
+          timeoutMs: undefined,
+          activity: undefined,
+          projectId: undefined,
+        },
+      ];
+    });
+
+    const titleCache = new Map<string, string>();
+    const resolveTitle = (candidate: (typeof managed)[number] | (typeof unmanaged)[number]) => {
+      const cached = titleCache.get(candidate.id);
+      if (cached !== undefined) return cached;
+      const title =
+        candidate.title ||
+        deriveTitleFromFirstMessage(workdir, candidate.id) ||
+        candidate.contextKey ||
+        candidate.id;
+      titleCache.set(candidate.id, title);
+      return title;
+    };
+
+    const matching = [...managed, ...unmanaged]
+      .filter((candidate) => {
+        if (query.projectId === '__none__' && candidate.projectId) return false;
+        if (
+          query.projectId &&
+          query.projectId !== '__none__' &&
+          candidate.projectId !== query.projectId
+        ) {
+          return false;
+        }
+        if (!normalizedQuery) return true;
+        return [
+          resolveTitle(candidate),
+          candidate.id,
+          candidate.platform,
+          candidate.contextKey,
+        ].some((value) => value.toLowerCase().includes(normalizedQuery));
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const cursorSeparator = query.cursor?.indexOf('\t') ?? -1;
+    const cursorUpdatedAt =
+      cursorSeparator >= 0 ? query.cursor?.slice(0, cursorSeparator) : undefined;
+    const cursorId = cursorSeparator >= 0 ? query.cursor?.slice(cursorSeparator + 1) : undefined;
+    const cursorFiltered =
+      cursorUpdatedAt && cursorId
+        ? matching.filter(
+            (candidate) =>
+              candidate.updatedAt < cursorUpdatedAt ||
+              (candidate.updatedAt === cursorUpdatedAt && candidate.id < cursorId)
+          )
+        : matching;
+    const total = matching.length;
+    const pageStart = query.cursor ? 0 : offset;
+    const pageCandidates = cursorFiltered.slice(pageStart, pageStart + limit);
+    const sessions = pageCandidates.map((candidate) => ({
+      ...candidate,
+      title: resolveTitle(candidate),
+    }));
+    const nextOffset = offset + sessions.length;
+    const hasMore = pageStart + sessions.length < cursorFiltered.length;
+    const lastSession = sessions.at(-1);
+
+    return {
+      sessions,
+      meta: {
+        limit,
+        offset,
+        q: query.q || '',
+        total,
+        hasMore,
+        nextOffset: hasMore ? nextOffset : null,
+        nextCursor: hasMore && lastSession ? `${lastSession.updatedAt}\t${lastSession.id}` : null,
+        processCwd: process.cwd(),
+        workdir,
+        pid: process.pid,
+        pmId: process.env.pm_id,
+      },
+    };
+  };
+
+  const sessionSnapshotListeners = new Set<() => void>();
+  const invalidateSessionSnapshots = () => {
+    if (sessionSnapshotListeners.size === 0) return;
+    try {
+      for (const listener of sessionSnapshotListeners) {
+        try {
+          listener();
+        } catch {
+          // A disconnected SSE client must not fail the mutation that triggered invalidation.
+        }
+      }
+    } catch {
+      // Snapshot refresh is best-effort and must not fail the completed mutation.
+    }
+  };
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url || '/';
@@ -205,9 +537,16 @@ export function startWebChat(options: WebChatOptions): void {
       }
     }
 
-    if (url === '/' || url === '/index.html') {
+    if (
+      url === '/' ||
+      url === '/index.html' ||
+      url === '/monitor' ||
+      url === '/monitor.html' ||
+      url === '/workspace' ||
+      url === '/workspace/'
+    ) {
       try {
-        const htmlPath = join(__dirname, '..', 'web', 'index.html');
+        const htmlPath = join(__dirname, '..', 'web', 'app', 'index.html');
         const html = readFileSync(htmlPath, 'utf-8');
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -218,25 +557,36 @@ export function startWebChat(options: WebChatOptions): void {
         res.end(html);
       } catch {
         res.writeHead(500);
-        res.end('web/index.html not found');
+        res.end('web/app/index.html not found');
       }
       return;
     }
 
-    if (url === '/monitor' || url === '/monitor.html') {
+    if (url.startsWith('/app/')) {
       try {
-        const htmlPath = join(__dirname, '..', 'web', 'monitor.html');
-        const html = readFileSync(htmlPath, 'utf-8');
+        const relativePath = decodeURIComponent(url.slice('/app/'.length));
+        if (!relativePath || relativePath.includes('..') || relativePath.includes('\\')) {
+          res.writeHead(404);
+          res.end('Not found');
+          return;
+        }
+        const assetPath = join(__dirname, '..', 'web', 'app', relativePath);
+        const contentType =
+          extname(assetPath) === '.js'
+            ? 'text/javascript; charset=utf-8'
+            : extname(assetPath) === '.css'
+              ? 'text/css; charset=utf-8'
+              : extname(assetPath) === '.svg'
+                ? 'image/svg+xml'
+                : 'application/octet-stream';
         res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          Pragma: 'no-cache',
-          Expires: '0',
+          'Content-Type': contentType,
+          'Cache-Control': 'public, max-age=31536000, immutable',
         });
-        res.end(html);
+        res.end(readFileSync(assetPath));
       } catch {
-        res.writeHead(500);
-        res.end('web/monitor.html not found');
+        res.writeHead(404);
+        res.end('Not found');
       }
       return;
     }
@@ -254,107 +604,329 @@ export function startWebChat(options: WebChatOptions): void {
         JSON.stringify({
           uploadAccept: uploadAccept || null,
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
+          interChatEnabled,
         })
       );
       return;
     }
 
-    // GET /api/sessions — セッション一覧
-    if (url === '/api/sessions' && req.method === 'GET') {
-      // managed: sessions.json に登録された非アーカイブセッション。
-      // タイトルが空なら最初のユーザーメッセージから導出し、それも無ければ
-      // contextKey をそのまま見せる（Discord/Slack はチャンネル ID、Web は web-chat:<id>）。
-      const managed = listAllSessions().map((s) => {
-        const isCurrentSession = s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id;
-        const isActive =
-          Boolean(s.contextKey && agentRunner.hasRunner?.(s.contextKey)) && isCurrentSession;
-        // 🟢 = サーバ側で runner プロセスが pool に居る + そのセッションが
-        // contextKey の current（Web は contextKey が appSessionId 個別なので常に current）
-        // 進行中リクエストがあれば timeoutAt / maxTimeoutAt を載せる (UI のカウントダウン用)
-        const timeoutState =
-          isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
-        const threadId = isCurrentSession ? sessionThreadId(s) : null;
-        const storedTitle = s.title || '';
-        const title =
-          (storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '') ||
-          deriveTitleFromFirstMessage(workdir, s.id) ||
-          s.contextKey;
-        const activity = threadId ? getActivity(threadId) : undefined;
-        const transcriptPath = join(workdir, 'logs', 'sessions', `${s.id}.jsonl`);
-        const transcriptUpdatedAt = existsSync(transcriptPath)
-          ? statSync(transcriptPath).mtime.toISOString()
-          : undefined;
-        const updatedAt = activity?.updatedAt
-          ? new Date(activity.updatedAt).toISOString()
-          : transcriptUpdatedAt || s.updatedAt;
-        return {
-          id: s.id,
-          title,
-          platform: s.platform,
-          contextKey: s.contextKey,
-          createdAt: s.createdAt,
-          updatedAt,
-          messageCount: s.messageCount,
-          isActive,
-          autoTalk: s.autoTalk === true,
-          autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
-          timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
-          maxTimeoutAt: timeoutState?.active ? timeoutState.maxTimeoutAt : undefined,
-          timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
-          activity,
-        };
-      });
-      const managedIds = new Set(managed.map((s) => s.id));
-
-      // logs/sessions/ ディレクトリにしか痕跡が無いセッション（移行・剪定済み）も拾う。
-      // managed に同じ id があれば既に出してるのでスキップ。
-      const sessionsDir = join(workdir, 'logs', 'sessions');
-      const unmanaged: typeof managed = [];
-      if (existsSync(sessionsDir)) {
-        for (const file of readdirSync(sessionsDir)) {
-          if (!file.endsWith('.jsonl')) continue;
-          const id = file.replace('.jsonl', '');
-          if (managedIds.has(id)) continue;
-          if (isSchedulerRunId(id)) continue;
-          const filePath = join(sessionsDir, file);
-          const stat = statSync(filePath);
-          const title = deriveTitleFromFirstMessage(workdir, id);
-          if (!title) continue; // 本文が抽出できないログは出さない
-          unmanaged.push({
-            id,
-            title,
-            platform: 'discord',
-            contextKey: '',
-            createdAt: stat.birthtime.toISOString(),
-            updatedAt: stat.mtime.toISOString(),
-            messageCount: 0,
-            isActive: false,
-            autoTalk: false,
-            autoTalkActive: false,
-            timeoutAt: undefined,
-            maxTimeoutAt: undefined,
-            timeoutMs: undefined,
-            activity: undefined,
-          });
-        }
+    // Workspace browser/editor. Paths are always workspace-relative and validated again
+    // by WorkspaceBrowser before filesystem access.
+    if (url === '/api/workspace/entries' && req.method === 'GET') {
+      try {
+        const directory =
+          new URL(rawUrl, 'http://localhost').searchParams.get('path')?.trim() || '';
+        const result = await workspaceBrowser.list(directory);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
+      return;
+    }
 
-      const sessions = [...managed, ...unmanaged].sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt)
-      );
+    if (url === '/api/workspace/file' && req.method === 'GET') {
+      try {
+        const filePath = new URL(rawUrl, 'http://localhost').searchParams.get('path')?.trim() || '';
+        const result = await workspaceBrowser.read(filePath);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
 
+    if (url === '/api/workspace/file' && req.method === 'PUT') {
+      try {
+        const body = await readBody(req);
+        const result = await workspaceBrowser.write(
+          typeof body.path === 'string' ? body.path : '',
+          body.content,
+          body.version
+        );
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    // GET /api/web-commands — Web入力欄の候補と引数ヒント
+    if (url === '/api/web-commands' && req.method === 'GET') {
+      const appSessionId = new URL(rawUrl, 'http://localhost').searchParams.get('appSessionId');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          sessions,
-          meta: {
-            processCwd: process.cwd(),
+          commands: getWebCommandDefinitions({
+            appSessionId: appSessionId || undefined,
             workdir,
-            pid: process.pid,
-            pmId: process.env.pm_id,
-          },
+            config: options.config,
+            resolver: options.resolver,
+            scheduler: options.scheduler,
+            skillsRef: options.skillsRef,
+          }),
         })
       );
+      return;
+    }
+
+    // POST /api/web-commands — Web専用アダプタでslash commandを解釈・実行
+    if (url === '/api/web-commands' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const input = String(body.input || '').trim();
+        if (!input.startsWith('/')) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'command must start with /' }));
+          return;
+        }
+        const result = executeWebCommand(input, {
+          appSessionId: body.appSessionId ? String(body.appSessionId) : undefined,
+          workdir,
+          config: options.config,
+          resolver: options.resolver,
+          scheduler: options.scheduler,
+          skillsRef: options.skillsRef,
+        });
+
+        if (result.kind === 'action' && result.action === 'restart') {
+          if (!canSelfRestart(getSelfLifecyclePermission())) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                error:
+                  '自己再起動が無効です。XANGI_SELF_LIFECYCLE=restart-only を設定してください。',
+              })
+            );
+            return;
+          }
+          if (body.confirm !== true) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ...result, confirmationRequired: true }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ...result, confirmationRequired: false }));
+          setTimeout(() => process.exit(0), 250);
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    // Web Projectは会話を束ねる論理単位。workspaceやディレクトリは作成しない。
+    if (url === '/api/projects' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ projects: webProjects.list() }));
+      return;
+    }
+
+    if (url === '/api/projects' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const project = webProjects.create({
+          name: String(body.name || ''),
+          prompt: String(body.prompt || ''),
+        });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ project }));
+      } catch (error) {
+        const status = error instanceof WebProjectError ? error.status : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const projectMatch = url.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectMatch && req.method === 'PATCH') {
+      try {
+        const projectId = decodeURIComponent(projectMatch[1]);
+        const body = await readBody(req);
+        const project = webProjects.update(projectId, {
+          name: body.name === undefined ? undefined : String(body.name),
+          prompt: body.prompt === undefined ? undefined : String(body.prompt),
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ project }));
+      } catch (error) {
+        const status = error instanceof WebProjectError ? error.status : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    // GET /api/sessions — セッション一覧
+    if (url === '/api/sessions' && req.method === 'GET') {
+      const searchParams = new URL(rawUrl, 'http://localhost').searchParams;
+      const requestedLimit = Number(searchParams.get('limit'));
+      const requestedOffset = Number(searchParams.get('offset'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify(
+          buildSessionsResponse({
+            limit:
+              Number.isFinite(requestedLimit) && requestedLimit > 0
+                ? requestedLimit
+                : SESSION_LIST_LIMIT,
+            offset: Number.isFinite(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0,
+            cursor: searchParams.get('cursor') || undefined,
+            q: searchParams.get('q') || '',
+            projectId: searchParams.get('projectId') || undefined,
+          })
+        )
+      );
+      return;
+    }
+
+    // GET /api/sessions/stream — Monitor/Web Chat 共通の軽量更新通知。
+    // 初期 snapshot を即返し、その後は turn の境界イベントだけを差分送信する。
+    if (url === '/api/sessions/stream' && req.method === 'GET') {
+      const streamProjectId =
+        new URL(rawUrl, 'http://localhost').searchParams.get('projectId') || undefined;
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      let closed = false;
+      let backpressured = false;
+      let pendingSnapshot: string | undefined;
+      const writeSse = (frame: string): boolean => {
+        if (closed || backpressured || res.destroyed || res.writableEnded) return false;
+        try {
+          const accepted = res.write(frame);
+          if (!accepted) backpressured = true;
+          return accepted;
+        } catch {
+          return false;
+        }
+      };
+      const sendSnapshot = () => {
+        const payload = JSON.stringify(buildSessionsResponse({ projectId: streamProjectId }));
+        if (backpressured) {
+          pendingSnapshot = payload;
+          return;
+        }
+        writeSse(`event: sessions\ndata: ${payload}\n\n`);
+      };
+      const handleDrain = () => {
+        backpressured = false;
+        if (pendingSnapshot) {
+          pendingSnapshot = undefined;
+          sendSnapshot();
+        }
+      };
+      res.on('drain', handleDrain);
+      sendSnapshot();
+      sessionSnapshotListeners.add(sendSnapshot);
+      const unsubscribe = subscribeEvents(
+        (event) => {
+          if (
+            event.type === 'turn.started' ||
+            event.type === 'turn.complete' ||
+            event.type === 'turn.aborted' ||
+            event.type === 'agent.error'
+          ) {
+            writeSse(`event: activity\ndata: ${JSON.stringify(event)}\n\n`);
+          }
+        },
+        { whenDisabled: true }
+      );
+      const pendingActivityThreads = new Set<string>();
+      let activityFlushTimer: NodeJS.Timeout | undefined;
+      const flushActivities = () => {
+        activityFlushTimer = undefined;
+        if (closed || res.destroyed || res.writableEnded) return;
+        for (const threadId of pendingActivityThreads) {
+          const activity = getActivity(threadId);
+          if (activity) {
+            writeSse(
+              `event: activity_snapshot\ndata: ${JSON.stringify({ threadId, activity })}\n\n`
+            );
+          }
+        }
+        pendingActivityThreads.clear();
+      };
+      const unsubscribeActivity = subscribeActivity((threadId) => {
+        pendingActivityThreads.add(threadId);
+        activityFlushTimer ??= setTimeout(flushActivities, 150);
+      });
+      const keepAlive = setInterval(() => {
+        writeSse(': keep-alive\n\n');
+      }, 25_000);
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(keepAlive);
+        if (activityFlushTimer) clearTimeout(activityFlushTimer);
+        unsubscribe();
+        unsubscribeActivity();
+        sessionSnapshotListeners.delete(sendSnapshot);
+        res.off('drain', handleDrain);
+        pendingActivityThreads.clear();
+        pendingSnapshot = undefined;
+      };
+      req.on('close', cleanup);
+      res.on('close', cleanup);
+      res.on('error', cleanup);
+      return;
+    }
+
+    // GET /api/sessions/:id/tool-history — 永続化されたツール実行履歴を遅延取得
+    const toolHistoryMatch = url.match(/^\/api\/sessions\/([^/]+)\/tool-history$/);
+    if (toolHistoryMatch && req.method === 'GET') {
+      const appSessionId = decodeURIComponent(toolHistoryMatch[1]);
+      const entry = getSessionEntry(appSessionId);
+      const transcriptPath = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
+      if (!entry && !existsSync(transcriptPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      const threadId =
+        (entry ? sessionThreadId(entry) : null) ||
+        deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
+      const requestedLimit = Number(new URL(rawUrl, 'http://localhost').searchParams.get('limit'));
+      const tools = threadId
+        ? readToolHistory(
+            threadId,
+            Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 100
+          )
+        : [];
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ tools }));
       return;
     }
 
@@ -367,7 +939,33 @@ export function startWebChat(options: WebChatOptions): void {
     ) {
       const appSessionId = decodeURIComponent(url.replace('/api/sessions/', ''));
       const entry = getSessionEntry(appSessionId);
-      const messages = readSessionMessages(workdir, appSessionId).map((m) => {
+      const searchParams = new URL(rawUrl, 'http://localhost').searchParams;
+      const requestedLimit = Number(searchParams.get('limit'));
+      const requestedBefore = Number(searchParams.get('before'));
+      const requestedCursor = Number(searchParams.get('cursor'));
+      const limit = Math.min(
+        SESSION_MESSAGE_MAX_LIMIT,
+        Number.isFinite(requestedLimit) && requestedLimit > 0
+          ? Math.floor(requestedLimit)
+          : SESSION_MESSAGE_LIMIT
+      );
+      const before =
+        Number.isFinite(requestedBefore) && requestedBefore >= 0 ? Math.floor(requestedBefore) : 0;
+      const cursorMode = searchParams.has('cursor');
+      const cursorPage = cursorMode
+        ? readSessionMessagesPage(
+            workdir,
+            appSessionId,
+            limit,
+            Number.isFinite(requestedCursor) && requestedCursor >= 0 ? requestedCursor : undefined
+          )
+        : undefined;
+      const rawMessages = cursorPage
+        ? cursorPage.entries
+        : readSessionMessagesTail(workdir, appSessionId, limit + 1, before);
+      const hasMore = cursorPage?.hasMore ?? rawMessages.length > limit;
+      const pageMessages = cursorPage ? rawMessages : hasMore ? rawMessages.slice(1) : rawMessages;
+      const messages = pageMessages.map((m) => {
         const isObj = typeof m.content === 'object' && m.content !== null;
         const obj = isObj ? (m.content as Record<string, unknown>) : {};
         const rawContent = isObj ? (obj.result ?? JSON.stringify(m.content)) : m.content;
@@ -379,9 +977,18 @@ export function startWebChat(options: WebChatOptions): void {
                 replySuggestions.replySuggestionCount
               )
             : undefined;
+        const sanitizedUserContent =
+          m.role === 'user' ? stripPromptMetadata(String(rawContent)) : '';
+        const displayedUser =
+          m.role === 'user'
+            ? parseDisplayedUserAttachments(sanitizedUserContent, [
+                join(workdir, 'tmp'),
+                join(dataDir, 'media', 'attachments'),
+              ])
+            : { content: '', attachments: [] };
         const displayContent =
           m.role === 'user'
-            ? stripPromptMetadata(String(rawContent))
+            ? displayedUser.content
             : m.role === 'assistant'
               ? assistantReplyData?.text || stripReplySuggestionMarkup(String(rawContent))
               : rawContent;
@@ -392,6 +999,7 @@ export function startWebChat(options: WebChatOptions): void {
           createdAt: m.createdAt,
           edited: m.edited,
           editedAt: m.editedAt,
+          platformMessageId: m.platformMessageId,
           usage: isObj
             ? {
                 num_turns: obj.num_turns,
@@ -400,6 +1008,7 @@ export function startWebChat(options: WebChatOptions): void {
               }
             : undefined,
           replySuggestions: assistantReplyData?.suggestions ?? [],
+          attachments: displayedUser.attachments,
         };
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -416,6 +1025,11 @@ export function startWebChat(options: WebChatOptions): void {
             appSessionId,
           platform: entry?.platform,
           messages,
+          limit,
+          before,
+          hasMore,
+          nextBefore: hasMore ? before + messages.length : null,
+          nextCursor: cursorPage?.nextCursor ?? null,
         })
       );
       return;
@@ -438,6 +1052,7 @@ export function startWebChat(options: WebChatOptions): void {
         res.end(JSON.stringify({ error: 'Message not found' }));
         return;
       }
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: updated }));
       return;
@@ -453,6 +1068,7 @@ export function startWebChat(options: WebChatOptions): void {
         res.end(JSON.stringify({ error: 'Message not found' }));
         return;
       }
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -465,6 +1081,7 @@ export function startWebChat(options: WebChatOptions): void {
       if (body.title) {
         updateSessionTitle(appSessionId, body.title);
       }
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -472,10 +1089,21 @@ export function startWebChat(options: WebChatOptions): void {
 
     // POST /api/sessions — 新規 Web セッション（既存セッションはそのまま並存）
     if (url === '/api/sessions' && req.method === 'POST') {
-      const newAppId = createWebSession({});
-      console.log(`[web-chat] Created new web session ${newAppId}`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, sessionId: newAppId }));
+      try {
+        const body = await readBody(req);
+        const project = resolveProject(body.projectId);
+        const newAppId = createWebSession({ projectId: project?.id });
+        console.log(
+          `[web-chat] Created new web session ${newAppId}${project ? ` in Project ${project.id}` : ''}`
+        );
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, sessionId: newAppId }));
+      } catch (error) {
+        const status = error instanceof WebProjectError ? error.status : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
       return;
     }
 
@@ -487,18 +1115,54 @@ export function startWebChat(options: WebChatOptions): void {
 
       const newAppId = createWebSession({
         title: sourceEntry?.title ? `${sourceEntry.title} (resumed)` : '',
+        resumedFromSessionId: sourceId,
+        projectId: sourceEntry?.projectId,
       });
       if (providerSid) {
         setSession(webContextKey(newAppId), providerSid);
       }
-      // 次の最初のメッセージで履歴注入
-      pendingHistoryInjections.add(newAppId);
-      // resume 元の appSessionId を引き継いで履歴を引っ張る
-      pendingHistoryInjections.add(sourceId);
-
       console.log(`[web-chat] Resumed session ${sourceId} into new web session ${newAppId}`);
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, sessionId: newAppId, sourceId }));
+      return;
+    }
+
+    // POST /api/sessions/:id/discord-continue — Web UI から元の Discord 会話へ投稿する
+    if (url.match(/^\/api\/sessions\/[^/]+\/discord-continue$/) && req.method === 'POST') {
+      const sourceId = decodeURIComponent(
+        url.replace('/api/sessions/', '').replace('/discord-continue', '')
+      );
+      const sourceEntry = getSessionEntry(sourceId);
+      if (!sourceEntry || sourceEntry.platform !== 'discord') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Discordセッションが見つかりません' }));
+        return;
+      }
+      const bridge = options.discordRemoteInputRef?.current;
+      if (!bridge) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Discordが起動していません' }));
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const message = String(body.message || '').trim();
+        if (!message) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'メッセージを入力してください' }));
+          return;
+        }
+        const result = await bridge.continueSession({ appSessionId: sourceId, message });
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const status = message.includes('処理中') ? 409 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: message }));
+      }
       return;
     }
 
@@ -564,6 +1228,7 @@ export function startWebChat(options: WebChatOptions): void {
           timeoutMs: result.timeoutMs!,
           remainingMs: result.remainingMs!,
         });
+        invalidateSessionSnapshots();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
@@ -612,6 +1277,7 @@ export function startWebChat(options: WebChatOptions): void {
         `[web-chat] Stopped runner for session ${targetId} ` +
           `(platform=${entry?.platform}, stopped=${stopped})`
       );
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, stopped }));
       return;
@@ -653,6 +1319,7 @@ export function startWebChat(options: WebChatOptions): void {
         else autoTalkHandle.disable(targetId);
       }
       console.log(`[web-chat] autotalk ${enabled ? 'ON' : 'OFF'} for session ${targetId}`);
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -681,7 +1348,6 @@ export function startWebChat(options: WebChatOptions): void {
         agentRunner.destroy?.(webContextKey(targetId));
       }
       removeSession(targetId);
-      pendingHistoryInjections.delete(targetId);
       busySessions.delete(targetId);
 
       const logPath = join(workdir, 'logs', 'sessions', `${targetId}.jsonl`);
@@ -691,6 +1357,7 @@ export function startWebChat(options: WebChatOptions): void {
       }
 
       console.log(`[web-chat] Deleted session ${targetId}`);
+      invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -701,10 +1368,27 @@ export function startWebChat(options: WebChatOptions): void {
       try {
         const uploadDir = join(workdir, 'tmp', 'web-uploads');
         mkdirSync(uploadDir, { recursive: true });
+        const maxBytes = uploadMaxBytes();
+        const declaredBytes = Number(req.headers['content-length']);
+        if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Upload too large', maxBytes }));
+          req.resume();
+          return;
+        }
 
         const chunks: Buffer[] = [];
+        let receivedBytes = 0;
         for await (const chunk of req) {
-          chunks.push(chunk as Buffer);
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          receivedBytes += buffer.length;
+          if (receivedBytes > maxBytes) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Upload too large', maxBytes }));
+            req.resume();
+            return;
+          }
+          chunks.push(buffer);
         }
         const body = Buffer.concat(chunks);
 
@@ -769,8 +1453,13 @@ export function startWebChat(options: WebChatOptions): void {
 
     if (url.startsWith('/api/files/') && req.method === 'GET') {
       const filename = decodeURIComponent(url.replace('/api/files/', ''));
-      const filePath = join(workdir, 'tmp', 'web-uploads', filename);
-      if (!existsSync(filePath) || filename.includes('..')) {
+      const uploadDir = join(workdir, 'tmp', 'web-uploads');
+      const filePath = join(uploadDir, filename);
+      if (
+        !existsSync(filePath) ||
+        filename.includes('..') ||
+        !isRealFileWithin(uploadDir, filePath)
+      ) {
         res.writeHead(404);
         res.end('Not found');
         return;
@@ -809,8 +1498,9 @@ export function startWebChat(options: WebChatOptions): void {
       const mappedMime = mimeTypes[ext];
       const headers: Record<string, string> = {
         'Content-Type': mappedMime || 'application/octet-stream',
+        'X-Content-Type-Options': 'nosniff',
       };
-      if (!mappedMime) {
+      if (!mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)) {
         const filename = basename(filePath);
         headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
       }
@@ -820,9 +1510,9 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url.startsWith('/api/workspace-file') && req.method === 'GET') {
-      const urlObj = new URL(rawUrl, `http://${req.headers.host}`);
+      const urlObj = new URL(rawUrl, 'http://localhost');
       const filePath = urlObj.searchParams.get('path') || '';
-      if (!filePath || !filePath.startsWith(workdir) || filePath.includes('..')) {
+      if (!filePath) {
         res.writeHead(403);
         res.end('Forbidden');
         return;
@@ -830,6 +1520,14 @@ export function startWebChat(options: WebChatOptions): void {
       if (!existsSync(filePath)) {
         res.writeHead(404);
         res.end('Not found');
+        return;
+      }
+      if (
+        !isRealFileWithin(workdir, filePath) &&
+        !isRealFileWithin(join(dataDir, 'media', 'attachments'), filePath)
+      ) {
+        res.writeHead(403);
+        res.end('Forbidden');
         return;
       }
       const ext = extname(filePath).toLowerCase();
@@ -877,8 +1575,9 @@ export function startWebChat(options: WebChatOptions): void {
       const mappedMime = mimeTypes[ext];
       const headers: Record<string, string> = {
         'Content-Type': mappedMime || 'application/octet-stream',
+        'X-Content-Type-Options': 'nosniff',
       };
-      if (!mappedMime) {
+      if (!mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)) {
         const filename = basename(filePath);
         headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
       }
@@ -944,10 +1643,20 @@ export function startWebChat(options: WebChatOptions): void {
           // 新規 Web セッションは空履歴ブロックを入れ、初期確認目的の
           // web_history 二重実行を避ける。
           let historyContext = '';
-          const hasExplicitResumeHistory = pendingHistoryInjections.has(appSessionId);
+          const resumeSourceId = entry.resumedFromSessionId;
+          const hasExplicitResumeHistory = Boolean(resumeSourceId);
           const shouldPrefetchFirstTurn = historyPrefetch.enabled && !sessionId;
           if (hasExplicitResumeHistory || shouldPrefetchFirstTurn) {
-            const pastMessages = readSessionMessages(workdir, appSessionId);
+            const pastMessages = readSessionMessages(workdir, resumeSourceId || appSessionId);
+            const sourcePlatform = resumeSourceId
+              ? getSessionEntry(resumeSourceId)?.platform
+              : undefined;
+            const historyPlatform =
+              sourcePlatform === 'discord'
+                ? 'Discord'
+                : sourcePlatform === 'slack'
+                  ? 'Slack'
+                  : 'Web';
             const recent = pastMessages.slice(-historyPrefetch.count);
             const entries = recent.map((m, index) => {
               const content =
@@ -961,11 +1670,14 @@ export function startWebChat(options: WebChatOptions): void {
                 content: stripPromptMetadata(content),
               };
             });
-            historyContext = `${buildPrefetchedHistoryBlock('Web', entries)}\n\n`;
-            pendingHistoryInjections.delete(appSessionId);
+            historyContext = `${buildPrefetchedHistoryBlock(historyPlatform, entries)}\n\n`;
           }
 
-          let prompt = `[プラットフォーム: Web]\n${historyContext}${message}`;
+          const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+          let prompt = `[プラットフォーム: Web]\n${prependWebProjectPrompt(
+            project,
+            `${historyContext}${message}`
+          )}`;
           const replySuggestionsEnabled = loadReplySuggestionsEnabled(
             replySuggestions.replySuggestions
           );
@@ -1012,6 +1724,34 @@ export function startWebChat(options: WebChatOptions): void {
           const sendSSE = (event: string, data: unknown) => {
             res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           };
+
+          let lastStreamText = '';
+          const unregisterStreamFinalizer = registerStreamFinalizer(() => {
+            const note = '⏸ プロセス再起動により中断されました';
+            const partialText = stripReplySuggestionMarkup(lastStreamText).trimEnd();
+            const interruptedText = partialText ? `${partialText}\n\n${note}` : note;
+            const stored = ensureVisibleAssistantResponse(
+              workdir,
+              appSessionId,
+              undefined,
+              interruptedText
+            );
+            const storedResult =
+              stored && typeof stored.content === 'object'
+                ? (stored.content as Record<string, unknown>).result
+                : undefined;
+            const responseText =
+              typeof storedResult === 'string' && storedResult ? storedResult : interruptedText;
+
+            invalidateSessionSnapshots();
+            sendSSE('text', { fullText: responseText });
+            sendSSE('done', {
+              response: responseText,
+              replySuggestions: [],
+              sessionId: appSessionId,
+              assistantMessageId: stored?.id,
+            });
+          });
 
           // ランナーから timeout 状態を chat SSE に流す。
           // PersistentRunner / RunnerManager は EventEmitter で
@@ -1071,6 +1811,7 @@ export function startWebChat(options: WebChatOptions): void {
                 onBackendReady: () => latency.markBackendReady(),
                 onText: (_chunk, fullText) => {
                   latency.markText();
+                  lastStreamText = fullText;
                   sendSSE('text', { fullText: stripReplySuggestionMarkup(fullText) });
                 },
                 onToolUse: (toolName, toolInput) => {
@@ -1083,6 +1824,9 @@ export function startWebChat(options: WebChatOptions): void {
                 },
                 onComplete: (completedResult) => {
                   latency.markAgentComplete();
+                  if (resumeSourceId) {
+                    clearResumedFromSessionId(appSessionId);
+                  }
                   setProviderSessionId(appSessionId, completedResult.sessionId);
                   setSession(ctxKey, completedResult.sessionId);
                   incrementMessageCount(appSessionId);
@@ -1091,6 +1835,7 @@ export function startWebChat(options: WebChatOptions): void {
                   if (!e?.title) {
                     updateSessionTitle(appSessionId, message.slice(0, 50));
                   }
+                  invalidateSessionSnapshots();
 
                   // INTER_INSTANCE_CHAT_ENABLED=true なら agent 応答も自分の jsonl に流す
                   flowFromHostPlatform(stripReplySuggestionMarkup(completedResult.result), 'agent');
@@ -1103,6 +1848,8 @@ export function startWebChat(options: WebChatOptions): void {
                 sessionId,
                 channelId: ctxKey,
                 appSessionId,
+                platform: 'web',
+                skipPermissions: body.skipPermissions === true ? true : undefined,
               }
             );
 
@@ -1145,6 +1892,7 @@ export function startWebChat(options: WebChatOptions): void {
             sendSSE('error', { message: errorMsg });
             latency.finish(errorMsg === 'Request cancelled by user' ? 'cancelled' : 'error');
           } finally {
+            unregisterStreamFinalizer();
             // timeout listener を必ず解除 (res.end 前のリーク防止)
             if (runnerEmitter) {
               for (const l of timeoutListeners) {
@@ -1191,7 +1939,6 @@ export function startWebChat(options: WebChatOptions): void {
 
 // 単体テストから参照される
 export const __test__ = {
-  pendingHistoryInjections,
   busySessions,
   webContextKey,
   isWebSession,

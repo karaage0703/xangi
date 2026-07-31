@@ -64,6 +64,13 @@ console.log(JSON.parse(readFileSync(path, 'utf8')).length);
   await writeFile(join(project, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(project, 'web', 'monitor.html'), '<main>Monitor</main>\n');
   await writeFile(join(project, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
+  await mkdir(join(project, 'web', 'app', 'assets'), { recursive: true });
+  await writeFile(
+    join(project, 'web', 'app', 'index.html'),
+    '<script src="/app/assets/app.js"></script><link rel="stylesheet" href="/app/assets/app.css"><main>React Web Chat</main>\n'
+  );
+  await writeFile(join(project, 'web', 'app', 'assets', 'app.js'), 'console.log("xangi");\n');
+  await writeFile(join(project, 'web', 'app', 'assets', 'app.css'), 'body { color: black; }\n');
   await writeFile(join(project, 'web', '.env'), 'WEB_SECRET=no\n');
   await writeFile(join(project, 'web', 'node_modules', 'ignored.js'), 'not shipped\n');
   await writeFile(
@@ -148,6 +155,29 @@ describe('packaging/build-bundle.sh', () => {
     ).rejects.toMatchObject({ code: 2 });
   });
 
+  it('React UIが参照するassetの欠落を拒否する', async () => {
+    const { project, output, nodeBinary } = await createFixture();
+    await rm(join(project, 'web', 'app', 'assets', 'app.js'));
+
+    await expect(
+      exec('bash', [
+        'packaging/build-bundle.sh',
+        '--project-root',
+        project,
+        '--output-dir',
+        output,
+        '--version',
+        '1.2.3',
+        '--platform',
+        'darwin',
+        '--arch',
+        'arm64',
+        '--node-binary',
+        nodeBinary,
+      ])
+    ).rejects.toMatchObject({ code: 2 });
+  });
+
   it('allowlistだけをversioned bundleへ入れproduction依存とNode runtimeを同梱する', async () => {
     const { project, output, nodeBinary } = await createFixture();
     await exec('bash', [
@@ -176,6 +206,9 @@ describe('packaging/build-bundle.sh', () => {
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
     expect(entries).toContain(`${root}/web/inter-chat.html`);
+    expect(entries).toContain(`${root}/web/app/index.html`);
+    expect(entries).toContain(`${root}/web/app/assets/app.js`);
+    expect(entries).toContain(`${root}/web/app/assets/app.css`);
     expect(entries.some((entry) => entry.startsWith(`${root}/web/node_modules/`))).toBe(false);
     expect(entries).not.toContain(`${root}/web/.env`);
     expect(entries).toContain(`${root}/README.md`);

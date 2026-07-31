@@ -18,6 +18,8 @@ Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLMをバ�
 - スキル、スケジューラー、イベントトリガー
 - Docker、pm2、supervisorによる自動復帰対応
 - セッション永続化、タイムアウト延長、ワークスペース hooks
+- Web Chatからworkspace内のMarkdown・コードを閲覧・編集
+- Web Projectで会話を論理的に分類し、Projectごとの追加プロンプトを設定（ディレクトリは作成しない）
 
 ## アーキテクチャ
 
@@ -218,7 +220,9 @@ npm start
 ```
 
 ブラウザで `http://localhost:18888` にアクセスして会話を開始。
-セッション監視だけを見たい場合は `http://localhost:18888/monitor` を開くと、Web / Discord / Slack の実行状態を読み取り専用で一覧できます。
+画面は最新100セッションと選択したセッションの直近50メッセージだけを読み込みます。`http://localhost:18888/workspace` では、同じ `WORKSPACE_PATH` 内のMarkdownやコードを閲覧・編集できます。ファイル名・更新日時での並び替えとMarkdown frontmatterのタグ絞り込みに対応し、スマートフォンではファイル一覧とエディタを画面単位で切り替えます。Chat / Workspace / Monitorでは、端末設定・ライト・ダークの表示テーマを選べます。セッション監視だけを見たい場合は `http://localhost:18888/monitor` を開くと、Web / Discord / Slack の実行状態をSSEで追跡できます。
+
+Workspace画面は、隠しファイル、`.git`、`.xangi`、依存物、build成果物、1 MiBを超えるファイル、symlinkを表示しません。既存ファイルだけを編集でき、保存は外部更新との競合を検知してatomicに置換します。Web UI自体には認証がないため、LAN公開時はworkspace編集も同じ公開範囲から利用可能になる点に注意してください。
 
 > 💡 ポート競合を避けるため Web Chat UI は明示的に `WEB_CHAT_ENABLED=true` した時だけ起動します。ポート変更は `WEB_CHAT_PORT` で。
 > 💡 Slack を使う場合は [Slack セットアップ](docs/slack-setup.md) を参照。
