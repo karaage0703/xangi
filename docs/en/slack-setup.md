@@ -1,4 +1,4 @@
-[日本語](../slack-setup.md) | **English**
+[日本語](../slack-setup.md) | English
 
 # Slack App Setup Guide
 
@@ -39,6 +39,7 @@ oauth_config:
       - channels:read
       - chat:write
       - files:read
+      - files:write
       - groups:history
       - groups:read
       - im:history
@@ -101,6 +102,7 @@ xangi operates in Socket Mode (no Webhook required).
 | `app_mentions:read` | Read mentions                    | Required                        |
 | `chat:write`        | Send messages                    | Required                        |
 | `files:read`        | Read files                       | For file attachment support     |
+| `files:write`       | Upload files                     | For sending generated files     |
 | `reactions:read`    | Read reaction events             | For reaction-based deletion     |
 | `reactions:write`   | Add reactions (e.g. eyes emoji)  | Required                        |
 | `im:history`        | Read DM history                  | For DM support                  |
@@ -118,10 +120,14 @@ After adding or changing scopes/events, reinstall the app from **"Install App"**
 1. Click **"Slash Commands"** in the left menu
 2. Create the following commands:
 
-| Command   | Description                                     |
-| --------- | ----------------------------------------------- |
-| `/new`    | Start a new session                             |
-| `/skill`  | List or run a skill (Usage Hint: `[skill-name] [args]`) |
+| Command     | Description                                                                       |
+| ----------- | --------------------------------------------------------------------------------- |
+| `/new`      | Start a new session                                                               |
+| `/delete`   | Delete the previous or specified bot message (Usage Hint: `[message-ts-or-link]`) |
+| `/skill`    | List or run a skill (Usage Hint: `[skill-name] [args]`)                           |
+| `/settings` | Show current settings                                                             |
+| `/models`   | List available models (Usage Hint: `[backend]`)                                   |
+| `/restart`  | Request a graceful xangi restart                                                  |
 
 > **Note**: Request URL is not needed in Socket Mode.
 
@@ -163,7 +169,7 @@ SLACK_DELETE_REACTIONS=wastebasket,x
 npm run build
 
 # Start with Docker
-docker compose up -d --build
+docker compose up xangi -d --build
 
 # Check logs
 docker compose logs -f xangi

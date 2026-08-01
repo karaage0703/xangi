@@ -1,3 +1,5 @@
+[English](en/telegram-setup.md) | 日本語
+
 # Telegram Bot セットアップガイド
 
 xangi を Telegram Bot として動かすための設定手順。
@@ -105,8 +107,12 @@ TELEGRAM_ALLOWED_BOTS_MAX_CONSECUTIVE=3      # 5分以内の同じBotからの�
 TELEGRAM_MODE=polling                        # polling | webhook
 # TELEGRAM_FORCE_IPV4=true                  # IPv6 経路で timeout する場合のみ
 
-# Webhook モードの場合は以下2項目が必須
-# TELEGRAM_WEBHOOK_URL=https://your-host.example.com  # Bot API が Webhook 登録に使う公開 URL
+# Webhook モードではsecretが必須
+TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
+
+# Optional: Bot APIへWebhookを自動登録する公開URL
+# 未設定の場合は、同じURLとsecretをTelegram側へ手動登録する
+# TELEGRAM_WEBHOOK_URL=https://your-host.example.com
 
 # Optional: Webhook サーバーの待ち受け設定
 # TELEGRAM_WEBHOOK_PORT=8766                # 待ち受けポート (既定: 8766)

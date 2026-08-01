@@ -28,6 +28,8 @@ import { events } from '../src/events-emitter.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
+import { Scheduler } from '../src/scheduler.js';
+import { EventTrigger } from '../src/event-trigger.js';
 
 /**
  * 任意のタイミングで完了させられる Fake AgentRunner。
@@ -42,8 +44,24 @@ class FakeRunner implements AgentRunner {
   nextResult = 'ok';
   persistResults = false;
 
-  async run(): Promise<RunResult> {
-    return { result: 'fake', sessionId: 'fake-sess' };
+  async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    const channelId = options?.channelId || 'default';
+    this.callOrder.push(channelId);
+    this.prompts.push(prompt);
+    const result = { result: this.nextResult, sessionId: `provider-${channelId}` };
+    if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
+      const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
+      mkdirSync(logsDir, { recursive: true });
+      const createdAt = new Date().toISOString();
+      appendFileSync(
+        join(logsDir, `${options.appSessionId}.jsonl`),
+        [
+          JSON.stringify({ role: 'user', content: prompt, createdAt }),
+          JSON.stringify({ role: 'assistant', content: result.result, createdAt }),
+        ].join('\n') + '\n'
+      );
+    }
+    return result;
   }
 
   async runStream(
@@ -192,6 +210,7 @@ describe('web-chat HTTP API', () => {
   let baseUrl = '';
   let runner: FakeRunner;
   let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
+  let scheduler: Scheduler;
   const prevWorkspace = process.env.WORKSPACE_PATH;
   const prevDataDir = process.env.DATA_DIR;
 
@@ -203,6 +222,7 @@ describe('web-chat HTTP API', () => {
     initSessions(testDir);
 
     runner = new FakeRunner();
+    scheduler = new Scheduler(process.env.DATA_DIR, { quiet: true });
     discordRemoteInputRef = {};
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
@@ -212,6 +232,7 @@ describe('web-chat HTTP API', () => {
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
+      scheduler,
     });
     baseUrl = `http://127.0.0.1:${port}`;
 
@@ -236,6 +257,7 @@ describe('web-chat HTTP API', () => {
     for (const ch of Array.from(runner?.pending.keys() ?? [])) {
       runner.release(ch);
     }
+    scheduler?.stopAll();
     clearSessions();
     clearActivities();
     if (testDir && existsSync(testDir)) {
@@ -268,6 +290,125 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('adds a triggered turn to the same Web session', async () => {
+    const created = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()) as {
+      sessionId: string;
+    };
+    runner.persistResults = true;
+    const trigger = new EventTrigger({ enabled: true, minIntervalMs: 0 }, scheduler);
+
+    const result = await trigger.handleLocal({
+      channel: `${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`,
+      message: '保存済みの処理結果を確認して',
+      source: 'web-test',
+      platform: 'web',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(result.status).toBe(202);
+    expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`);
+    expect(readSessionMessages(testDir, created.sessionId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('保存済みの処理結果を確認して'),
+        }),
+        expect.objectContaining({ role: 'assistant', content: 'ok' }),
+      ])
+    );
+  });
+
+  it('creates and edits schedules for Web and chat platforms', async () => {
+    const page = await fetch(`${baseUrl}/schedules`);
+    expect(page.status).toBe(200);
+
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '定期レポート', prompt: '簡潔にまとめて' }),
+    });
+    const { project } = (await projectResponse.json()) as {
+      project: { id: string };
+    };
+    const addedResponse = await fetch(`${baseUrl}/api/schedules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: 'web',
+        projectId: project.id,
+        type: 'cron',
+        expression: '0 9 * * *',
+        message: '朝の予定を確認して',
+        label: '朝の確認',
+      }),
+    });
+    const added = (await addedResponse.json()) as { schedule: { id: string } };
+    expect(addedResponse.status).toBe(201);
+
+    const listed = (await (await fetch(`${baseUrl}/api/schedules`)).json()) as {
+      schedules: Array<{ id: string; platform: string; channelId: string; enabled: boolean }>;
+    };
+    expect(listed.schedules).toEqual([
+      expect.objectContaining({
+        id: added.schedule.id,
+        platform: 'web',
+        channelId: '__new__',
+        projectId: project.id,
+        enabled: true,
+      }),
+    ]);
+
+    const sessionsBeforeRun = listAllSessions().length;
+    await scheduler.getAgentRunner('web')?.(
+      '朝の予定を確認して',
+      '__new__',
+      scheduler.get(added.schedule.id)
+    );
+    const newSession = listAllSessions().find(
+      (session) => session.platform === 'web' && session.projectId === project.id
+    );
+    expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
+    expect(newSession).toBeDefined();
+
+    const updated = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: 'discord',
+        channelId: 'thread-456',
+        type: 'once',
+        runAt: new Date(Date.now() + 60_000).toISOString(),
+        message: '更新後の予定',
+        label: '編集済み',
+      }),
+    });
+    expect(updated.status).toBe(200);
+    expect(scheduler.get(added.schedule.id)).toEqual(
+      expect.objectContaining({
+        platform: 'discord',
+        channelId: 'thread-456',
+        type: 'once',
+        message: '更新後の予定',
+        label: '編集済み',
+        enabled: true,
+      })
+    );
+
+    const toggled = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(toggled.status).toBe(200);
+    expect(scheduler.get(added.schedule.id)?.enabled).toBe(false);
+
+    const removed = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}`, {
+      method: 'DELETE',
+    });
+    expect(removed.status).toBe(200);
+    expect(scheduler.get(added.schedule.id)).toBeUndefined();
   });
 
   it('creates logical Projects without directories and injects their prompt into Web turns', async () => {
@@ -502,6 +643,9 @@ describe('web-chat HTTP API', () => {
 
     expect(res.status).toBe(200);
     expect(data.commands.find((command) => command.name === 'help')?.usage).toBe('/help');
+    expect(data.commands.find((command) => command.name === 'models')?.usage).toBe(
+      '/models [backend]'
+    );
     expect(data.commands.find((command) => command.name === 'skill')?.description).toContain(
       'スキル'
     );
@@ -879,9 +1023,7 @@ describe('web-chat HTTP API', () => {
     expect(sourceStylesheet).toMatch(
       /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
     );
-    expect(sourceStylesheet).toMatch(
-      /\.workspace-file-panel\s*\{[^}]*overflow-y:\s*auto/s
-    );
+    expect(sourceStylesheet).toMatch(/\.workspace-file-panel\s*\{[^}]*overflow-y:\s*auto/s);
     expect(sourceStylesheet).not.toMatch(/\.workspace-browser-header\s*\{/);
     expect(sourceStylesheet).not.toMatch(/\.workspace-file-panel-title\s*\{/);
     expect(workspaceSource).not.toContain('className="workspace-browser-header"');
@@ -1210,8 +1352,7 @@ describe('web-chat HTTP API', () => {
     const reader = response.body!.getReader();
     const streamed = await readStreamUntil(
       reader,
-      (text) =>
-        text.includes('event: done') && text.includes('プロセス再起動により中断されました')
+      (text) => text.includes('event: done') && text.includes('プロセス再起動により中断されました')
     );
     expect(streamed).toContain('"replySuggestions":[]');
     expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
@@ -1312,6 +1453,20 @@ describe('web-chat HTTP API', () => {
     } finally {
       rmSync(siblingDir, { recursive: true });
     }
+  });
+
+  it('GET /api/workspace-file resolves relative source paths inside the workspace', async () => {
+    const source = join(testDir, 'scheduler.ts');
+    writeFileSync(source, 'export const scheduled = true;\n');
+
+    const response = await fetch(
+      `${baseUrl}/api/workspace-file?path=${encodeURIComponent('scheduler.ts')}`
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(response.headers.get('content-disposition')).toBeNull();
+    expect(await response.text()).toBe('export const scheduled = true;\n');
   });
 
   it('GET /api/sessions includes current activity for running web sessions', async () => {

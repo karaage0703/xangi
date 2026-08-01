@@ -14,7 +14,7 @@ import {
   mkdirSync,
   realpathSync,
 } from 'fs';
-import { join, dirname, extname, basename, relative, isAbsolute } from 'path';
+import { join, dirname, extname, basename, relative, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
 import type { DiscordRemoteInputBridge } from './discord/message-handler.js';
@@ -70,7 +70,7 @@ import {
 import type { Config } from './config.js';
 import { loadReplySuggestionsEnabled } from './settings.js';
 import type { BackendResolver } from './backend-resolver.js';
-import type { Scheduler } from './scheduler.js';
+import type { Platform, ScheduleInput, Scheduler } from './scheduler.js';
 import type { Skill } from './skills.js';
 import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
 import { executeWebCommand, getWebCommandDefinitions } from './web-slash-commands.js';
@@ -87,6 +87,7 @@ const SESSION_LIST_MAX_LIMIT = 200;
 const SESSION_MESSAGE_LIMIT = 50;
 const SESSION_MESSAGE_MAX_LIMIT = 200;
 const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const WEB_SCHEDULE_NEW_SESSION_ID = '__new__';
 const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
   '.html',
   '.htm',
@@ -234,7 +235,14 @@ export function startWebChat(options: WebChatOptions): void {
     return project;
   };
 
-  options.scheduler?.registerAgentRunner('web', async (prompt, appSessionId) => {
+  options.scheduler?.registerAgentRunner('web', async (prompt, requestedSessionId, schedule) => {
+    const appSessionId =
+      requestedSessionId === WEB_SCHEDULE_NEW_SESSION_ID
+        ? createWebSession({
+            projectId: resolveProject(schedule?.projectId)?.id,
+            title: schedule?.label,
+          })
+        : requestedSessionId;
     const entry = getSessionEntry(appSessionId);
     if (!entry || entry.platform !== 'web') {
       throw new Error(`Web session ${appSessionId} not found`);
@@ -256,6 +264,40 @@ export function startWebChat(options: WebChatOptions): void {
     incrementMessageCount(appSessionId);
     return result.result;
   });
+
+  const scheduleInputFromBody = (body: Record<string, unknown>): ScheduleInput => {
+    const platform = String(body.platform || 'web').trim() as Platform;
+    if (!['discord', 'slack', 'telegram', 'web'].includes(platform)) {
+      throw new Error('platform must be discord, slack, telegram, or web');
+    }
+    const type = String(body.type || '');
+    if (type !== 'cron' && type !== 'once' && type !== 'startup') {
+      throw new Error('type must be cron, once, or startup');
+    }
+    const message = String(body.message || '').trim();
+    if (!message) throw new Error('実行内容を入力してください');
+
+    let channelId = String(body.channelId || body.sessionId || '').trim();
+    let projectId: string | undefined;
+    if (platform === 'web') {
+      const project = resolveProject(body.projectId);
+      channelId = WEB_SCHEDULE_NEW_SESSION_ID;
+      projectId = project?.id;
+    } else if (!channelId) {
+      throw new Error('送信先IDを入力してください');
+    }
+
+    return {
+      type,
+      expression: type === 'cron' ? String(body.expression || '').trim() : undefined,
+      runAt: type === 'once' ? String(body.runAt || '').trim() : undefined,
+      message,
+      channelId,
+      platform,
+      label: String(body.label || '').trim() || undefined,
+      projectId,
+    };
+  };
 
   // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
   // バックエンドでも .ext 部分を抽出して拡張子検証する。MIME パターン (image/* など) は
@@ -542,6 +584,8 @@ export function startWebChat(options: WebChatOptions): void {
       url === '/index.html' ||
       url === '/monitor' ||
       url === '/monitor.html' ||
+      url === '/schedules' ||
+      url === '/schedules/' ||
       url === '/workspace' ||
       url === '/workspace/'
     ) {
@@ -607,6 +651,99 @@ export function startWebChat(options: WebChatOptions): void {
           interChatEnabled,
         })
       );
+      return;
+    }
+
+    // Web automation: all supported platforms can be created and edited here. Web schedules
+    // create a fresh conversation for every run, optionally inside a logical Project.
+    if (url === '/api/schedules' && req.method === 'GET') {
+      if (!options.scheduler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(
+        JSON.stringify({
+          schedules: options.scheduler.list(),
+          enabled: options.config?.scheduler.enabled ?? process.env.SCHEDULER_ENABLED !== 'false',
+          startupEnabled:
+            options.config?.scheduler.startupEnabled ?? process.env.STARTUP_ENABLED !== 'false',
+        })
+      );
+      return;
+    }
+
+    if (url === '/api/schedules' && req.method === 'POST') {
+      if (!options.scheduler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const schedule = options.scheduler.add(scheduleInputFromBody(body));
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ schedule }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const scheduleMatch = url.match(/^\/api\/schedules\/([^/]+)$/);
+    if (scheduleMatch && req.method === 'PATCH') {
+      if (!options.scheduler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        return;
+      }
+      const id = decodeURIComponent(scheduleMatch[1]);
+      const current = options.scheduler.get(id);
+      if (!current) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'スケジュールが見つかりません' }));
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const hasContentUpdate = ['type', 'message', 'platform', 'channelId', 'projectId'].some(
+          (key) => body[key] !== undefined
+        );
+        let schedule = hasContentUpdate
+          ? options.scheduler.update(id, scheduleInputFromBody(body))
+          : current;
+        if (typeof body.enabled === 'boolean' && body.enabled !== schedule?.enabled) {
+          schedule = options.scheduler.toggle(id);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ schedule }));
+      } catch (error) {
+        const status = error instanceof WebProjectError ? error.status : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    if (scheduleMatch && req.method === 'DELETE') {
+      if (!options.scheduler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        return;
+      }
+      const removed = options.scheduler.remove(decodeURIComponent(scheduleMatch[1]));
+      if (!removed) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'スケジュールが見つかりません' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -697,7 +834,7 @@ export function startWebChat(options: WebChatOptions): void {
           res.end(JSON.stringify({ error: 'command must start with /' }));
           return;
         }
-        const result = executeWebCommand(input, {
+        const result = await executeWebCommand(input, {
           appSessionId: body.appSessionId ? String(body.appSessionId) : undefined,
           workdir,
           config: options.config,
@@ -1511,12 +1648,15 @@ export function startWebChat(options: WebChatOptions): void {
 
     if (url.startsWith('/api/workspace-file') && req.method === 'GET') {
       const urlObj = new URL(rawUrl, 'http://localhost');
-      const filePath = urlObj.searchParams.get('path') || '';
-      if (!filePath) {
+      const requestedPath = urlObj.searchParams.get('path') || '';
+      if (!requestedPath) {
         res.writeHead(403);
         res.end('Forbidden');
         return;
       }
+      const filePath = isAbsolute(requestedPath)
+        ? resolve(requestedPath)
+        : resolve(workdir, requestedPath);
       if (!existsSync(filePath)) {
         res.writeHead(404);
         res.end('Not found');
@@ -1562,6 +1702,8 @@ export function startWebChat(options: WebChatOptions): void {
         '.js': 'application/javascript; charset=utf-8',
         '.mjs': 'application/javascript; charset=utf-8',
         '.json': 'application/json; charset=utf-8',
+        '.ts': 'text/plain; charset=utf-8',
+        '.tsx': 'text/plain; charset=utf-8',
         '.txt': 'text/plain; charset=utf-8',
         '.md': 'text/markdown; charset=utf-8',
         '.csv': 'text/csv; charset=utf-8',

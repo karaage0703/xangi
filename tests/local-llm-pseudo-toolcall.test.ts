@@ -17,14 +17,16 @@ describe('containsPseudoToolCall', () => {
 
   it('Harmony channel タグを検出', () => {
     expect(
-      containsPseudoToolCall('了解。<|channel>thought\ncall:tool_search{query:arxiv}<channel|>続けます。')
+      containsPseudoToolCall(
+        '了解。<|channel>thought\ncall:tool_search{query:arxiv}<channel|>続けます。'
+      )
     ).toBe(true);
   });
 
   it('tool_call タグを検出', () => {
-    expect(containsPseudoToolCall('<|tool_call>call:fetch{url:http://example.com}<tool_call|>')).toBe(
-      true
-    );
+    expect(
+      containsPseudoToolCall('<|tool_call>call:fetch{url:http://example.com}<tool_call|>')
+    ).toBe(true);
   });
 
   it('stream 途中の open のみ (close 不在) も検出', () => {
@@ -156,9 +158,7 @@ describe('StreamingDriftBuffer', () => {
 
   it('完全 strict drift は途中で drop、release は drift 除去後のみ', () => {
     const buf = new StreamingDriftBuffer();
-    const r = buf.feed(
-      'まずは <|tool_call>call:exec{cmd:ls}<tool_call|> を実行します。'
-    );
+    const r = buf.feed('まずは <|tool_call>call:exec{cmd:ls}<tool_call|> を実行します。');
     expect(r.dropped).toBe(true);
     expect(r.release).toContain('まずは ');
     expect(r.release).toContain('を実行します');
@@ -276,14 +276,15 @@ describe('isSafeForRescue', () => {
   });
 
   it('discord_message は safe (read-only tool list)', () => {
-    expect(
-      isSafeForRescue('discord_message', { channel: '123', 'message-id': '456' }).safe
-    ).toBe(true);
+    expect(isSafeForRescue('discord_message', { channel: '123', 'message-id': '456' }).safe).toBe(
+      true
+    );
   });
 
   it('exec で xangi-cmd discord_history は safe (allowlist)', () => {
     expect(
-      isSafeForRescue('exec', { command: 'xangi-cmd discord_history --channel 123 --count 10' }).safe
+      isSafeForRescue('exec', { command: 'xangi-cmd discord_history --channel 123 --count 10' })
+        .safe
     ).toBe(true);
   });
 
@@ -296,7 +297,9 @@ describe('isSafeForRescue', () => {
   });
 
   it('exec で xangi-cmd web_history も safe', () => {
-    expect(isSafeForRescue('exec', { command: 'xangi-cmd web_history --count 10' }).safe).toBe(true);
+    expect(isSafeForRescue('exec', { command: 'xangi-cmd web_history --count 10' }).safe).toBe(
+      true
+    );
   });
 
   it('slack_search は safe (read-only tool list)', () => {
@@ -321,6 +324,20 @@ describe('isSafeForRescue', () => {
     const check = isSafeForRescue('exec', { command: 'xangi-cmd schedule_remove --id foo' });
     expect(check.safe).toBe(false);
     expect(check.reason).toContain('allowlist');
+  });
+
+  it('exec で読み取り専用の xangi-cmd models は safe', () => {
+    expect(isSafeForRescue('exec', { command: 'xangi-cmd models --backend codex' }).safe).toBe(
+      true
+    );
+  });
+
+  it('exec でモデルを変更する xangi-cmd models --use は unsafe', () => {
+    const check = isSafeForRescue('exec', {
+      command: 'xangi-cmd models --backend codex --use gpt-test',
+    });
+    expect(check.safe).toBe(false);
+    expect(check.reason).toContain('changes');
   });
 
   it('exec で xangi-cmd discord_history にパイプ付き = unsafe (shell metachar)', () => {
@@ -500,8 +517,7 @@ describe('drift rescue scenario (decision tree)', () => {
   });
 
   it('shell metachar シナリオ: パイプ付き xangi-cmd は reject', () => {
-    const drift =
-      'call:exec{command:xangi-cmd discord_history --channel 123 | grep keyword}';
+    const drift = 'call:exec{command:xangi-cmd discord_history --channel 123 | grep keyword}';
 
     const parsed = parsePseudoToolCall(drift);
     expect(parsed).not.toBeNull();

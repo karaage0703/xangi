@@ -243,6 +243,41 @@ describe('Scheduler', () => {
     expect(toggledBack?.enabled).toBe(true);
   });
 
+  it('should update a schedule while preserving identity and enabled state', () => {
+    const schedule = scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'before',
+      channelId: '__new__',
+      platform: 'web',
+      projectId: 'project-1',
+    });
+    scheduler.toggle(schedule.id);
+
+    const updated = scheduler.update(schedule.id, {
+      type: 'once',
+      runAt: new Date(Date.now() + 60_000).toISOString(),
+      message: 'after',
+      channelId: 'thread-456',
+      platform: 'discord',
+      label: 'edited',
+    });
+
+    expect(updated).toEqual(
+      expect.objectContaining({
+        id: schedule.id,
+        createdAt: schedule.createdAt,
+        enabled: false,
+        type: 'once',
+        message: 'after',
+        channelId: 'thread-456',
+        platform: 'discord',
+        label: 'edited',
+      })
+    );
+    expect(updated?.projectId).toBeUndefined();
+  });
+
   it('should persist schedules to file', () => {
     scheduler.add({
       type: 'cron',

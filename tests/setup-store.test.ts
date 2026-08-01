@@ -10,7 +10,6 @@ describe('typed setup config', () => {
     workspacePath: '/Users/example/xangi-workspace',
     webChatEnabled: true,
     webChatAccess: 'local',
-    notionSyncEnabled: false,
   };
 
   it('accepts only the documented fields and backend values', () => {
@@ -46,13 +45,8 @@ describe('typed setup config', () => {
     ).toThrow(SetupValidationError);
   });
 
-  it('migrates existing setup config to Notion sync disabled', () => {
-    const {
-      notionSyncEnabled: _notionSyncEnabled,
-      webChatAccess: _webChatAccess,
-      ...legacy
-    } = valid;
-    expect(parseSetupConfig(legacy)).toEqual(valid);
+  it('ignores the removed legacy Notion sync flag', () => {
+    expect(parseSetupConfig({ ...valid, notionSyncEnabled: true })).toEqual(valid);
   });
 });
 
@@ -80,7 +74,6 @@ describe('SetupStore', () => {
         workspacePath: '/Users/example/workspace',
         webChatEnabled: true,
         webChatAccess: 'local',
-        notionSyncEnabled: false,
         unexpected: 'not allowed',
       })
     ).rejects.toBeInstanceOf(SetupValidationError);
@@ -96,7 +89,6 @@ describe('SetupStore', () => {
       workspacePath: '/Users/example/My Workspace',
       webChatEnabled: true,
       webChatAccess: 'tailscale',
-      notionSyncEnabled: true,
     });
 
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
@@ -104,7 +96,6 @@ describe('SetupStore', () => {
       workspacePath: '/Users/example/My Workspace',
       webChatEnabled: true,
       webChatAccess: 'tailscale',
-      notionSyncEnabled: true,
     });
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);
     expect(

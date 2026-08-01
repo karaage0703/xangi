@@ -28,15 +28,16 @@ describe('buildCliEnv', () => {
     expect(env.XANGI_CHANNEL_ID).toBeUndefined();
   });
 
-  it('injects the current chat platform for Discord and Slack', () => {
+  it('injects the current chat platform for Discord, Slack, and Web', () => {
     expect(buildCliEnv('ch1', 'slack').XANGI_PLATFORM).toBe('slack');
     expect(buildCliEnv('ch1', 'discord').XANGI_PLATFORM).toBe('discord');
+    expect(buildCliEnv('web-chat:pane1', 'web').XANGI_PLATFORM).toBe('web');
   });
 
-  it('does not leak the parent platform for non-chat platforms', () => {
+  it('does not leak the parent platform when the platform is unknown', () => {
     process.env.XANGI_PLATFORM = 'slack';
 
-    const env = buildCliEnv('web-chat:pane1', 'web');
+    const env = buildCliEnv('channel');
 
     expect(env.XANGI_PLATFORM).toBeUndefined();
   });

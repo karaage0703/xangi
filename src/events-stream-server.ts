@@ -7,8 +7,8 @@
  * turn.complete / turn.aborted / agent.error) を受け取る。
  *
  * 設計:
- * - サーバ側フィルタなし。全 subscriber に全イベントをブロードキャストする。
- *   instance_id 等で絞り込みたい場合は consumer 側で self-filter する。
+ * - 基本は全イベントをブロードキャストする。`thread_id` queryを指定した接続は
+ *   サーバ側でthreadを絞り、instance_id等はconsumer側でself-filterする。
  * - 30 秒ごとに `: keepalive` コメント行を流して中継 proxy の idle 切断を防ぐ。
  * - クライアント切断 (req close / error) を検知したら subscriber を解除して
  *   keepalive timer を止める。

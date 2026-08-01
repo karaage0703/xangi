@@ -26,3 +26,61 @@ describe('MarkdownBody code blocks', () => {
     expect(html).toContain('<code class="language-typescript">const answer = 42;');
   });
 });
+
+describe('MarkdownBody links', () => {
+  it('opens external and file-style links without replacing the chat document', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[external](https://example.test/docs) [file](/workspace/notes/example.md:12)',
+      })
+    );
+
+    expect(html).toContain(
+      '<a href="https://example.test/docs" target="_blank" rel="noopener noreferrer">external</a>'
+    );
+    expect(html).toContain(
+      '<a href="/api/workspace-file?path=%2Fworkspace%2Fnotes%2Fexample.md" target="_blank" rel="noopener noreferrer">file</a>'
+    );
+  });
+
+  it('maps encoded and relative source paths to the workspace file endpoint', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[encoded](/workspace/My%20Project/scheduler.ts:42:7) [relative](src/index.ts#L8)',
+      })
+    );
+
+    expect(html).toContain(
+      '<a href="/api/workspace-file?path=%2Fworkspace%2FMy%20Project%2Fscheduler.ts" target="_blank" rel="noopener noreferrer">encoded</a>'
+    );
+    expect(html).toContain(
+      '<a href="/api/workspace-file?path=src%2Findex.ts" target="_blank" rel="noopener noreferrer">relative</a>'
+    );
+  });
+
+  it('keeps Web Chat application routes and explicit URI schemes intact', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[workspace](/workspace) [mail](mailto:test@example.test)',
+      })
+    );
+
+    expect(html).toContain(
+      '<a href="/workspace" target="_blank" rel="noopener noreferrer">workspace</a>'
+    );
+    expect(html).toContain(
+      '<a href="mailto:test@example.test" target="_blank" rel="noopener noreferrer">mail</a>'
+    );
+  });
+
+  it('keeps in-document fragment links in the current document', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[section](#details)',
+      })
+    );
+
+    expect(html).toContain('<a href="#details">section</a>');
+    expect(html).not.toContain('target="_blank"');
+  });
+});

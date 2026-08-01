@@ -1,8 +1,3 @@
-/**
- * Webブラウザ専用のxangiコマンド
- */
-export const XANGI_COMMANDS_WEB = `## Webブラウザ経由の注意事項
+export const XANGI_COMMANDS_WEB = `## Web固有ルール
 
-- マークダウンをフル活用可能（コードブロック、テーブル、リンク、画像等すべてレンダリングされる）
-- リンクはそのままURLを記述すればクリッカブルになる
-- \`MEDIA:/path/to/file\` で画像・ファイルを表示可能（ブラウザ内にインライン表示される）`;
+ファイルは MEDIA:/absolute/path でブラウザへ表示する。`;

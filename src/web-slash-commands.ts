@@ -10,6 +10,7 @@ import type { Scheduler } from './scheduler.js';
 import { parseScheduleInput } from './scheduler.js';
 import { loadSettings, formatSettings } from './settings.js';
 import { loadSkills, type Skill } from './skills.js';
+import { executeModelsCommand, MODELS_COMMAND_USAGE } from './models-command.js';
 
 export interface WebCommandDefinition {
   name: string;
@@ -79,9 +80,22 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
     category: 'settings',
   },
   {
+    name: 'models',
+    description: '利用可能なモデル一覧を表示',
+    usage: MODELS_COMMAND_USAGE,
+    category: 'settings',
+    options: [
+      {
+        name: 'backend',
+        description: 'バックエンド（省略時はすべて）',
+        type: 'string',
+      },
+    ],
+  },
+  {
     name: 'backend',
     description: 'バックエンド設定を表示・変更',
-    usage: '/backend show|list|set|reset ...',
+    usage: '/backend show|set|reset ...',
     category: 'settings',
     options: [
       {
@@ -110,11 +124,6 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
       {
         name: 'reset',
         description: 'デフォルトへ戻す',
-        type: 'subcommand',
-      },
-      {
-        name: 'list',
-        description: '利用可能なバックエンド一覧を表示',
         type: 'subcommand',
       },
     ],
@@ -251,6 +260,9 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
       if (set?.options?.[0]) set.options[0].choices = backendChoices;
       if (set?.options?.[1] && modelChoices.length > 0) set.options[1].choices = modelChoices;
     }
+    if (copy.name === 'models' && copy.options?.[0]) {
+      copy.options[0].choices = backendChoices;
+    }
     if (copy.name === 'schedule') {
       for (const name of ['remove', 'toggle']) {
         const option = copy.options?.find((candidate) => candidate.name === name);
@@ -333,29 +345,13 @@ function handleBackend(args: string[], ctx: WebCommandContext): WebCommandResult
     };
   }
 
-  if (subcommand === 'list') {
-    const backends = resolver
-      .getAllowedBackends()
-      .map((backend) => `- \`${backend}\` — ${getBackendDisplayName(backend)}`);
-    const models = resolver.getAllowedModels();
-    return {
-      kind: 'message',
-      message: [
-        '## 利用可能なバックエンド',
-        ...backends,
-        '',
-        `モデル制限: ${models?.length ? models.map((model) => `\`${model}\``).join(', ') : 'なし'}`,
-      ].join('\n'),
-    };
-  }
-
   if (subcommand === 'reset') {
     resolver.clearChannelOverride(channelId);
     return { kind: 'message', message: 'バックエンド設定をデフォルトへ戻しました。' };
   }
 
   if (subcommand !== 'set') {
-    throw new Error('使い方: /backend show|list|set|reset');
+    throw new Error('使い方: /backend show|set|reset');
   }
 
   const backend = args[1] as AgentBackend | undefined;
@@ -470,7 +466,10 @@ function handleSchedule(args: string[], ctx: WebCommandContext): WebCommandResul
   throw new Error('使い方: /schedule add|list|remove|toggle');
 }
 
-export function executeWebCommand(input: string, ctx: WebCommandContext): WebCommandResult {
+export async function executeWebCommand(
+  input: string,
+  ctx: WebCommandContext
+): Promise<WebCommandResult> {
   const tokens = tokenize(input.trim());
   const commandName = (tokens.shift() || '').replace(/^\//, '').toLowerCase();
 
@@ -493,6 +492,11 @@ export function executeWebCommand(input: string, ctx: WebCommandContext): WebCom
       };
     case 'settings':
       return { kind: 'message', message: formatSettings(loadSettings()) };
+    case 'models':
+      return {
+        kind: 'message',
+        message: await executeModelsCommand(tokens[0], requireResolver(ctx)),
+      };
     case 'skill': {
       const skillName = tokens.shift();
       const skills = loadSkills(ctx.workdir);

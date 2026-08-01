@@ -25,7 +25,6 @@ import {
 import { installCmd } from './install-cmd.js';
 import { uninstallCmd } from './uninstall-cmd.js';
 import { updateCmd } from './update-cmd.js';
-import { notionSyncCmd } from './notion-sync-cmd.js';
 import { settingsCmd } from './settings-cmd.js';
 import { resolveAppLayout } from '../installer/layout.js';
 import { installConfiguredWorkspaceTemplate } from '../installer/workspace-template.js';
@@ -115,7 +114,6 @@ Usage:
   xangi install [--manifest URL] [--public-key PATH]
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
-  xangi notion-sync <status|enable|disable|run> [--sync-config PATH] [--once]
   xangi settings
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -136,8 +134,6 @@ Options:
   --purge         Also remove settings, tokens, and state; never removes the workspace
   --yes           Confirm the destructive data removal requested by --purge
   --managed       From a source checkout, update the signed managed installation instead
-  --sync-config P Advanced compatibility mode: use a per-document Notion sync YAML
-  --once          Run one explicit Notion sync even when Notion sync is disabled
   --apply         Persist choices made during AI-guided setup
   --complete      Mark the minimum BOOTSTRAP onboarding complete
   --workspace P   Absolute workspace path for setup --apply
@@ -164,10 +160,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     'allow-downgrade',
     'purge',
     'yes',
-    'once',
     'apply',
     'complete',
-    'notion-sync',
   ]);
 
   for (let i = 3; i < argv.length; i++) {
@@ -491,7 +485,6 @@ export async function run(argv = process.argv): Promise<void> {
             workspacePath,
             workspaceMode,
             webChatAccess,
-            notionSyncEnabled: parsed.flags['notion-sync'] === true,
           },
           {
             layout,
@@ -551,11 +544,6 @@ export async function run(argv = process.argv): Promise<void> {
 
   if (parsed.command === 'update') {
     console.log(await updateCmd(parsed.flags));
-    return;
-  }
-
-  if (parsed.command === 'notion-sync') {
-    console.log(await notionSyncCmd(parsed.positionals[0] || 'status', parsed.flags));
     return;
   }
 

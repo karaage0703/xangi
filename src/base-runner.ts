@@ -1,7 +1,6 @@
 import {
   CHAT_SYSTEM_PROMPT_RESUME,
   CHAT_SYSTEM_PROMPT_PERSISTENT,
-  XANGI_COMMANDS,
   buildXangiCommands,
   buildChatSystemResume,
   buildChatSystemPersistent,
@@ -40,10 +39,7 @@ export function buildPersistentSystemPrompt(platform?: ChatPlatform): string {
   return systemPrompt + '\n\n## XANGI_COMMANDS\n\n' + commands;
 }
 
-// XANGI_COMMANDSを再エクスポート（local-llm runner等から使う）
-// XANGI_COMMANDS は静的版 (platform=undefined)、buildXangiCommands は runtime 切替版。
-// Local LLM runner は platform 別に system prompt を切替えたいので buildXangiCommands を使う。
-export { XANGI_COMMANDS, buildXangiCommands };
+export { buildXangiCommands };
 
 // safe-env.ts から再エクスポート（既存のimportを壊さないため）
 export { getSafeEnv } from './safe-env.js';

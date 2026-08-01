@@ -39,12 +39,15 @@ export interface Schedule {
   enabled: boolean;
   /** ラベル（任意） */
   label?: string;
+  /** Web予定で新規会話を作る場合の論理Project ID */
+  projectId?: string;
 }
+export type ScheduleInput = Omit<Schedule, 'id' | 'createdAt' | 'enabled'>;
 export interface SendMessageFn {
   (channelId: string, message: string): Promise<void>;
 }
 export interface AgentRunFn {
-  (prompt: string, channelId: string): Promise<string>;
+  (prompt: string, channelId: string, schedule?: Schedule): Promise<string>;
 }
 // ─── Scheduler ───────────────────────────────────────────────────────
 export class Scheduler {
@@ -104,8 +107,44 @@ export class Scheduler {
   /**
    * スケジュールを追加
    */
-  add(schedule: Omit<Schedule, 'id' | 'createdAt' | 'enabled'>): Schedule {
-    // Validate
+  add(schedule: ScheduleInput): Schedule {
+    this.validate(schedule);
+    const newSchedule: Schedule = {
+      ...schedule,
+      id: this.generateId(),
+      createdAt: new Date().toISOString(),
+      enabled: true,
+    };
+    this.schedules.push(newSchedule);
+    this.save();
+    if (!this.disabled) {
+      this.startJob(newSchedule);
+    }
+    return newSchedule;
+  }
+  /**
+   * スケジュール内容を更新
+   */
+  update(id: string, schedule: ScheduleInput): Schedule | undefined {
+    const index = this.schedules.findIndex((item) => item.id === id);
+    if (index === -1) return undefined;
+    this.validate(schedule);
+    const current = this.schedules[index];
+    const updated: Schedule = {
+      ...schedule,
+      id: current.id,
+      createdAt: current.createdAt,
+      enabled: current.enabled,
+    };
+    this.stopJob(id);
+    this.schedules[index] = updated;
+    this.save();
+    if (!this.disabled && updated.enabled) {
+      this.startJob(updated);
+    }
+    return updated;
+  }
+  private validate(schedule: ScheduleInput): void {
     if (schedule.type === 'cron') {
       if (!schedule.expression || !cron.validate(schedule.expression)) {
         throw new Error(
@@ -129,18 +168,6 @@ export class Scheduler {
     } else {
       throw new Error(`Unknown schedule type: ${schedule.type}`);
     }
-    const newSchedule: Schedule = {
-      ...schedule,
-      id: this.generateId(),
-      createdAt: new Date().toISOString(),
-      enabled: true,
-    };
-    this.schedules.push(newSchedule);
-    this.save();
-    if (!this.disabled) {
-      this.startJob(newSchedule);
-    }
-    return newSchedule;
   }
   /**
    * スケジュールを削除
@@ -371,7 +398,7 @@ export class Scheduler {
     }
     try {
       this.log(`[scheduler] Running agent for: ${schedule.id}`);
-      const result = await agentRunner(schedule.message, schedule.channelId);
+      const result = await agentRunner(schedule.message, schedule.channelId, schedule);
       this.log(`[scheduler] Agent completed: ${schedule.id} (${result.length} chars)`);
     } catch (error) {
       // 一時的なネットワークエラー (DNS 一時失敗・接続タイムアウト等) は
@@ -384,7 +411,7 @@ export class Scheduler {
         );
         await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
         try {
-          const result = await agentRunner(schedule.message, schedule.channelId);
+          const result = await agentRunner(schedule.message, schedule.channelId, schedule);
           this.log(`[scheduler] Agent completed on retry: ${schedule.id} (${result.length} chars)`);
           return;
         } catch (retryError) {

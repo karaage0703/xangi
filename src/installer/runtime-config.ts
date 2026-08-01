@@ -19,7 +19,6 @@ export async function loadSetupRuntimeEnv(
     DATA_DIR: stateDir,
     WEB_CHAT_ENABLED: String(config.webChatEnabled),
     WEB_CHAT_HOST: config.webChatAccess === 'lan' ? '0.0.0.0' : '127.0.0.1',
-    XANGI_NOTION_SYNC_ENABLED: String(config.notionSyncEnabled),
   };
 }
 

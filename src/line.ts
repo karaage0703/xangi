@@ -11,9 +11,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
 import type { AgentRunner } from './agent-runner.js';
+import type { BackendResolver } from './backend-resolver.js';
 import { ensureSession, getActiveSessionId, getSessionEntry, archiveSession } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { executeModelsCommand, parseModelsCommand } from './models-command.js';
+import { splitMessage } from './message-split.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -101,6 +104,7 @@ export function snapLoadingSeconds(value: number | undefined): number {
 
 export interface LineBotOptions {
   agentRunner: AgentRunner;
+  resolver: BackendResolver;
   channelSecret: string;
   channelAccessToken: string;
   allowedUsers?: string[];
@@ -133,7 +137,7 @@ export interface LineBotOptions {
  * Webhook URL に登録する。
  */
 export function startLineBot(options: LineBotOptions): void {
-  const { agentRunner, channelSecret, channelAccessToken } = options;
+  const { agentRunner, resolver, channelSecret, channelAccessToken } = options;
   const port = options.port ?? DEFAULT_PORT;
   const path = options.path ?? DEFAULT_PATH;
   const allowedUsers = options.allowedUsers ?? [];
@@ -156,6 +160,7 @@ export function startLineBot(options: LineBotOptions): void {
         path,
         channelSecret,
         agentRunner,
+        resolver,
         client,
         allowedUsers,
         allowAll,
@@ -194,6 +199,7 @@ interface HandlerContext {
   path: string;
   channelSecret: string;
   agentRunner: AgentRunner;
+  resolver: BackendResolver;
   client: LineBotClient;
   allowedUsers: string[];
   allowAll: boolean;
@@ -291,6 +297,26 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
   }
 
   const contextKey = `${LINE_CONTEXT_PREFIX}${userId}`;
+
+  const modelsBackend = parseModelsCommand(text);
+  if (modelsBackend !== null) {
+    try {
+      const result = await executeModelsCommand(modelsBackend, ctx.resolver);
+      await ctx.client.replyMessage({
+        replyToken,
+        messages: splitMessage(result, LINE_TEXT_MESSAGE_MAX)
+          .slice(0, 5)
+          .map((chunk) => ({ type: 'text' as const, text: chunk })),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
+      await ctx.client.replyMessage({
+        replyToken,
+        messages: [{ type: 'text', text: message.slice(0, LINE_TEXT_MESSAGE_MAX) }],
+      });
+    }
+    return;
+  }
 
   // Reset コマンド検出: テキストが reset patterns に一致したら現 session を archive、
   // 新 session を発番、確認テキストを返して Runner 起動はしない。

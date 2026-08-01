@@ -209,7 +209,7 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('他のServe/Funnel設定は変更しない');
     expect(prompt).toContain('Web Chat自体には認証がなく');
     expect(prompt).toContain('Discord');
-    expect(prompt).toContain('Notion同期はOFFのまま');
+    expect(prompt).not.toContain('Notion同期');
     expect(prompt).toContain('setup --complete');
     expect(prompt).toContain('/Applications/Xangi/current/README.md');
     expect(prompt).toContain('/Applications/Xangi/current/docs/usage.md');
@@ -284,7 +284,7 @@ describe('guided setup backend preflight', () => {
 });
 
 describe('guided setup deterministic apply and completion', () => {
-  it('creates a blank workspace BOOTSTRAP and keeps Notion disabled', async () => {
+  it('creates a blank workspace BOOTSTRAP', async () => {
     const { homeDir, layout } = await fixture();
     const workspacePath = join(homeDir, 'blank-workspace');
     const binDir = join(homeDir, '.nvm', 'versions', 'node', 'v22.16.0', 'bin');
@@ -306,7 +306,6 @@ describe('guided setup deterministic apply and completion', () => {
       workspacePath,
       webChatEnabled: true,
       webChatAccess: 'local',
-      notionSyncEnabled: false,
     });
     expect(await readFile(join(workspacePath, 'BOOTSTRAP.md'), 'utf8')).toContain(
       'すべて日本語で一度に一つずつ質問'
@@ -386,13 +385,12 @@ describe('guided setup deterministic apply and completion', () => {
     await expect(completeGuidedSetup(layout)).resolves.toContain('最低限のセットアップが完了');
     expect(
       JSON.parse(await readFile(join(layout.configDir, 'onboarding.json'), 'utf8'))
-    ).toMatchObject({ phase: 'minimum_ready', notionSyncEnabled: false });
+    ).toMatchObject({ phase: 'minimum_ready' });
     await expect(readOnboardingStatus(layout)).resolves.toMatchObject({
       phase: 'minimum_ready',
       backend: 'codex',
       workspacePath,
       webChatAccess: 'local',
-      notionSyncEnabled: false,
     });
   });
 

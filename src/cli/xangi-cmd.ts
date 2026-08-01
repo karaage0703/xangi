@@ -35,6 +35,7 @@
  *   node xangi-cmd.js g2_session [--base-url <url>] [--title <title>] [--token <token>]  # alias
  *   node xangi-cmd.js system_restart
  *   node xangi-cmd.js system_settings --key <key> --value <value>
+ *   node xangi-cmd.js models [--backend <backend>] [--use <model>] [--effort <level>]
  */
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -42,6 +43,7 @@ import { fileURLToPath } from 'url';
 import { discordApi } from './discord-api.js';
 import { slackApi } from './slack-api.js';
 import { scheduleCmd } from './schedule-cmd.js';
+import { formatXangiCmdHelp } from './xangi-cmd-help.js';
 import { systemCmd } from './system-cmd.js';
 import { interChatCmd } from './inter-chat-cmd.js';
 import { webHistoryCmd } from './web-history-cmd.js';
@@ -108,7 +110,13 @@ async function requestToolServer(command: string, flags: Record<string, string>)
   const res = await fetch(`${serverUrl}/api/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command, flags }),
+    body: JSON.stringify({
+      command,
+      flags,
+      context: {
+        channelId: process.env.XANGI_CHANNEL_ID || process.env.XANGI_DEFAULT_CHANNEL,
+      },
+    }),
   });
 
   const body = (await res.json()) as { ok: boolean; result?: string; error?: string };
@@ -121,66 +129,29 @@ async function requestToolServer(command: string, flags: Record<string, string>)
 function parseArgs(argv: string[]): {
   command: string;
   flags: Record<string, string>;
+  positionals: string[];
 } {
   const command = argv[2] || '';
   const flags: Record<string, string> = {};
+  const positionals: string[] = [];
   for (let i = 3; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const value = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true';
       flags[key] = value;
+    } else {
+      positionals.push(arg);
     }
   }
-  return { command, flags };
+  return { command, flags, positionals };
 }
 
 async function main(): Promise<void> {
-  const { command, flags } = parseArgs(process.argv);
+  const { command, flags, positionals } = parseArgs(process.argv);
 
   if (!command || command === 'help') {
-    console.log(`xangi-cmd — xangiコマンドCLI
-
-Discord操作:
-  discord_history   チャンネル履歴取得
-  discord_message   特定メッセージの全文取得
-  discord_send      メッセージ送信
-  discord_channels  チャンネル一覧
-  discord_search    メッセージ検索
-  discord_edit      メッセージ編集
-  discord_delete    メッセージ削除
-  discord_thread_leave    スレッドから指定ユーザーを退出させる
-
-Slack操作:
-  slack_history      現チャンネル履歴取得
-  slack_send         メッセージ送信
-  slack_channels     チャンネル一覧
-  slack_search       メッセージ検索
-  slack_edit         メッセージ編集
-  slack_delete       メッセージ削除
-
-Web Chat操作:
-  web_history       Web Chat の現セッション履歴取得
-
-スケジュール:
-  schedule_list     一覧表示
-  schedule_add      追加
-  schedule_remove   削除
-  schedule_toggle   有効/無効切替
-
-インスタンス間チャット:
-  inter_chat_send    --text <text> [--from-label <label>] [--origin-chain a,b]
-  inter_chat_tail    [--limit <n>] [--ttl <sec>]
-  inter_chat_clear   自分のjsonlをTTLで物理削除
-  inter_chat_list    共有ディレクトリのインスタンス一覧
-  inter_chat_config  解決済み設定を表示
-
-その他:
-  media_send        ファイル送信
-  terminal_session  外部 device / terminal 用 Web セッション作成
-  g2_session        terminal_session の Even G2 向け alias
-  system_restart    再起動
-  system_settings   設定変更`);
+    console.log(formatXangiCmdHelp(positionals[0]));
     return;
   }
 
@@ -200,6 +171,8 @@ Web Chat操作:
     } else if (command === 'system_restart') {
       // 自プロセスではなく xangi 本体プロセスを再起動する必要があるため tool-server に委譲
       result = await requestToolServer(command, flags);
+    } else if (command === 'models') {
+      result = await requestToolServer('models', flags);
     } else if (command.startsWith('system_')) {
       result = await systemCmd(command, flags);
     } else if (command.startsWith('inter_chat_')) {

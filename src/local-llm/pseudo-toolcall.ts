@@ -220,6 +220,8 @@ const SAFE_XANGI_SUBCOMMANDS = new Set([
   'discord_search',
   'schedule_list',
   'system_settings',
+  'models',
+  'help',
 ]);
 
 const SHELL_METACHAR_PATTERN = /[|&;`$<>]/;
@@ -254,6 +256,9 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
     }
     const match = cmd.match(/^xangi-cmd\s+([a-z_]+)/);
     if (match && SAFE_XANGI_SUBCOMMANDS.has(match[1])) {
+      if (match[1] === 'models' && /(?:^|\s)--use(?:\s|$)/.test(cmd)) {
+        return { safe: false, reason: 'models --use changes the next-turn model' };
+      }
       return { safe: true };
     }
     return {

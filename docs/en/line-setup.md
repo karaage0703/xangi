@@ -1,3 +1,5 @@
+[日本語](../line-setup.md) | English
+
 # LINE Messaging API Setup Guide
 
 How to run xangi as a LINE bot. Designed for 1:1 chat.

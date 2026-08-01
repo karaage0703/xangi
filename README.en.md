@@ -1,4 +1,4 @@
-[日本語](README.md) | **English**
+[日本語](README.md) | English
 
 # xangi
 
@@ -8,18 +8,17 @@
 
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-An AI assistant for Discord / Slack / Telegram / browser / LINE, powered by Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLM backends. Discord recommended; browser-only mode also supported.
+xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI, Antigravity CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
 
-## Features
+## Key features
 
-- Discord / Slack / Telegram / Web Chat UI / LINE support
-- Claude Code / Codex / Cursor CLI / Grok CLI / Antigravity CLI / Local LLM support
-- Per-channel backend / model / effort switching with `/backend`
-- Skills, scheduler, and event triggers
-- Docker, pm2, and auto-restart support
-- Session persistence, timeout extension, and workspace hooks
+- Six AI backends and five chat surfaces
+- Per-channel backend, model, and effort settings with dynamic model discovery
+- Run workspace skills directly from chat
+- Persistent sessions and transcripts, timeout extension, and workspace hooks
+- Scheduler and event-triggered agent turns
 - Browse and edit workspace Markdown and code from Web Chat
-- Group conversations into logical Web Projects with an optional extra prompt (without creating directories)
+- Organize conversations with logical Web Projects and optional extra prompts
 
 ## Architecture
 
@@ -44,311 +43,110 @@ flowchart LR
 
 ## Quickstart
 
-The same flow works on macOS, Linux, and WSL2. First prepare one supported AI tool, then install xangi.
+The same flow works on macOS, Linux, and WSL2.
 
-Example: prepare Codex (`claude-code`, `cursor`, `grok`, and `antigravity` are also available)
+1. Prepare one supported AI tool. This example uses Codex.
 
-```bash
-bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
-```
+   ```bash
+   bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
+   ```
 
-Install xangi
+   Replace `codex` with `claude-code`, `cursor`, `grok`, or `antigravity` if needed.
 
-```bash
-curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
-```
+2. Install xangi.
 
-After installation, open a new terminal and start setup:
+   ```bash
+   curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
+   ```
 
-```bash
-xangi setup
-```
+3. Open a new terminal and start guided setup.
 
-Follow the questions from the AI guiding `xangi setup` to configure the workspace and Web Chat access scope.
+   ```bash
+   xangi setup
+   ```
 
-## Detailed setup for users
-
-### 1. Set up an AI coding tool
-
-xangi's guided setup uses Codex, Claude Code, Cursor Agent, Grok Build, or Antigravity. The dedicated script is independent of xangi and can also be used to set up only an AI coding tool.
+The guided setup currently communicates in Japanese. It lets you choose the workspace, AI backend, Web Chat access scope, and whether to start the service. If setup stops or you are unsure about the current state, run:
 
 ```bash
-bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
-```
-
-Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, or `antigravity`. Use `check` as the last argument to inspect installation and authentication without changing them. The script installs a missing tool using its vendor's official installer and starts interactive authentication. Codex requires Node.js and npm. If either is unavailable, the script prints the full sequence for installing nvm, closing and reopening the terminal, running `nvm install --lts`, and rerunning Codex setup, then stops.
-
-### 2. Install xangi
-
-Paste the same command into a terminal on macOS, Linux, or WSL2:
-
-```bash
-curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install.sh | bash
-```
-
-The installer detects the operating system and CPU, installs xangi, and creates `~/.local/bin/xangi`. It does not launch an interactive AI UI inside the `curl ... | bash` pipe. After installation, it tells you to run `xangi setup` from a normal terminal. This avoids platform-specific terminal handoff failures in TUI applications such as Codex. Run the installer from any directory. When `~/.local/bin` is not on PATH, it adds it idempotently to the bash or zsh startup files and also prints an `export PATH=...` command for the current shell.
-
-### Minimum flow and recovery commands
-
-After the installer completes, run `xangi setup` from a normal terminal. The installer has already placed the xangi application. The AI guiding setup runs `xangi install` when needed to register and start the OS service, asks separately whether to enable automatic startup, and finishes by checking the result with `doctor`.
-
-```text
-Prepare an AI tool → install xangi → setup → start the service → doctor
-```
-
-If the flow stops partway through, resume from the relevant command below. Normally, you only run `xangi setup` manually; its AI guide continues through service activation and diagnostics.
-
-1. `xangi setup`
-   - Interactively saves the workspace, selected AI, and Web Chat access scope.
-   - Web Chat defaults to this device only. Tailscale keeps the app on loopback and uses Tailscale Serve to expose it only inside the tailnet. LAN access is enabled only after warning that Web Chat has no application-level authentication.
-   - Resume here after waiting for AI tool installation or authentication, or after leaving setup midway.
-2. `xangi install`
-   - Registers the managed OS service and starts it for the current session. It does not enable startup after login or reboot.
-   - The AI launched by `xangi setup` normally runs it. Run it manually only when configuration succeeded but service activation failed.
-3. `xangi doctor`
-   - Diagnoses the service, Web Chat, and whether the configured workspace matches the running workspace.
-   - Run this first when you are unsure where the flow stopped.
-
-### Start using xangi
-
-After setup, xangi runs as a service, so no additional start command is required.
-
-- Browser: open `http://127.0.0.1:18888` for local-only access, or `http://<Tailscale IP>:18888` when Tailscale access was selected
-- Discord and other chat platforms: message the bot configured during setup
-- Health check: run `xangi doctor`
-
-The installer cannot change the parent shell's PATH. In the terminal that ran the installer, run the printed `export PATH=...` command or open a new terminal. The installer adds `~/.local/bin` to the bash and zsh startup files.
-
-### Installing multiple xangi instances on one machine
-
-The Gitless managed distribution currently supports one instance per OS user. Running the install command again as the same user updates and reconfigures that instance; it does not create a second one. A different Mac or PC, or a separate OS user on the same computer, has an independent home directory and can run the same install command safely.
-
-Named managed instances under one OS user are not supported yet. Use separate OS users for now. The multiple-clone, PM2, and Docker guidance later in this README is for source-checkout developers, not the Gitless managed distribution.
-
-### Connection settings
-
-When setup needs Discord allowed user IDs or Discord, Slack, LINE, Telegram, or Notion tokens, open the local settings page with one command:
-
-```bash
-xangi settings
-```
-
-Values never enter the AI conversation or shell history. xangi stores them with mode 0600 in the OS-specific configuration area. The temporary page binds only to `127.0.0.1`, never sends stored values back to the browser, and shuts down after saving.
-
-### Settings and updates
-
-```bash
-xangi settings
-xangi setup
 xangi doctor
-xangi update
-xangi service start
-xangi service stop
-xangi service restart
-xangi service status
-xangi service autostart enable
-xangi service autostart disable
-xangi uninstall
-xangi notion-sync enable
 ```
 
-`start|stop|restart|status` and `autostart enable|disable` are shared by managed and checkout installations. Only `autostart enable` registers startup after login or reboot. `autostart disable` removes that registration without stopping the currently running process. Neither `install` nor `service start` enables automatic startup implicitly.
+See the [usage guide](docs/en/usage.md#first-install-without-git) for installation, updates, removal, and configuration paths.
 
-For Notion sync, save the token and destination parent page with `xangi settings`, then enable it. See the [usage guide](docs/en/usage.md) for detailed commands, update and rollback behavior, and OS-specific paths.
+## Start using xangi
 
-To remove a managed installation, run `xangi uninstall`. It removes the service, scheduled updates, and xangi application while retaining the workspace, settings, tokens, and history, so the same install command can reinstall it immediately. Use `xangi uninstall --purge --yes` for a full settings and history reset. Neither command removes the workspace.
+- Web Chat: open `http://127.0.0.1:18888` when local access was selected
+- Discord, Slack, Telegram, or LINE: message the configured bot
+- Health check: `xangi doctor`
+- Connection settings: `xangi settings`
+- If the service was not started during setup: `xangi service start`
 
-## For developers and advanced users
+The [usage guide](docs/en/usage.md) covers chat commands, the terminal CLI, scheduling, Docker, Local LLMs, and environment variables.
 
-Everything below is for contributors who clone xangi with Git. Building xangi from source requires Node.js 22+ and npm. Regular users do not run these commands.
+## Platform setup
 
-### 1. Configure environment variables
+- [Discord](docs/en/discord-setup.md)
+- [Slack](docs/en/slack-setup.md)
+- [Telegram](docs/en/telegram-setup.md)
+- [LINE](docs/en/line-setup.md)
+- Web Chat is configured directly by `xangi setup`
+
+## Develop from source
+
+This section is for xangi contributors. Source builds require Node.js 22 or later, npm, and the AI CLI you intend to use.
 
 ```bash
 cp .env.example .env
-```
-
-**Minimum required settings (.env):**
-
-```bash
-# Discord Bot Token (required)
-DISCORD_TOKEN=your_discord_bot_token
-
-# Allowed user ID (required, comma-separated for multiple, "*" for all)
-DISCORD_ALLOWED_USER=123456789012345678
-```
-
-> 💡 The working directory defaults to `./workspace`. Set `WORKSPACE_PATH` to change it.
-
-> 💡 See [Discord Setup](docs/en/discord-setup.md) for how to create a Bot and find IDs.
-
-### 2. Build & Run
-
-```bash
-# Requires Node.js 22+ and at least one AI CLI
-# Claude Code: curl -fsSL https://claude.ai/install.sh | bash
-# Codex CLI:   npm install -g @openai/codex
-# Cursor CLI:  curl https://cursor.com/install -fsS | bash
-# Grok CLI:    curl -fsSL https://x.ai/cli/install.sh | bash
-# Antigravity CLI: curl -fsSL https://antigravity.google/cli/install.sh | bash
-# Local LLM:   Install Ollama (https://ollama.com)
-
 npm ci
 npm run build
 npm start
-
-# Development
-npm run dev
 ```
 
-### 3. Verify
+For Discord, set `DISCORD_TOKEN` and `DISCORD_ALLOWED_USER` in `.env`. For Web Chat only, set `WEB_CHAT_ENABLED=true`. A source checkout uses the process startup directory as its default workspace; set `WORKSPACE_PATH` when you need a different directory.
 
-Mention the bot in Discord to start a conversation.
+Use `npm run dev` during development. The validation commands are `npm test`, `npm run typecheck`, `npm run lint`, and `npm run format:check`. See the [usage guide](docs/en/usage.md) for PM2, multiple instances, and key environment variables, and [.env.example](.env.example) for an annotated configuration sample.
 
-### Browser-only (no Discord/Slack)
-
-If you don't want to set up tokens or just want to use it via a local browser, the Web Chat UI can run standalone.
-
-Add to `.env`:
-
-```bash
-WEB_CHAT_ENABLED=true
-```
-
-```bash
-npm start
-```
-
-Open `http://localhost:18888` in your browser.
-The UI loads only the latest 100 sessions and the latest 50 messages in the selected session. Open `http://localhost:18888/workspace` to browse and edit Markdown and code inside the same `WORKSPACE_PATH`. Files can be sorted by name or modification time and filtered by Markdown frontmatter tags; on phones, the file list and editor switch as full-screen views. Chat, Workspace, and Monitor support system, light, and dark themes. Open `http://localhost:18888/monitor` to follow Web, Discord, and Slack activity over SSE.
-
-The Workspace screen excludes hidden files, `.git`, `.xangi`, dependencies, build outputs, files larger than 1 MiB, and symbolic links. It edits existing files only, detects external changes before saving, and replaces files atomically. The Web UI has no application-level authentication, so LAN access also exposes workspace editing to the same network scope.
-
-> 💡 The Web Chat UI is opt-in (`WEB_CHAT_ENABLED=true`) to avoid surprise port conflicts. Change the port with `WEB_CHAT_PORT`.
-> 💡 See [Slack Setup](docs/en/slack-setup.md) for Slack integration.
-> 💡 See [Telegram Setup](docs/en/telegram-setup.md) for Telegram Bot integration.
-
-### Lifecycle management (pm2)
-
-xangi uses `./bin/xangi service` inside each clone to control the external supervisor. The `/restart` command is a low-level request for the running xangi process to gracefully shut down. A process manager is required for auto-recovery.
-
-```bash
-npm install -g pm2
-./bin/xangi service start
-./bin/xangi service status
-./bin/xangi service restart
-./bin/xangi service stop
-```
-
-To start xangi automatically after an OS reboot, run the following once from the target clone:
-
-```bash
-./bin/xangi service start
-./bin/xangi service autostart enable
-```
-
-Run `./bin/xangi service autostart disable` to remove automatic startup. Enabling runs `pm2 save` and `pm2 startup`; disabling runs `pm2 unstartup`. If PM2 prints a `sudo ...` command, run it once.
-
-When running multiple clones, run `./bin/xangi` from each target directory. If you want commands on PATH, prefer named symlinks such as `xangi-dev` / `xangi-prod` instead of one generic `xangi` symlink.
-
-```bash
-ln -sf /home/user/xangi-dev/bin/xangi ~/.local/bin/xangi-dev
-ln -sf /home/user/xangi-prod/bin/xangi ~/.local/bin/xangi-prod
-
-xangi-dev service status
-xangi-prod service restart
-```
-
-`ecosystem.config.cjs` is a PM2 app definition file. It uses `.env`'s `XANGI_PROCESS_NAME` as the PM2 process name, falling back to `XANGI_INSTANCE_ID` and then the directory name. It also defines the script and `node --env-file=.env` arguments. `./bin/xangi service start` uses this config to ask PM2 to start xangi. The `.cjs` extension keeps the PM2 config in CommonJS (`module.exports`) even though this package uses ESM (`"type": "module"`).
-
-## Usage
-
-### Basics
-
-- `@xangi your question` - Mention to interact
-- No mention needed in dedicated channels
-
-### Commands
-
-| Command                    | Description                                             |
-| -------------------------- | ------------------------------------------------------- |
-| `/new`                     | Start a new session                                     |
-| `/stop`                    | Stop running task                                       |
-| `/settings`                | Show current settings                                   |
-| `/notify`                  | Configure completion notifications for this channel     |
-| `/backend`                 | Per-channel backend / model switching                   |
-| `xangi sessions/chat/send` | Connect to xangi Web sessions from a terminal           |
-| `xangi-cmd schedule_*`     | Scheduler (cron / reminders)                            |
-| `xangi-cmd discord_*`      | Discord operations (history / send / search, etc.)      |
-| `xangi-cmd trigger`        | Event trigger (start an agent turn when a job finishes) |
-
-Response messages include buttons (Stop / New Session). Discord, Slack, and Web Chat keep reply suggestions collapsed and continue the same session when one is selected. Discord and Slack reveal suggestions only to the user who opens them. In Discord threads, completed responses also show a `Leave` button that removes the user who clicked it from the thread (the bot requires the Manage Threads permission). Use Discord's `/replysuggestions mode:on|off|show|default` command to switch suggestions globally. OFF does not add the generation instruction to AI prompts, so it consumes no extra suggestion tokens. Environment variables define per-platform startup defaults.
-On the first provider turn, xangi prefetches recent Discord, Slack, or Web history. Set `HISTORY_PREFETCH_ENABLED=false` to disable it and `HISTORY_PREFETCH_COUNT` to change the number of messages.
-
-See [Usage Guide](docs/en/usage.md) for details.
-
-## Running with Docker
-
-Docker containers are available for isolated execution.
+To use Docker:
 
 ```bash
 # Claude Code backend
 docker compose up xangi -d --build
 
-# Local LLM backend (Ollama)
+# Full image (also set AGENT_BACKEND=local-llm in .env to use a local model)
 docker compose up xangi-max -d --build
 
-# GPU version (CUDA + Python + PyTorch)
+# GPU image with CUDA and PyTorch
 docker compose up xangi-gpu -d --build
 ```
 
-`docker-compose.yml` sets `restart: unless-stopped`. Unless you explicitly stop the service with `docker compose stop` / `docker compose down`, the xangi container will be restored when the Docker daemon starts. To start xangi after an OS reboot, enable auto-start for the Docker daemon on the host.
+See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 
-See [Usage Guide: Docker](docs/en/usage.md#docker-deployment) for details.
+## Security
 
-## Environment Variables
-
-### Required (when using Discord)
-
-| Variable               | Description                                     |
-| ---------------------- | ----------------------------------------------- |
-| `DISCORD_TOKEN`        | Discord Bot Token                               |
-| `DISCORD_ALLOWED_USER` | Allowed user IDs (comma-separated, `*` for all) |
-
-For browser-only operation, just set `WEB_CHAT_ENABLED=true` (no Discord token required).
-
-See [Usage Guide](docs/en/usage.md#environment-variables-reference) for all environment variables.
+- Web Chat has no application-level authentication. LAN access exposes workspace browsing and editing to the same network scope. Prefer local access or Tailscale.
+- `xangi settings` binds temporarily to `127.0.0.1` and never sends stored tokens back to the browser.
+- Do not paste external-service tokens into AI conversations or shell history.
 
 ## Workspace
 
-Recommended workspace: [ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace)
+[ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace) is an optional starter kit with skills for notes, diaries, transcription, Notion integration, and more.
 
-A starter kit with pre-configured skills (note-taking, diary, transcription, Notion integration, etc.). Combine with xangi to automate daily tasks from chat.
+## Related projects
 
-## Related Projects
-
-### Device and wearable integrations
-
-- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - A resident bridge that makes a Stack-chan (M5Stack) speak xangi's responses with facial expressions and head movement, by subscribing to the [external event stream](docs/en/events.md) (SSE)
-- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - An Even Hub app, bridge, and local Whisper STT server for browsing xangi sessions, sending voice input, and viewing responses on Even Realities G2
-- [xangi-pets](https://github.com/karaage0703/xangi-pets) - A desktop companion that animates with xangi's state, displays responses in speech bubbles, and lets you send messages to xangi
-
-## Book
-
-📖 [生活に溶け込むAI — Build Your Own AI Assistant with AI Agents](https://karaage0703.booth.pm/items/8027277) (Japanese)
-
-A book about building AI assistants with xangi.
+- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - Bridge xangi responses to an expressive M5Stack character
+- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Hub app and bridge for using xangi from Even Realities G2
+- [xangi-pets](https://github.com/karaage0703/xangi-pets) - Desktop companions that display xangi state and responses
 
 ## Documentation
 
-- [Usage Guide](docs/en/usage.md) - Docker, env vars, Local LLM, troubleshooting
-- [Discord Setup](docs/en/discord-setup.md) - Bot creation & ID lookup
-- [Slack Setup](docs/en/slack-setup.md) - Slack integration
-- [Telegram Setup](docs/en/telegram-setup.md) - Telegram Bot integration
-- [LINE Setup](docs/en/line-setup.md) - LINE Messaging API integration (incl. Tailscale Funnel for public webhook)
-- [Design Document](docs/en/design.md) - Architecture, design philosophy, data flow
-- [External Event Stream](docs/en/events.md) - Response lifecycle event delivery spec
-- [Inter-instance Chat](docs/en/inter-instance-chat.md) - Message exchange & auto-talk between instances
+- [Usage guide](docs/en/usage.md) - Commands, configuration, Docker, Local LLMs, multiple instances, and troubleshooting
+- [Design document](docs/en/design.md) - Architecture, components, and data flow
+- [External event stream](docs/en/events.md) - SSE and device input APIs
+- [Inter-instance chat](docs/en/inter-instance-chat.md) - Messaging between xangi instances
+
+## Book
+
+[生活に溶け込むAI — Build Your Own AI Assistant with AI Agents](https://karaage0703.booth.pm/items/8027277) (Japanese)
 
 ## Acknowledgments
 

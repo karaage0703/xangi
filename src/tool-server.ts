@@ -20,9 +20,15 @@ import { slackHistoryCmd } from './cli/slack-history-cmd.js';
 import { isGitHubAppEnabled, generateInstallationToken } from './github-auth.js';
 import { ValidationError } from './errors.js';
 import type { EventTrigger, TriggerRequestBody } from './event-trigger.js';
+import { discoverBackendModels } from './backend-models.js';
+import type { BackendResolver } from './backend-resolver.js';
+import { executeModelsCommand, selectModelForNextTurn } from './models-command.js';
+import { formatXangiCmdHelp } from './cli/xangi-cmd-help.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
+let backendResolver: BackendResolver | null = null;
+let modelDiscovery: typeof discoverBackendModels = discoverBackendModels;
 
 interface ToolRequest {
   command: string;
@@ -65,6 +71,25 @@ async function executeCommand(
     return scheduleCmd(command, flags);
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
+  } else if (command === 'help') {
+    return formatXangiCmdHelp(flags['topic']);
+  } else if (command === 'models') {
+    if (!backendResolver) {
+      throw new ValidationError('models is not available on this instance');
+    }
+    if (flags.use) {
+      return selectModelForNextTurn(
+        {
+          backend: flags.backend,
+          model: flags.use,
+          effort: flags.effort,
+          channelId: flags.channel ?? context?.channelId,
+        },
+        backendResolver,
+        modelDiscovery
+      );
+    }
+    return executeModelsCommand(flags.backend, backendResolver, modelDiscovery);
   } else if (command === 'trigger') {
     if (!eventTrigger) {
       throw new ValidationError('Trigger is not available on this instance');
@@ -167,8 +192,14 @@ function persistToolServerPort(port: number): void {
  * options.eventTrigger を渡すと POST /api/trigger（外部イベントによる
  * エージェントターン起動）と xangi-cmd trigger が有効になる。
  */
-export function startToolServer(options?: { eventTrigger?: EventTrigger | null }): void {
+export function startToolServer(options?: {
+  eventTrigger?: EventTrigger | null;
+  backendResolver?: BackendResolver | null;
+  modelDiscovery?: typeof discoverBackendModels;
+}): void {
   eventTrigger = options?.eventTrigger ?? null;
+  backendResolver = options?.backendResolver ?? null;
+  modelDiscovery = options?.modelDiscovery ?? discoverBackendModels;
   server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 

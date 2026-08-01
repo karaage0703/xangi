@@ -30,7 +30,7 @@ describe('secret settings UI', () => {
     expect(html).toContain('Discord');
     expect(html).toContain('DISCORD_ALLOWED_USER');
     expect(html).toContain('許可ユーザーID');
-    expect(html).toContain('同期先の親ページIDまたはURL');
+    expect(html).not.toContain('Notion');
     expect(html).toContain('設定済み');
     expect(html).not.toContain('existing-discord-secret');
 
@@ -46,20 +46,16 @@ describe('secret settings UI', () => {
         DISCORD_ALLOWED_USER: '123456789012345678, 987654321098765432',
         SLACK_BOT_TOKEN: 'xoxb-new-secret',
         SLACK_APP_TOKEN: 'xapp-new-secret',
-        XANGI_NOTION_PARENT_PAGE_ID: 'https://notion.so/parent-page',
       }),
     });
     expect(response.status).toBe(200);
-    expect(await server.completion).toBe(4);
+    expect(await server.completion).toBe(3);
     expect(await store.get('DISCORD_TOKEN')).toBe('existing-discord-secret');
     expect(await store.get('DISCORD_ALLOWED_USER')).toBe(
       '123456789012345678,987654321098765432'
     );
     expect(await store.get('SLACK_BOT_TOKEN')).toBe('xoxb-new-secret');
     expect(await store.get('SLACK_APP_TOKEN')).toBe('xapp-new-secret');
-    expect(await store.get('XANGI_NOTION_PARENT_PAGE_ID')).toBe(
-      'https://notion.so/parent-page'
-    );
   });
 
   it('rejects an invalid Discord allowed-user value without saving it', async () => {
@@ -98,24 +94,6 @@ describe('secret settings UI', () => {
       body: new URLSearchParams({ DISCORD_TOKEN: 'must-not-be-stored' }),
     });
     expect(response.status).toBe(404);
-  });
-
-  it('accepts a same-host form POST when the browser omits Origin', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'xangi-settings-ui-'));
-    roots.push(root);
-    const store = new SecretStore(join(root, 'secrets.json'));
-    const server = await startSecretSettingsServer({ store, timeoutMs: 5_000 });
-    servers.push(server);
-
-    const response = await fetch(server.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ XANGI_NOTION_TOKEN: 'notion-new-secret' }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await server.completion).toBe(1);
-    expect(await store.get('XANGI_NOTION_TOKEN')).toBe('notion-new-secret');
   });
 
   it('accepts a valid one-time form POST with an opaque browser Origin', async () => {

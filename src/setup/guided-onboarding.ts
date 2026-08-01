@@ -30,7 +30,6 @@ export interface OnboardingStatus {
   workspacePath?: string;
   workspaceMode?: string;
   webChatAccess?: string;
-  notionSyncEnabled?: boolean;
   updatedAt?: string;
 }
 
@@ -321,12 +320,11 @@ ${workspaceFlow}
 7. 最低限のセットアップが終わり、BOOTSTRAP.mdの指示に従って同ファイルが削除されたら次を実行してください:
    ${options.launcherCommand} setup --complete
 8. その後、すぐxangiを使い始めるか、追加設定を続けるか日本語で確認してください。
-9. Discord、Notion同期、他のchat platform、schedule、skillなどxangi自体の設定では、workspace内にxangiのオンボーディング手順を探してはいけません。workspaceはAIの人格、BOOTSTRAP、利用者データのための場所です。必ずxangi本体に同梱された次の公式documentを必要な範囲だけ読んでから、一問ずつ案内してください:
+9. Discord、他のchat platform、schedule、skillなどxangi自体の設定では、workspace内にxangiのオンボーディング手順を探してはいけません。workspaceはAIの人格、BOOTSTRAP、利用者データのための場所です。必ずxangi本体に同梱された次の公式documentを必要な範囲だけ読んでから、一問ずつ案内してください:
    - README: ${readmePath}
    - CLIと設定のusage: ${usagePath}
    - Discord設定: ${discordSetupPath}
-   利用者が明示的に選ばない限りNotion同期はOFFのままにしてください。
-   secretやtokenをAIとの会話へ貼り付けるよう求めたり、read・printf・echoなどのshell commandを組み立てて保存させたりしないでください。Discordの許可ユーザーID、Discord、Slack、LINE、Telegram、Notionのtoken設定が必要な場合は、利用者自身がTerminalで\`${options.launcherCommand} settings\`を実行し、ローカルの専用設定画面へ入力すると案内してください。Notion同期では同じ画面で親ページIDまたはURLも入力し、その後に\`${options.launcherCommand} notion-sync enable\`を実行します。workspace全体を自動検出するため、個別Markdownの相対path、同期方向、YAML manifestを質問してはいけません。
+   secretやtokenをAIとの会話へ貼り付けるよう求めたり、read・printf・echoなどのshell commandを組み立てて保存させたりしないでください。Discordの許可ユーザーID、Discord、Slack、LINE、Telegramのtoken設定が必要な場合は、利用者自身がTerminalで\`${options.launcherCommand} settings\`を実行し、ローカルの専用設定画面へ入力すると案内してください。
 ${startupFlow}
 
 任意のsoftwareを勝手にインストールしたり、署名されていないworkspace templateを取得したり、secretを表示したり、利用者の明示的な選択なしに外部連携を有効化したりしないでください。`;
@@ -429,7 +427,6 @@ export interface ApplySetupOptions {
   backendExecutable?: string;
   workspacePath: string;
   workspaceMode: string;
-  notionSyncEnabled?: boolean;
   webChatEnabled?: boolean;
   webChatAccess?: string;
 }
@@ -498,8 +495,6 @@ export async function readOnboardingStatus(layout: AppLayout): Promise<Onboardin
       workspacePath: typeof value.workspacePath === 'string' ? value.workspacePath : undefined,
       workspaceMode: typeof value.workspaceMode === 'string' ? value.workspaceMode : undefined,
       webChatAccess: typeof value.webChatAccess === 'string' ? value.webChatAccess : undefined,
-      notionSyncEnabled:
-        typeof value.notionSyncEnabled === 'boolean' ? value.notionSyncEnabled : undefined,
       updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : undefined,
     };
   } catch (error) {
@@ -557,7 +552,6 @@ export async function applyGuidedSetup(
       workspacePath: options.workspacePath,
       webChatEnabled: options.webChatEnabled ?? true,
       webChatAccess: options.webChatAccess ?? 'local',
-      notionSyncEnabled: options.notionSyncEnabled ?? false,
     });
     if (mode === 'template') {
       if (!dependencies.initializeTemplate) {
@@ -612,10 +606,9 @@ export async function completeGuidedSetup(layout: AppLayout): Promise<string> {
     backend: setup.backend,
     workspacePath: setup.workspacePath,
     webChatAccess: setup.webChatAccess,
-    notionSyncEnabled: setup.notionSyncEnabled,
     updatedAt: new Date().toISOString(),
   });
-  return '最低限のセットアップが完了しました。Discord、Notion、schedule、skillは後から設定できます。';
+  return '最低限のセットアップが完了しました。Discord、schedule、skillは後から設定できます。';
 }
 
 export function launcherCommand(path: string): string {

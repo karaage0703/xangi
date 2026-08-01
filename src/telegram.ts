@@ -2,6 +2,7 @@ import { Bot, webhookCallback, type Context } from 'grammy';
 import { Agent as HttpsAgent } from 'node:https';
 import type { Config } from './config.js';
 import type { AgentRunner } from './agent-runner.js';
+import type { BackendResolver } from './backend-resolver.js';
 import type { Scheduler } from './scheduler.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { StreamSession, type StreamView } from './stream-session.js';
@@ -30,6 +31,7 @@ import {
   type TelegramAttachmentSendResult,
   type TelegramMediaCandidate,
 } from './telegram-media.js';
+import { executeModelsCommand, parseModelsCommand } from './models-command.js';
 
 const TELEGRAM_RETRY_BASE_MS = 1_000;
 const TELEGRAM_RETRY_MAX_MS = 60_000;
@@ -666,9 +668,10 @@ export function shouldProcessMessage(params: {
 export async function startTelegramBot(opts: {
   config: Config;
   agentRunner: AgentRunner;
+  resolver: BackendResolver;
   scheduler: Scheduler;
 }): Promise<void> {
-  const { config, agentRunner, scheduler } = opts;
+  const { config, agentRunner, resolver, scheduler } = opts;
   const tcfg = config.telegram;
 
   if (!tcfg.enabled || !tcfg.botToken) {
@@ -990,6 +993,22 @@ export async function startTelegramBot(opts: {
     const cleanText = isMentioned ? cleanMention(text, botMention) : text;
     const rawCmd = cleanText.toLowerCase();
 
+    const modelsBackend = parseModelsCommand(cleanText);
+    if (modelsBackend !== null) {
+      try {
+        const result = await executeModelsCommand(modelsBackend, resolver);
+        for (const chunk of splitMessage(result, 4096)) {
+          await ctx.reply(chunk);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
+        await ctx.reply(message).catch((err) => {
+          console.warn(`[xangi-telegram] Failed to send models error: ${formatTelegramError(err)}`);
+        });
+      }
+      return;
+    }
+
     // リセットコマンド (/stop 同様キューを経由しない)
     const resetPatterns = tcfg.resetTextPatterns ?? ['/reset', '/new', '/clear'];
     if (isResetCommand(cleanText, resetPatterns)) {
@@ -1020,6 +1039,7 @@ export async function startTelegramBot(opts: {
             (mediaEnabled ? '・画像や動画には、キャプションで指示を添えられます。\n' : '') +
             '・/new, /reset, /clear : 新しい会話セッションを開始します。\n' +
             '・/stop : 現在実行中のタスクを停止します。\n' +
+            '・/models [backend] : 利用可能なモデル一覧を表示します。\n' +
             '・/help : この案内を表示します。'
         )
         .catch((err) => {

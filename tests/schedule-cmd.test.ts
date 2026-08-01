@@ -87,6 +87,20 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
     expect(schedules[0]?.platform).toBe('discord');
   });
 
+  it('supports Web schedules and normalizes web-chat context keys', async () => {
+    process.env.XANGI_PLATFORM = 'web';
+
+    await scheduleCmd('schedule_add', {
+      input: '毎日 9:00 おはよう',
+      channel: 'web-chat:pane123',
+    });
+
+    const schedules = JSON.parse(
+      readFileSync(join(tmpDir, '.xangi', 'schedules.json'), 'utf-8')
+    ) as Array<{ platform: string; channelId: string }>;
+    expect(schedules[0]).toMatchObject({ platform: 'web', channelId: 'pane123' });
+  });
+
   it('rejects invalid schedule platforms', async () => {
     await expect(
       scheduleCmd('schedule_add', {
@@ -94,6 +108,6 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
         channel: 'ch1',
         platform: 'mastodon',
       })
-    ).rejects.toThrow('--platform must be discord or slack');
+    ).rejects.toThrow('--platform must be discord, slack, or web');
   });
 });
