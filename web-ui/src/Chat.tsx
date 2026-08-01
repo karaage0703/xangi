@@ -10,6 +10,15 @@ import {
 } from 'react';
 import { requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
+import {
+  applyPublishedLiveEvent,
+  liveThreadId,
+  selectLiveTurn,
+  syncObservedLiveTurn,
+  type LiveActivity,
+  type ObservedLiveTurn,
+  type PublishedLiveEvent,
+} from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
 import { shouldShowAutoTalk } from './sessionList';
 import { associateToolHistory } from './toolHistory';
@@ -21,10 +30,7 @@ const PROJECT_STATE_KEY = 'xangi_active_project_v1';
 const SIDEBAR_COLLAPSED_KEY = 'xangi_sidebar_collapsed_v1';
 const AUTO_TALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 
-interface Activity {
-  state: string;
-  summary: string;
-  active: boolean;
+interface Activity extends LiveActivity {
   toolLines?: string[];
   history?: Array<{ state: string; summary: string; at: number }>;
   startedAt?: number;
@@ -685,6 +691,7 @@ function ChatPane({
   const [error, setError] = useState('');
   const [streamText, setStreamText] = useState('');
   const [toolLines, setToolLines] = useState<string[]>([]);
+  const [observedLiveTurn, setObservedLiveTurn] = useState<ObservedLiveTurn>();
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
   const [toolHistory, setToolHistory] = useState<ToolHistoryEntry[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -784,6 +791,7 @@ function ChatPane({
     setError('');
     setStreamText('');
     setToolLines([]);
+    setObservedLiveTurn(undefined);
     setLiveToolsOpen(true);
     setToolHistory([]);
     setDiscordComposeEnabled(false);
@@ -798,10 +806,34 @@ function ChatPane({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!busy) return;
+    if (!busy && !summary?.activity?.active) return;
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [busy]);
+  }, [busy, summary?.activity?.active]);
+
+  useEffect(() => {
+    if (busy) {
+      setObservedLiveTurn(undefined);
+      return;
+    }
+    setObservedLiveTurn((current) => syncObservedLiveTurn(current, summary?.activity));
+  }, [busy, summary?.activity?.active, summary?.activity?.textPreview, summary?.activity?.turnId]);
+
+  useEffect(() => {
+    if (busy || !summary?.activity?.active) return;
+    const threadId = liveThreadId(summary);
+    if (!threadId) return;
+    const source = new EventSource(`/api/events/stream?thread_id=${encodeURIComponent(threadId)}`);
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as PublishedLiveEvent;
+        setObservedLiveTurn((current) => applyPublishedLiveEvent(current, data));
+      } catch {
+        // A malformed observer event must not interrupt the chat pane.
+      }
+    };
+    return () => source.close();
+  }, [busy, summary?.activity?.active, summary?.activity?.turnId, summary?.contextKey, sessionId]);
 
   useEffect(() => {
     if (refreshVersion > 0 && sessionId && !busy) void loadDetail();
@@ -1176,6 +1208,18 @@ function ChatPane({
   const elapsed = thinkingStartedAt
     ? Math.max(0, Math.floor((clock - thinkingStartedAt) / 1000))
     : 0;
+  const liveTurn = selectLiveTurn({
+    localBusy: busy,
+    localText: streamText,
+    localToolLines: toolLines,
+    activity: summary?.activity,
+    observed: observedLiveTurn,
+  });
+  const liveElapsed = busy
+    ? elapsed
+    : liveTurn.startedAt
+      ? Math.max(0, Math.floor((clock - liveTurn.startedAt) / 1000))
+      : summary?.activity?.elapsedSec || 0;
   const timeoutText = formatRemaining(timeout.timeoutAt);
   const timeoutWarning = Boolean(timeout.timeoutAt && timeout.timeoutAt - clock <= 30_000);
   const timeoutRemaining = timeout.timeoutAt ? Math.max(0, timeout.timeoutAt - clock) : 0;
@@ -1264,13 +1308,13 @@ function ChatPane({
             }}
           />
         ))}
-        {(busy || streamText || toolLines.length > 0) && (
+        {liveTurn.visible && (
           <article className="message assistant live-turn" aria-live="polite">
             <header>
               <span>xangi</span>
-              <small>{busy ? `処理中 ${elapsed}秒` : ''}</small>
+              <small>{`${liveTurn.statusLabel} ${liveElapsed}秒`}</small>
             </header>
-            {toolLines.length > 0 && (
+            {liveTurn.toolLines.length > 0 && (
               <section className="live-tools">
                 <button
                   type="button"
@@ -1280,20 +1324,20 @@ function ChatPane({
                 >
                   <span>実行ツール</span>
                   <small>
-                    {toolLines.length}件 · {liveToolsOpen ? '隠す' : '表示'}
+                    {liveTurn.toolLines.length}件 · {liveToolsOpen ? '隠す' : '表示'}
                   </small>
                 </button>
                 {liveToolsOpen && (
                   <div className="tool-history">
-                    {toolLines.map((line, index) => (
+                    {liveTurn.toolLines.map((line, index) => (
                       <code key={`${line}-${index}`}>{line}</code>
                     ))}
                   </div>
                 )}
               </section>
             )}
-            {streamText ? (
-              <MessageContent content={streamText} markdown />
+            {liveTurn.text ? (
+              <MessageContent content={liveTurn.text} markdown />
             ) : (
               <div className="thinking">
                 <span className="spinner" />
