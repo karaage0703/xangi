@@ -1,36 +1,24 @@
-/**
- * 全プラットフォーム共通のxangiコマンド（Discord/Slack/Web）
- */
-export const XANGI_COMMANDS_COMMON = `## 長時間処理
+/** 全プラットフォーム共通の、実行時に必要な契約だけを保持する。 */
+export const XANGI_COMMANDS_COMMON = `## オンデマンドヘルプ
 
-xangiのデフォルトタイムアウトは30分（1800000ms、env TIMEOUT_MS で変更可）。
-- ターン終了後も存続する方法を使い、具体手順はワークスペースの指示に従う
-- 開始報告前に存続を確認し、ログと終了状態を保存する
-- 確認できなければ開始済み・完了済みと報告しない
+xangiの操作方法や引数を推測しない。必要な時だけ xangi-cmd help <topic|command> を確認する。
+
+## 長時間処理
+
+30分を超える処理はワークスペース指定の永続方式で実行し、開始報告前に存続・ログ・終了状態の保存を確認する。確認できなければ開始済み・完了済みと報告しない。
 
 ## 自己再起動
 
-- 現在のxangi自身は、\`xangi-cmd system_restart\`をこのターンから直接呼び、遅延・子プロセス・スケジューラへ委譲しない
-- 受付を完了とみなさず、復帰後に状態・起動時刻・ログを確認する`;
+- 現在のxangi自身は xangi-cmd system_restart をこのターンから直接呼び、遅延・子プロセス・スケジューラへ委譲しない
+- 受付を完了とみなさず、復帰後に状態・起動時刻・ログを確認する
 
-/**
- * イベントトリガー（TRIGGER_ENABLED=true のときだけ注入される）
- *
- * Web/LINE はトリガーの投稿先にできない（platform: discord|slack のみ）ため、
- * チャットプラットフォーム（Discord/Slack）向けにだけ組み立て側で追加する。
- */
-export const XANGI_COMMANDS_TRIGGER = `## イベントトリガー（完了時に自分を起こす）
+## AI向けバックエンドモデル確認・選択
 
-長時間処理を環境固有の方法で永続実行するときは、その完了・失敗時の処理から \`xangi-cmd trigger\` を呼ぶと、新しいターンを起動して結果を報告できる：
+利用可能なモデルは回答前に xangi-cmd models --backend <backend> で取得し、返った正確なIDだけを案内する。取得非対応・失敗時に固定名で補わない。
 
-\`\`\`
-xangi-cmd trigger --channel <チャンネルID> --message "長時間処理が終了した。保存済みの終了状態とログを確認して報告して" --source <source>
-\`\`\`
+ユーザーがモデル選択を明示依頼した場合だけ、説明・effort・タスク特性を比較し、xangi-cmd models --backend <backend> --use <exact-model-id> [--effort <level>] [--channel <settings-channel-id>] を実行する。選択は次のturnから適用される。Discordスレッドでは親設定チャンネルIDを指定し、明示依頼なしに自動変更しない。`;
 
-- 成功時だけでなく失敗時にもtriggerへ到達するようにする
-- triggerを呼ぶ前に終了状態とログを保存し、次のターンで確認できるようにする
-- 永続実行・完了検知・状態保存の具体的な方法はワークスペースの指示に従う
-- \`--source\` は発火元の識別子（英数と \`_.:-\`）。チャンネルには \`⚡ trigger: <source>\` ラベルが付く
-- 同一 source は 10 秒以内の連続発火、および前回ターンの実行中の発火が拒否される
-- 同一チャンネル宛は実行中ターンの終了を待って直列に発火する
-- 定刻チェックには従来どおり \`schedule_add\`、「イベント完了の瞬間に動きたい」場合は trigger を使う`;
+/** TRIGGER_ENABLED=true かつ対応platformの時だけ注入する。 */
+export const XANGI_COMMANDS_TRIGGER = `## イベントトリガー
+
+長時間処理の終了時は、終了状態とログを保存してから成功・失敗どちらでも xangi-cmd trigger --channel <id> --message <message> --source <source> を呼ぶ。具体的な永続方式はワークスペースの指示に従う。同一sourceの即時再試行と実行中turnへの重複発火を避ける。定刻確認はschedule、完了時通知はtriggerを使う。`;

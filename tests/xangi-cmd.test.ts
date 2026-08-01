@@ -218,4 +218,25 @@ describe('xangi-cmd CLI channelId completion', () => {
     });
     expect(lastRequest.context).toEqual({});
   });
+
+  it('uses the same models command name in the CLI and tool server', async () => {
+    await runCli(['models', '--backend', 'codex']);
+    expect(lastRequest.command).toBe('models');
+    expect(lastRequest.flags).toEqual({ backend: 'codex' });
+  });
+
+  it('forwards positional help topic to the tool server', async () => {
+    await runCli(['help', 'schedule_add']);
+    expect(lastRequest.command).toBe('help');
+    expect(lastRequest.flags).toEqual({ topic: 'schedule_add' });
+  });
+
+  it('passes next-turn model selection and current channel context', async () => {
+    await runCli(['models', '--backend', 'codex', '--use', 'gpt-test', '--effort', 'high'], {
+      XANGI_CHANNEL_ID: 'web-chat:test',
+    });
+    expect(lastRequest.command).toBe('models');
+    expect(lastRequest.flags).toEqual({ backend: 'codex', use: 'gpt-test', effort: 'high' });
+    expect(lastRequest.context).toEqual({ channelId: 'web-chat:test' });
+  });
 });

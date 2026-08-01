@@ -1,7 +1,7 @@
 import { AppNavigation } from './AppNavigation';
 import { ThemeSelect } from './ThemeSelect';
 
-type AppSurface = 'chat' | 'workspace' | 'monitor';
+type AppSurface = 'chat' | 'workspace' | 'schedules' | 'monitor';
 
 export function AppTopbar({ current }: { current: AppSurface }) {
   return (

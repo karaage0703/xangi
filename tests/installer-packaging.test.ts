@@ -21,7 +21,6 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   const nodeBinary = join(root, 'node-fixture');
 
   await mkdir(join(project, 'dist'), { recursive: true });
-  await mkdir(join(project, 'src'), { recursive: true });
   await mkdir(join(project, 'docs', 'en'), { recursive: true });
   await mkdir(join(project, 'web'), { recursive: true });
   await mkdir(join(project, 'web', 'node_modules'), { recursive: true });
@@ -41,21 +40,8 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await mkdir(join(project, 'memory'), { recursive: true });
 
   await writeFile(join(project, 'dist', 'index.js'), 'console.log("xangi")\n');
-  await writeFile(
-    join(project, 'dist', 'approval.js'),
-    `import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const path = join(dirname(fileURLToPath(import.meta.url)), 'approval-patterns.json');
-console.log(JSON.parse(readFileSync(path, 'utf8')).length);
-`
-  );
   await writeFile(join(project, 'dist', '.env'), 'TOKEN=do-not-package\n');
   await writeFile(join(project, 'dist', 'server.pem'), 'private material\n');
-  await writeFile(
-    join(project, 'src', 'approval-patterns.json'),
-    JSON.stringify([{ command: 'rm ', description: 'delete', category: 'filesystem' }])
-  );
   await writeFile(join(project, 'README.md'), '# xangi\n');
   await writeFile(join(project, 'README.en.md'), '# xangi\n');
   await writeFile(join(project, 'docs', 'usage.md'), '# 使い方\n');
@@ -202,7 +188,6 @@ describe('packaging/build-bundle.sh', () => {
     const root = 'xangi-1.2.3-darwin-arm64';
 
     expect(entries).toContain(`${root}/dist/index.js`);
-    expect(entries).toContain(`${root}/dist/approval-patterns.json`);
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
     expect(entries).toContain(`${root}/web/inter-chat.html`);
@@ -237,9 +222,6 @@ describe('packaging/build-bundle.sh', () => {
     await expect(
       readFile(join(unpacked, root, 'runtime', 'bin', 'node'), 'utf8')
     ).resolves.toContain('fixture-node');
-    await expect(
-      exec(process.execPath, [join(unpacked, root, 'dist', 'approval.js')])
-    ).resolves.toMatchObject({ stdout: '1\n' });
   });
 
   it('release targetと一致しないNode runtimeを拒否する', async () => {

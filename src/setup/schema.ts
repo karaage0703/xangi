@@ -21,7 +21,6 @@ export interface SetupConfig {
   workspacePath: string;
   webChatEnabled: boolean;
   webChatAccess: SetupWebChatAccess;
-  notionSyncEnabled: boolean;
 }
 
 const ALLOWED_KEYS = new Set<string>([
@@ -30,6 +29,7 @@ const ALLOWED_KEYS = new Set<string>([
   'workspacePath',
   'webChatEnabled',
   'webChatAccess',
+  // Read compatibility for setup files created before Notion sync was removed.
   'notionSyncEnabled',
 ]);
 
@@ -60,7 +60,6 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     workspacePath,
     webChatEnabled,
     webChatAccess = 'local',
-    notionSyncEnabled = false,
   } = value;
   if (
     typeof backend !== 'string' ||
@@ -73,7 +72,7 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     typeof webChatEnabled !== 'boolean' ||
     typeof webChatAccess !== 'string' ||
     !(SETUP_WEB_CHAT_ACCESS as readonly string[]).includes(webChatAccess) ||
-    typeof notionSyncEnabled !== 'boolean'
+    (value.notionSyncEnabled !== undefined && typeof value.notionSyncEnabled !== 'boolean')
   ) {
     throw new SetupValidationError();
   }
@@ -92,6 +91,5 @@ export function parseSetupConfig(value: unknown): SetupConfig {
     workspacePath,
     webChatEnabled,
     webChatAccess: webChatAccess as SetupWebChatAccess,
-    notionSyncEnabled,
   };
 }

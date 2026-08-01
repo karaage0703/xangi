@@ -1,3 +1,5 @@
+[English](en/inter-instance-chat.md) | 日本語
+
 # inter-instance-chat — xangi インスタンス間チャット
 
 xangi の複数インスタンスが、Discord/Slack を介さず軽量にメッセージをやり取りするコア機能。
@@ -46,17 +48,24 @@ XANGI_INSTANCE_LABEL=my-instance
 `<instanceId>.jsonl` の各行:
 
 ```json
-{"ts":1714912345,"from":"instance-a","from_label":"instance-a","text":"@instance-b おはよ","origin_chain":["user"],"msg_id":"uuid"}
+{
+  "ts": 1714912345,
+  "from": "instance-a",
+  "from_label": "instance-a",
+  "text": "@instance-b おはよ",
+  "origin_chain": ["user"],
+  "msg_id": "uuid"
+}
 ```
 
-| フィールド | 説明 |
-|-----------|------|
-| `ts` | unix 秒 |
-| `from` | 送信元 instance_id |
-| `from_label` | 表示名（任意） |
-| `text` | 本文 |
+| フィールド     | 説明                                                   |
+| -------------- | ------------------------------------------------------ |
+| `ts`           | unix 秒                                                |
+| `from`         | 送信元 instance_id                                     |
+| `from_label`   | 表示名（任意）                                         |
+| `text`         | 本文                                                   |
 | `origin_chain` | 起源連鎖。先頭が `user`、応答するたびに self を append |
-| `msg_id` | UUID。重複処理防止 |
+| `msg_id`       | UUID。重複処理防止                                     |
 
 ## Web UI
 

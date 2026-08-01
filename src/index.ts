@@ -1,13 +1,11 @@
 import { Client, GatewayIntentBits, Events, Partials, REST, Routes } from 'discord.js';
 import { loadConfig } from './config.js';
-import { requestApproval, setApprovalEnabled } from './approval.js';
 import { getBackendDisplayName } from './agent-runner.js';
 import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
 import { startSlackBot } from './slack.js';
 import { initSettings, loadSettings } from './settings.js';
-import lockfile from 'proper-lockfile';
 import { Scheduler } from './scheduler.js';
 import { initSessions } from './sessions.js';
 import { join } from 'path';
@@ -17,7 +15,6 @@ import { startLineBot } from './line.js';
 import { formatTelegramError, startTelegramBot } from './telegram.js';
 import { getEventsConfig } from './events-emitter.js';
 import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { registerDiscordTimeoutUi } from './discord/ui.js';
 import {
   buildSlashCommands,
@@ -35,43 +32,10 @@ import { runShutdownCleanup } from './shutdown.js';
 import { getSelfLifecyclePermission } from './self-lifecycle.js';
 import { loadStoredSecrets } from './setup/runtime-secrets.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
+import { acquireDataDirLock } from './data-dir-lock.js';
 dotenvConfig({ override: true });
 await applySetupRuntimeEnvFromProcess();
 await loadStoredSecrets();
-
-/**
- * dataDir を flock 風に排他ロックする。
- * 同じ dataDir を複数の xangi インスタンスで共有すると sessions.json を
- * 取り合って書き潰し合うため、起動時に警告して回避を促す。
- *
- * 取得成功時は release 関数を返す。取得失敗時 (別インスタンスが使用中) は
- * 警告を出して null を返す (起動は継続する; 重複検知はあくまで助言)。
- *
- * proper-lockfile は mtime ハートビート (`update`) で生存を示し、`stale` 時間
- * 経過後は強制取得を許す。crash で残った lock は次起動時に自動回収される。
- */
-async function acquireDataDirLock(dataDir: string): Promise<(() => Promise<void>) | null> {
-  try {
-    const release = await lockfile.lock(dataDir, {
-      stale: 60_000, // 60s 以上 mtime が更新されてなければ stale とみなす
-      update: 30_000, // 30s ごとに mtime を更新 (heartbeat)
-      retries: 0, // すぐに ELOCKED を返す
-    });
-    return release;
-  } catch (err) {
-    const code =
-      err && typeof err === 'object' && 'code' in err ? (err as { code: string }).code : '';
-    if (code === 'ELOCKED') {
-      console.warn(`[xangi] ⚠️  Another xangi process is using the same dataDir: ${dataDir}`);
-      console.warn(
-        `[xangi] ⚠️  Sessions and settings will be overwritten unpredictably. Set DATA_DIR to a separate path for this instance.`
-      );
-    } else {
-      console.warn(`[xangi] Failed to acquire dataDir lock: ${err}`);
-    }
-    return null;
-  }
-}
 
 async function main() {
   const config = loadConfig();
@@ -188,6 +152,7 @@ async function main() {
   if (config.line.enabled) {
     startLineBot({
       agentRunner,
+      resolver,
       channelSecret: config.line.channelSecret!,
       channelAccessToken: config.line.channelAccessToken!,
       allowedUsers: lineAllowed,
@@ -209,6 +174,7 @@ async function main() {
     void startTelegramBot({
       config,
       agentRunner,
+      resolver,
       scheduler,
     }).catch((err) => {
       console.error(`[xangi] Failed to start Telegram bot: ${formatTelegramError(err)}`);
@@ -225,16 +191,14 @@ async function main() {
   const { initGitHubAuth } = await import('./github-auth.js');
   initGitHubAuth();
 
-  // ツール承認の有効/無効（デフォルト無効）
-  if (process.env.APPROVAL_ENABLED === 'true') {
-    setApprovalEnabled(true);
-  }
-
   // ツールサーバー起動（Claude Codeからcurlで叩くAPI）
   // イベントトリガー（POST /api/trigger）は scheduler の agentRunner 経路を再利用
   const { startToolServer } = await import('./tool-server.js');
   const { EventTrigger, loadTriggerConfig } = await import('./event-trigger.js');
-  startToolServer({ eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler) });
+  startToolServer({
+    eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler),
+    backendResolver: resolver,
+  });
 
   // Discord ボット: トークン未設定 (Web オンリーモード等) では Client を生成しない。
   // 生成だけでも discord.js の内部リソースを確保するし、login しない Client が
@@ -261,44 +225,6 @@ async function main() {
     // スラッシュコマンド登録
     client.once(Events.ClientReady, async (c) => {
       console.log(`[xangi] Ready! Logged in as ${c.user.tag}`);
-
-      // ツール承認サーバー起動（Claude Code PreToolUseフック用）
-      const { startApprovalServer } = await import('./approval-server.js');
-      startApprovalServer(async (toolName, toolInput, dangerDescription) => {
-        // 最初のメンションなし応答チャンネルに承認メッセージを送信
-        const approvalChannelId = Object.entries(
-          loadSettings().discordAutoReplyChannels ?? {}
-        ).find(([, enabled]) => enabled)?.[0];
-        if (!approvalChannelId) return true; // チャンネル未設定なら許可
-        const channel = c.channels.cache.get(approvalChannelId);
-        if (!channel || !('send' in channel)) return true;
-
-        const command =
-          toolName === 'Bash'
-            ? String((toolInput as Record<string, unknown>).command || '').slice(0, 200)
-            : `${toolName}: ${String((toolInput as Record<string, unknown>).file_path || '')}`;
-
-        return requestApproval(
-          approvalChannelId,
-          { command, matches: dangerDescription },
-          (approvalId, danger) => {
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`xangi_approve_${approvalId}`)
-                .setLabel('許可')
-                .setStyle(ButtonStyle.Success),
-              new ButtonBuilder()
-                .setCustomId(`xangi_deny_${approvalId}`)
-                .setLabel('拒否')
-                .setStyle(ButtonStyle.Danger)
-            );
-            (channel as unknown as { send: (opts: unknown) => Promise<unknown> }).send({
-              content: `⚠️ **危険なコマンドを検知**\n\`\`\`\n${danger.command}\n\`\`\`\n${danger.matches.join(', ')}\n\n2分以内に応答がなければ自動拒否`,
-              components: [row],
-            });
-          }
-        );
-      });
 
       const rest = new REST({ version: '10' }).setToken(config.discord.token);
       try {
@@ -372,6 +298,7 @@ async function main() {
     await startSlackBot({
       config,
       agentRunner,
+      resolver,
       skills: skillsRef.current,
       reloadSkills: () => {
         skillsRef.current = loadSkills(workdir);

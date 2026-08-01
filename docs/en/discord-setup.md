@@ -1,4 +1,4 @@
-[日本語](../discord-setup.md) | **English**
+[日本語](../discord-setup.md) | English
 
 # Discord Bot Setup Guide
 
@@ -47,6 +47,7 @@ On the same Bot page, configure **Privileged Gateway Intents**:
    - Send Messages in Threads
    - Manage Threads (required when using the `Leave` button to remove the user who clicked it)
    - Read Message History
+   - Attach Files (required to send generated files)
    - Add Reactions
    - Use Slash Commands
 4. Copy the generated URL
@@ -74,7 +75,7 @@ DISCORD_ALLOWED_USER=YOUR_DISCORD_USER_ID
 npm run build
 
 # Start with Docker
-docker compose up -d --build
+docker compose up xangi -d --build
 
 # Check logs
 docker compose logs -f xangi

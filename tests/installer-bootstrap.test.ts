@@ -48,7 +48,6 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
   );
   await chmod(join(payload, 'runtime', 'bin', 'node'), 0o755);
   await writeFile(join(payload, 'dist', 'cli', 'xangi-main.js'), '// fixture\n');
-  await writeFile(join(payload, 'dist', 'approval-patterns.json'), '[]\n');
   await writeFile(join(payload, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(payload, 'web', 'monitor.html'), '<main>Monitor</main>\n');
   await writeFile(join(payload, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');

@@ -36,11 +36,13 @@ export class CursorRunner extends CliRunnerBase {
 
   private force: boolean;
   private trustWorkspace: boolean;
+  private readonly systemPrompt: string;
 
   constructor(options?: BaseRunnerOptions) {
     super(options);
     this.force = process.env.CURSOR_FORCE !== 'false';
     this.trustWorkspace = process.env.CURSOR_TRUST_WORKSPACE !== 'false';
+    this.systemPrompt = buildSystemPrompt(options?.platform);
   }
 
   private buildBaseArgs(options?: RunOptions): string[] {
@@ -86,9 +88,10 @@ export class CursorRunner extends CliRunnerBase {
   }
 
   private buildFullPrompt(rawPrompt: string): string {
-    const systemPrompt = buildSystemPrompt();
     const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return systemPrompt ? `${systemPrompt}\n\n---\n\n${promptWithRuntime}` : promptWithRuntime;
+    return this.systemPrompt
+      ? `${this.systemPrompt}\n\n---\n\n${promptWithRuntime}`
+      : promptWithRuntime;
   }
 
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {

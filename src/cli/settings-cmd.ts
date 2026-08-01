@@ -28,13 +28,6 @@ export const SECRET_FIELDS: readonly SecretField[] = [
   { name: 'LINE_CHANNEL_SECRET', label: 'Channel secret', group: 'LINE' },
   { name: 'TELEGRAM_BOT_TOKEN', label: 'Botトークン', group: 'Telegram' },
   { name: 'TELEGRAM_WEBHOOK_SECRET_TOKEN', label: 'Webhook secret（任意）', group: 'Telegram' },
-  { name: 'XANGI_NOTION_TOKEN', label: 'Integrationトークン', group: 'Notion' },
-  {
-    name: 'XANGI_NOTION_PARENT_PAGE_ID',
-    label: '同期先の親ページIDまたはURL',
-    group: 'Notion',
-    type: 'text',
-  },
 ];
 
 export interface SecretSettingsServer {

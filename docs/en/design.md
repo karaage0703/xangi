@@ -1,4 +1,4 @@
-[日本語](../design.md) | **English**
+[日本語](../design.md) | English
 
 # Design Document
 
@@ -51,7 +51,7 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 
 - Configuration loading and validation (`config.ts` / `config-validate.ts`)
 - Startup branching for the enabled clients (Discord / Slack / Web Chat / LINE / Telegram; a Web-only setup does not create a Discord Client)
-- Starting the scheduler and the various HTTP servers (tool-server / events-stream / event-trigger / approval-server, etc.)
+- Starting the scheduler and the various HTTP servers (tool-server / events-stream / event-trigger, etc.)
 - SIGTERM/SIGINT handling (graceful shutdown, including the finalization pass in `stream-finalizer.ts`)
 
 ### Discord Integration (src/discord/)
@@ -101,7 +101,8 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - Project filtering happens server-side in both `GET /api/sessions` and `GET /api/sessions/stream`. Typing in search no longer reconnects SSE, and the redundant initial search request is skipped
 - `/monitor` is a read-only mode of the same React app. It receives turn-boundary snapshots from `GET /api/sessions/stream` and does not poll
 - `/workspace` is the workspace browser/editor mode of the same React app. `workspace-browser.ts` accepts only workspace-relative paths below `WORKSPACE_PATH`; it excludes hidden/state/dependency/build paths, symlinks, non-text files, and files larger than 1 MiB. It extracts `tags` from Markdown YAML frontmatter so the UI can filter tags and sort by name or modification time. Saves compare the SHA-256 captured at read time and atomically rename a temporary file in the same directory. External changes return 409 so the UI can require a reload
-- Chat, Workspace, and Monitor share a common top bar and theme selector so navigation and display controls stay fixed. The system/light/dark preference is stored in localStorage and switches semantic color tokens through `data-theme`
+- `/schedules` is the schedule-management mode. Its HTTP APIs add, edit, enable, disable, and delete jobs for Web, Discord, Slack, and Telegram. Web jobs store a reserved new-conversation value as `channelId` plus an optional `projectId`. At run time the Project is validated again, a fresh Web session is created, and the normal Web agent-runner path appends the turn to that session
+- Chat, Files, Schedules, and Monitor share a common top bar and theme selector so navigation and display controls stay fixed. The system/light/dark preference is stored in localStorage and switches semantic color tokens through `data-theme`
 - React is bundled into static assets at build time, so distributed installations add no frontend runtime dependency beyond Node.js
 
 ### macOS, Linux, and WSL2 setup and update core
@@ -114,7 +115,7 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - `onboarding.json` atomically records `preflight`, `bootstrap_in_progress`, and `minimum_ready` in the configuration area as the source of truth for resume and diagnostics. There is no browser UI that replaces AI onboarding; when no supported agent is available it prints installation guidance and exits
 - `secrets.json` is atomically stored with mode 0600 in the OS-specific configuration area. `xangi settings` opens a temporary GUI for Discord allowed-user IDs and tokens on loopback with a one-time URL, Host validation, no-store, and CSP. It never sends stored values to the browser and closes after saving, keeping connection settings out of the AI, workspace, setup JSON, and shell history
 - `packaging/bootstrap.sh` is published as the shared `install.sh` entry point for every supported operating system. It detects Darwin / Linux and arm64 / x64, then dispatches to the target installer in the same GitHub Release. WSL2 follows the Linux path. A piped invocation always defers setup and service activation, installs the verified CLI, and tells the user to run `xangi setup` from a normal terminal. Shell/readline and an AI TUI never hand terminal ownership to each other inside the pipe
-- `packaging/build-bundle.sh` packages the compiled runtime, production dependencies, documentation, the dangerous-operation `approval-patterns.json`, and only the three allowlisted Web Chat HTML assets; it excludes `web/node_modules` and secret candidates. `packaging/build-installer.mjs` verifies the signed manifest and bundle during the release build, then embeds the manifest and artifact SHA-256 values plus the Ed25519 public key into each target installer. Later updates use the persisted public key. The target installer verifies the Node runtime, CLI entry point, approval patterns, and Web UI assets before committing the verified bundle, atomic `current` symlink, stable launcher, and `~/.local/bin/xangi` ahead of AI onboarding. External AI or service failures do not roll back the distribution, leaving `xangi setup` or `xangi install` available for recovery
+- `packaging/build-bundle.sh` packages the compiled runtime, production dependencies, documentation, and only the three allowlisted Web Chat HTML assets; it excludes `web/node_modules` and secret candidates. `packaging/build-installer.mjs` verifies the signed manifest and bundle during the release build, then embeds the manifest and artifact SHA-256 values plus the Ed25519 public key into each target installer. Later updates use the persisted public key. The target installer verifies the Node runtime, CLI entry point, and Web UI assets before committing the verified bundle, atomic `current` symlink, stable launcher, and `~/.local/bin/xangi` ahead of AI onboarding. External AI or service failures do not roll back the distribution, leaving `xangi setup` or `xangi install` available for recovery
 - `.github/workflows/release-assets.yml` builds Darwin / Linux × arm64 / x64 bundles on native runners and limits the Ed25519 private key to the final manifest-signing job. Each installer receives a version-pinned artifact URL and a `releases/latest` manifest URL for update discovery, while bundles, manifests, installers, and checksums are attached to the same GitHub Release
 - `workspace-template.ts` resolves the selected GitHub repository branch to its latest commit at selection time, downloads the commit-pinned archive without Git, records repository, commit SHA, and archive SHA-256, and atomically seeds an empty workspace. Normal install/update flows apply it only once. When the user explicitly selects template mode again during setup, xangi may safely reseed a missing or empty target even if prior application state remains. A workspace containing user files is never modified
 - `platform/*-update.ts` manages a six-hour signed-channel check through LaunchAgent or a systemd user timer
@@ -125,7 +126,6 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - checkout `doctor` detects PM2 and realpath-compares the Web Chat workdir reported by `/api/sessions` with the saved setup config. For Tailscale access it also verifies that Tailscale Serve forwards the effective Web Chat port to loopback
 - `src/cli/xangi-main.ts` is the execution-only CLI entry point. It unconditionally invokes the `run()` exported by `src/cli/xangi.ts` and maps top-level errors to process exit codes. The CLI library does not decide whether to run by comparing `import.meta.url` with `process.argv[1]`, so the managed `~/.local/bin/xangi → app/bin/xangi → current → dist/cli/xangi-main.js` symlink chain has one unambiguous execution boundary
 - A checkout's `bin/xangi` runs current `src/cli/xangi-main.ts` through local `tsx` and never selects an ignored, stale `dist/` tree. A distribution has no source tree, runs its bundled `dist/cli/xangi-main.js` and Node.js runtime, and allowlists the README and user-facing documentation used as onboarding sources
-- The standard `notion-sync/` path is a one-way mirror with the workspace as source of truth. It discovers safe Markdown and uses a path-to-page map in the state directory to create and update a Notion child-page hierarchy. The previous per-document manifest engine remains available only through an explicit compatibility option. The real Notion connection stays behind an adapter boundary
 - `notionSyncEnabled` is a global gate that defaults to off. Status and disable do not contact the Notion API, and a normal run is rejected before an adapter is created. Only an explicit `run --once` bypasses the gate; disabling preserves sync state and backups for a later resume
 
 ### LINE Bot Integration (line.ts)
@@ -260,12 +260,10 @@ BackendResolver priority:
 Manages the system prompts that xangi injects into AI CLIs:
 
 - **Chat platform info** — A short fixed text indicating the conversation is via Discord/Slack
-- **XANGI_COMMANDS** — Injects platform-specific command specifications from `src/prompts/`
-  - Common commands (`xangi-commands-common.ts`): Timeout handling, etc.
-  - Chat platform common (`xangi-commands-chat-platform.ts`): File sending (MEDIA:), message separators (===), scheduling, system commands
-  - Discord-specific (`xangi-commands-discord.ts`): `xangi-cmd discord_*` CLI tools, auto-expand
-  - Slack-specific (`xangi-commands-slack.ts`): Slack-specific operations
-  - Automatic platform detection: If only Discord is active, only Discord-specific commands are injected (saves tokens)
+- **XANGI_COMMANDS** — Keeps only runtime contracts such as long-running work, self restart, `MEDIA:`, and platform-specific identifiers in the persistent prompt
+  - Command usage is stored in `xangi-cmd help <topic|command>` metadata and loaded only when needed
+  - User-facing slash commands keep each platform's `/help` and command metadata as their source of truth
+  - When the platform is unknown, no platform-specific rules are injected, preventing Discord and Slack instructions from being mixed
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
 - **Tool-use display** — Discord tool-use history is controlled by `DISCORD_TOOL_HISTORY_MODE=button|inline|off`. The default is `button`: completed messages do not include the history inline, and a `Tools` button shows it only to the user who clicked it via an ephemeral response. Slack uses the same `Tools` button pattern and does not inline tool history in the completed message. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Tools button for Discord even in `button` mode. `inline` keeps the previous top-of-message display, and `off` disables tool history display. For compatibility, `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. While a turn is running, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. After completion it normalizes internal context tools into short labels such as `workspace-RAG検索`; Bash/exec final history strips wrappers such as `/bin/bash -lc` and shows a shorter command summary. Live Bash/exec tool argument display is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
 - **Reply suggestions** — Discord, Slack, and Web Chat generate suggestions in a dedicated JSON block within the same AI response and remove that block before display. Discord and Slack expose one public `返信候補` button and reveal choices ephemerally to the requesting user. Web Chat uses a collapsed control below the response. Selecting a choice continues the same session. Discord's `/replysuggestions` command persists a global override in `settings.json`; every platform checks it immediately before processing a message. OFF skips suggestion prompt injection. Session titles and transcript views also remove history-prefetch and suggestion-generation metadata.
@@ -281,6 +279,7 @@ Each turn prepends one line containing the agent workspace and Git repository:
 - `cwd` comes from the workdir used by that runner. When omitted, it falls back to `process.cwd()`, matching the directory inherited by the child process. The normal config path sets the runner workdir from `WORKSPACE_PATH`.
 - Git information is resolved from that same workspace and cached for five seconds.
 - This keeps the prompt aligned with the directory passed to the AI CLI even when the xangi checkout and agent workspace are different.
+- Set `XANGI_RUNTIME_CONTEXT_ENABLED=false` to disable this injection. The default is `true`.
 
 AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to each AI CLI's auto-loading feature:
 
@@ -302,6 +301,8 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | grok-cli.ts          | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
 | antigravity-cli.ts   | Antigravity CLI          | Google `agy` command, Agy 1.1.2 final JSON with legacy plain-output fallback           |
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
+
+`backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi-cmd models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
@@ -559,11 +560,11 @@ Design rationale: Step A's skill hinting is usually decisive — by surfacing "w
 
 `isSafeForRescue(name, args)` decides whether a parsed pseudo tool_call may be executed. We avoid a denylist approach (rejecting specific dangerous commands like `rm/curl/git`) because such lists are easy to bypass; instead, only an explicit allowlist is permitted:
 
-| Category                    | Allowed                                                                                                                                                                                                          |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Direct read-only tools      | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
-| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}`                    |
-| Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                                         |
+| Category                    | Allowed                                                                                                                                                                                                                                                    |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Direct read-only tools      | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                                           |
+| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` (`models --use` is excluded because it changes state) |
+| Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                                                                                   |
 
 Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pseudo_format` structured error that nudges the LLM toward the proper function_calling structure.
 
@@ -619,6 +620,7 @@ Manages periodic execution and reminders:
 │ - agentRunners: Map<platform, fn> # AI exec funcs   │
 ├─────────────────────────────────────────────────────┤
 │ + add(schedule): Schedule                          │
+│ + update(id, schedule): Schedule                   │
 │ + remove(id): boolean                              │
 │ + toggle(id): Schedule                             │
 │ + list(): Schedule[]                               │
@@ -631,6 +633,7 @@ Manages periodic execution and reminders:
 
 - `cron`: Periodic execution via cron expressions
 - `once`: One-time reminder (executes once at a specified time)
+- `startup`: Executes when xangi starts
 
 **Persistence:**
 
@@ -687,6 +690,7 @@ External process (build script / CI / watcher cron)
 **Design decisions:**
 
 - Turn execution reuses the scheduler's `agentRunner` path. The per-platform run functions (thinking message, splitting, attachments, Stop / extend / remaining-time controls) are already registered on the scheduler, so the trigger only needs `Scheduler.getAgentRunner(platform)`
+- Web accepts both `web-chat:<sessionId>` and the raw `sessionId`, normalizing either form to the raw appSessionId before invoking the runner. Triggered turns therefore append to the existing Web conversation transcript
 - The HTTP response (`202` + `triggerId`) is fire-and-forget and does not wait for the turn, so callers (build scripts etc.) are never blocked
 - A `⚡ trigger: <source>` label is posted to the channel first, making it visible what woke the agent
 
@@ -696,22 +700,6 @@ External process (build script / CI / watcher cron)
 - HTTP requests require Bearer auth with `XANGI_TRIGGER_TOKEN`. If the token is not configured, all requests are rejected even when enabled (the tool-server binds 0.0.0.0, so unauthenticated acceptance would allow arbitrary prompt injection over the network). Token comparison is constant-time
 - `xangi-cmd trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still requires the opt-in
 - Abuse protection: per-source rate limiting (`TRIGGER_MIN_INTERVAL_MS`, default 10s, `429` on excess) and a concurrent-run guard (`409` while the same source is running). Message length capped at 4000 chars
-
-### Approval Flow (approval.ts / approval-server.ts)
-
-Detects dangerous commands (e.g., `rm -rf`, `git push --force`) in AI output and requires user approval before execution.
-
-```
-AI CLI outputs command
-  → approval.ts pattern matches (approval-patterns.json)
-  → Dangerous command detected
-  → approval-server.ts sends button-attached message to Discord/Slack
-  → User approves/rejects
-  → Result returned to AI CLI
-```
-
-- Enabled via `APPROVAL_ENABLED=true` (disabled by default)
-- Patterns defined in `src/approval-patterns.json`
 
 ### GitHub App Authentication (github-auth.ts)
 
@@ -818,18 +806,18 @@ Prefetched history is wrapped as quoted data so instructions inside it are not t
 
 xangi's user management uses a simple allowlist approach:
 
-- Access control via `DISCORD_ALLOWED_USER` / `SLACK_ALLOWED_USER`
+- Access control via each platform's `*_ALLOWED_USER` setting (Discord, Slack, LINE, and Telegram)
 - Multiple users can be specified with commas; `*` allows everyone
 - Sessions are managed per channel
-- Sender info (display name, Discord ID) is automatically injected into the prompt
+- Platform-specific sender info (display name and user ID) is automatically injected into the prompt
 
 ### AI CLI Abstraction
 
 Hides AI CLI implementation details and makes them interchangeable:
 
-```typescript
-// Switch backends via configuration
-AGENT_BACKEND = claude - code; // or codex / cursor / grok / antigravity / local-llm
+```bash
+# Switch backends via configuration
+AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / local-llm
 ```
 
 When new AI CLIs emerge in the future, support can be added simply by creating a new adapter.
@@ -838,17 +826,16 @@ When new AI CLIs emerge in the future, support can be added simply by creating a
 
 Detects and automatically executes special commands output by the AI:
 
-| Method        | Command Example                                                          | Action                                                                                                                                            |
-| ------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLI tool      | `xangi-cmd discord_send --channel ID --message "..."`                    | Discord operations                                                                                                                                |
-| CLI tool      | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | Button-attached message                                                                                                                           |
-| CLI tool      | `xangi-cmd schedule_add --input "Daily 9:00 ..."`                        | Schedule operations                                                                                                                               |
-| CLI tool      | `xangi-cmd system_restart`                                               | Process restart                                                                                                                                   |
-| Text parsing  | `MEDIA:/path/to/file`                                                    | File sending                                                                                                                                      |
-| Text parsing  | `\n===\n`                                                                | Message splitting                                                                                                                                 |
-| Slash command | `/autoreply`                                                             | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`)                                                              |
-| Slash command | `/respondtobots`                                                         | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`)                                            |
-| Slash command | `/threadmode`                                                            | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
+| Method        | Command Example                                                | Action                                                                                                                                            |
+| ------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI tool      | `xangi-cmd discord_send --channel ID --message "..."`          | Send a Discord message                                                                                                                            |
+| CLI tool      | `xangi-cmd schedule_add --input "Daily 9:00 ..." --channel ID` | Schedule operations                                                                                                                               |
+| CLI tool      | `xangi-cmd system_restart`                                     | Process restart                                                                                                                                   |
+| Text parsing  | `MEDIA:/path/to/file`                                          | File sending                                                                                                                                      |
+| Text parsing  | `\n===\n`                                                      | Message splitting                                                                                                                                 |
+| Slash command | `/autoreply`                                                   | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`)                                                              |
+| Slash command | `/respondtobots`                                               | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`)                                            |
+| Slash command | `/threadmode`                                                  | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
 
 CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
@@ -884,14 +871,14 @@ Scraping paths from text (layer 2) is a rescue, not the intended path. Local LLM
 
 ### Persistence Strategy
 
-| Data                      | Storage Location                                                   | Format                                                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Schedules                 | `${DATA_DIR}/schedules.json`                                       | JSON                                                                                                                                              |
-| Runtime settings          | `${WORKSPACE}/settings.json`                                       | JSON                                                                                                                                              |
-| Sessions                  | `${DATA_DIR}/sessions.json`                                        | JSON (appSessionId-based, activeByContext + sessions)                                                                                             |
-| Transcripts               | `logs/sessions/{appSessionId}.jsonl`                               | JSONL (per-session conversation logs)                                                                                                             |
-| DATA_DIR lock             | `${DATA_DIR}.lock/`                                                | Lock directory managed by `proper-lockfile` (detects duplicate xangi instances sharing the same DATA_DIR; 30s heartbeat + 60s stale auto-reclaim) |
-| Environment file (`.env`) | Default: `process.cwd()/.env` / Override: `XANGI_ENV_PATH` env var | KEY=VALUE lines                                                                                                                                   |
+| Data                      | Storage Location                                                   | Format                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schedules                 | `${DATA_DIR}/schedules.json`                                       | JSON                                                                                                                                                                            |
+| Runtime settings          | `${DATA_DIR}/settings.json`                                        | JSON                                                                                                                                                                            |
+| Sessions                  | `${DATA_DIR}/sessions.json`                                        | JSON (appSessionId-based, activeByContext + sessions)                                                                                                                           |
+| Transcripts               | `logs/sessions/{appSessionId}.jsonl`                               | JSONL (per-session conversation logs)                                                                                                                                           |
+| DATA_DIR lock             | `${DATA_DIR}.lock/`                                                | Lock acquired by `proper-lockfile` after creating `DATA_DIR` (startup aborts before external connections or scheduler if locking fails; 30s heartbeat + 60s stale auto-reclaim) |
+| Environment file (`.env`) | Default: `process.cwd()/.env` / Override: `XANGI_ENV_PATH` env var | KEY=VALUE lines                                                                                                                                                                 |
 
 #### Environment file persistence and Docker security design
 
@@ -942,7 +929,7 @@ Sessions are managed using xangi's own `appSessionId`. The backend's `providerSe
     "<appSessionId>": {
       "id": "<appSessionId>",
       "title": "...",
-      "platform": "discord|slack|web",
+      "platform": "discord|slack|web|line|telegram",
       "contextKey": "<channelId>",
       "agent": { "backend": "claude-code", "providerSessionId": "..." }
     }
@@ -971,10 +958,12 @@ logs/sessions/
 **Notes:**
 
 - Logs are excluded via `.gitignore`
-- Automatic rotation (directory split by date)
+- Appends each session to `logs/sessions/<appSessionId>.jsonl`
 - Log write failures are ignored (no impact on core functionality)
 
-## File Structure
+## Key File Structure
+
+This is a representative responsibility map, not a fixed exhaustive inventory. Run `rg --files src` for the current complete file list.
 
 ```
 bin/
@@ -1007,11 +996,21 @@ src/
 ├── codex-cli.ts        # Codex CLI adapter
 ├── cursor-cli.ts       # Cursor CLI adapter
 ├── grok-cli.ts         # Grok CLI adapter
+├── antigravity-cli.ts  # Antigravity CLI adapter
 ├── cli-process.ts      # Shared process/env/timeout helpers for one-shot CLI runners
 ├── jsonl-buffer.ts     # Shared JSONL stream line splitter
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)
 ├── dynamic-runner.ts   # Dynamic runner manager
 ├── backend-resolver.ts # Per-channel backend resolution
+├── backend-models.ts   # Dynamic available-model discovery and shared formatting
+├── backend-effort.ts   # Backend-specific effort validation and normalization
+├── models-command.ts   # Shared /models and AI-facing model selection
+├── data-dir-lock.ts    # Single-writer DATA_DIR lock and heartbeat
+├── self-lifecycle.ts   # Self-restart authorization
+├── shutdown.ts         # Shared graceful shutdown control
+├── web-projects.ts     # Web Project definitions and persistence
+├── web-slash-commands.ts # Web Chat command registry
+├── workspace-browser.ts # Workspace browsing and editing boundary
 ├── hooks.ts            # Workspace hooks (Stop hook external verification gate)
 ├── tool-server.ts      # Tool Server (HTTP API for AI CLIs)
 ├── event-trigger.ts    # Event trigger (start a turn externally via POST /api/trigger)
@@ -1020,8 +1019,6 @@ src/
 ├── activity-store.ts   # Current-turn lightweight snapshots
 ├── pet-inbox-server.ts # Accepts text sent from xangi-pets (POST /api/pet/inbox)
 ├── even-terminal-server.ts # Even Terminal compatible HTTP API
-├── approval.ts         # Dangerous command detection (pattern matching)
-├── approval-server.ts  # Approval server (Discord/Slack interactive approval flow)
 ├── github-auth.ts      # GitHub App authentication (in-memory key management & token generation)
 ├── safe-env.ts         # Environment variable whitelist
 ├── env-persist.ts      # .env path resolution and dynamic write-back (XANGI_ENV_PATH)
@@ -1113,9 +1110,9 @@ src/
 ### Security Policy
 
 - Runs as non-root user (UID 1000)
-- Only the workspace is mounted
+- Mounts the workspace plus the selected backend's credentials, prompts, Git configuration, and optional secret or inter-chat paths as needed
 - Environment variables for the AI agent are restricted via whitelist (`src/safe-env.ts`)
-- No direct access to host network (only via ollama container)
+- Defines a `host.docker.internal` host-gateway; restrict exposure with each service configuration and the host firewall
 
 For details (environment variable reference, Docker operation methods, etc.), see the [Usage Guide](usage.md).
 

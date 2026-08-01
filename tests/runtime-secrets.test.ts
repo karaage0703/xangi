@@ -19,7 +19,7 @@ describe('loadStoredSecrets', () => {
     await new SecretStore(join(configHome, 'xangi', 'secrets.json')).setMany({
       DISCORD_TOKEN: 'stored-discord',
       DISCORD_ALLOWED_USER: '123456789012345678',
-      XANGI_NOTION_TOKEN: 'stored-notion',
+      SLACK_APP_TOKEN: 'stored-slack-app',
     });
     const env: NodeJS.ProcessEnv = {
       XDG_CONFIG_HOME: configHome,
@@ -29,10 +29,10 @@ describe('loadStoredSecrets', () => {
     };
 
     expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
-      ['DISCORD_ALLOWED_USER', 'XANGI_NOTION_TOKEN']
+      ['DISCORD_ALLOWED_USER', 'SLACK_APP_TOKEN']
     );
     expect(env.DISCORD_TOKEN).toBe('explicit-discord');
     expect(env.DISCORD_ALLOWED_USER).toBe('123456789012345678');
-    expect(env.XANGI_NOTION_TOKEN).toBe('stored-notion');
+    expect(env.SLACK_APP_TOKEN).toBe('stored-slack-app');
   });
 });

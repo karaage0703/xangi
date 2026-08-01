@@ -124,7 +124,7 @@ export function createAgentRunner(
     case 'codex':
       return new CodexRunner({ ...config, platform: options?.platform });
     case 'cursor':
-      return new CursorRunner(config);
+      return new CursorRunner({ ...config, platform: options?.platform });
     case 'grok':
       return new GrokRunner({ ...config, platform: options?.platform });
     case 'antigravity':

@@ -1,3 +1,5 @@
+[English](en/slack-setup.md) | 日本語
+
 # Slack App セットアップガイド
 
 xangi を Slack で使用するための App 作成手順。
@@ -37,6 +39,7 @@ oauth_config:
       - channels:read
       - chat:write
       - files:read
+      - files:write
       - groups:history
       - groups:read
       - im:history
@@ -99,6 +102,7 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `app_mentions:read` | メンションの読み取り                 | 必須                              |
 | `chat:write`        | メッセージ送信                       | 必須                              |
 | `files:read`        | ファイルの読み取り                   | 添付ファイル対応時                |
+| `files:write`       | ファイルのアップロード               | 生成ファイルの送信時              |
 | `reactions:read`    | リアクションイベントの読み取り       | リアクション削除を使う場合        |
 | `reactions:write`   | リアクション追加（👀など）           | 必須                              |
 | `im:history`        | DM の履歴読み取り                    | DM対応時                          |
@@ -116,10 +120,14 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 1. 左メニュー **「Slash Commands」** をクリック
 2. 以下のコマンドを作成：
 
-| Command   | Description                                     |
-| --------- | ----------------------------------------------- |
-| `/new`    | 新しいセッションを開始                          |
-| `/skill`  | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`） |
+| Command     | Description                                                                 |
+| ----------- | --------------------------------------------------------------------------- |
+| `/new`      | 新しいセッションを開始                                                      |
+| `/delete`   | 直前または指定したbotメッセージを削除（Usage Hint: `[message-ts-or-link]`） |
+| `/skill`    | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`）                   |
+| `/settings` | 現在の設定を表示                                                            |
+| `/models`   | 利用可能なモデル一覧を表示（Usage Hint: `[backend]`）                       |
+| `/restart`  | xangiのgraceful restartを要求                                               |
 
 ⚠️ Socket Mode では Request URL は不要です。
 
@@ -161,7 +169,7 @@ SLACK_DELETE_REACTIONS=wastebasket,x
 npm run build
 
 # Docker で起動
-docker compose up -d --build
+docker compose up xangi -d --build
 
 # ログ確認
 docker compose logs -f xangi

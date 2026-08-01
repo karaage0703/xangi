@@ -22,8 +22,10 @@ function makeFakeScheduler(overrides?: {
   const runnerImpl = overrides?.runner === null ? undefined : (overrides?.runner ?? runner);
   const senderImpl = overrides?.sender === null ? undefined : (overrides?.sender ?? sender);
   const scheduler = {
-    getAgentRunner: (platform: string) => (platform === 'discord' ? runnerImpl : undefined),
-    getSender: (platform: string) => (platform === 'discord' ? senderImpl : undefined),
+    getAgentRunner: (platform: string) =>
+      platform === 'discord' || platform === 'web' ? runnerImpl : undefined,
+    getSender: (platform: string) =>
+      platform === 'discord' || platform === 'web' ? senderImpl : undefined,
   } as unknown as Scheduler;
   return { scheduler, runner, sender };
 }
@@ -169,13 +171,27 @@ describe('EventTrigger firing', () => {
     expect(runner).toHaveBeenCalledOnce();
   });
 
+  it('routes Web triggers to the raw appSessionId', async () => {
+    const { scheduler, runner, sender } = makeFakeScheduler();
+    const trigger = new EventTrigger(makeConfig(), scheduler);
+    const res = await trigger.handleLocal({
+      channel: 'web-chat:pane123',
+      message: 'render finished',
+      source: 'render',
+      platform: 'web',
+    });
+
+    expect(res.status).toBe(202);
+    expect(res.body.platform).toBe('web');
+    await flush();
+    expect(runner).toHaveBeenCalledWith(expect.stringContaining('render finished'), 'pane123');
+    expect(sender).toHaveBeenCalledWith('pane123', '⚡ trigger: render');
+  });
+
   it('rate limits same source within minIntervalMs', async () => {
     const { scheduler } = makeFakeScheduler();
     const trigger = new EventTrigger(makeConfig({ minIntervalMs: 60_000 }), scheduler);
-    const first = await trigger.handleHttp(
-      { channel: 'c1', message: 'hi', source: 'ci' },
-      AUTH
-    );
+    const first = await trigger.handleHttp({ channel: 'c1', message: 'hi', source: 'ci' }, AUTH);
     expect(first.status).toBe(202);
     await flush();
     const second = await trigger.handleHttp(
@@ -185,10 +201,7 @@ describe('EventTrigger firing', () => {
     expect(second.status).toBe(429);
     expect(second.body.retryAfterMs).toBeGreaterThan(0);
     // 別 source はレート制限の影響を受けない
-    const other = await trigger.handleHttp(
-      { channel: 'c1', message: 'hi', source: 'other' },
-      AUTH
-    );
+    const other = await trigger.handleHttp({ channel: 'c1', message: 'hi', source: 'other' }, AUTH);
     expect(other.status).toBe(202);
   });
 
@@ -200,10 +213,7 @@ describe('EventTrigger firing', () => {
       });
     const { scheduler } = makeFakeScheduler({ runner: pendingRunner });
     const trigger = new EventTrigger(makeConfig(), scheduler);
-    const first = await trigger.handleHttp(
-      { channel: 'c1', message: 'hi', source: 'ci' },
-      AUTH
-    );
+    const first = await trigger.handleHttp({ channel: 'c1', message: 'hi', source: 'ci' }, AUTH);
     expect(first.status).toBe(202);
     const second = await trigger.handleHttp(
       { channel: 'c1', message: 'hi again', source: 'ci' },

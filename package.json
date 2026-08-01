@@ -1,7 +1,7 @@
 {
   "name": "xangi-dev",
   "version": "0.1.0",
-  "description": "Discord bot with Claude Code CLI integration",
+  "description": "AI assistant connecting agent backends to Discord, Slack, Telegram, Web Chat, and LINE",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

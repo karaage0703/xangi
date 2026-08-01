@@ -1,8 +1,10 @@
+[日本語](../events.md) | English
+
 # External Event Stream (Pull SSE)
 
 xangi exposes its response lifecycle as Server-Sent Events (SSE). Consumers such as desktop avatars, dashboards, visualizers, or glasses clients can connect to `GET /api/events/stream` and observe what the running xangi instance is doing.
 
-Events are emitted across Discord, Slack, Web Chat, and Line. Consumers should branch on `platform`, `thread_id`, and `thread_label`.
+Events are emitted across Discord, Slack, Web Chat, LINE, and Telegram. Consumers should branch on `platform`, `thread_id`, and `thread_label`.
 
 ## Endpoint
 
@@ -19,11 +21,11 @@ GET http://<xangi-host>:<WEB_CHAT_PORT>/api/events/stream
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `WEB_CHAT_PORT` | `18888` | HTTP server port for Web Chat and SSE |
-| `XANGI_EVENTS_ENABLED` | `true` | Set to `false` to disable event streaming (connections return 503) |
-| `XANGI_INSTANCE_ID` | `xangi-<hostname>-<sha1(DATA_DIR)[:6]>` | Stable instance identifier used by consumers for filtering |
+| Variable               | Default                                 | Description                                                        |
+| ---------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| `WEB_CHAT_PORT`        | `18888`                                 | HTTP server port for Web Chat and SSE                              |
+| `XANGI_EVENTS_ENABLED` | `true`                                  | Set to `false` to disable event streaming (connections return 503) |
+| `XANGI_INSTANCE_ID`    | `xangi-<hostname>-<sha1(DATA_DIR)[:6]>` | Stable instance identifier used by consumers for filtering         |
 
 If `XANGI_INSTANCE_ID` is not set, xangi derives it from hostname and `DATA_DIR`. Same machine + same `DATA_DIR` keeps the same ID across restarts; same machine + different `DATA_DIR` gets a different ID.
 
@@ -39,26 +41,43 @@ Common fields:
 
 ```jsonc
 {
-  "type":         "<event type>",
-  "instance_id":  "xangi-prod",
-  "host_hint":    "<hostname>",
-  "platform":     "discord",
-  "thread_id":    "discord:<channelId>",
-  "turn_id":      "discord-msg-<messageId>",
+  "type": "<event type>",
+  "instance_id": "xangi-prod",
+  "host_hint": "<hostname>",
+  "platform": "discord",
+  "thread_id": "discord:<channelId>",
+  "turn_id": "discord-msg-<messageId>",
   "thread_label": "#general",
-  "ts":           1730000000
+  "ts": 1730000000,
 }
 ```
 
+### `thread_id` mapping
+
+| Platform | `thread_id`           | `turn_id`                  | Example `thread_label`            |
+| -------- | --------------------- | -------------------------- | --------------------------------- |
+| Discord  | `discord:<channelId>` | `discord-msg-<messageId>`  | `#general` / `DM`                 |
+| Slack    | `slack:<channelId>`   | `slack-msg-<ts>`           | `#general` / `Slack DM`           |
+| Web      | `web:<appSessionId>`  | `web-msg-<unix-ms>`        | session title / `Browser session` |
+| LINE     | `line:<userId>`       | `line-msg-<messageId>`     | `LINE 1:1 (<userId>…)`            |
+| Telegram | `telegram:<chatId>`   | `telegram-msg-<messageId>` | `Telegram Chat (<chatId>)`        |
+
 Event types:
 
-| Type | Description |
-|---|---|
-| `turn.started` | One frame when xangi receives a user message |
-| `message.delta` | Streaming assistant text delta |
-| `turn.complete` | One frame when the turn completes successfully |
-| `turn.aborted` | One frame when the user cancels the turn |
-| `agent.error` | One frame when the agent fails |
+| Type               | Description                                            |
+| ------------------ | ------------------------------------------------------ |
+| `turn.started`     | One frame when xangi receives a user message           |
+| `message.delta`    | Streaming assistant text delta                         |
+| `turn.complete`    | One frame when the turn completes successfully         |
+| `turn.aborted`     | One frame when the user cancels the turn               |
+| `agent.error`      | One frame when the agent fails                         |
+| `timeout.extended` | Updated deadline and remaining time after an extension |
+
+Timeout timestamps use Unix epoch milliseconds; durations use milliseconds.
+
+```jsonc
+{ "type": "timeout.extended", ..., "timeout_at": 1730002400000, "max_timeout_at": 1730036000000, "timeout_ms": 2400000, "remaining_ms": 1200000 }
+```
 
 Normal turn flow:
 
@@ -95,18 +114,18 @@ All three inbox routes use the Web Chat reply suggestion settings (`WEB_REPLY_SU
   "thread_id": "web:<appSessionId>",
   "turn_id": "web-msg-pet-<unix-ms>",
   "session_id": "<appSessionId>",
-  "events_url": "/api/events/stream?thread_id=web%3A<appSessionId>"
+  "events_url": "/api/events/stream?thread_id=web%3A<appSessionId>",
 }
 ```
 
 Environment variables:
 
-| Variable | Default | Description |
-|---|---|---|
-| `XANGI_PET_INBOX_ENABLED` | `true` | Set to `false` to disable all pet/device inbox writes |
-| `XANGI_PET_INBOX_TOKEN` | unset | Fallback token for pet/device/terminal routes |
-| `XANGI_DEVICE_INBOX_ENABLED` | `true` | Set to `false` to disable `/api/device/inbox` and `/api/terminal/inbox` |
-| `XANGI_DEVICE_INBOX_TOKEN` | unset | Token for device/terminal routes; falls back to `XANGI_PET_INBOX_TOKEN` |
+| Variable                     | Default | Description                                                             |
+| ---------------------------- | ------- | ----------------------------------------------------------------------- |
+| `XANGI_PET_INBOX_ENABLED`    | `true`  | Set to `false` to disable all pet/device inbox writes                   |
+| `XANGI_PET_INBOX_TOKEN`      | unset   | Fallback token for pet/device/terminal routes                           |
+| `XANGI_DEVICE_INBOX_ENABLED` | `true`  | Set to `false` to disable `/api/device/inbox` and `/api/terminal/inbox` |
+| `XANGI_DEVICE_INBOX_TOKEN`   | unset   | Token for device/terminal routes; falls back to `XANGI_PET_INBOX_TOKEN` |
 
 When no token is configured, xangi only accepts loopback, RFC1918 LAN, Tailscale CGNAT (`100.64.0.0/10`), IPv6 link-local, and IPv6 ULA clients. Public IP requests return 403.
 
@@ -117,7 +136,7 @@ xangi implements a minimal compatibility layer for the HTTP API expected by `@ev
 The Even Terminal UI only exposes `claude` and `codex` provider labels. xangi accepts those labels for compatibility, but the actual backend is still chosen by xangi's normal configuration:
 
 ```text
-AGENT_BACKEND=claude-code | codex | cursor | grok | local-llm
+AGENT_BACKEND=claude-code | codex | cursor | grok | antigravity | local-llm
 ```
 
 Local LLM works by setting `AGENT_BACKEND=local-llm` on the xangi side, then choose either provider label in the Even UI.
@@ -162,7 +181,7 @@ POST /api/interrupt
 {
   "text": "input from G2",
   "sessionId": "<optional xangi web appSessionId>",
-  "provider": "codex"
+  "provider": "codex",
 }
 ```
 
@@ -176,15 +195,16 @@ The response is asynchronous. The Even client should subscribe to `/api/events`.
 
 ### Event Message Mapping
 
-| xangi event | Even Terminal-compatible message |
-|---|---|
-| `turn.started` | `{ "type": "user_prompt", "text": "..." }` |
-| `message.delta` | `{ "type": "text_delta", "text": "..." }` |
-| `turn.complete` | `{ "type": "result", "success": true, "text": "..." }` |
-| `turn.aborted` | `{ "type": "result", "success": false, "text": "Turn aborted" }` |
-| `agent.error` | `{ "type": "error", "message": "..." }` |
+| xangi event        | Even Terminal-compatible message                                  |
+| ------------------ | ----------------------------------------------------------------- |
+| `turn.started`     | `{ "type": "user_prompt", "text": "..." }`                        |
+| `message.delta`    | `{ "type": "text_delta", "text": "..." }`                         |
+| `turn.complete`    | `{ "type": "result", "success": true, "text": "..." }`            |
+| `turn.aborted`     | `{ "type": "result", "success": false, "text": "Turn aborted" }`  |
+| `agent.error`      | `{ "type": "error", "message": "..." }`                           |
+| `timeout.extended` | `{ "type": "notification", "message": "xangi timeout extended" }` |
 
-`permission-response`, `question-response`, and `interrupt` currently return `{"ok":true,"ignored":true}` for protocol compatibility. xangi's approval and question flows are still handled through its existing chat-platform mechanisms.
+`permission-response`, `question-response`, and `interrupt` currently return `{"ok":true,"ignored":true}` for protocol compatibility.
 
 ### Curl Check
 

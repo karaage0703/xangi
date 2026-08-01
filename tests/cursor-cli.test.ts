@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CursorRunner } from '../src/cursor-cli.js';
+import { createAgentRunner } from '../src/agent-runner.js';
 
 vi.mock('child_process', () => {
   const EventEmitter = require('events');
@@ -95,6 +96,16 @@ describe('CursorRunner', () => {
     expect(args).toContain('--force');
     expect(args).toContain('--trust');
     expect(args[args.indexOf('--model') + 1]).toBe('auto');
+  });
+
+  it('factory経由のWeb platformをsystem promptへ引き継ぐ', async () => {
+    const runner = createAgentRunner('cursor', {}, { platform: 'web' }) as CursorRunner;
+    const { args } = await getSpawnArgs(runner, 'run');
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('## Web固有ルール');
+    expect(prompt).not.toContain('## Discord固有ルール');
+    expect(prompt).not.toContain('## Slack固有ルール');
   });
 
   it('uses auto model by default to avoid Cursor CLI global model drift', async () => {

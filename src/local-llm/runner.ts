@@ -26,7 +26,6 @@ import { loadSkills } from '../skills.js';
 import { CHAT_SYSTEM_PROMPT_PERSISTENT, buildXangiCommands } from '../base-runner.js';
 import type { ChatPlatform } from '../prompts/index.js';
 import { TOOLS_USAGE_PROMPT } from '../prompts/index.js';
-import { checkApprovalServer } from '../approval-server.js';
 import {
   logPrompt,
   logResponse,
@@ -1357,17 +1356,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
         );
 
-        // 危険コマンド承認チェック（承認サーバー経由、Claude Codeと同じ仕組み）
-        const approvalResult = await checkApprovalServer(toolCall.name, toolCall.arguments);
-        if (approvalResult === 'deny') {
-          console.log(`[local-llm] Tool denied by approval server: ${toolCall.name}`);
-          session.messages.push({
-            role: 'tool',
-            content: 'Tool execution denied by user.',
-          });
-          continue;
-        }
-
         // 同一 / 類似 tool_call ループ検出 + 冪等キャッシュ短絡
         const sig = toolCallSignature(toolCall.name, toolCall.arguments);
         const loopResult = recordToolCallAndDetectLoop(session, sig);
@@ -1659,17 +1647,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
           // Discordにツール実行中を通知
           callbacks.onToolUse?.(toolCall.name, toolCall.arguments as Record<string, unknown>);
-
-          // 危険コマンド承認チェック（承認サーバー経由、Claude Codeと同じ仕組み）
-          const approvalResult2 = await checkApprovalServer(toolCall.name, toolCall.arguments);
-          if (approvalResult2 === 'deny') {
-            console.log(`[local-llm] Tool denied by approval server: ${toolCall.name}`);
-            session.messages.push({
-              role: 'tool',
-              content: 'Tool execution denied by user.',
-            });
-            continue;
-          }
 
           // 同一 / 類似 tool_call ループ検出 + 冪等キャッシュ短絡
           const sig = toolCallSignature(toolCall.name, toolCall.arguments);

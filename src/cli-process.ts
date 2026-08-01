@@ -13,7 +13,7 @@ export function buildCliEnv(channelId?: string, platform?: ChatPlatform): NodeJS
   } else {
     delete env.XANGI_CHANNEL_ID;
   }
-  if (platform === 'discord' || platform === 'slack') {
+  if (platform === 'discord' || platform === 'slack' || platform === 'web') {
     env.XANGI_PLATFORM = platform;
   } else {
     delete env.XANGI_PLATFORM;

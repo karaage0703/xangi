@@ -1,3 +1,5 @@
+[English](en/discord-setup.md) | 日本語
+
 # Discord Bot セットアップガイド
 
 xangi を Discord で使用するための Bot 作成手順。
@@ -45,6 +47,7 @@ Discord アカウントでログイン。
    - ✅ Threadsでメッセージを送る（Send Messages in Threads）
    - ✅ スレッドを管理（Manage Threads。`Leave` ボタンで押下者を退出させる場合は必須）
    - ✅ メッセージ履歴を読む（Read Message History）
+   - ✅ ファイルを添付（Attach Files。生成ファイルを送信する場合）
    - ✅ リアクションを付ける（Add Reactions）
    - ✅ スラッシュコマンドを使用（Use Slash Commands）
 4. 生成された URL をコピー
@@ -74,7 +77,7 @@ DISCORD_ALLOWED_USER=YOUR_DISCORD_USER_ID
 npm run build
 
 # Docker で起動
-docker compose up -d --build
+docker compose up xangi -d --build
 
 # ログ確認
 docker compose logs -f xangi

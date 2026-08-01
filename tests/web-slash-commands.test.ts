@@ -70,28 +70,28 @@ describe('Web slash command adapter', () => {
     rmSync(workdir, { recursive: true });
   });
 
-  it('supports quoted skill arguments and rejects names outside the loaded skill catalog', () => {
+  it('supports quoted skill arguments and rejects names outside the loaded skill catalog', async () => {
     const skillDir = join(workdir, 'skills', 'demo');
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: Demo skill\n---\n');
 
-    const result = executeWebCommand('/skill demo "two words"', { workdir });
+    const result = await executeWebCommand('/skill demo "two words"', { workdir });
     expect(result).toEqual({
       kind: 'chat',
       displayMessage: '/skill demo "two words"',
       message: 'スキル「demo」を実行してください。引数: two words',
     });
-    expect(() => executeWebCommand('/skill missing', { workdir })).toThrow(
+    await expect(executeWebCommand('/skill missing', { workdir })).rejects.toThrow(
       'スキル `missing` は見つかりません'
     );
   });
 
-  it('uses /skill without a name to list the current skill catalog', () => {
+  it('uses /skill without a name to list the current skill catalog', async () => {
     const skillDir = join(workdir, 'skills', 'demo');
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: Demo skill\n---\n');
 
-    expect(executeWebCommand('/skill', { workdir })).toEqual({
+    expect(await executeWebCommand('/skill', { workdir })).toEqual({
       kind: 'skills',
       skills: [{ name: 'demo', description: 'Demo skill' }],
     });
@@ -135,20 +135,30 @@ describe('Web slash command adapter', () => {
     ]);
     expect(backendSet?.options?.[1].choices).toEqual([{ name: 'gpt-test', value: 'gpt-test' }]);
 
+    const models = commands.find((command) => command.name === 'models');
+    expect(models?.usage).toBe('/models [backend]');
+    expect(models?.options?.[0].choices).toEqual([
+      { name: 'Claude Code', value: 'claude-code' },
+      { name: 'Codex', value: 'codex' },
+    ]);
+
     const scheduleRemove = commands
       .find((command) => command.name === 'schedule')
       ?.options?.find((option) => option.name === 'remove');
     expect(scheduleRemove?.options?.[0].choices?.[0].value).toBe(added.id);
   });
 
-  it('stores and resets backend overrides using the Web session context key', () => {
+  it('stores and resets backend overrides using the Web session context key', async () => {
     const context = {
       appSessionId: 'web-1',
       workdir,
       resolver: resolver as unknown as BackendResolver,
     };
 
-    const set = executeWebCommand('/backend set codex --model gpt-test --effort high', context);
+    const set = await executeWebCommand(
+      '/backend set codex --model gpt-test --effort high',
+      context
+    );
     expect(set.kind).toBe('message');
     expect(resolver.override).toEqual({
       backend: 'codex',
@@ -156,27 +166,27 @@ describe('Web slash command adapter', () => {
       effort: 'high',
     });
 
-    executeWebCommand('/backend reset', context);
+    await executeWebCommand('/backend reset', context);
     expect(resolver.cleared).toBe(true);
     expect(resolver.override).toBeUndefined();
   });
 
-  it('adds, lists, toggles, and removes schedules scoped to a Web session', () => {
+  it('adds, lists, toggles, and removes schedules scoped to a Web session', async () => {
     const context = { appSessionId: 'web-1', workdir, scheduler };
-    const added = executeWebCommand('/schedule add 30分後 Webの確認', context);
+    const added = await executeWebCommand('/schedule add 30分後 Webの確認', context);
     expect(added.kind).toBe('message');
 
     const schedule = scheduler.list(undefined, 'web')[0];
     expect(schedule.channelId).toBe('web-1');
     expect(schedule.message).toBe('Webの確認');
 
-    const listed = executeWebCommand('/schedule list', context);
+    const listed = await executeWebCommand('/schedule list', context);
     expect(listed.kind).toBe('message');
     if (listed.kind === 'message') expect(listed.message).toContain(schedule.id);
 
-    executeWebCommand(`/schedule toggle ${schedule.id}`, context);
+    await executeWebCommand(`/schedule toggle ${schedule.id}`, context);
     expect(scheduler.list(undefined, 'web')[0].enabled).toBe(false);
-    executeWebCommand(`/schedule remove ${schedule.id}`, context);
+    await executeWebCommand(`/schedule remove ${schedule.id}`, context);
     expect(scheduler.list(undefined, 'web')).toEqual([]);
   });
 });

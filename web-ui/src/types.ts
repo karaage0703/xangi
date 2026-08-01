@@ -61,6 +61,38 @@ export interface SessionsResponse {
   meta: SessionsMeta;
 }
 
+export type ScheduleType = 'cron' | 'once' | 'startup';
+
+export interface Schedule {
+  id: string;
+  type: ScheduleType;
+  expression?: string;
+  runAt?: string;
+  message: string;
+  channelId: string;
+  platform: Platform;
+  createdAt: string;
+  enabled: boolean;
+  label?: string;
+  projectId?: string;
+}
+
+export interface SchedulesResponse {
+  schedules: Schedule[];
+  enabled: boolean;
+  startupEnabled: boolean;
+}
+
+export interface WebProject {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+export interface ProjectsResponse {
+  projects: WebProject[];
+}
+
 export interface MessageUsage {
   num_turns?: number;
   duration_ms?: number;

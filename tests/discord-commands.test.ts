@@ -287,6 +287,11 @@ describe('Discord Commands', () => {
       const typeOption = setSubcommand.options.find((opt: any) => opt.name === 'type');
 
       expect(typeOption.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
+
+      const models = commands.find((cmd) => cmd.name === 'models') as any;
+      const modelsBackend = models.options.find((opt: any) => opt.name === 'backend');
+      expect(modelsBackend.required).toBe(false);
+      expect(modelsBackend.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
     });
   });
 

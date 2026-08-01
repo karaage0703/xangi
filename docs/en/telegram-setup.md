@@ -1,3 +1,5 @@
+[日本語](../telegram-setup.md) | English
+
 # Telegram Bot Setup Guide
 
 How to run xangi as a Telegram bot.
@@ -99,8 +101,12 @@ TELEGRAM_ALLOWED_BOTS_MAX_CONSECUTIVE=3      # Max mentions from the same bot wi
 TELEGRAM_MODE=polling                        # polling | webhook
 # TELEGRAM_FORCE_IPV4=true                  # only when the IPv6 route times out
 
-# Required when using webhook mode:
-# TELEGRAM_WEBHOOK_URL=https://your-host.example.com  # public URL used to register the webhook with Telegram
+# Required in webhook mode:
+TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
+
+# Optional: public URL for automatic Bot API webhook registration
+# If omitted, register the same URL and secret with Telegram manually.
+# TELEGRAM_WEBHOOK_URL=https://your-host.example.com
 
 # Optional: webhook server settings
 # TELEGRAM_WEBHOOK_PORT=8766                # listening port (default: 8766)

@@ -1,3 +1,5 @@
+[English](en/line-setup.md) | 日本語
+
 # LINE Messaging API セットアップガイド
 
 xangi を LINE Bot として動かすための設定手順。1:1 chat 想定。

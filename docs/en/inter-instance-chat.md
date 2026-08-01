@@ -1,4 +1,4 @@
-[日本語](../inter-instance-chat.md) | **English**
+[日本語](../inter-instance-chat.md) | English
 
 # inter-instance-chat — Chat Between xangi Instances
 
@@ -48,17 +48,24 @@ but **be sure to set it explicitly when running multiple instances on the same m
 Each line of `<instanceId>.jsonl`:
 
 ```json
-{"ts":1714912345,"from":"instance-a","from_label":"instance-a","text":"@instance-b おはよ","origin_chain":["user"],"msg_id":"uuid"}
+{
+  "ts": 1714912345,
+  "from": "instance-a",
+  "from_label": "instance-a",
+  "text": "@instance-b おはよ",
+  "origin_chain": ["user"],
+  "msg_id": "uuid"
+}
 ```
 
-| Field | Description |
-|-----------|------|
-| `ts` | Unix seconds |
-| `from` | Sender instance_id |
-| `from_label` | Display name (optional) |
-| `text` | Message body |
+| Field          | Description                                                   |
+| -------------- | ------------------------------------------------------------- |
+| `ts`           | Unix seconds                                                  |
+| `from`         | Sender instance_id                                            |
+| `from_label`   | Display name (optional)                                       |
+| `text`         | Message body                                                  |
 | `origin_chain` | Origin chain. Starts with `user`; each responder appends self |
-| `msg_id` | UUID. Prevents duplicate processing |
+| `msg_id`       | UUID. Prevents duplicate processing                           |
 
 ## Web UI
 

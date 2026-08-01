@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
+import type { BackendResolver } from '../src/backend-resolver.js';
+import type { AgentBackend } from '../src/config.js';
 
 /**
  * tool-server のステータスコード退行検出テスト。
@@ -10,11 +12,37 @@ import { startToolServer, stopToolServer } from '../src/tool-server.js';
  */
 describe('tool-server HTTP status codes', () => {
   let serverUrl: string;
+  const overrides = new Map<string, unknown>();
+  const resolver = {
+    getAllowedBackends: () => ['codex', 'claude-code'] as AgentBackend[],
+    getAllowedModels: () => undefined,
+    isBackendAllowed: (backend: AgentBackend) => backend === 'codex' || backend === 'claude-code',
+    isModelAllowed: () => true,
+    setChannelOverride: (channelId: string, override: unknown) =>
+      overrides.set(channelId, override),
+  } as BackendResolver;
 
   beforeAll(() => {
     // 親シェルから引き継いだ XANGI_TOOL_SERVER を捨てる（実機xangiのURLを誤って叩かないため）
     delete process.env.XANGI_TOOL_SERVER;
-    startToolServer();
+    startToolServer({
+      backendResolver: resolver,
+      modelDiscovery: async (backend) =>
+        backend === 'codex'
+          ? {
+              backend,
+              source: 'test source',
+              status: 'available',
+              models: [{ id: 'gpt-test', supportedEfforts: ['high'] }],
+            }
+          : {
+              backend,
+              source: 'test source',
+              status: 'unsupported',
+              models: [],
+              message: '取得非対応',
+            },
+    });
     // listen() コールバック内で XANGI_TOOL_SERVER が再設定される。それを待つ
     return new Promise<void>((resolve) => {
       const wait = () => {
@@ -103,6 +131,89 @@ describe('tool-server HTTP status codes', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flags: {}, context: {} }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns command-specific help without backend state', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'help', flags: { topic: 'schedule_add' }, context: {} }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; result: string };
+    expect(body.ok).toBe(true);
+    expect(body.result).toContain('Usage: xangi-cmd schedule_add');
+  });
+
+  it('returns 400 for unknown help topic', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'help', flags: { topic: 'missing' }, context: {} }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('lists every allowed backend when models has no backend', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'models', flags: {}, context: {} }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: string };
+    expect(body.result).toContain('gpt-test');
+    expect(body.result).toContain('取得非対応');
+  });
+
+  it('reports unsupported backend model discovery without hard-coded models', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'models',
+        flags: { backend: 'claude-code' },
+        context: {},
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; result: string };
+    expect(body.ok).toBe(true);
+    expect(body.result).toContain('取得非対応');
+    expect(body.result).not.toMatch(/sonnet|opus/i);
+  });
+
+  it('selects a discovered model for the next turn', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'models',
+        flags: { backend: 'codex', use: 'gpt-test', effort: 'high' },
+        context: { channelId: 'web-chat:test' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(overrides.get('web-chat:test')).toEqual({
+      backend: 'codex',
+      model: 'gpt-test',
+      effort: 'high',
+    });
+  });
+
+  it('does not accept the removed backend_models command', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'backend_models', flags: {}, context: {} }),
     });
 
     expect(res.status).toBe(400);

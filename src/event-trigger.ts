@@ -15,6 +15,7 @@
  */
 import { timingSafeEqual } from 'crypto';
 import type { Scheduler, Platform } from './scheduler.js';
+import { webAppSessionId } from './sessions.js';
 
 /** トリガー受付メッセージの上限文字数 */
 export const TRIGGER_MAX_MESSAGE_LENGTH = 4000;
@@ -22,7 +23,7 @@ export const TRIGGER_MAX_MESSAGE_LENGTH = 4000;
 /** source 名の制約（表示・ログ・レート制限キーに使うため英数等に限定） */
 const SOURCE_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 
-const VALID_PLATFORMS: Platform[] = ['discord', 'slack', 'telegram'];
+const VALID_PLATFORMS: Platform[] = ['discord', 'slack', 'telegram', 'web'];
 
 export interface TriggerConfig {
   /** 機能全体の有効化（TRIGGER_ENABLED、デフォルト false） */
@@ -118,9 +119,9 @@ export class EventTrigger {
 
   private async fire(body: TriggerRequestBody): Promise<TriggerResult> {
     // ── バリデーション ──
-    const channel = typeof body.channel === 'string' ? body.channel.trim() : '';
+    const requestedChannel = typeof body.channel === 'string' ? body.channel.trim() : '';
     const message = typeof body.message === 'string' ? body.message.trim() : '';
-    if (!channel) {
+    if (!requestedChannel) {
       return { status: 400, body: { ok: false, error: 'channel is required' } };
     }
     if (!message) {
@@ -150,6 +151,11 @@ export class EventTrigger {
         status: 400,
         body: { ok: false, error: `platform must be one of: ${VALID_PLATFORMS.join(', ')}` },
       };
+    }
+    const channel =
+      platform === 'web' ? webAppSessionId(requestedChannel).trim() : requestedChannel;
+    if (!channel) {
+      return { status: 400, body: { ok: false, error: 'channel is required' } };
     }
 
     // ── 暴走防止 ──

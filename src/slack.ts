@@ -2,6 +2,7 @@ import { App, LogLevel } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { Config } from './config.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
+import type { BackendResolver } from './backend-resolver.js';
 import { processManager } from './process-manager.js';
 import type { Skill } from './skills.js';
 import { formatSkillList } from './skills.js';
@@ -33,6 +34,7 @@ import {
   sanitizeReplySuggestionOutput,
   stripReplySuggestionMarkup,
 } from './reply-suggestions.js';
+import { executeModelsCommand } from './models-command.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
@@ -481,6 +483,7 @@ import type { Scheduler } from './scheduler.js';
 export interface SlackChannelOptions {
   config: Config;
   agentRunner: AgentRunner;
+  resolver: BackendResolver;
   skills: Skill[];
   reloadSkills: () => Skill[];
   scheduler?: Scheduler;
@@ -573,7 +576,7 @@ export function registerSlackSchedulerBridge(deps: {
 }
 
 export async function startSlackBot(options: SlackChannelOptions): Promise<void> {
-  const { config, agentRunner, reloadSkills } = options;
+  const { config, agentRunner, resolver, reloadSkills } = options;
   let { skills } = options;
 
   if (!config.slack.botToken || !config.slack.appToken) {
@@ -1212,6 +1215,30 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     const settings = loadSettings();
     await respond({ text: formatSettings(settings) });
+  });
+
+  // /models [backend] コマンド
+  app.command('/models', async ({ command, ack, respond }) => {
+    await ack();
+
+    if (
+      !config.slack.allowedUsers?.includes('*') &&
+      !config.slack.allowedUsers?.includes(command.user_id)
+    ) {
+      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
+      return;
+    }
+
+    try {
+      const result = await executeModelsCommand(command.text.trim() || undefined, resolver);
+      await respond({
+        text: sliceByBytes(markdownToSlackMrkdwn(result), SLACK_MAX_TEXT_BYTES),
+        response_type: 'ephemeral',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
+      await respond({ text: message, response_type: 'ephemeral' });
+    }
   });
 
   // /restart コマンド

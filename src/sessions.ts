@@ -265,6 +265,13 @@ export function getSession(channelId: string): string | undefined {
  */
 export const WEB_CHAT_CONTEXT_PREFIX = 'web-chat:';
 
+/** WebのcontextKeyまたは生appSessionIdを、生appSessionIdへ正規化する。 */
+export function webAppSessionId(channelId: string): string {
+  return channelId.startsWith(WEB_CHAT_CONTEXT_PREFIX)
+    ? channelId.slice(WEB_CHAT_CONTEXT_PREFIX.length)
+    : channelId;
+}
+
 /**
  * Web 用のセッションを作成する。contextKey は `web-chat:<appSessionId>` で自動生成。
  * 同時に複数の Web セッションを保持・操作できる。

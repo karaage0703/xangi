@@ -198,9 +198,7 @@ exit 0
     expect(result.stdout).toContain('xangi install');
     expect(result.stdout).toContain('xangi uninstall');
     expect(result.stdout).toContain('xangi update');
-    expect(result.stdout).toContain('xangi notion-sync');
-    expect(result.stdout).toContain('status|enable|disable|run');
-    expect(result.stdout).toContain('--once');
+    expect(result.stdout).not.toContain('notion-sync');
     expect(result.stdout).toContain('--allow-downgrade');
     expect(result.stdout).toContain('--purge');
     expect(result.stdout).toContain('--yes');
@@ -281,7 +279,6 @@ exit 0
         backend: 'codex',
         workspacePath: workspace,
         webChatAccess: 'tailscale',
-        notionSyncEnabled: false,
       }
     );
     expect(readFileSync(join(workspace, 'BOOTSTRAP.md'), 'utf8')).toContain(

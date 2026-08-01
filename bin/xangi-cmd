@@ -22,42 +22,23 @@ resolve_server() {
 COMMAND="$1"
 shift || true
 
+if [ "$COMMAND" = "help" ]; then
+  TOPIC="$1"
+  if [ -n "$TOPIC" ]; then
+    set -- --topic "$TOPIC"
+  else
+    set --
+  fi
+fi
+
 TOOL_SERVER=$(resolve_server) || {
   echo "Error: XANGI_TOOL_SERVER が設定されていません" >&2
   echo "xangi配下で起動するか、XANGI_TOOL_SERVER=http://127.0.0.1:<port> を指定してください" >&2
   exit 1
 }
 
-if [ -z "$COMMAND" ] || [ "$COMMAND" = "help" ]; then
-  echo "xangi-cmd — xangiコマンドCLI
-
-Discord操作:
-  discord_history   チャンネル履歴取得
-  discord_message   特定メッセージの全文取得
-  discord_send      メッセージ送信
-  discord_channels  チャンネル一覧
-  discord_search    メッセージ検索
-  discord_edit      メッセージ編集
-  discord_delete    メッセージ削除
-  discord_thread_leave    スレッドから指定ユーザーを退出させる
-  media_send        ファイル送信
-
-Web Chat操作:
-  web_history       現ペインの会話履歴を取得
-
-スケジュール:
-  schedule_list     一覧表示
-  schedule_add      追加
-  schedule_remove   削除
-  schedule_toggle   有効/無効切替
-
-システム:
-  system_restart    再起動
-  system_settings   設定変更
-
-イベントトリガー:
-  trigger           エージェントターンを起動 (--channel --message [--source] [--platform])"
-  exit 0
+if [ -z "$COMMAND" ]; then
+  COMMAND="help"
 fi
 
 # 引数を --key value ペアからJSONオブジェクトに変換

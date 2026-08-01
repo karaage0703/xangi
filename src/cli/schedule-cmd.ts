@@ -7,7 +7,8 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { parseScheduleInput, formatScheduleList } from '../scheduler.js';
+import { parseScheduleInput, formatScheduleList, type Platform } from '../scheduler.js';
+import { webAppSessionId } from '../sessions.js';
 
 interface Schedule {
   id: string;
@@ -16,7 +17,7 @@ interface Schedule {
   runAt?: string;
   message: string;
   channelId: string;
-  platform: 'discord' | 'slack';
+  platform: Platform;
   createdAt: string;
   enabled: boolean;
   label?: string;
@@ -25,13 +26,13 @@ interface Schedule {
 type SchedulePlatform = Schedule['platform'];
 
 function isSchedulePlatform(value: string): value is SchedulePlatform {
-  return value === 'discord' || value === 'slack';
+  return value === 'discord' || value === 'slack' || value === 'web';
 }
 
 function resolveSchedulePlatform(flags: Record<string, string>): SchedulePlatform {
   const value = flags['platform'] || process.env.XANGI_PLATFORM || 'discord';
   if (!isSchedulePlatform(value)) {
-    throw new Error(`--platform must be discord or slack: ${value}`);
+    throw new Error(`--platform must be discord, slack, or web: ${value}`);
   }
   return value;
 }
@@ -87,7 +88,8 @@ async function scheduleAdd(flags: Record<string, string>): Promise<string> {
 
   const schedules = loadSchedules();
   // targetChannelId が指定されていればそちらを優先
-  const targetChannel = parsed.targetChannelId || channelId;
+  const requestedChannel = parsed.targetChannelId || channelId;
+  const targetChannel = platform === 'web' ? webAppSessionId(requestedChannel) : requestedChannel;
 
   const newSchedule: Schedule = {
     id: generateId(),

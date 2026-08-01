@@ -24,7 +24,6 @@ import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
-import { resolveApproval } from '../approval.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
 import {
   getChannelAutoReply,
@@ -58,6 +57,7 @@ import { formatToolHistoryDisclosure } from '../tool-history.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { formatNumberedSuggestions } from '../reply-suggestions.js';
+import { executeModelsCommand } from '../models-command.js';
 
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
@@ -138,6 +138,17 @@ export function buildSlashCommands(
       .addStringOption((option) => option.setName('args').setDescription('引数').setRequired(false))
       .toJSON(),
     new SlashCommandBuilder().setName('settings').setDescription('現在の設定を表示する').toJSON(),
+    new SlashCommandBuilder()
+      .setName('models')
+      .setDescription('利用可能なモデル一覧を表示する')
+      .addStringOption((option) =>
+        option
+          .setName('backend')
+          .setDescription('バックエンド（省略時はすべて）')
+          .setRequired(false)
+          .addChoices(...backendChoices)
+      )
+      .toJSON(),
     new SlashCommandBuilder()
       .setName('replysuggestions')
       .setDescription('回答候補の全体ON/OFFを設定する')
@@ -241,9 +252,6 @@ export function buildSlashCommands(
           )
       )
       .addSubcommand((sub) => sub.setName('reset').setDescription('デフォルトに戻す'))
-      .addSubcommand((sub) =>
-        sub.setName('list').setDescription('利用可能なバックエンド一覧を表示')
-      )
       .toJSON(),
   ];
 
@@ -702,20 +710,6 @@ export function createInteractionHandler(
         return;
       }
 
-      // 承認ボタン
-      if (interaction.customId.startsWith('xangi_approve_')) {
-        const approvalId = interaction.customId.replace('xangi_approve_', '');
-        resolveApproval(approvalId, true);
-        await interaction.update({ content: '✅ 許可しました', components: [] }).catch(() => {});
-        return;
-      }
-      if (interaction.customId.startsWith('xangi_deny_')) {
-        const approvalId = interaction.customId.replace('xangi_deny_', '');
-        resolveApproval(approvalId, false);
-        await interaction.update({ content: '❌ 拒否しました', components: [] }).catch(() => {});
-        return;
-      }
-
       // 未知のボタン → 何もせずACK
       await interaction.deferUpdate().catch(() => {});
       return;
@@ -974,90 +968,16 @@ export function createInteractionHandler(
         );
         return;
       }
+    }
 
-      if (sub === 'list') {
-        await interaction.deferReply();
-        const allowed = resolver.getAllowedBackends();
-        const allowedModels = resolver.getAllowedModels();
-        const defaultRes = resolver.getDefault();
-        const lines = ['**利用可能なバックエンド:**'];
-        for (const b of allowed) {
-          const isDefault = b === defaultRes.backend;
-          lines.push(`- ${getBackendDisplayName(b)}${isDefault ? ' (デフォルト)' : ''}`);
-        }
-        if (allowedModels && allowedModels.length > 0) {
-          lines.push('', '**許可モデル:**');
-          for (const m of allowedModels) {
-            lines.push(`- \`${m}\``);
-          }
-        }
-
-        // Local LLM モデル一覧を取得（許可されている場合）
-        // Ollama (`/api/tags`) と vLLM / OpenAI 互換 (`/v1/models`) の両方に対応
-        if (allowed.includes('local-llm')) {
-          const llmBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
-          let modelsShown = false;
-
-          // Ollama 経路
-          try {
-            const res = await fetch(`${llmBase}/api/tags`, {
-              signal: AbortSignal.timeout(3000),
-            });
-            if (res.ok) {
-              const data = (await res.json()) as {
-                models?: Array<{ name: string; size: number }>;
-              };
-              if (data.models && data.models.length > 0) {
-                lines.push('', '**Ollamaモデル（インストール済み）:**');
-                for (const m of data.models) {
-                  const sizeGB = (m.size / 1e9).toFixed(1);
-                  lines.push(`- \`${m.name}\` (${sizeGB}GB)`);
-                }
-                modelsShown = true;
-              }
-            }
-          } catch {
-            // Ollama 未起動・別サーバーの可能性 → fallback へ
-          }
-
-          // vLLM / OpenAI 互換経路 (Ollama で取れなかった場合のフォールバック)
-          if (!modelsShown) {
-            try {
-              const res = await fetch(`${llmBase}/v1/models`, {
-                signal: AbortSignal.timeout(3000),
-              });
-              if (res.ok) {
-                const data = (await res.json()) as {
-                  data?: Array<{ id: string; max_model_len?: number; owned_by?: string }>;
-                };
-                if (data.data && data.data.length > 0) {
-                  lines.push('', '**Local LLM モデル（OpenAI互換API）:**');
-                  for (const m of data.data) {
-                    const ctx = m.max_model_len
-                      ? ` (max_model_len: ${m.max_model_len.toLocaleString()})`
-                      : '';
-                    const owner = m.owned_by ? ` [${m.owned_by}]` : '';
-                    lines.push(`- \`${m.id}\`${ctx}${owner}`);
-                  }
-                  modelsShown = true;
-                }
-              }
-            } catch {
-              // 両方失敗 → 警告表示
-            }
-          }
-
-          if (!modelsShown) {
-            lines.push(
-              '',
-              `⚠️ Local LLM サーバー (\`${llmBase}\`) からモデル一覧を取得できませんでした。Ollama (\`/api/tags\`) も OpenAI互換 (\`/v1/models\`) も応答なし。`
-            );
-          }
-        }
-
-        await interaction.editReply(lines.join('\n'));
-        return;
-      }
+    if (interaction.commandName === 'models') {
+      await interaction.deferReply();
+      const backend = interaction.options.getString('backend') ?? undefined;
+      const content = await executeModelsCommand(backend, resolver);
+      const chunks = splitMessage(content, DISCORD_SAFE_LENGTH);
+      await interaction.editReply(chunks[0]);
+      for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
+      return;
     }
 
     if (interaction.commandName === 'skip') {

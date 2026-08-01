@@ -17,13 +17,13 @@ describe('SecretStore', () => {
     const path = join(root, 'config', 'secrets.json');
     const store = new SecretStore(path);
 
-    await store.set('XANGI_NOTION_TOKEN', 'ntn_secret-value');
+    await store.set('TELEGRAM_BOT_TOKEN', 'telegram-secret-value');
 
-    expect(await store.get('XANGI_NOTION_TOKEN')).toBe('ntn_secret-value');
+    expect(await store.get('TELEGRAM_BOT_TOKEN')).toBe('telegram-secret-value');
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
       schemaVersion: 1,
-      secrets: { XANGI_NOTION_TOKEN: 'ntn_secret-value' },
+      secrets: { TELEGRAM_BOT_TOKEN: 'telegram-secret-value' },
     });
   });
 
@@ -32,10 +32,10 @@ describe('SecretStore', () => {
     roots.push(root);
     const store = new SecretStore(join(root, 'secrets.json'));
     await store.set('DISCORD_TOKEN', 'discord-secret');
-    await store.set('XANGI_NOTION_TOKEN', 'notion-secret');
+    await store.set('SLACK_APP_TOKEN', 'slack-app-secret');
 
     expect(await store.get('DISCORD_TOKEN')).toBe('discord-secret');
-    expect(await store.get('XANGI_NOTION_TOKEN')).toBe('notion-secret');
+    expect(await store.get('SLACK_APP_TOKEN')).toBe('slack-app-secret');
   });
 
   it('stores multiple values in one atomic update and returns a copy', async () => {

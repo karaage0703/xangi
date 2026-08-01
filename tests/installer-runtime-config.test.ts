@@ -28,7 +28,6 @@ describe('setup runtime config bridge', () => {
         workspacePath: join(root, 'workspace'),
         webChatEnabled: true,
         webChatAccess: 'tailscale',
-        notionSyncEnabled: true,
       })
     );
     await expect(loadSetupRuntimeEnv(configPath, join(root, 'state'))).resolves.toEqual({
@@ -38,7 +37,6 @@ describe('setup runtime config bridge', () => {
       DATA_DIR: join(root, 'state'),
       WEB_CHAT_ENABLED: 'true',
       WEB_CHAT_HOST: '127.0.0.1',
-      XANGI_NOTION_SYNC_ENABLED: 'true',
     });
   });
 
@@ -52,7 +50,6 @@ describe('setup runtime config bridge', () => {
         backend: 'claude-code',
         workspacePath: root,
         webChatEnabled: false,
-        notionSyncEnabled: false,
       })
     );
     const importer = vi.fn(async () => {

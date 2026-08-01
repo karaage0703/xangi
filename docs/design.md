@@ -1,3 +1,5 @@
+[English](en/design.md) | 日本語
+
 # 設計ドキュメント
 
 xangiのアーキテクチャと設計思想について説明します。
@@ -49,7 +51,7 @@ flowchart LR
 
 - 設定読み込みと検証（`config.ts` / `config-validate.ts`）
 - 有効化されたクライアントの起動分岐（Discord / Slack / Web Chat / LINE / Telegram。Web オンリー構成では Discord Client を生成しない）
-- スケジューラー・各種 HTTP サーバー（tool-server / events-stream / event-trigger / approval-server 等）の起動
+- スケジューラー・各種 HTTP サーバー（tool-server / events-stream / event-trigger 等）の起動
 - SIGTERM/SIGINT ハンドリング（`stream-finalizer.ts` の確定処理を含む graceful shutdown）
 
 ### Discord 統合（src/discord/）
@@ -99,7 +101,8 @@ flowchart LR
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
 - `/monitor` は同じReactアプリの読み取り専用モード。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけをworkspace相対pathで列挙・読込し、hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超を拒否する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部更新時は409を返し、UIが再読込を促す
-- Chat / Workspace / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える
+- `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除をHTTP API経由で行う。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
+- Chat / Files / Schedules / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える
 - Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
 ### macOS・Linux・WSL2セットアップ・更新コア
@@ -112,7 +115,7 @@ flowchart LR
 - `onboarding.json` は`preflight` / `bootstrap_in_progress` / `minimum_ready`をconfig領域へatomic保存し、中断後の再開と診断の正本になる。AIオンボーディングを置き換えるsetup用browser UIは持たず、対応agentが無い場合はinstall手順を表示して終了する
 - `secrets.json` はOS別config領域へmode 0600でatomic保存する。`xangi settings`はDiscord許可ユーザーIDとtoken用の一時GUIをloopbackだけに開き、one-time URL、Host検証、no-store/CSPを適用する。保存済み値はbrowserへ返さず、保存後にserverを閉じ、AI・workspace・setup JSON・shell historyから接続設定を分離する
 - `packaging/bootstrap.sh` は全対応OS共通の`install.sh`としてGitHub Releaseへ配置する。Darwin / Linuxとarm64 / x64を自動判定し、同じReleaseのtarget installerへ振り分ける。WSL2はLinuxとして扱う。pipe経由の実行では常にsetupとservice起動を延期し、署名検証済みCLIの配置後に通常のTerminalから`xangi setup`を実行するよう案内する。shell/readlineとAI TUIの端末所有権をpipe内で引き継がない
-- `packaging/build-bundle.sh` はcompiled runtime・production依存・documentationに加え、危険操作検知用`approval-patterns.json`とWeb Chatの公式HTML 3ファイルだけを明示allowlistで同梱する。`web/node_modules`やsecret候補は含めない。`packaging/build-installer.mjs` はrelease build時に署名済みmanifestとbundleを照合し、manifest・artifactのSHA-256とEd25519公開鍵をtarget installerへ埋め込む。target installerはNode runtime、CLI entrypoint、承認pattern、Web UI資産を検証してから、検証済みbundle、atomicな`current` symlink、stable launcher、`~/.local/bin/xangi`をAI onboarding前に確定する。外部AIやserviceの失敗は配布物をrollbackせず、利用者が`xangi setup`または`xangi install`で再開できる状態を保つ
+- `packaging/build-bundle.sh` はcompiled runtime・production依存・documentationに加え、Web Chatの公式HTML 3ファイルだけを明示allowlistで同梱する。`web/node_modules`やsecret候補は含めない。`packaging/build-installer.mjs` はrelease build時に署名済みmanifestとbundleを照合し、manifest・artifactのSHA-256とEd25519公開鍵をtarget installerへ埋め込む。target installerはNode runtime、CLI entrypoint、Web UI資産を検証してから、検証済みbundle、atomicな`current` symlink、stable launcher、`~/.local/bin/xangi`をAI onboarding前に確定する。外部AIやserviceの失敗は配布物をrollbackせず、利用者が`xangi setup`または`xangi install`で再開できる状態を保つ
 - `.github/workflows/release-assets.yml` はDarwin / Linux × arm64 / x64をnative runnerでbuildし、最終jobだけがEd25519秘密鍵を使ってmanifestへ署名する。version固定artifact URLと`releases/latest`の更新確認用manifest URLをinstallerへ埋め込み、bundle・manifest・installer・checksumを同じGitHub Releaseへ添付する
 - `workspace-template.ts` は利用者が選択した時点で指定GitHub repositoryのbranch最新commitを解決し、commit固定archiveをGitなしで取得する。repository・commit SHA・archive SHA-256をstateへ記録し、空workspaceへatomic展開する。通常のinstall/updateでは初回だけ適用するが、利用者がsetupでtemplate modeを明示的に選び直した場合は、適用済みstateが残っていても対象が空または未作成なら安全に再展開する。既存ファイルがあるworkspaceは変更しない
 - `platform/*-update.ts` は6時間ごとに署名済みchannelを確認するLaunchAgent / systemd user timerを管理する
@@ -123,7 +126,6 @@ flowchart LR
 - `doctor`はcheckoutではPM2を検出し、Web Chatの`/api/sessions`が返すworkdirをsetup configとrealpath比較する。tailscale accessでは、有効なWeb Chat portのTailscale Serve TCP転送がloopbackを向いていることも確認する
 - `src/cli/xangi-main.ts`はCLI実行専用entrypointで、`src/cli/xangi.ts`がexportする`run()`を無条件に呼び、top-level errorを終了コードへ変換する。CLI library自身は`import.meta.url`と`process.argv[1]`を比較して実行可否を判定しない。これによりmanaged版の`~/.local/bin/xangi → app/bin/xangi → current → dist/cli/xangi-main.js`という複数symlink経路でも起動責務が曖昧にならない
 - checkoutの`bin/xangi`はlocal `tsx`で現在の`src/cli/xangi-main.ts`を実行し、Git管理外の古い`dist/`を使用しない。sourceを含まない配布bundleでは同梱`dist/cli/xangi-main.js`とNode runtimeを実行し、オンボーディングの正本になるREADMEと利用者向けdocsもallowlistで同梱する
-- `notion-sync/` の標準経路はworkspaceを正本とする一方向ミラー。安全なMarkdownを自動検出し、state領域のpath-to-page対応表を使ってNotionの子ページ階層を作成・更新する。従来の文書単位manifest engineは互換用の明示指定時だけ利用する。実Notion接続はadapter境界に隔離する
 - `notionSyncEnabled` はデフォルトOFFのglobal gate。OFF中のstatus/disableはNotion APIへ接続せず、通常runもadapter生成前に拒否する。`run --once`だけが明示的な一回実行としてgateを越え、同期stateとbackupはdisable後も保持する
 
 ### LINE Bot 統合（line.ts）
@@ -256,12 +258,10 @@ BackendResolverの優先順位:
 xangiがAI CLIに注入するシステムプロンプトを管理：
 
 - **チャットプラットフォーム情報** — Discord/Slack経由の会話であることを伝える短い固定テキスト
-- **XANGI_COMMANDS** — `src/prompts/` からプラットフォームに応じたコマンド仕様を注入
-  - 共通コマンド（`xangi-commands-common.ts`）: タイムアウト対策等
-  - チャットPF共通（`xangi-commands-chat-platform.ts`）: ファイル送信（MEDIA:）・セパレータ（===）・スケジュール・システムコマンド
-  - Discord専用（`xangi-commands-discord.ts`）: `xangi-cmd discord_*` CLIツール・自動展開
-  - Slack専用（`xangi-commands-slack.ts`）: Slack固有の操作
-  - プラットフォーム自動判別: Discordのみ有効なら Discord専用コマンドだけ注入（トークン節約）
+- **XANGI_COMMANDS** — 常駐promptには長時間処理・自己再起動・`MEDIA:`・platform固有IDなど、実行時に必要な契約だけを注入
+  - コマンドのusageは `xangi-cmd help <topic|command>` のmetadataを正本とし、必要な時だけ取得
+  - ユーザー向けslash commandは各platformの `/help` とcommand metadataを正本にする
+  - platform未指定時は固有ルールを注入せず、Discord / Slackの操作説明を混在させない
 - **プラットフォーム識別** — 各メッセージに `[プラットフォーム: Discord]` or `[プラットフォーム: Slack]` を注入。AIが適切なコマンドを使い分け
 
 #### Runtime context 注入（runtime-context.ts）
@@ -299,6 +299,8 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | grok-cli.ts          | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                     |
 | antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.2最終JSONと旧版プレーン出力フォールバック        |
 | local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
+
+`backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi-cmd models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
@@ -555,11 +557,11 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 
 `isSafeForRescue(name, args)` は擬似 tool_call の救済実行可否を判定する。denylist (`rm/curl/git` 等を弾く) は抜け道が多いため使わず、明示的な allowlist のみを許可:
 
-| カテゴリ                       | 対象                                                                                                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list` |
-| `exec` / `bash` のサブコマンド | `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings}` のいずれかで始まる場合のみ                     |
-| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                              |
+| カテゴリ                       | 対象                                                                                                                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                           |
+| `exec` / `bash` のサブコマンド | `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` のいずれかで始まる場合のみ（`models --use` は変更操作なので除外） |
+| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                                                        |
 
 それ以外は `{safe: false, reason}` を返し、`unsafe_tool_in_pseudo_format` 構造化エラーで LLM に proper function_calling 構造への切替を促す。
 
@@ -615,6 +617,7 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 │ - agentRunners: Map<platform, fn> # AI実行関数     │
 ├─────────────────────────────────────────────────────┤
 │ + add(schedule): Schedule                          │
+│ + update(id, schedule): Schedule                   │
 │ + remove(id): boolean                              │
 │ + toggle(id): Schedule                             │
 │ + list(): Schedule[]                               │
@@ -627,6 +630,7 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 
 - `cron`: cron式による定期実行
 - `once`: 単発リマインダー（指定時刻に1回実行）
+- `startup`: xangi起動時に実行
 
 **永続化:**
 
@@ -683,6 +687,7 @@ AI CLI（Claude Code等）
 **設計判断:**
 
 - ターン実行は scheduler の `agentRunner` 経路を再利用する。プラットフォームごとの投稿処理（thinking メッセージ・分割・添付・Stop / 延長 / 残り時間表示）を持つ実行関数が既に scheduler に登録されているため、トリガー側は `Scheduler.getAgentRunner(platform)` で取得して呼ぶだけでよい
+- Webは`web-chat:<sessionId>`と生の`sessionId`の両方を受け付け、runner呼び出し前に生のappSessionIdへ正規化する。これによりtrigger起点のターンも既存Web会話のtranscriptへ追加される
 - HTTP 応答（`202` + `triggerId`）はターン完了を待たない fire-and-forget。呼び出し側（ビルドスクリプト等）をブロックしない
 - 発火時に `⚡ trigger: <source>` ラベルをチャンネルへ先行投稿し、何が起動したか可視化する
 
@@ -692,22 +697,6 @@ AI CLI（Claude Code等）
 - HTTP 経由は `XANGI_TRIGGER_TOKEN` の Bearer 認証必須。トークン未設定時は有効化されていても全拒否（tool-server は 0.0.0.0 bind のため、無認証受け付けはネットワーク越しの任意プロンプト注入になる）。トークン比較は定数時間比較
 - `xangi-cmd trigger`（`/api/execute` 経由）はローカルコマンドの既存の信頼境界に従いトークン検証を省略するが、opt-in は同様に要求
 - 暴走防止: source 単位のレート制限（`TRIGGER_MIN_INTERVAL_MS`、デフォルト 10 秒、超過 `429`）と同時実行ガード（同一 source 実行中は `409`）。メッセージ長上限 4000 文字
-
-### 承認フロー（approval.ts / approval-server.ts）
-
-AIが実行しようとするコマンドの中から危険なもの（`rm -rf`、`git push --force` 等）を検知し、実行前にユーザーの承認を求める仕組み。
-
-```
-AI CLI がコマンド出力
-  → approval.ts がパターンマッチ（approval-patterns.json）
-  → 危険コマンド検知
-  → approval-server.ts がDiscord/Slackにボタン付きメッセージ送信
-  → ユーザーが承認/拒否
-  → 結果をAI CLIに返却
-```
-
-- `APPROVAL_ENABLED=true` で有効化（デフォルト無効）
-- パターンは `src/approval-patterns.json` で定義
 
 ### GitHub App認証（github-auth.ts）
 
@@ -814,18 +803,18 @@ skills/
 
 xangiのユーザー管理はシンプルな許可リスト方式：
 
-- `DISCORD_ALLOWED_USER` / `SLACK_ALLOWED_USER` でアクセス制御
+- 各platformの`*_ALLOWED_USER`（Discord / Slack / LINE / Telegram）でアクセス制御
 - カンマ区切りで複数ユーザー指定可能、`*` で全員許可
 - セッションはチャンネル単位で管理
-- プロンプトに発言者情報（表示名・Discord ID）が自動注入される
+- プロンプトにplatform固有の発言者情報（表示名・ユーザーID）が自動注入される
 
 ### AI CLIの抽象化
 
 AI CLIの実装詳細を隠蔽し、交換可能に：
 
-```typescript
-// 設定でバックエンドを切り替え
-AGENT_BACKEND=claude-code  # or codex / cursor / grok / antigravity / local-llm
+```bash
+# 設定でバックエンドを切り替え
+AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / local-llm
 ```
 
 将来的に新しいAI CLIが登場しても、アダプターを追加するだけで対応可能。
@@ -834,17 +823,16 @@ AGENT_BACKEND=claude-code  # or codex / cursor / grok / antigravity / local-llm
 
 AIが出力する特殊コマンドを検出して自動実行：
 
-| 方式               | コマンド例                                                               | 動作                                                                                                                                              |
-| ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLIツール          | `xangi-cmd discord_send --channel ID --message "..."`                    | Discord操作                                                                                                                                       |
-| CLIツール          | `xangi-cmd discord_buttons --channel ID --message "..." --buttons "..."` | ボタン付きメッセージ送信                                                                                                                          |
-| CLIツール          | `xangi-cmd schedule_add --input "毎日 9:00 ..."`                         | スケジュール操作                                                                                                                                  |
-| CLIツール          | `xangi-cmd system_restart`                                               | プロセス再起動                                                                                                                                    |
-| テキストパース     | `MEDIA:/path/to/file`                                                    | ファイル送信                                                                                                                                      |
-| テキストパース     | `\n===\n`                                                                | メッセージ分割                                                                                                                                    |
-| スラッシュコマンド | `/autoreply`                                                             | チャンネルごとのメンションなし応答を ON/OFF/default/表示（`settings.json` に永続化）                                                              |
-| スラッシュコマンド | `/respondtobots`                                                         | bot 同士の応答 ON/OFF トグル（ホワイトリストは `RESPOND_TO_BOTS`、連続上限は `RESPOND_TO_BOTS_MAX_CONSECUTIVE`）                                  |
-| スラッシュコマンド | `/threadmode`                                                            | チャンネルごとの Discord 発言ごとスレッド返信モードを ON/OFF/default/表示（`settings.json` に永続化、全体デフォルトは `DISCORD_REPLY_IN_THREAD`） |
+| 方式               | コマンド例                                                    | 動作                                                                                                                                              |
+| ------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLIツール          | `xangi-cmd discord_send --channel ID --message "..."`         | Discordメッセージ送信                                                                                                                             |
+| CLIツール          | `xangi-cmd schedule_add --input "毎日 9:00 ..." --channel ID` | スケジュール操作                                                                                                                                  |
+| CLIツール          | `xangi-cmd system_restart`                                    | プロセス再起動                                                                                                                                    |
+| テキストパース     | `MEDIA:/path/to/file`                                         | ファイル送信                                                                                                                                      |
+| テキストパース     | `\n===\n`                                                     | メッセージ分割                                                                                                                                    |
+| スラッシュコマンド | `/autoreply`                                                  | チャンネルごとのメンションなし応答を ON/OFF/default/表示（`settings.json` に永続化）                                                              |
+| スラッシュコマンド | `/respondtobots`                                              | bot 同士の応答 ON/OFF トグル（ホワイトリストは `RESPOND_TO_BOTS`、連続上限は `RESPOND_TO_BOTS_MAX_CONSECUTIVE`）                                  |
+| スラッシュコマンド | `/threadmode`                                                 | チャンネルごとの Discord 発言ごとスレッド返信モードを ON/OFF/default/表示（`settings.json` に永続化、全体デフォルトは `DISCORD_REPLY_IN_THREAD`） |
 
 CLIツール（`xangi-cmd`）は xangi 内蔵の tool-server（HTTPエンドポイント）経由で実行される。
 DISCORD_TOKEN 等のシークレットは xangi プロセス内に閉じ込められ、AI CLI からはアクセスできない。
@@ -880,14 +868,14 @@ AI の応答テキストからファイルパスを拾って添付する処理�
 
 ### 永続化戦略
 
-| データ            | 保存先                                                              | 形式                                                                                                                                               |
-| ----------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| スケジュール      | `${DATA_DIR}/schedules.json`                                        | JSON                                                                                                                                               |
-| ランタイム設定    | `${WORKSPACE}/settings.json`                                        | JSON                                                                                                                                               |
-| セッション        | `${DATA_DIR}/sessions.json`                                         | JSON（appSessionId方式、activeByContext + sessions）                                                                                               |
-| トランスクリプト  | `logs/sessions/{appSessionId}.jsonl`                                | JSONL（セッション単位の会話ログ）                                                                                                                  |
-| DATA_DIR ロック   | `${DATA_DIR}.lock/`                                                 | `proper-lockfile` が管理するロックディレクトリ（同 `DATA_DIR` を複数 xangi で握ろうとした際の重複検知用、30s ハートビート + 60s stale で自動回収） |
-| 環境変数 (`.env`) | デフォルト: `process.cwd()/.env` / 上書き: `XANGI_ENV_PATH` env var | KEY=VALUE 行                                                                                                                                       |
+| データ            | 保存先                                                              | 形式                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| スケジュール      | `${DATA_DIR}/schedules.json`                                        | JSON                                                                                                                                                      |
+| ランタイム設定    | `${DATA_DIR}/settings.json`                                         | JSON                                                                                                                                                      |
+| セッション        | `${DATA_DIR}/sessions.json`                                         | JSON（appSessionId方式、activeByContext + sessions）                                                                                                      |
+| トランスクリプト  | `logs/sessions/{appSessionId}.jsonl`                                | JSONL（セッション単位の会話ログ）                                                                                                                         |
+| DATA_DIR ロック   | `${DATA_DIR}.lock/`                                                 | `DATA_DIR`作成後に`proper-lockfile`が取得するロックディレクトリ（取得不能なら外部接続・scheduler開始前に起動中止、30sハートビート + 60s staleで自動回収） |
+| 環境変数 (`.env`) | デフォルト: `process.cwd()/.env` / 上書き: `XANGI_ENV_PATH` env var | KEY=VALUE 行                                                                                                                                              |
 
 #### 環境変数の永続化と Docker のセキュリティ設計
 
@@ -938,7 +926,7 @@ xangi独自の `appSessionId` でセッションを管理。backendの `provider
     "<appSessionId>": {
       "id": "<appSessionId>",
       "title": "...",
-      "platform": "discord|slack|web",
+      "platform": "discord|slack|web|line|telegram",
       "contextKey": "<channelId>",
       "agent": { "backend": "claude-code", "providerSessionId": "..." }
     }
@@ -967,10 +955,12 @@ logs/sessions/
 **注意事項：**
 
 - ログは `.gitignore` で除外されている
-- 自動ローテーション（日付ごとにディレクトリ分割）
+- 1セッションにつき`logs/sessions/<appSessionId>.jsonl`へ追記
 - ログ書き込み失敗は無視（本体の動作に影響させない）
 
-## ファイル構成
+## 主要ファイル構成
+
+以下は責務を理解するための代表的な構成であり、全ファイルの固定一覧ではない。現在の全ファイルは`rg --files src`で確認する。
 
 ```
 bin/
@@ -1003,11 +993,21 @@ src/
 ├── codex-cli.ts        # Codex CLIアダプター
 ├── cursor-cli.ts       # Cursor CLIアダプター
 ├── grok-cli.ts         # Grok CLIアダプター
+├── antigravity-cli.ts  # Antigravity CLIアダプター
 ├── cli-process.ts      # 単発CLI runnerのprocess/env/timeout共通部品
 ├── jsonl-buffer.ts     # JSONL streamの行分割共通部品
 ├── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）
 ├── dynamic-runner.ts   # 動的ランナーマネージャー
 ├── backend-resolver.ts # チャンネル別バックエンド解決
+├── backend-models.ts   # backend別の利用可能モデル動的取得・共通表示
+├── backend-effort.ts   # backend別effortの検証・正規化
+├── models-command.ts   # 全platform共通/modelsとAI向けmodel選択
+├── data-dir-lock.ts    # DATA_DIRの単一writer lockとheartbeat
+├── self-lifecycle.ts   # 自己restart許可の判定
+├── shutdown.ts         # graceful shutdownの共通制御
+├── web-projects.ts     # Web Projectの定義・永続化
+├── web-slash-commands.ts # Web Chatコマンドregistry
+├── workspace-browser.ts # Workspace閲覧・編集の境界
 ├── hooks.ts            # ワークスペースhooks（Stop hook 外部検証ゲート）
 ├── tool-server.ts      # Tool Server（AI CLI向けHTTP API）
 ├── event-trigger.ts    # イベントトリガー（POST /api/trigger で外部からターン起動）
@@ -1016,8 +1016,6 @@ src/
 ├── activity-store.ts   # 現在ターンの軽量スナップショット
 ├── pet-inbox-server.ts # xangi-pets からのテキスト送信受付（POST /api/pet/inbox）
 ├── even-terminal-server.ts # Even Terminal 互換 HTTP API
-├── approval.ts         # 危険コマンド検知（パターンマッチ）
-├── approval-server.ts  # 承認サーバー（Discord/Slack対話的承認フロー）
 ├── github-auth.ts      # GitHub App認証（秘密鍵メモリ管理・トークン生成）
 ├── safe-env.ts         # 環境変数ホワイトリスト
 ├── env-persist.ts      # .env パス解決と動的書き戻し（XANGI_ENV_PATH）
@@ -1108,9 +1106,9 @@ src/
 ### セキュリティ方針
 
 - 非rootユーザー（UID 1000）で実行
-- ワークスペースのみマウント
+- ワークスペースに加え、選択したbackendの認証情報、prompt、git設定、任意のsecret・inter-chat共有先を必要な範囲でマウント
 - AIエージェントへの環境変数はホワイトリスト方式で制限（`src/safe-env.ts`）
-- ホストネットワークへの直接アクセスなし（ollamaコンテナ経由のみ）
+- `host.docker.internal`へのhost-gatewayを設定する。公開範囲は各serviceとhost側firewallで制限
 
 詳細（環境変数一覧・Docker操作方法等）は [使い方ガイド](usage.md) を参照。
 

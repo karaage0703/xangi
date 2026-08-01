@@ -1,0 +1,340 @@
+import { spawn } from 'node:child_process';
+import type { AgentBackend } from './config.js';
+
+const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
+
+export interface BackendModel {
+  id: string;
+  displayName?: string;
+  description?: string;
+  isDefault?: boolean;
+  supportedEfforts?: string[];
+}
+
+export interface BackendModelDiscovery {
+  backend: AgentBackend;
+  source: string;
+  status: 'available' | 'unsupported' | 'unavailable';
+  models: BackendModel[];
+  message?: string;
+}
+
+export interface CommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+export type ModelDiscoveryCommandRunner = (
+  command: string,
+  args: string[],
+  input?: string
+) => Promise<CommandResult>;
+
+function hasAuthenticationError(result: CommandResult): boolean {
+  return /not authenticated|not logged in|sign.?in required|login required/i.test(
+    `${result.stdout}\n${result.stderr}`
+  );
+}
+
+function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env: process.env,
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`${command} model discovery timed out`));
+      }
+    }, MODEL_DISCOVERY_TIMEOUT_MS);
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+      // Codex app-server stays alive while stdin is open. Once the requested
+      // response arrives, resolve and stop this short-lived discovery process.
+      if (input !== undefined && parseCodexModels(stdout).length > 0 && !settled) {
+        clearTimeout(timer);
+        settled = true;
+        child.kill();
+        resolve({ stdout, stderr });
+      }
+    });
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+
+    if (input !== undefined) {
+      child.stdin?.on('error', () => {
+        // Spawn/early-exit errors are reported by the child process handlers.
+      });
+      child.stdin?.write(input);
+    }
+  });
+}
+
+export function parseCodexModels(output: string): BackendModel[] {
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const event = JSON.parse(trimmed) as {
+        id?: number;
+        result?: {
+          data?: Array<{
+            id?: string;
+            displayName?: string;
+            description?: string;
+            isDefault?: boolean;
+            supportedReasoningEfforts?: Array<{ reasoningEffort?: string }>;
+          }>;
+        };
+      };
+      if (event.id !== 2 || !Array.isArray(event.result?.data)) continue;
+      return event.result.data
+        .filter((model): model is typeof model & { id: string } => Boolean(model.id))
+        .map((model) => ({
+          id: model.id,
+          displayName: model.displayName,
+          description: model.description,
+          isDefault: model.isDefault,
+          supportedEfforts: model.supportedReasoningEfforts
+            ?.map((effort) => effort.reasoningEffort)
+            .filter((effort): effort is string => Boolean(effort)),
+        }));
+    } catch {
+      // app-server notifications and non-JSON diagnostics are irrelevant here.
+    }
+  }
+  return [];
+}
+
+export function parseCursorModels(output: string): BackendModel[] {
+  const models: BackendModel[] = [];
+  for (const line of output.split('\n')) {
+    const match = line.trim().match(/^([^\s]+)\s+-\s+(.+)$/);
+    if (!match) continue;
+    const [, id, rawName] = match;
+    const isDefault = /\(.*default.*\)$/i.test(rawName);
+    const displayName = rawName.replace(/\s*\([^)]*default[^)]*\)\s*$/i, '').trim();
+    models.push({ id, displayName, isDefault });
+  }
+  return models;
+}
+
+export function parseGrokModels(output: string): BackendModel[] {
+  const models: BackendModel[] = [];
+  for (const line of output.split('\n')) {
+    const match = line.trim().match(/^\*\s+([^\s]+)(?:\s+\(default\))?$/i);
+    if (!match) continue;
+    models.push({ id: match[1], isDefault: /\(default\)$/i.test(line.trim()) });
+  }
+  return models;
+}
+
+export function parseAntigravityModels(output: string): BackendModel[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 && !/^(available models|usage|you are not authenticated|error:)/i.test(line)
+    )
+    .map((id) => ({ id }));
+}
+
+async function discoverLocalLlmModels(fetchFn: typeof fetch): Promise<BackendModelDiscovery> {
+  const baseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
+  try {
+    const ollama = await fetchFn(`${baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (ollama.ok) {
+      const data = (await ollama.json()) as { models?: Array<{ name?: string }> };
+      const models = (data.models ?? [])
+        .filter((model): model is { name: string } => Boolean(model.name))
+        .map((model) => ({ id: model.name }));
+      if (models.length > 0) {
+        return { backend: 'local-llm', source: 'Ollama /api/tags', status: 'available', models };
+      }
+    }
+  } catch {
+    // Try the OpenAI-compatible endpoint below.
+  }
+
+  try {
+    const compatible = await fetchFn(`${baseUrl}/v1/models`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (compatible.ok) {
+      const data = (await compatible.json()) as { data?: Array<{ id?: string }> };
+      const models = (data.data ?? [])
+        .filter((model): model is { id: string } => Boolean(model.id))
+        .map((model) => ({ id: model.id }));
+      if (models.length > 0) {
+        return {
+          backend: 'local-llm',
+          source: 'OpenAI-compatible /v1/models',
+          status: 'available',
+          models,
+        };
+      }
+    }
+  } catch {
+    // Report the combined failure below.
+  }
+
+  return {
+    backend: 'local-llm',
+    source: `${baseUrl}/api/tags or /v1/models`,
+    status: 'unavailable',
+    models: [],
+    message: 'Local LLMサーバーからモデル一覧を取得できませんでした',
+  };
+}
+
+export async function discoverBackendModels(
+  backend: AgentBackend,
+  options: { runner?: ModelDiscoveryCommandRunner; fetchFn?: typeof fetch } = {}
+): Promise<BackendModelDiscovery> {
+  const runner = options.runner ?? runCommand;
+  try {
+    if (backend === 'claude-code') {
+      return {
+        backend,
+        source: 'Claude Code CLI',
+        status: 'unsupported',
+        models: [],
+        message: 'CLIに機械可読なモデル一覧取得機能がありません',
+      };
+    }
+    if (backend === 'local-llm') {
+      return discoverLocalLlmModels(options.fetchFn ?? fetch);
+    }
+    if (backend === 'codex') {
+      const input = [
+        JSON.stringify({
+          id: 1,
+          method: 'initialize',
+          params: { clientInfo: { name: 'xangi', version: '0.1.0' } },
+        }),
+        JSON.stringify({
+          id: 2,
+          method: 'model/list',
+          params: { limit: 100, includeHidden: false },
+        }),
+        '',
+      ].join('\n');
+      const { stdout } = await runner('codex', ['app-server', '--stdio'], input);
+      const models = parseCodexModels(stdout);
+      if (models.length === 0) throw new Error('model/list returned no models');
+      return { backend, source: 'codex app-server model/list', status: 'available', models };
+    }
+    if (backend === 'cursor') {
+      const result = await runner('cursor-agent', ['models']);
+      if (hasAuthenticationError(result)) throw new Error('Cursor CLI is not authenticated');
+      const { stdout } = result;
+      const models = parseCursorModels(stdout);
+      if (models.length === 0) throw new Error('cursor-agent models returned no models');
+      return { backend, source: 'cursor-agent models', status: 'available', models };
+    }
+    if (backend === 'grok') {
+      const result = await runner('grok', ['models']);
+      if (hasAuthenticationError(result)) throw new Error('Grok CLI is not authenticated');
+      const { stdout } = result;
+      const models = parseGrokModels(stdout);
+      if (models.length === 0) throw new Error('grok models returned no models');
+      return { backend, source: 'grok models', status: 'available', models };
+    }
+    const result = await runner('agy', ['models']);
+    if (hasAuthenticationError(result)) throw new Error('Antigravity CLI is not authenticated');
+    const { stdout } = result;
+    const models = parseAntigravityModels(stdout);
+    if (models.length === 0) throw new Error('agy models returned no models');
+    return { backend, source: 'agy models', status: 'available', models };
+  } catch (error) {
+    return {
+      backend,
+      source:
+        backend === 'codex'
+          ? 'codex app-server model/list'
+          : backend === 'cursor'
+            ? 'cursor-agent models'
+            : backend === 'grok'
+              ? 'grok models'
+              : 'agy models',
+      status: 'unavailable',
+      models: [],
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function formatBackendModels(
+  discovery: BackendModelDiscovery,
+  allowedModels?: string[]
+): string {
+  const title = discovery.backend;
+  if (discovery.status !== 'available') {
+    const label = discovery.status === 'unsupported' ? '取得非対応' : '取得失敗';
+    return `### ${title}\n- ${label}: ${discovery.message ?? discovery.source}`;
+  }
+
+  const visibleModels = allowedModels
+    ? discovery.models.filter((model) => allowedModels.includes(model.id))
+    : discovery.models;
+  const lines = [`### ${title}`, `- 取得元: ${discovery.source}`];
+  if (allowedModels && visibleModels.length !== discovery.models.length) {
+    lines.push('- ALLOWED_MODELSで表示を絞り込み');
+  }
+  if (visibleModels.length === 0) {
+    lines.push('- 利用許可されたモデルなし');
+    return lines.join('\n');
+  }
+  for (const model of visibleModels) {
+    const name =
+      model.displayName && model.displayName !== model.id ? ` — ${model.displayName}` : '';
+    const defaultLabel = model.isDefault ? ' (default)' : '';
+    const efforts = model.supportedEfforts?.length
+      ? ` [effort: ${model.supportedEfforts.join(', ')}]`
+      : '';
+    lines.push(`- \`${model.id}\`${name}${defaultLabel}${efforts}`);
+  }
+  return lines.join('\n');
+}
+
+export function configuredAllowedModels(
+  env: NodeJS.ProcessEnv = process.env
+): string[] | undefined {
+  const raw = env.ALLOWED_MODELS;
+  if (!raw) return undefined;
+  const models = raw
+    .split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return models.length > 0 ? models : undefined;
+}
