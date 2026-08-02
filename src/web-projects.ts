@@ -1,16 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { ALL_AGENT_BACKENDS, type AgentBackend, type EffortLevel } from './config.js';
 
 const PROJECTS_FILE = 'web-projects.json';
 const PROJECTS_VERSION = 1;
 const MAX_NAME_LENGTH = 80;
 const MAX_PROMPT_LENGTH = 20_000;
+const MAX_MODEL_LENGTH = 200;
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'max'];
+
+export interface WebProjectBackendSettings {
+  backend?: AgentBackend;
+  model?: string;
+  effort?: EffortLevel;
+}
+
+interface WebProjectBackendInput {
+  backend?: AgentBackend | null;
+  model?: string | null;
+  effort?: EffortLevel | null;
+}
 
 export interface WebProject {
   id: string;
   name: string;
   prompt: string;
+  backend?: AgentBackend;
+  model?: string;
+  effort?: EffortLevel;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,15 +60,17 @@ export class WebProjectStore {
     return project ? { ...project } : undefined;
   }
 
-  create(input: { name: string; prompt?: string }): WebProject {
+  create(input: { name: string; prompt?: string } & WebProjectBackendInput): WebProject {
     const name = normalizeName(input.name);
     const prompt = normalizePrompt(input.prompt ?? '');
+    const backendSettings = normalizeBackendSettings(input);
     this.assertUniqueName(name);
     const timestamp = new Date().toISOString();
     const project: WebProject = {
       id: randomUUID(),
       name,
       prompt,
+      ...backendSettings,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -59,14 +79,24 @@ export class WebProjectStore {
     return { ...project };
   }
 
-  update(id: string, input: { name?: string; prompt?: string }): WebProject {
+  update(
+    id: string,
+    input: { name?: string; prompt?: string } & WebProjectBackendInput
+  ): WebProject {
     const project = this.state.projects.find((candidate) => candidate.id === id);
     if (!project) throw new WebProjectError('Projectが見つかりません', 404);
     const name = input.name === undefined ? project.name : normalizeName(input.name);
     const prompt = input.prompt === undefined ? project.prompt : normalizePrompt(input.prompt);
+    const backendSettings =
+      input.backend === undefined && input.model === undefined && input.effort === undefined
+        ? { backend: project.backend, model: project.model, effort: project.effort }
+        : normalizeBackendSettings(input);
     this.assertUniqueName(name, id);
     project.name = name;
     project.prompt = prompt;
+    project.backend = backendSettings.backend;
+    project.model = backendSettings.model;
+    project.effort = backendSettings.effort;
     project.updatedAt = new Date().toISOString();
     this.persist();
     return { ...project };
@@ -156,6 +186,7 @@ function parseProjects(raw: string): PersistedWebProjects {
       id: candidate.id,
       name,
       prompt: normalizePrompt(candidate.prompt),
+      ...normalizeBackendSettings(candidate),
       createdAt: candidate.createdAt,
       updatedAt: candidate.updatedAt,
     };
@@ -186,4 +217,30 @@ function normalizePrompt(value: string): string {
     throw new WebProjectError(`追加プロンプトは${MAX_PROMPT_LENGTH}文字以内にしてください`, 400);
   }
   return prompt;
+}
+
+function normalizeBackendSettings(input: WebProjectBackendInput): WebProjectBackendSettings {
+  const backend = input.backend || undefined;
+  if (backend !== undefined && !ALL_AGENT_BACKENDS.includes(backend)) {
+    throw new WebProjectError('Projectのバックエンドが不正です', 400);
+  }
+  const model = input.model?.trim() || undefined;
+  if (model && (model.length > MAX_MODEL_LENGTH || hasControlCharacter(model))) {
+    throw new WebProjectError(`モデルIDは${MAX_MODEL_LENGTH}文字以内で入力してください`, 400);
+  }
+  const effort = input.effort || undefined;
+  if (effort !== undefined && !EFFORT_LEVELS.includes(effort)) {
+    throw new WebProjectError('Projectのeffortが不正です', 400);
+  }
+  if (!backend && (model || effort)) {
+    throw new WebProjectError('モデルまたはeffortを設定するにはバックエンドが必要です', 400);
+  }
+  return { backend, model, effort };
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
 }

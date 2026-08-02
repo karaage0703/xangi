@@ -527,6 +527,10 @@ docker build -t myapp . && \
 
 `/models` は、各CLIが提供する公式の一覧取得機能から現在のアカウントで利用可能なモデルを動的取得します。Codexは`app-server model/list`、Cursorは`cursor-agent models`、Grokは`grok models`、Antigravityは`agy models`を使用します。Local LLMはOllamaの`/api/tags`またはOpenAI互換の`/v1/models`を使用します。Claude Codeのように機械可読な一覧取得機能がないバックエンドは「取得非対応」と表示し、モデル名をハードコードで補いません。
 
+Webのスラッシュコマンドパレットでは、`/backend set`でbackendを選ぶと同じ動的取得結果からmodel候補を表示し、modelを選ぶとその組み合わせで利用可能なeffort候補を表示します。Web Project設定のmodel / effort候補も同じ取得結果を使用します。
+
+Discordの`/backend set`でもmodelとeffortはautocomplete候補として表示されます。model候補は選択済みbackendの動的取得結果と`ALLOWED_MODELS`で絞り込み、effort候補は選択済みbackend/modelの両方で利用可能な値だけを表示します。
+
 AIへ自然言語でモデルの利用可否を尋ねた場合も、システムプロンプトは回答前に次の読み取り専用コマンドで実測するよう指示します。
 
 ```bash
@@ -1283,9 +1287,9 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `WEB_CHAT_PORT`    | WebチャットUIのポート                                                                                                                                                                    | `18888`    |
 | `WEB_CHAT_HOST`    | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`  |
 
-Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
 
-Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトを設定できる。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
+Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトと既定のbackend / model / effortを設定できる。modelとeffortの候補は、選択したbackendから動的取得される。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。既存のWeb会話はセッション行の`Projectへ移動`から所属先を変更でき、`Projectなし`へ戻すこともできる。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。`/backend reset`で会話固有設定を消すとProject設定へ戻る。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。
 

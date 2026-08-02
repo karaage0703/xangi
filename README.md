@@ -18,7 +18,7 @@ Claude Code、Codex、Cursor CLI、Grok CLI、Antigravity CLI、Local LLMを、D
 - セッション・会話履歴の永続化、タイムアウト延長、ワークスペースhooks
 - スケジューラーと外部イベントからのエージェント起動
 - Web Chatからワークスペース内のMarkdown・コードを閲覧・編集
-- Web Projectによる会話の分類とProjectごとの追加プロンプト
+- Web Projectによる会話の分類・既存会話の移動と、Projectごとの追加プロンプト・既定モデル設定
 
 ## アーキテクチャ
 

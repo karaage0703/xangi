@@ -26,6 +26,7 @@ import {
   getSessionEntry,
   getActiveSessionId,
   updateSessionTitle,
+  updateSessionProject,
   incrementMessageCount,
   createWebSession,
   clearResumedFromSessionId,
@@ -67,9 +68,15 @@ import {
   sanitizeReplySuggestionOutput,
   stripReplySuggestionMarkup,
 } from './reply-suggestions.js';
-import type { Config } from './config.js';
+import type { AgentBackend, Config, EffortLevel } from './config.js';
 import { loadReplySuggestionsEnabled } from './settings.js';
-import type { BackendResolver } from './backend-resolver.js';
+import type { BackendResolver, ChannelOverride } from './backend-resolver.js';
+import { discoverBackendModels } from './backend-models.js';
+import {
+  getSupportedEffortLevels,
+  requiresExplicitModelForEffort,
+  supportsEffort,
+} from './backend-effort.js';
 import type { Platform, ScheduleInput, Scheduler } from './scheduler.js';
 import type { Skill } from './skills.js';
 import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
@@ -212,6 +219,7 @@ interface WebChatOptions {
   skillsRef?: { current: Skill[] };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
+  discoverModels?: typeof discoverBackendModels;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -235,6 +243,66 @@ export function startWebChat(options: WebChatOptions): void {
     return project;
   };
 
+  const projectBackendDefault = (
+    project: ReturnType<typeof resolveProject>
+  ): ChannelOverride | undefined => {
+    if (!project?.backend) return undefined;
+    return { backend: project.backend, model: project.model, effort: project.effort };
+  };
+
+  const parseProjectBackendSettings = (body: Record<string, unknown>) => {
+    const backend = body.backend ? String(body.backend) : undefined;
+    const model = body.model ? String(body.model).trim() : undefined;
+    const effort = body.effort ? String(body.effort) : undefined;
+    if (!backend) {
+      if (model || effort) {
+        throw new WebProjectError('モデルまたはeffortを設定するにはバックエンドが必要です', 400);
+      }
+      return { backend: null, model: null, effort: null } as const;
+    }
+    if (!options.resolver) {
+      throw new WebProjectError('この環境ではProjectのバックエンド設定を利用できません', 503);
+    }
+    if (!options.resolver.isBackendAllowed(backend as AgentBackend)) {
+      throw new WebProjectError(
+        `許可されたバックエンドを指定してください: ${options.resolver.getAllowedBackends().join(', ')}`,
+        400
+      );
+    }
+    if (model && !options.resolver.isModelAllowed(model)) {
+      throw new WebProjectError(`モデル ${model} は許可されていません`, 400);
+    }
+    if (effort && !supportsEffort(backend as AgentBackend, effort as EffortLevel)) {
+      throw new WebProjectError(
+        `${backend} のeffortは ${getSupportedEffortLevels(backend as AgentBackend).join(', ') || '未対応'} です`,
+        400
+      );
+    }
+    if (effort && requiresExplicitModelForEffort(backend as AgentBackend) && !model) {
+      throw new WebProjectError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
+    }
+    return {
+      backend: backend as AgentBackend,
+      model: model || null,
+      effort: (effort as EffortLevel | undefined) || null,
+    };
+  };
+
+  const resolveWebSessionBackend = (appSessionId: string) => {
+    const entry = getSessionEntry(appSessionId);
+    if (!entry || entry.platform !== 'web' || !options.resolver) return undefined;
+    const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+    const projectDefault = projectBackendDefault(project);
+    const contextKey = webContextKey(appSessionId);
+    const resolved = options.resolver.resolve(contextKey, projectDefault);
+    const source = options.resolver.getChannelOverride(contextKey)
+      ? 'session'
+      : projectDefault
+        ? 'project'
+        : 'default';
+    return { ...resolved, source };
+  };
+
   options.scheduler?.registerAgentRunner('web', async (prompt, requestedSessionId, schedule) => {
     const appSessionId =
       requestedSessionId === WEB_SCHEDULE_NEW_SESSION_ID
@@ -249,6 +317,7 @@ export function startWebChat(options: WebChatOptions): void {
     }
     const contextKey = webContextKey(appSessionId);
     const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+    const backendDefault = projectBackendDefault(project);
     const result = await agentRunner.run(
       `[プラットフォーム: Web]\n${prependWebProjectPrompt(project, prompt)}`,
       {
@@ -257,6 +326,9 @@ export function startWebChat(options: WebChatOptions): void {
         settingsChannelId: contextKey,
         appSessionId,
         platform: 'web',
+        defaultBackend: backendDefault?.backend,
+        defaultModel: backendDefault?.model,
+        defaultEffort: backendDefault?.effort,
       }
     );
     setSession(contextKey, result.sessionId);
@@ -375,6 +447,7 @@ export function startWebChat(options: WebChatOptions): void {
         timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
         activity,
         projectId: s.projectId,
+        ...(s.platform === 'web' ? { backend: resolveWebSessionBackend(s.id) } : {}),
       };
     });
 
@@ -587,7 +660,8 @@ export function startWebChat(options: WebChatOptions): void {
       url === '/schedules' ||
       url === '/schedules/' ||
       url === '/workspace' ||
-      url === '/workspace/'
+      url === '/workspace/' ||
+      /^\/chat\/[^/]+\/?$/.test(url)
     ) {
       try {
         const htmlPath = join(__dirname, '..', 'web', 'app', 'index.html');
@@ -649,6 +723,42 @@ export function startWebChat(options: WebChatOptions): void {
           uploadAccept: uploadAccept || null,
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
           interChatEnabled,
+          allowedBackends: options.resolver?.getAllowedBackends() ?? [],
+        })
+      );
+      return;
+    }
+
+    // Project設定フォーム向けの構造化モデル一覧。
+    if (url === '/api/models' && req.method === 'GET') {
+      if (!options.resolver) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'backend resolver is not available' }));
+        return;
+      }
+      const backend = new URL(rawUrl, 'http://localhost').searchParams.get(
+        'backend'
+      ) as AgentBackend | null;
+      if (!backend || !options.resolver.isBackendAllowed(backend)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: `backend must be one of: ${options.resolver.getAllowedBackends().join(', ')}`,
+          })
+        );
+        return;
+      }
+      const discovery = await discoverBackendModels(backend);
+      const allowedModels = options.resolver.getAllowedModels();
+      const models = allowedModels
+        ? discovery.models.filter((model) => allowedModels.includes(model.id))
+        : discovery.models;
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(
+        JSON.stringify({
+          ...discovery,
+          models,
+          supportedEfforts: getSupportedEffortLevels(backend),
         })
       );
       return;
@@ -807,7 +917,14 @@ export function startWebChat(options: WebChatOptions): void {
 
     // GET /api/web-commands — Web入力欄の候補と引数ヒント
     if (url === '/api/web-commands' && req.method === 'GET') {
-      const appSessionId = new URL(rawUrl, 'http://localhost').searchParams.get('appSessionId');
+      const commandUrl = new URL(rawUrl, 'http://localhost');
+      const appSessionId = commandUrl.searchParams.get('appSessionId');
+      const selectedBackend = commandUrl.searchParams.get('backend') as AgentBackend | null;
+      const selectedModel = commandUrl.searchParams.get('model') || undefined;
+      const modelDiscovery =
+        selectedBackend && options.resolver?.isBackendAllowed(selectedBackend)
+          ? await (options.discoverModels ?? discoverBackendModels)(selectedBackend)
+          : undefined;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -816,6 +933,10 @@ export function startWebChat(options: WebChatOptions): void {
             workdir,
             config: options.config,
             resolver: options.resolver,
+            selectedBackend: modelDiscovery?.backend,
+            selectedModel,
+            modelDiscovery,
+            discoverModels: options.discoverModels,
             scheduler: options.scheduler,
             skillsRef: options.skillsRef,
           }),
@@ -834,11 +955,19 @@ export function startWebChat(options: WebChatOptions): void {
           res.end(JSON.stringify({ error: 'command must start with /' }));
           return;
         }
+        const commandSessionId = body.appSessionId ? String(body.appSessionId) : undefined;
+        const commandSession = commandSessionId ? getSessionEntry(commandSessionId) : undefined;
+        const commandProject = commandSession?.projectId
+          ? webProjects.get(commandSession.projectId)
+          : undefined;
         const result = await executeWebCommand(input, {
-          appSessionId: body.appSessionId ? String(body.appSessionId) : undefined,
+          appSessionId: commandSessionId,
           workdir,
           config: options.config,
           resolver: options.resolver,
+          backendDefault: projectBackendDefault(commandProject),
+          backendDefaultSource: commandProject ? `${commandProject.name} Project設定` : undefined,
+          discoverModels: options.discoverModels,
           scheduler: options.scheduler,
           skillsRef: options.skillsRef,
         });
@@ -890,6 +1019,7 @@ export function startWebChat(options: WebChatOptions): void {
         const project = webProjects.create({
           name: String(body.name || ''),
           prompt: String(body.prompt || ''),
+          ...parseProjectBackendSettings(body),
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ project }));
@@ -906,9 +1036,13 @@ export function startWebChat(options: WebChatOptions): void {
       try {
         const projectId = decodeURIComponent(projectMatch[1]);
         const body = await readBody(req);
+        const hasBackendUpdate = ['backend', 'model', 'effort'].some(
+          (key) => body[key] !== undefined
+        );
         const project = webProjects.update(projectId, {
           name: body.name === undefined ? undefined : String(body.name),
           prompt: body.prompt === undefined ? undefined : String(body.prompt),
+          ...(hasBackendUpdate ? parseProjectBackendSettings(body) : {}),
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ project }));
@@ -1211,12 +1345,32 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // PATCH /api/sessions/:id — タイトル変更
+    // PATCH /api/sessions/:id — タイトル・所属Project変更
     if (url.startsWith('/api/sessions/') && !url.includes('/messages/') && req.method === 'PATCH') {
       const appSessionId = decodeURIComponent(url.replace('/api/sessions/', ''));
       const body = await readBody(req);
+      const entry = getSessionEntry(appSessionId);
+      if (!entry) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
       if (body.title) {
         updateSessionTitle(appSessionId, body.title);
+      }
+      if (body.projectId !== undefined) {
+        if (entry.platform !== 'web') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Web会話だけProjectへ移動できます' }));
+          return;
+        }
+        if (busySessions.has(appSessionId)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '実行中の会話はProjectへ移動できません' }));
+          return;
+        }
+        const project = resolveProject(body.projectId);
+        updateSessionProject(appSessionId, project?.id);
       }
       invalidateSessionSnapshots();
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1780,14 +1934,25 @@ export function startWebChat(options: WebChatOptions): void {
           // 安全網: contextKey と active が紐付いていることを保証
           ensureSession(ctxKey, { platform: 'web' });
           const sessionId = getSession(ctxKey);
+          const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+          const backendDefault = projectBackendDefault(project);
+          const resolvedBackend = options.resolver?.resolve(ctxKey, backendDefault);
+          const providerBackendChanged = Boolean(
+            sessionId &&
+            entry.agent?.backend &&
+            resolvedBackend &&
+            entry.agent.backend !== resolvedBackend.backend
+          );
 
-          // provider セッションが無い初回は直近履歴を先読みする。
+          // provider セッションが無い初回、または Project 移動で backend が変わった時は
+          // 直近履歴を先読みする。backend 変更時は通常の先読み設定が無効でも会話を引き継ぐ。
           // 新規 Web セッションは空履歴ブロックを入れ、初期確認目的の
           // web_history 二重実行を避ける。
           let historyContext = '';
           const resumeSourceId = entry.resumedFromSessionId;
           const hasExplicitResumeHistory = Boolean(resumeSourceId);
-          const shouldPrefetchFirstTurn = historyPrefetch.enabled && !sessionId;
+          const shouldPrefetchFirstTurn =
+            providerBackendChanged || (historyPrefetch.enabled && !sessionId);
           if (hasExplicitResumeHistory || shouldPrefetchFirstTurn) {
             const pastMessages = readSessionMessages(workdir, resumeSourceId || appSessionId);
             const sourcePlatform = resumeSourceId
@@ -1815,7 +1980,6 @@ export function startWebChat(options: WebChatOptions): void {
             historyContext = `${buildPrefetchedHistoryBlock(historyPlatform, entries)}\n\n`;
           }
 
-          const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
           let prompt = `[プラットフォーム: Web]\n${prependWebProjectPrompt(
             project,
             `${historyContext}${message}`
@@ -1991,6 +2155,9 @@ export function startWebChat(options: WebChatOptions): void {
                 channelId: ctxKey,
                 appSessionId,
                 platform: 'web',
+                defaultBackend: backendDefault?.backend,
+                defaultModel: backendDefault?.model,
+                defaultEffort: backendDefault?.effort,
                 skipPermissions: body.skipPermissions === true ? true : undefined,
               }
             );

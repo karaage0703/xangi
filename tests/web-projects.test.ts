@@ -49,6 +49,44 @@ describe('WebProjectStore', () => {
       '同じ名前のProjectがすでにあります'
     );
   });
+
+  it('persists Project backend settings and preserves them on a name-only update', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-projects-'));
+    directories.push(root);
+    const store = WebProjectStore.fromDataDir(root);
+    const project = store.create({
+      name: '実装',
+      backend: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+    });
+
+    expect(WebProjectStore.fromDataDir(root).get(project.id)).toMatchObject({
+      backend: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+    });
+    expect(store.update(project.id, { name: '実装・レビュー' })).toMatchObject({
+      backend: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+    });
+  });
+
+  it('clears Project backend settings and rejects model-only settings', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-projects-'));
+    directories.push(root);
+    const store = WebProjectStore.fromDataDir(root);
+    const project = store.create({ name: '実装', backend: 'codex', model: 'gpt-test' });
+
+    const cleared = store.update(project.id, { backend: null, model: null, effort: null });
+    expect(cleared.backend).toBeUndefined();
+    expect(cleared.model).toBeUndefined();
+    expect(cleared.effort).toBeUndefined();
+    expect(() => store.create({ name: '不正', model: 'gpt-test' })).toThrow(
+      'モデルまたはeffortを設定するにはバックエンドが必要です'
+    );
+  });
 });
 
 describe('prependWebProjectPrompt', () => {

@@ -18,6 +18,7 @@ import {
   setProviderSessionId,
   listAllSessions,
   hasSessionGoneIdle,
+  updateSessionProject,
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
 
@@ -275,6 +276,27 @@ describe('sessions', () => {
 
       expect(entry.projectId).toBe('project-1');
       expect(entry.contextKey).toBe(`${WEB_CHAT_CONTEXT_PREFIX}${appId}`);
+    });
+
+    it('moves an existing Web session into and out of a Project', () => {
+      initSessions(testDir);
+      const appId = createWebSession({});
+
+      expect(updateSessionProject(appId, 'project-1')).toBe(true);
+      expect(getSessionEntry(appId)?.projectId).toBe('project-1');
+      expect(updateSessionProject(appId)).toBe(true);
+      expect(getSessionEntry(appId)?.projectId).toBeUndefined();
+
+      clearSessions();
+      initSessions(testDir);
+      expect(getSessionEntry(appId)?.projectId).toBeUndefined();
+    });
+
+    it('does not move a non-Web session into a Project', () => {
+      initSessions(testDir);
+      const appId = createSession('discord-1', { platform: 'discord' });
+      expect(updateSessionProject(appId, 'project-1')).toBe(false);
+      expect(getSessionEntry(appId)?.projectId).toBeUndefined();
     });
   });
 

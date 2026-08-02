@@ -21,6 +21,13 @@ import {
 } from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
 import { shouldShowAutoTalk } from './sessionList';
+import {
+  messageElementId,
+  messageIdFromHash,
+  messagePermalink,
+  sessionIdFromPathname,
+  sessionPath,
+} from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
 import type { RuntimeConfig as Config, ToolHistoryEntry, ToolHistoryResponse } from './types';
 
@@ -54,12 +61,28 @@ interface Session {
   timeoutMs?: number;
   activity?: Activity;
   projectId?: string;
+  backend?: {
+    backend: string;
+    model?: string;
+    effort?: string;
+    source: 'session' | 'project' | 'default';
+  };
 }
 
 interface Project {
   id: string;
   name: string;
   prompt: string;
+  backend?: string;
+  model?: string;
+  effort?: string;
+}
+
+interface ModelDiscoveryResponse {
+  status: 'available' | 'unsupported' | 'unavailable';
+  models: Array<{ id: string; displayName?: string; supportedEfforts?: string[] }>;
+  message?: string;
+  supportedEfforts: string[];
 }
 
 interface ProjectsResponse {
@@ -175,6 +198,17 @@ function platformLabel(platform?: string): string {
   return platform || 'Log';
 }
 
+function backendLabel(backend?: Session['backend']): string {
+  if (!backend) return '';
+  return [backend.backend, backend.model, backend.effort].filter(Boolean).join(' · ');
+}
+
+function backendSourceLabel(source?: 'session' | 'project' | 'default'): string {
+  if (source === 'session') return '会話個別設定';
+  if (source === 'project') return 'Project設定';
+  return 'xangiデフォルト';
+}
+
 function relativeTime(value?: string): string {
   if (!value) return '';
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -222,6 +256,11 @@ function isMobile(): boolean {
 }
 
 function restorePanes(): { panes: PaneDescriptor[]; activeKey: string } {
+  const linkedSessionId = sessionIdFromPathname(window.location.pathname);
+  if (linkedSessionId) {
+    const pane = { key: `pane-${++paneSequence}`, sessionId: linkedSessionId };
+    return { panes: [pane], activeKey: pane.key };
+  }
   try {
     const parsed = JSON.parse(localStorage.getItem(PANE_STATE_KEY) || '{}') as {
       sessions?: Array<string | null>;
@@ -378,6 +417,8 @@ function CommandPalette({
   const [error, setError] = useState('');
   const [running, setRunning] = useState(false);
   const state = useCommandPalette(value, commands);
+  const selectedBackend = value.match(/^\/backend\s+set\s+([^\s]+)/i)?.[1] || '';
+  const selectedModel = value.match(/(?:^|\s)--model=([^\s]+)/i)?.[1] || '';
 
   const runCommand = useCallback(async () => {
     if (running || !value.trim()) return;
@@ -394,12 +435,14 @@ function CommandPalette({
 
   useEffect(() => {
     if (!open) return;
-    requestJson<{ commands: CommandDefinition[] }>(
-      `/api/web-commands${sessionId ? `?appSessionId=${encodeURIComponent(sessionId)}` : ''}`
-    )
+    const params = new URLSearchParams();
+    if (sessionId) params.set('appSessionId', sessionId);
+    if (selectedBackend) params.set('backend', selectedBackend);
+    if (selectedModel) params.set('model', selectedModel);
+    requestJson<{ commands: CommandDefinition[] }>(`/api/web-commands?${params}`)
       .then((data) => setCommands(data.commands))
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [open, sessionId]);
+  }, [open, selectedBackend, selectedModel, sessionId]);
 
   useEffect(() => setActive(0), [state.title, value]);
   useEffect(() => {
@@ -486,6 +529,7 @@ function MessageView({
   tools,
   sessionId,
   mutable,
+  linked,
   suggestionsEnabled,
   onReload,
   onSuggestion,
@@ -494,6 +538,7 @@ function MessageView({
   tools: ToolHistoryEntry[];
   sessionId: string;
   mutable: boolean;
+  linked: boolean;
   suggestionsEnabled: boolean;
   onReload: () => Promise<void>;
   onSuggestion: (suggestion: string) => void;
@@ -546,7 +591,10 @@ function MessageView({
   }
 
   return (
-    <article className={`message ${message.role}`}>
+    <article
+      className={`message ${message.role}${linked ? ' linked-message' : ''}`}
+      id={message.id ? messageElementId(message.id) : undefined}
+    >
       <header>
         <span>{message.role === 'user' ? 'あなた' : 'xangi'}</span>
         <time>{displayTime(message.createdAt)}</time>
@@ -610,6 +658,17 @@ function MessageView({
         </>
       )}
       <div className="message-actions">
+        {message.id && (
+          <button
+            type="button"
+            aria-label="メッセージリンクをコピー"
+            onClick={() =>
+              void copyText(messagePermalink(window.location.origin, sessionId, message.id!))
+            }
+          >
+            リンク
+          </button>
+        )}
         <button type="button" onClick={() => void copyText(message.content)}>
           コピー
         </button>
@@ -664,6 +723,7 @@ function ChatPane({
   pane,
   active,
   config,
+  projectId,
   summary,
   onFocus,
   onClose,
@@ -676,6 +736,7 @@ function ChatPane({
   pane: PaneDescriptor;
   active: boolean;
   config: Config;
+  projectId?: string;
   summary?: Session;
   onFocus: () => void;
   onClose: () => void;
@@ -712,6 +773,8 @@ function ChatPane({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef(active);
+  const linkedMessageId = messageIdFromHash(window.location.hash);
+  const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
   const sessionId = pane.sessionId;
   const editable =
     detail?.platform === 'web' || (detail?.platform === 'discord' && discordComposeEnabled);
@@ -795,7 +858,8 @@ function ChatPane({
     setLiveToolsOpen(true);
     setToolHistory([]);
     setDiscordComposeEnabled(false);
-    followBottomRef.current = true;
+    followBottomRef.current = !linkedMessageId;
+    linkedMessageScrolledRef.current = undefined;
     setTimeoutState({
       timeoutAt: summary?.timeoutAt,
       maxTimeoutAt: summary?.maxTimeoutAt,
@@ -804,6 +868,20 @@ function ChatPane({
     void loadDetail();
     void loadToolHistory();
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!linkedMessageId || !detail || loadingOlder) return;
+    const target = document.getElementById(messageElementId(linkedMessageId));
+    if (target) {
+      const targetKey = `${sessionId}:${linkedMessageId}`;
+      if (linkedMessageScrolledRef.current !== targetKey) {
+        linkedMessageScrolledRef.current = targetKey;
+        requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
+      }
+      return;
+    }
+    if (detail.hasMore) void loadDetail(true);
+  }, [detail, linkedMessageId, loadingOlder, loadDetail, sessionId]);
 
   useEffect(() => {
     if (!busy && !summary?.activity?.active) return;
@@ -971,7 +1049,10 @@ function ChatPane({
   }
 
   async function createSession() {
-    const result = await requestJson<{ sessionId: string }>('/api/sessions', { method: 'POST' });
+    const result = await requestJson<{ sessionId: string }>(
+      '/api/sessions',
+      jsonInit('POST', projectId ? { projectId } : {})
+    );
     onSessionChange(result.sessionId);
     setDetail({
       id: result.sessionId,
@@ -1251,6 +1332,14 @@ function ChatPane({
         >
           {detail?.title || summary?.title || '(empty)'}
         </button>
+        {summary?.backend && (
+          <span
+            className={`pane-backend-badge source-${summary.backend.source}`}
+            title={`${backendLabel(summary.backend)}（${backendSourceLabel(summary.backend.source)}）`}
+          >
+            {backendLabel(summary.backend)}
+          </span>
+        )}
         <button type="button" className="pane-close" aria-label="ペインを閉じる" onClick={onClose}>
           ×
         </button>
@@ -1300,6 +1389,7 @@ function ChatPane({
             tools={messageTools[index] ?? []}
             sessionId={sessionId || ''}
             mutable={Boolean(detail)}
+            linked={message.id === linkedMessageId}
             suggestionsEnabled={editable}
             onReload={() => loadDetail()}
             onSuggestion={(suggestion) => {
@@ -1594,6 +1684,90 @@ function SessionDeleteDialog({
   );
 }
 
+function SessionProjectDialog({
+  session,
+  projects,
+  projectId,
+  moving,
+  onProjectChange,
+  onCancel,
+  onConfirm,
+}: {
+  session: Session | null;
+  projects: Project[];
+  projectId: string;
+  moving: boolean;
+  onProjectChange: (projectId: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const backdropPointerDownRef = useRef(false);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (session && !dialog.open) {
+      const frame = requestAnimationFrame(() => {
+        if (!dialog.open) dialog.showModal();
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    if (!session && dialog.open) dialog.close();
+  }, [session]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="session-project-dialog"
+      aria-labelledby="session-project-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!moving) onCancel();
+      }}
+      onPointerDown={(event) => {
+        backdropPointerDownRef.current = event.target === event.currentTarget;
+      }}
+      onClick={(event) => {
+        const clickedBackdrop =
+          event.target === event.currentTarget && backdropPointerDownRef.current;
+        backdropPointerDownRef.current = false;
+        if (clickedBackdrop && !moving) onCancel();
+      }}
+    >
+      <div className="session-project-dialog-body">
+        <h2 id="session-project-title">Projectへ移動</h2>
+        <p>「{session?.title || 'この会話'}」の所属先を選びます。</p>
+        <label>
+          <span>Project</span>
+          <select
+            autoFocus
+            value={projectId}
+            disabled={moving}
+            onChange={(event) => onProjectChange(event.target.value)}
+          >
+            <option value="">Projectなし</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <small>会話個別の設定がなければ、移動先Projectのモデル設定を次の送信から使います。</small>
+      </div>
+      <div className="session-project-dialog-actions">
+        <button type="button" disabled={moving} onClick={onCancel}>
+          キャンセル
+        </button>
+        <button type="button" className="primary" disabled={moving} onClick={onConfirm}>
+          {moving ? '移動中…' : '移動'}
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
 export function Chat() {
   const restored = useMemo(restorePanes, []);
   const [panes, setPanes] = useState<PaneDescriptor[]>(restored.panes);
@@ -1608,6 +1782,15 @@ export function Chat() {
   const [editingProjectId, setEditingProjectId] = useState<string>();
   const [projectName, setProjectName] = useState('');
   const [projectPrompt, setProjectPrompt] = useState('');
+  const [projectBackend, setProjectBackend] = useState('');
+  const [projectModel, setProjectModel] = useState('');
+  const [projectEffort, setProjectEffort] = useState('');
+  const [projectModelOptions, setProjectModelOptions] = useState<ModelDiscoveryResponse['models']>(
+    []
+  );
+  const [projectEffortOptions, setProjectEffortOptions] = useState<string[]>([]);
+  const [projectModelStatus, setProjectModelStatus] = useState('');
+  const [loadingProjectModels, setLoadingProjectModels] = useState(false);
   const [savingProject, setSavingProject] = useState(false);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
@@ -1621,10 +1804,14 @@ export function Chat() {
     uploadAccept: null,
     timeoutExtendEnabled: true,
     interChatEnabled: false,
+    allowedBackends: [],
   });
   const [notice, setNotice] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
+  const [sessionToMove, setSessionToMove] = useState<Session | null>(null);
+  const [moveProjectId, setMoveProjectId] = useState('');
+  const [movingSession, setMovingSession] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const sessionsRef = useRef<Session[]>([]);
   const queryRef = useRef('');
@@ -1683,6 +1870,42 @@ export function Chat() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (!projectFormOpen || !projectBackend) {
+      setProjectModelOptions([]);
+      setProjectEffortOptions([]);
+      setProjectModelStatus('');
+      setLoadingProjectModels(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingProjectModels(true);
+    setProjectModelStatus('');
+    requestJson<ModelDiscoveryResponse>(`/api/models?backend=${encodeURIComponent(projectBackend)}`)
+      .then((result) => {
+        if (cancelled) return;
+        setProjectModelOptions(result.models);
+        setProjectEffortOptions(result.supportedEfforts);
+        setProjectModelStatus(
+          result.status === 'available'
+            ? `${result.models.length}件のモデルを取得しました`
+            : result.message || 'モデル一覧を取得できません'
+        );
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setProjectModelOptions([]);
+        setProjectEffortOptions([]);
+        setProjectModelStatus(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProjectModels(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectBackend, projectFormOpen]);
+
+  useEffect(() => {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
@@ -1704,6 +1927,11 @@ export function Chat() {
         activeIdx: activeIndex,
       })
     );
+    const activeSessionId = panes[activeIndex]?.sessionId;
+    const nextPath = activeSessionId ? sessionPath(activeSessionId) : '/';
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState(null, '', `${nextPath}${window.location.search}`);
+    }
   }, [activeKey, panes]);
 
   useEffect(() => {
@@ -1863,6 +2091,9 @@ export function Chat() {
     setEditingProjectId(undefined);
     setProjectName('');
     setProjectPrompt('');
+    setProjectBackend('');
+    setProjectModel('');
+    setProjectEffort('');
     setProjectFormOpen(true);
   }
 
@@ -1873,6 +2104,9 @@ export function Chat() {
     setEditingProjectId(project.id);
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
+    setProjectBackend(project.backend || '');
+    setProjectModel(project.model || '');
+    setProjectEffort(project.effort || '');
     setProjectFormOpen(true);
   }
 
@@ -1881,7 +2115,13 @@ export function Chat() {
     if (!projectName.trim() || savingProject) return;
     setSavingProject(true);
     try {
-      const body = { name: projectName.trim(), prompt: projectPrompt.trim() };
+      const body = {
+        name: projectName.trim(),
+        prompt: projectPrompt.trim(),
+        backend: projectBackend || null,
+        model: projectBackend && projectModel ? projectModel : null,
+        effort: projectBackend && projectEffort ? projectEffort : null,
+      };
       const endpoint = editingProjectId
         ? `/api/projects/${encodeURIComponent(editingProjectId)}`
         : '/api/projects';
@@ -1897,6 +2137,9 @@ export function Chat() {
       setEditingProjectId(undefined);
       setProjectName('');
       setProjectPrompt('');
+      setProjectBackend('');
+      setProjectModel('');
+      setProjectEffort('');
       setNotice('');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
@@ -1944,6 +2187,32 @@ export function Chat() {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setDeletingSession(false);
+    }
+  }
+
+  function openMoveSession(session: Session) {
+    setSessionToMove(session);
+    setMoveProjectId(session.projectId || '');
+  }
+
+  async function moveSession() {
+    if (!sessionToMove || movingSession) return;
+    setMovingSession(true);
+    try {
+      await requestJson(`/api/sessions/${encodeURIComponent(sessionToMove.id)}`, {
+        ...jsonInit('PATCH', { projectId: moveProjectId || null }),
+      });
+      setSessionToMove(null);
+      setNotice(
+        moveProjectId
+          ? `「${sessionToMove.title}」を${projectNames.get(moveProjectId) || 'Project'}へ移動しました。`
+          : `「${sessionToMove.title}」をProjectなしへ移動しました。`
+      );
+      await loadSessions(0, query, false);
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMovingSession(false);
     }
   }
 
@@ -2083,6 +2352,17 @@ export function Chat() {
                           ■
                         </button>
                       )}
+                      {session.platform === 'web' && (
+                        <button
+                          type="button"
+                          aria-label="Projectへ移動"
+                          title={session.isActive ? '実行中は移動できません' : 'Projectへ移動'}
+                          disabled={session.isActive}
+                          onClick={() => openMoveSession(session)}
+                        >
+                          ▱
+                        </button>
+                      )}
                       {shouldShowAutoTalk(config.interChatEnabled, session.platform) && (
                         <button
                           type="button"
@@ -2168,7 +2448,91 @@ export function Chat() {
                     placeholder="このProjectの会話に追加する指示"
                   />
                 </label>
-                <p>会話をまとめるだけで、フォルダは作成しません。</p>
+                <fieldset className="project-model-settings">
+                  <legend>既定のAI設定</legend>
+                  <label>
+                    <span>バックエンド</span>
+                    <select
+                      value={projectBackend}
+                      onChange={(event) => {
+                        setProjectBackend(event.target.value);
+                        setProjectModel('');
+                        setProjectEffort('');
+                      }}
+                    >
+                      <option value="">xangiのデフォルト</option>
+                      {config.allowedBackends.map((backend) => (
+                        <option key={backend} value={backend}>
+                          {backend}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {projectBackend && (
+                    <>
+                      <label>
+                        <span>モデル</span>
+                        <select
+                          value={projectModel}
+                          disabled={loadingProjectModels}
+                          onChange={(event) => {
+                            setProjectModel(event.target.value);
+                            const model = projectModelOptions.find(
+                              (candidate) => candidate.id === event.target.value
+                            );
+                            if (
+                              projectEffort &&
+                              model?.supportedEfforts?.length &&
+                              !model.supportedEfforts.includes(projectEffort)
+                            ) {
+                              setProjectEffort('');
+                            }
+                          }}
+                        >
+                          <option value="">バックエンドのデフォルト</option>
+                          {projectModel &&
+                            !projectModelOptions.some((model) => model.id === projectModel) && (
+                              <option value={projectModel}>{projectModel}</option>
+                            )}
+                          {projectModelOptions.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.displayName && model.displayName !== model.id
+                                ? `${model.displayName} (${model.id})`
+                                : model.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>effort</span>
+                        <select
+                          value={projectEffort}
+                          disabled={projectEffortOptions.length === 0}
+                          onChange={(event) => setProjectEffort(event.target.value)}
+                        >
+                          <option value="">デフォルト</option>
+                          {(
+                            projectModelOptions.find((model) => model.id === projectModel)
+                              ?.supportedEfforts || projectEffortOptions
+                          ).map((effort) => (
+                            <option key={effort} value={effort}>
+                              {effort}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {(loadingProjectModels || projectModelStatus) && (
+                        <small className="project-model-status" role="status">
+                          {loadingProjectModels ? 'モデルを取得中…' : projectModelStatus}
+                        </small>
+                      )}
+                    </>
+                  )}
+                </fieldset>
+                <p>
+                  このProjectの会話は既定のAI設定を継承します。会話個別の設定がある場合はそちらを優先します。
+                </p>
+                <p>Projectは会話をまとめる論理グループで、フォルダは作成しません。</p>
                 <div className="project-form-actions">
                   <button
                     type="button"
@@ -2224,7 +2588,13 @@ export function Chat() {
                       <span className="project-view-copy">
                         <strong>{project.name}</strong>
                         <small>
-                          {project.prompt ? '追加プロンプト設定済み' : '追加プロンプトなし'}
+                          {project.backend
+                            ? [project.backend, project.model, project.effort]
+                                .filter(Boolean)
+                                .join(' · ')
+                            : project.prompt
+                              ? '追加プロンプト設定済み'
+                              : 'xangiのデフォルトAI設定'}
                         </small>
                       </span>
                     </button>
@@ -2263,6 +2633,27 @@ export function Chat() {
               <span className="pane-count">
                 {panes.length} / {MAX_PANES} ペイン
               </span>
+              {activeProject && (
+                <button
+                  type="button"
+                  className="project-context-chip"
+                  title="Project設定を開く"
+                  onClick={() => {
+                    setProjectViewOpen(true);
+                    setProjectFormOpen(false);
+                  }}
+                >
+                  <span aria-hidden="true">▱</span>
+                  <strong>{activeProject.name}</strong>
+                  <small>
+                    {activeProject.backend
+                      ? [activeProject.backend, activeProject.model, activeProject.effort]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : 'xangiデフォルト'}
+                  </small>
+                </button>
+              )}
               <button
                 type="button"
                 className="add-pane"
@@ -2337,6 +2728,7 @@ export function Chat() {
                   pane={pane}
                   active={pane.key === activeKey}
                   config={config}
+                  projectId={activeProjectId || undefined}
                   summary={sessions.find((session) => session.id === pane.sessionId)}
                   onFocus={() => setActiveKey(pane.key)}
                   onClose={() => closePane(pane.key)}
@@ -2375,6 +2767,17 @@ export function Chat() {
           if (!deletingSession) setSessionToDelete(null);
         }}
         onConfirm={() => void deleteSession()}
+      />
+      <SessionProjectDialog
+        session={sessionToMove}
+        projects={projects}
+        projectId={moveProjectId}
+        moving={movingSession}
+        onProjectChange={setMoveProjectId}
+        onCancel={() => {
+          if (!movingSession) setSessionToMove(null);
+        }}
+        onConfirm={() => void moveSession()}
       />
     </main>
   );

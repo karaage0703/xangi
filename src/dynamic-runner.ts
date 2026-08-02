@@ -233,12 +233,18 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   }
 
   private getRequestDefault(options: RunOptions | undefined) {
-    if (!options?.defaultBackend && !options?.defaultModel && !options?.defaultLocalLlmMode) {
+    if (
+      !options?.defaultBackend &&
+      !options?.defaultModel &&
+      !options?.defaultEffort &&
+      !options?.defaultLocalLlmMode
+    ) {
       return undefined;
     }
     return {
       backend: options.defaultBackend,
       model: options.defaultModel,
+      effort: options.defaultEffort,
       localLlmMode: options.defaultLocalLlmMode,
     };
   }

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebClient } from '@slack/web-api';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { Config } from '../src/config.js';
-import { clearSessions, initSessions } from '../src/sessions.js';
+import { clearSessions, createWebSession, initSessions } from '../src/sessions.js';
+import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import {
   _resetSlackStateForTest,
   createSlackCompletedBlocks,
@@ -400,6 +401,46 @@ describe('resolveSlackDeleteReactionTarget', () => {
 });
 
 describe('processMessage', () => {
+  it('injects linked Web session history into the Slack turn', async () => {
+    const sessionId = createWebSession({ title: 'Slackから参照' });
+    logPrompt(tempDir!, sessionId, 'Web UIで決めた内容');
+    const linkedMessageId = readSessionMessages(tempDir!, sessionId)[0].id;
+    const client = {
+      chat: {
+        postMessage: vi.fn().mockResolvedValue({ ts: '1783402634.549099' }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onComplete?.({ result: 'ok', sessionId: 'provider-1' });
+      return { result: 'ok', sessionId: 'provider-1' };
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      slack: { streaming: true, showThinking: true, replySuggestions: false },
+    } as Config;
+
+    await processMessage(
+      AUTO_REPLY_CHANNEL,
+      slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS),
+      THREAD_TS,
+      `これを参照 https://xangi.test/chat/${sessionId}#message-${linkedMessageId}`,
+      '1783402632.322829',
+      client,
+      agentRunner,
+      config
+    );
+
+    expect(runStream.mock.calls[0]?.[0]).toContain('<referenced-message platform="web"');
+    expect(runStream.mock.calls[0]?.[0]).toContain('Web UIで決めた内容');
+  });
+
   it('uses conversationKey as runner channelId while posting to Slack channelId', async () => {
     const postMessage = vi.fn().mockResolvedValue({ ts: '1783402634.549099' });
     const update = vi.fn().mockResolvedValue({});

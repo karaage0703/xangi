@@ -1,6 +1,6 @@
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
-import type { BackendResolver } from './backend-resolver.js';
+import type { BackendResolver, ChannelOverride } from './backend-resolver.js';
 import {
   getSupportedEffortLevels,
   requiresExplicitModelForEffort,
@@ -11,6 +11,7 @@ import { parseScheduleInput } from './scheduler.js';
 import { loadSettings, formatSettings } from './settings.js';
 import { loadSkills, type Skill } from './skills.js';
 import { executeModelsCommand, MODELS_COMMAND_USAGE } from './models-command.js';
+import { discoverBackendModels, type BackendModelDiscovery } from './backend-models.js';
 
 export interface WebCommandDefinition {
   name: string;
@@ -236,8 +237,29 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
       name: getBackendDisplayName(backend),
       value: backend,
     })) ?? [];
-  const modelChoices =
-    ctx.resolver?.getAllowedModels()?.map((model) => ({ name: model, value: model })) ?? [];
+  const allowedModels = ctx.resolver?.getAllowedModels();
+  const discoveredModels = (ctx.modelDiscovery?.models ?? []).filter(
+    (model) => !allowedModels || allowedModels.includes(model.id)
+  );
+  const modelChoices = [
+    { name: 'バックエンドのデフォルト', value: '--model=default' },
+    ...discoveredModels.map((model) => ({
+      name:
+        model.displayName && model.displayName !== model.id
+          ? `${model.displayName} (${model.id})`
+          : model.id,
+      value: `--model=${model.id}`,
+      description: model.description,
+    })),
+  ];
+  const selectedModel = discoveredModels.find((model) => model.id === ctx.selectedModel);
+  const supportedEfforts = ctx.selectedBackend
+    ? getSupportedEffortLevels(ctx.selectedBackend).filter(
+        (effort) =>
+          !selectedModel?.supportedEfforts?.length ||
+          selectedModel.supportedEfforts.includes(effort)
+      )
+    : [];
   const scheduleChoices =
     ctx.appSessionId && ctx.scheduler
       ? ctx.scheduler.list(undefined, 'web').map((schedule) => ({
@@ -257,8 +279,36 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
     }
     if (copy.name === 'backend') {
       const set = copy.options?.find((option) => option.name === 'set');
-      if (set?.options?.[0]) set.options[0].choices = backendChoices;
-      if (set?.options?.[1] && modelChoices.length > 0) set.options[1].choices = modelChoices;
+      const backendOption = set?.options?.[0];
+      if (backendOption) backendOption.choices = backendChoices;
+      if (set && backendOption) {
+        set.options = [backendOption];
+        if (ctx.selectedBackend && ctx.modelDiscovery) {
+          set.options.push({
+            name: 'model',
+            description:
+              ctx.modelDiscovery.status === 'available'
+                ? 'モデル'
+                : ctx.modelDiscovery.message || 'モデルを取得できません',
+            type: 'string',
+            choices: modelChoices,
+          });
+          if (ctx.selectedModel !== undefined && supportedEfforts.length > 0) {
+            set.options.push({
+              name: 'effort',
+              description: 'effort',
+              type: 'string',
+              choices: [
+                { name: 'デフォルト', value: '--effort=default' },
+                ...supportedEfforts.map((effort) => ({
+                  name: effort,
+                  value: `--effort=${effort}`,
+                })),
+              ],
+            });
+          }
+        }
+      }
     }
     if (copy.name === 'models' && copy.options?.[0]) {
       copy.options[0].choices = backendChoices;
@@ -286,6 +336,12 @@ export interface WebCommandContext {
   workdir: string;
   config?: Config;
   resolver?: BackendResolver;
+  backendDefault?: ChannelOverride;
+  backendDefaultSource?: string;
+  selectedBackend?: AgentBackend;
+  selectedModel?: string;
+  modelDiscovery?: BackendModelDiscovery;
+  discoverModels?: typeof discoverBackendModels;
   scheduler?: Scheduler;
   skillsRef?: { current: Skill[] };
 }
@@ -325,14 +381,18 @@ function requireScheduler(ctx: WebCommandContext): Scheduler {
   return ctx.scheduler;
 }
 
-function handleBackend(args: string[], ctx: WebCommandContext): WebCommandResult {
+async function handleBackend(args: string[], ctx: WebCommandContext): Promise<WebCommandResult> {
   const resolver = requireResolver(ctx);
   const channelId = requireSession(ctx);
   const subcommand = args[0] || 'show';
 
   if (subcommand === 'show') {
-    const resolved = resolver.resolve(channelId);
-    const source = resolver.getChannelOverride(channelId) ? 'Webセッション設定' : 'デフォルト';
+    const resolved = resolver.resolve(channelId, ctx.backendDefault);
+    const source = resolver.getChannelOverride(channelId)
+      ? 'Webセッション設定'
+      : ctx.backendDefault
+        ? ctx.backendDefaultSource || 'Project設定'
+        : 'デフォルト';
     return {
       kind: 'message',
       message: [
@@ -347,7 +407,12 @@ function handleBackend(args: string[], ctx: WebCommandContext): WebCommandResult
 
   if (subcommand === 'reset') {
     resolver.clearChannelOverride(channelId);
-    return { kind: 'message', message: 'バックエンド設定をデフォルトへ戻しました。' };
+    return {
+      kind: 'message',
+      message: ctx.backendDefault
+        ? `${ctx.backendDefaultSource || 'Project設定'}へ戻しました。`
+        : 'バックエンド設定をデフォルトへ戻しました。',
+    };
   }
 
   if (subcommand !== 'set') {
@@ -365,9 +430,14 @@ function handleBackend(args: string[], ctx: WebCommandContext): WebCommandResult
   let effort: EffortLevel | undefined;
   for (let index = 2; index < args.length; index++) {
     if (args[index] === '--model') model = args[++index];
+    else if (args[index].startsWith('--model=')) model = args[index].slice('--model='.length);
     else if (args[index] === '--effort') effort = args[++index] as EffortLevel;
-    else if (!model) model = args[index];
+    else if (args[index].startsWith('--effort=')) {
+      effort = args[index].slice('--effort='.length) as EffortLevel;
+    } else if (!model) model = args[index];
   }
+  if (model === 'default') model = undefined;
+  if ((effort as string | undefined) === 'default') effort = undefined;
 
   if (model && !resolver.isModelAllowed(model)) {
     throw new Error(`モデル \`${model}\` は許可されていません`);
@@ -379,6 +449,24 @@ function handleBackend(args: string[], ctx: WebCommandContext): WebCommandResult
   }
   if (effort && requiresExplicitModelForEffort(backend) && !model) {
     throw new Error(`${backend} で effort を指定するにはモデルも指定してください`);
+  }
+
+  if (model) {
+    const discovery = await (ctx.discoverModels ?? discoverBackendModels)(backend);
+    if (discovery.status !== 'available') {
+      throw new Error(discovery.message || `${backend}のモデル一覧を取得できません`);
+    }
+    const selected = discovery.models.find((candidate) => candidate.id === model);
+    if (!selected) throw new Error(`モデル \`${model}\` は現在の候補にありません`);
+    if (
+      effort &&
+      selected.supportedEfforts?.length &&
+      !selected.supportedEfforts.includes(effort)
+    ) {
+      throw new Error(
+        `モデル \`${model}\` のeffortは ${selected.supportedEfforts.join(', ')} です`
+      );
+    }
   }
 
   resolver.setChannelOverride(channelId, { backend, model, effort });
@@ -393,7 +481,7 @@ function handleLlmMode(args: string[], ctx: WebCommandContext): WebCommandResult
   const channelId = requireSession(ctx);
   const mode = args[0] || 'show';
   if (mode === 'show') {
-    const resolved = resolver.resolve(channelId);
+    const resolved = resolver.resolve(channelId, ctx.backendDefault);
     const startupMode = process.env.LOCAL_LLM_MODE || 'agent';
     return {
       kind: 'message',
@@ -522,7 +610,7 @@ export async function executeWebCommand(
       return { kind: 'chat', displayMessage: input, message, skipPermissions: true };
     }
     case 'backend':
-      return handleBackend(tokens, ctx);
+      return await handleBackend(tokens, ctx);
     case 'llmmode':
       return handleLlmMode(tokens, ctx);
     case 'schedule':

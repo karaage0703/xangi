@@ -91,12 +91,15 @@ Based on `@slack/bolt`.
 
 ### Web Chat (web-chat.ts)
 
+- Message permalinks use `/chat/<appSessionId>#message-<messageId>` and are available for every transcript entry originating from Web, Discord, or Slack. The React app restores the target session, pages backward when needed, then scrolls to and highlights the message. When Discord or Slack input contains a permalink for the same instance, `session-reference.ts` verifies both IDs and adds only that message as an untrusted quoted block rather than instructions. The IDs are reference keys, not authentication credentials
+
 Lightweight server based on `http.createServer` (no Express dependency).
 
 - A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
 - Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops
 - Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
-- Web Projects are logical namespaces equivalent to Discord channels. Names and extra prompts are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. Creating a Project never creates a directory, Git repository, or instruction file
+- Web Projects are logical namespaces equivalent to Discord channels. Names, extra prompts, and optional backend/model/effort defaults are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. An existing Web session can change or clear its `projectId` while it is idle. Creating a Project never creates a directory, Git repository, or instruction file
+- Web backend resolution uses conversation override (`/backend set`) first, then the Project default, then the runtime default. `/backend reset` removes only the conversation override. If moving a conversation changes provider backend, xangi does not reuse the old provider session ID and preloads the saved transcript into the next turn to preserve context
 - `GET /api/sessions` returns only the latest 100 sessions plus `activity`; title derivation reads the first JSONL line in chunks instead of each complete log
 - Project filtering happens server-side in both `GET /api/sessions` and `GET /api/sessions/stream`. Typing in search no longer reconnects SSE, and the redundant initial search request is skipped
 - `/monitor` is a read-only mode of the same React app. It receives turn-boundary snapshots from `GET /api/sessions/stream` and does not poll
