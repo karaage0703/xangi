@@ -1372,6 +1372,9 @@ function ChatPane({
             会話を読み込み中…
           </div>
         )}
+        {detail && detail.messages.length === 0 && !detail.hasMore && !liveTurn.visible && (
+          <div className="empty-state">まだメッセージがありません</div>
+        )}
         {detail?.hasMore && (
           <button
             type="button"

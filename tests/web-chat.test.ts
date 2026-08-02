@@ -1129,6 +1129,9 @@ describe('web-chat HTTP API', () => {
       /if \(activeRef\.current\) \{\s*requestAnimationFrame\(\(\) => draftRef\.current\?\.focus\(\)\);\s*\}/
     );
     expect(chatSource).toContain('会話を読み込み中…');
+    expect(chatSource).toMatch(
+      /detail && detail\.messages\.length === 0 && !detail\.hasMore && !liveTurn\.visible[\s\S]*まだメッセージがありません/
+    );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
     expect(chatSource).toContain("jsonInit('POST', projectId ? { projectId } : {})");
