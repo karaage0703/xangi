@@ -14,7 +14,14 @@ import {
   resolveDiscordSettingsChannelId,
 } from '../src/discord/thread-context.js';
 import { clearSettingsCache, initSettings, saveSettings } from '../src/settings.js';
-import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
+import {
+  clearSessions,
+  createSession,
+  createWebSession,
+  getActiveSessionId,
+  initSessions,
+} from '../src/sessions.js';
+import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 
 let tempDir: string | undefined;
 
@@ -330,6 +337,52 @@ describe('Discord thread run lock', () => {
     const prompt = runStream.mock.calls[0][0] as string;
     expect(prompt).toContain('[チャンネルルール（必ず従うこと）]');
     expect(prompt).toContain('このチャンネルでは簡潔に答える');
+  });
+
+  it('Discordへ貼られたWeb会話リンクの履歴を引用する', async () => {
+    saveSettings({ discordAutoReplyChannels: { '123': true } });
+    const webSessionId = createWebSession({ title: 'Discordから参照' });
+    logPrompt(tempDir!, webSessionId, 'Web UIで決めた内容');
+    const linkedMessageId = readSessionMessages(tempDir!, webSessionId)[0].id;
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const runStream = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'provider-1' });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+      },
+    } as Config;
+    registerDiscordMessageHandlers({ client, config, agentRunner, workdir: tempDir! });
+    const message = createExistingThreadMessage({
+      messageId: '2004',
+      content: `これを参照 http://xangi.test/chat/${webSessionId}#message-${linkedMessageId}`,
+      threadId: 'thread-reference',
+      parentChannelId: '123',
+      starterContent: 'thread starter',
+      client,
+    });
+
+    await handlers.get(Events.MessageCreate)!(message);
+
+    const prompt = runStream.mock.calls[0][0] as string;
+    expect(prompt).toContain('<referenced-message platform="web"');
+    expect(prompt).toContain('Web UIで決めた内容');
   });
 
   it('既存スレッド内メッセージでは親チャンネルの完了通知設定を使う', async () => {

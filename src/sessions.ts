@@ -396,6 +396,16 @@ export function updateSessionTitle(appSessionId: string, title: string): void {
   saveSessionsToFile();
 }
 
+/** Webセッションの所属Projectを変更する。undefinedでProjectなしへ戻す。 */
+export function updateSessionProject(appSessionId: string, projectId?: string): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry || entry.platform !== 'web') return false;
+  entry.projectId = projectId;
+  entry.updatedAt = new Date().toISOString();
+  saveSessionsToFile();
+  return true;
+}
+
 /**
  * セッションのメッセージ数をインクリメント
  */

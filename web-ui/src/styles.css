@@ -69,6 +69,7 @@ body,
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -85,12 +86,14 @@ button {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.session-delete-dialog {
+.session-delete-dialog,
+.session-project-dialog {
   position: fixed;
   inset: 0;
   width: min(420px, calc(100vw - 32px));
@@ -107,21 +110,25 @@ textarea:focus-visible {
   box-shadow: 0 18px 48px rgb(55 53 47 / 24%);
 }
 
-.session-delete-dialog::backdrop {
+.session-delete-dialog::backdrop,
+.session-project-dialog::backdrop {
   background: rgb(15 15 15 / 38%);
 }
 
-.session-delete-dialog-body {
+.session-delete-dialog-body,
+.session-project-dialog-body {
   padding: 24px;
 }
 
-.session-delete-dialog h2 {
+.session-delete-dialog h2,
+.session-project-dialog h2 {
   margin: 0 0 10px;
   font-size: 18px;
   line-height: 1.35;
 }
 
-.session-delete-dialog p {
+.session-delete-dialog p,
+.session-project-dialog p {
   margin: 0;
   color: var(--ink-secondary);
   font-size: 14px;
@@ -129,7 +136,8 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.session-delete-dialog-actions {
+.session-delete-dialog-actions,
+.session-project-dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -138,7 +146,8 @@ textarea:focus-visible {
   background: var(--surface-muted);
 }
 
-.session-delete-dialog-actions button {
+.session-delete-dialog-actions button,
+.session-project-dialog-actions button {
   min-width: 96px;
   min-height: 44px;
   border: 1px solid var(--border);
@@ -148,7 +157,8 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
-.session-delete-dialog-actions button:disabled {
+.session-delete-dialog-actions button:disabled,
+.session-project-dialog-actions button:disabled {
   cursor: wait;
   opacity: 0.62;
 }
@@ -159,9 +169,54 @@ textarea:focus-visible {
   background: var(--danger);
 }
 
+.session-project-dialog-body {
+  display: grid;
+  gap: 14px;
+}
+
+.session-project-dialog-body label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.session-project-dialog-body select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.session-project-dialog-body small {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.session-project-dialog-actions .primary {
+  border-color: var(--accent);
+  color: var(--surface);
+  background: var(--accent);
+}
+
 @media (hover: hover) {
   .session-delete-dialog-actions button:not(:disabled):hover {
     background: var(--surface-subtle);
+  }
+
+  .session-project-dialog-actions button:not(:disabled):hover {
+    background: var(--surface-subtle);
+  }
+
+  .session-project-dialog-actions .primary:not(:disabled):hover {
+    color: var(--surface);
+    background: var(--accent-ink);
   }
 
   .session-delete-dialog-actions .session-delete-dialog-danger:not(:disabled):hover {
@@ -520,6 +575,7 @@ button:disabled {
 }
 
 .project-form input,
+.project-form select,
 .project-form textarea {
   width: 100%;
   min-height: 36px;
@@ -528,6 +584,29 @@ button:disabled {
   padding: 7px 9px;
   color: var(--ink);
   background: var(--surface);
+}
+
+.project-model-settings {
+  display: grid;
+  gap: 9px;
+  margin: 2px 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.project-model-settings legend {
+  padding: 0 5px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.project-model-status {
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .project-empty {
@@ -581,6 +660,7 @@ button:disabled {
 }
 
 .project-form input:focus,
+.project-form select:focus,
 .project-form textarea:focus {
   border-color: var(--accent);
   outline: 2px solid var(--accent-tint);
@@ -709,7 +789,7 @@ button:disabled {
 
 .session-row:hover .session-actions,
 .session-row:focus-within .session-actions {
-  width: 70px;
+  width: 96px;
   opacity: 1;
 }
 
@@ -734,6 +814,11 @@ button:disabled {
 .message-actions button:hover {
   color: var(--ink);
   background: var(--hover);
+}
+
+.session-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .load-more {
@@ -1408,6 +1493,58 @@ button:disabled {
   cursor: default;
 }
 
+.pane-backend-badge {
+  max-width: 42%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-backend-badge.source-project {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent-tint);
+}
+
+.project-context-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(420px, 50vw);
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--ink-secondary);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.project-context-chip strong,
+.project-context-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-context-chip strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-context-chip small {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
 .pane-close {
   width: 28px;
   height: 28px;
@@ -1755,6 +1892,13 @@ video.media-preview {
 .message:hover .message-actions,
 .message:focus-within .message-actions {
   opacity: 1;
+}
+
+.message:target,
+.message.linked-message {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  background: var(--accent-soft);
 }
 
 .message-actions button {
@@ -2871,7 +3015,7 @@ video.media-preview {
   }
 
   .session-actions {
-    width: 132px;
+    width: 176px;
     opacity: 1;
   }
 
@@ -2916,6 +3060,15 @@ video.media-preview {
   }
 
   .pane-count {
+    display: none;
+  }
+
+  .project-context-chip {
+    max-width: calc(100vw - 142px - var(--safe-left) - var(--safe-right));
+    min-height: 40px;
+  }
+
+  .project-context-chip small {
     display: none;
   }
 

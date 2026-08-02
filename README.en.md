@@ -18,7 +18,7 @@ xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI,
 - Persistent sessions and transcripts, timeout extension, and workspace hooks
 - Scheduler and event-triggered agent turns
 - Browse and edit workspace Markdown and code from Web Chat
-- Organize conversations with logical Web Projects and optional extra prompts
+- Organize and move conversations with logical Web Projects, optional extra prompts, and per-Project default models
 
 ## Architecture
 

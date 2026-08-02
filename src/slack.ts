@@ -35,6 +35,7 @@ import {
   stripReplySuggestionMarkup,
 } from './reply-suggestions.js';
 import { executeModelsCommand } from './models-command.js';
+import { prependReferencedMessages } from './session-reference.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
@@ -1420,6 +1421,7 @@ export async function processMessage(
       );
       prompt = `${prefetchedHistory}\n\n${prompt}`;
     }
+    prompt = prependReferencedMessages(prompt, tWorkdir);
     const useStreaming = config.slack.streaming ?? true;
     const showThinking = config.slack.showThinking ?? true;
 

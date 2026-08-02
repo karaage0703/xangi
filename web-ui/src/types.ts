@@ -87,6 +87,9 @@ export interface WebProject {
   id: string;
   name: string;
   prompt: string;
+  backend?: string;
+  model?: string;
+  effort?: string;
 }
 
 export interface ProjectsResponse {
@@ -139,6 +142,7 @@ export interface RuntimeConfig {
   uploadAccept: string | null;
   timeoutExtendEnabled: boolean;
   interChatEnabled: boolean;
+  allowedBackends: string[];
 }
 
 export type WebCommandCategory = 'session' | 'skills' | 'settings' | 'system';

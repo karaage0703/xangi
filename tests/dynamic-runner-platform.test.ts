@@ -107,6 +107,32 @@ describe('DynamicRunnerManager platform routing', () => {
     );
   });
 
+  it('passes a Project default backend, model, and effort to backend resolution', async () => {
+    const config = makeConfig('web');
+    const resolved = { backend: 'local-llm' as const, model: 'test' };
+    const resolver = {
+      resolve: vi.fn().mockReturnValue(resolved),
+      getDefault: vi.fn().mockReturnValue({ backend: 'local-llm', model: 'test' }),
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver);
+    const run = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+
+    (manager as unknown as { defaultRunner: { run: typeof run } }).defaultRunner = { run };
+
+    await manager.run('prompt', {
+      channelId: 'web-chat:session-1',
+      defaultBackend: 'codex',
+      defaultModel: 'gpt-5.6-sol',
+      defaultEffort: 'high',
+    });
+
+    expect(resolver.resolve).toHaveBeenCalledWith('web-chat:session-1', {
+      backend: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+    });
+  });
+
   it('passes the resolved effort to the selected runner', async () => {
     const config = makeConfig('discord');
     const resolved = { backend: 'codex' as const, model: 'gpt-5.6-sol', effort: 'max' as const };

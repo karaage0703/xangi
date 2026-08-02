@@ -7,13 +7,21 @@ import { Scheduler } from '../src/scheduler.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
 import type { AgentBackend } from '../src/config.js';
+import type { BackendModelDiscovery } from '../src/backend-models.js';
+
+const discoverModels = async (backend: AgentBackend): Promise<BackendModelDiscovery> => ({
+  backend,
+  source: 'test discovery',
+  status: 'available',
+  models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['medium', 'high'] }],
+});
 
 class FakeResolver {
   override: ChannelOverride | undefined;
   cleared = false;
 
-  resolve() {
-    return this.override ?? { backend: 'claude-code' as AgentBackend };
+  resolve(_channelId?: string, requestDefault?: ChannelOverride) {
+    return this.override ?? requestDefault ?? { backend: 'claude-code' as AgentBackend };
   }
 
   getChannelOverride() {
@@ -100,7 +108,7 @@ describe('Web slash command adapter', () => {
     );
   });
 
-  it('builds nested, dynamic option metadata for the generic Web picker', () => {
+  it('builds nested, dynamic option metadata for the generic Web picker', async () => {
     const skillDir = join(workdir, 'skills', 'demo');
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: Demo skill\n---\n');
@@ -117,6 +125,9 @@ describe('Web slash command adapter', () => {
       workdir,
       scheduler,
       resolver: resolver as unknown as BackendResolver,
+      selectedBackend: 'codex',
+      selectedModel: 'gpt-test',
+      modelDiscovery: await discoverModels('codex'),
     });
 
     const skill = commands.find((command) => command.name === 'skill');
@@ -133,7 +144,19 @@ describe('Web slash command adapter', () => {
       { name: 'Claude Code', value: 'claude-code' },
       { name: 'Codex', value: 'codex' },
     ]);
-    expect(backendSet?.options?.[1].choices).toEqual([{ name: 'gpt-test', value: 'gpt-test' }]);
+    expect(backendSet?.options?.[1].choices).toEqual([
+      { name: 'バックエンドのデフォルト', value: '--model=default' },
+      {
+        name: 'GPT Test (gpt-test)',
+        value: '--model=gpt-test',
+        description: undefined,
+      },
+    ]);
+    expect(backendSet?.options?.[2].choices).toEqual([
+      { name: 'デフォルト', value: '--effort=default' },
+      { name: 'medium', value: '--effort=medium' },
+      { name: 'high', value: '--effort=high' },
+    ]);
 
     const models = commands.find((command) => command.name === 'models');
     expect(models?.usage).toBe('/models [backend]');
@@ -153,10 +176,11 @@ describe('Web slash command adapter', () => {
       appSessionId: 'web-1',
       workdir,
       resolver: resolver as unknown as BackendResolver,
+      discoverModels,
     };
 
     const set = await executeWebCommand(
-      '/backend set codex --model gpt-test --effort high',
+      '/backend set codex --model=gpt-test --effort=high',
       context
     );
     expect(set.kind).toBe('message');
@@ -169,6 +193,28 @@ describe('Web slash command adapter', () => {
     await executeWebCommand('/backend reset', context);
     expect(resolver.cleared).toBe(true);
     expect(resolver.override).toBeUndefined();
+  });
+
+  it('shows and restores the Project backend default when no session override exists', async () => {
+    const context = {
+      appSessionId: 'web-1',
+      workdir,
+      resolver: resolver as unknown as BackendResolver,
+      backendDefault: { backend: 'codex' as const, model: 'gpt-test', effort: 'high' as const },
+      backendDefaultSource: 'Project「実装」',
+    };
+
+    const shown = await executeWebCommand('/backend show', context);
+    expect(shown.kind).toBe('message');
+    if (shown.kind === 'message') {
+      expect(shown.message).toContain('Codex');
+      expect(shown.message).toContain('Project「実装」');
+    }
+
+    resolver.override = { backend: 'claude-code' };
+    const reset = await executeWebCommand('/backend reset', context);
+    expect(reset.kind).toBe('message');
+    if (reset.kind === 'message') expect(reset.message).toContain('Project「実装」');
   });
 
   it('adds, lists, toggles, and removes schedules scoped to a Web session', async () => {

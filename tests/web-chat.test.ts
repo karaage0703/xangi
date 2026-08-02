@@ -19,6 +19,7 @@ import {
   listAllSessions,
   getSessionEntry,
   createSession,
+  createWebSession,
   setProviderSessionId,
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
@@ -26,10 +27,13 @@ import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src
 import { clearActivities, startActivity, updateActivityTool } from '../src/activity-store.js';
 import { events } from '../src/events-emitter.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
-import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
+import { logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import { Scheduler } from '../src/scheduler.js';
 import { EventTrigger } from '../src/event-trigger.js';
+import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
+import type { AgentBackend } from '../src/config.js';
+import type { BackendModelDiscovery } from '../src/backend-models.js';
 
 /**
  * 任意のタイミングで完了させられる Fake AgentRunner。
@@ -41,6 +45,7 @@ class FakeRunner implements AgentRunner {
   callbacks = new Map<string, StreamCallbacks>();
   callOrder: string[] = [];
   prompts: string[] = [];
+  options: RunOptions[] = [];
   nextResult = 'ok';
   persistResults = false;
 
@@ -48,6 +53,7 @@ class FakeRunner implements AgentRunner {
     const channelId = options?.channelId || 'default';
     this.callOrder.push(channelId);
     this.prompts.push(prompt);
+    this.options.push(options ?? {});
     const result = { result: this.nextResult, sessionId: `provider-${channelId}` };
     if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
       const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
@@ -72,6 +78,7 @@ class FakeRunner implements AgentRunner {
     const channelId = options?.channelId || 'default';
     this.callOrder.push(channelId);
     this.prompts.push(prompt);
+    this.options.push(options ?? {});
     this.callbacks.set(channelId, callbacks);
     return new Promise<RunResult>((resolve) => {
       this.pending.set(channelId, () => {
@@ -211,6 +218,7 @@ describe('web-chat HTTP API', () => {
   let runner: FakeRunner;
   let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
   let scheduler: Scheduler;
+  let resolver: BackendResolver;
   const prevWorkspace = process.env.WORKSPACE_PATH;
   const prevDataDir = process.env.DATA_DIR;
 
@@ -222,6 +230,25 @@ describe('web-chat HTTP API', () => {
     initSessions(testDir);
 
     runner = new FakeRunner();
+    const overrides = new Map<string, ChannelOverride>();
+    resolver = {
+      resolve: (channelId?: string, requestDefault?: ChannelOverride) =>
+        (channelId ? overrides.get(channelId) : undefined) ??
+        requestDefault ?? { backend: 'claude-code' },
+      getDefault: () => ({ backend: 'claude-code' }),
+      getChannelOverride: (channelId: string) => overrides.get(channelId),
+      getAllowedBackends: () => ['claude-code', 'codex'] as AgentBackend[],
+      getAllowedModels: () => ['gpt-test'],
+      isBackendAllowed: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
+      isModelAllowed: (model: string) => model === 'gpt-test',
+      setChannelOverride: (channelId: string, override: ChannelOverride) => {
+        overrides.set(channelId, override);
+      },
+      clearChannelOverride: (channelId: string) => {
+        overrides.delete(channelId);
+      },
+      setChannelLocalLlmMode: () => {},
+    } as unknown as BackendResolver;
     scheduler = new Scheduler(process.env.DATA_DIR, { quiet: true });
     discordRemoteInputRef = {};
     const port = await freePort();
@@ -233,6 +260,13 @@ describe('web-chat HTTP API', () => {
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
       scheduler,
+      resolver,
+      discoverModels: async (backend): Promise<BackendModelDiscovery> => ({
+        backend,
+        source: 'web-chat test discovery',
+        status: 'available',
+        models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['high'] }],
+      }),
     });
     baseUrl = `http://127.0.0.1:${port}`;
 
@@ -290,6 +324,15 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('serves the Web app route used by message permalinks', async () => {
+    const sessionId = createWebSession({ title: 'permalink test' });
+    const response = await fetch(`${baseUrl}/chat/${sessionId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(await response.text()).toContain('<div id="root"></div>');
   });
 
   it('adds a triggered turn to the same Web session', async () => {
@@ -457,6 +500,77 @@ describe('web-chat HTTP API', () => {
     expect(runner.prompts.at(-1)).toContain('調べて');
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
     await readSSEUntilDone((await send).body);
+  });
+
+  it('moves an existing Web conversation and inherits the Project backend settings', async () => {
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: '実装',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'high',
+      }),
+    });
+    const { project } = (await projectResponse.json()) as {
+      project: { id: string; backend: string; model: string; effort: string };
+    };
+    expect(projectResponse.status).toBe(201);
+    expect(project).toMatchObject({ backend: 'codex', model: 'gpt-test', effort: 'high' });
+
+    const created = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()) as {
+      sessionId: string;
+    };
+    setProviderSessionId(created.sessionId, 'provider-old', 'claude-code');
+    logPrompt(testDir, created.sessionId, '以前の相談');
+    logResponse(testDir, created.sessionId, { result: '以前の回答' });
+    const moved = await fetch(`${baseUrl}/api/sessions/${created.sessionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id }),
+    });
+    expect(moved.status).toBe(200);
+    expect(getSessionEntry(created.sessionId)?.projectId).toBe(project.id);
+
+    const listed = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{
+        id: string;
+        backend?: { backend: string; model?: string; effort?: string; source: string };
+      }>;
+    };
+    expect(listed.sessions.find((session) => session.id === created.sessionId)?.backend).toEqual({
+      backend: 'codex',
+      model: 'gpt-test',
+      effort: 'high',
+      source: 'project',
+    });
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: created.sessionId, message: '実装して' }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runner.options.at(-1)).toMatchObject({
+      defaultBackend: 'codex',
+      defaultModel: 'gpt-test',
+      defaultEffort: 'high',
+    });
+    expect(runner.prompts.at(-1)).toContain('以前の相談');
+    expect(runner.prompts.at(-1)).toContain('以前の回答');
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`);
+    await readSSEUntilDone((await send).body);
+
+    const cleared = await fetch(`${baseUrl}/api/sessions/${created.sessionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: null }),
+    });
+    expect(cleared.status).toBe(200);
+    expect(getSessionEntry(created.sessionId)?.projectId).toBeUndefined();
   });
 
   it('serves the workspace app route and browses workspace-relative files', async () => {
@@ -654,6 +768,20 @@ describe('web-chat HTTP API', () => {
         .find((command) => command.name === 'llmmode')
         ?.options?.[0].choices?.map((choice) => choice.value)
     ).toEqual(['show', 'agent', 'lite', 'chat', 'default']);
+
+    const dynamicRes = await fetch(`${baseUrl}/api/web-commands?backend=codex&model=gpt-test`);
+    const dynamicData = (await dynamicRes.json()) as typeof data;
+    const backendSet = dynamicData.commands
+      .find((command) => command.name === 'backend')
+      ?.options?.find((option) => option.name === 'set');
+    expect(backendSet?.options?.[1].choices?.map((choice) => choice.value)).toEqual([
+      '--model=default',
+      '--model=gpt-test',
+    ]);
+    expect(backendSet?.options?.[2].choices?.map((choice) => choice.value)).toEqual([
+      '--effort=default',
+      '--effort=high',
+    ]);
   });
 
   it('POST /api/web-commands returns inline help without starting the agent', async () => {
@@ -928,11 +1056,13 @@ describe('web-chat HTTP API', () => {
   it('serves the React shell and exposes inter-chat state through config', async () => {
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
       interChatEnabled?: boolean;
+      allowedBackends?: string[];
     };
     const html = await (await fetch(baseUrl)).text();
     const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
 
     expect(config.interChatEnabled).toBe(false);
+    expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain('/app/assets/');
     expect(html).toContain('viewport-fit=cover');
@@ -1000,10 +1130,17 @@ describe('web-chat HTTP API', () => {
     );
     expect(chatSource).toContain('会話を読み込み中…');
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
+    expect(chatSource).toContain('projectId={activeProjectId || undefined}');
+    expect(chatSource).toContain("jsonInit('POST', projectId ? { projectId } : {})");
     expect(chatSource).toContain('session-project-tag');
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
     expect(chatSource).toContain('＋ 新規Project');
+    expect(chatSource).toContain('Projectへ移動');
+    expect(chatSource).toContain('既定のAI設定');
+    expect(chatSource).toContain('project-context-chip');
+    expect(sourceStylesheet).toMatch(/\.project-model-settings\s*\{/);
+    expect(sourceStylesheet).toMatch(/\.pane-backend-badge\s*\{/);
     expect(chatSource).not.toContain('Project内の会話');
     expect(sourceStylesheet).toMatch(
       /\.projects-link\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s
@@ -1035,7 +1172,7 @@ describe('web-chat HTTP API', () => {
     expect(chatSource).toContain('dialog.showModal()');
     expect(chatSource).not.toContain("window.confirm('このセッションを削除しますか？')");
     expect(sourceStylesheet).toMatch(
-      /\.session-delete-dialog-actions button\s*\{[^}]*min-height:\s*44px/s
+      /\.session-delete-dialog-actions button,\s*\.session-project-dialog-actions button\s*\{[^}]*min-height:\s*44px/s
     );
   });
 

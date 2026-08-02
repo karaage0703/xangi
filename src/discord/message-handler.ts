@@ -39,6 +39,7 @@ import {
   updateSessionTitle,
 } from '../sessions.js';
 import { stripPromptMetadata } from '../session-title.js';
+import { prependReferencedMessages } from '../session-reference.js';
 import { deriveThreadTitle } from './thread-title.js';
 import {
   buildDiscordChannelContextLine,
@@ -285,6 +286,8 @@ export async function processPrompt(
         : await prefetchDiscordHistory(message, config.historyPrefetch.count);
       prompt = `${prefetchedHistory}\n\n${prompt}`;
     }
+
+    prompt = prependReferencedMessages(prompt, config.agent.config.workdir || process.cwd());
 
     // チャンネル・ユーザー情報をプロンプトに付与
     const actorName = actor?.name ?? message.author.displayName ?? message.author.username;

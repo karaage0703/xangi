@@ -19,6 +19,7 @@ export interface RunOptions {
   platform?: ChatPlatform; // 実行元プラットフォーム（Web/EvenとDiscordのprompt分離用）
   defaultBackend?: AgentBackend; // 実行経路ごとの backend default（CHANNEL_OVERRIDES が優先）
   defaultModel?: string; // 実行経路ごとの model default
+  defaultEffort?: EffortLevel; // 実行経路ごとの effort default
   defaultLocalLlmMode?: LocalLlmMode; // 実行経路ごとの Local LLM mode default
   effort?: EffortLevel; // Claude Code / Codex のreasoning effort
   /** Local LLM の動作モード override（per-channel override 由来）。Local LLM 以外では無視される */

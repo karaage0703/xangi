@@ -58,6 +58,7 @@ import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { formatNumberedSuggestions } from '../reply-suggestions.js';
 import { executeModelsCommand } from '../models-command.js';
+import { discoverBackendModels, type BackendModelDiscovery } from '../backend-models.js';
 
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
@@ -65,6 +66,7 @@ export interface SkillsRef {
 }
 
 const DISCORD_APPLICATION_COMMAND_LIMIT = 100;
+const DISCORD_MODEL_DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const BACKEND_CHOICE_LABELS: Record<AgentBackend, string> = {
   'claude-code': 'Claude Code',
@@ -237,18 +239,14 @@ export function buildSlashCommands(
               .setRequired(true)
               .addChoices(...backendChoices)
           )
-          .addStringOption((opt) => opt.setName('model').setDescription('モデル名'))
+          .addStringOption((opt) =>
+            opt.setName('model').setDescription('モデル名').setAutocomplete(true)
+          )
           .addStringOption((opt) =>
             opt
               .setName('effort')
               .setDescription('effortレベル（対応バックエンド用）')
-              .addChoices(
-                { name: 'デフォルト', value: 'none' },
-                { name: 'low', value: 'low' },
-                { name: 'medium', value: 'medium' },
-                { name: 'high', value: 'high' },
-                { name: 'max', value: 'max' }
-              )
+              .setAutocomplete(true)
           )
       )
       .addSubcommand((sub) => sub.setName('reset').setDescription('デフォルトに戻す'))
@@ -368,25 +366,167 @@ export function buildSlashCommands(
   return commands;
 }
 
+interface DiscordAutocompleteChoice {
+  name: string;
+  value: string;
+}
+
+interface DiscordAutocompleteInput {
+  commandName: string;
+  focusedName: string;
+  focusedValue: string;
+  backend?: AgentBackend;
+  model?: string;
+}
+
+interface DiscordModelDiscoveryCacheEntry {
+  result?: BackendModelDiscovery;
+  expiresAt: number;
+  refresh?: Promise<BackendModelDiscovery>;
+}
+
+/**
+ * Discord autocomplete must answer within a few seconds. Backend discovery can
+ * spawn an external CLI, so keep the last result and refresh stale entries in
+ * the background instead of blocking an interaction.
+ */
+export function createDiscordModelDiscoveryCache(
+  discoverModels: typeof discoverBackendModels,
+  ttlMs = DISCORD_MODEL_DISCOVERY_CACHE_TTL_MS
+): typeof discoverBackendModels {
+  const cache = new Map<AgentBackend, DiscordModelDiscoveryCacheEntry>();
+
+  const refresh = (
+    backend: AgentBackend,
+    entry: DiscordModelDiscoveryCacheEntry
+  ): Promise<BackendModelDiscovery> => {
+    if (entry.refresh) return entry.refresh;
+    entry.refresh = discoverModels(backend)
+      .then((result) => {
+        entry.result = result;
+        entry.expiresAt = Date.now() + ttlMs;
+        entry.refresh = undefined;
+        return result;
+      })
+      .catch((error) => {
+        entry.refresh = undefined;
+        if (entry.result) return entry.result;
+        cache.delete(backend);
+        throw error;
+      });
+    return entry.refresh;
+  };
+
+  return async (backend: AgentBackend) => {
+    let entry = cache.get(backend);
+    if (!entry) {
+      entry = { expiresAt: 0 };
+      cache.set(backend, entry);
+      return refresh(backend, entry);
+    }
+    if (entry.result && entry.expiresAt > Date.now()) return entry.result;
+    if (entry.result) {
+      void refresh(backend, entry);
+      return entry.result;
+    }
+    return refresh(backend, entry);
+  };
+}
+
+function filterAutocompleteChoices(
+  choices: DiscordAutocompleteChoice[],
+  query: string
+): DiscordAutocompleteChoice[] {
+  const normalized = query.toLowerCase();
+  return choices
+    .filter(
+      (choice) =>
+        !normalized ||
+        choice.name.toLowerCase().includes(normalized) ||
+        choice.value.toLowerCase().includes(normalized)
+    )
+    .slice(0, 25);
+}
+
+export async function getDiscordAutocompleteChoices(
+  input: DiscordAutocompleteInput,
+  skills: Skill[],
+  resolver: BackendResolver,
+  discoverModels: typeof discoverBackendModels = discoverBackendModels
+): Promise<DiscordAutocompleteChoice[]> {
+  if (input.commandName === 'skill' && input.focusedName === 'name') {
+    return filterAutocompleteChoices(
+      skills.map((skill) => ({
+        name: `${skill.name} - ${skill.description.slice(0, 50)}`.slice(0, 100),
+        value: skill.name,
+      })),
+      input.focusedValue
+    );
+  }
+
+  if (input.commandName !== 'backend' || !input.backend) return [];
+  if (!resolver.isBackendAllowed(input.backend)) return [];
+
+  if (input.focusedName === 'model') {
+    const discovery = await discoverModels(input.backend);
+    if (discovery.status !== 'available') return [];
+    const allowedModels = resolver.getAllowedModels();
+    return filterAutocompleteChoices(
+      discovery.models
+        .filter((model) => !allowedModels || allowedModels.includes(model.id))
+        .map((model) => ({
+          name:
+            model.displayName && model.displayName !== model.id
+              ? `${model.displayName} (${model.id})`.slice(0, 100)
+              : model.id.slice(0, 100),
+          value: model.id,
+        })),
+      input.focusedValue
+    );
+  }
+
+  if (input.focusedName === 'effort') {
+    let discovery: BackendModelDiscovery | undefined;
+    if (input.model) discovery = await discoverModels(input.backend);
+    const selectedModel = discovery?.models.find((model) => model.id === input.model);
+    const efforts = getSupportedEffortLevels(input.backend).filter(
+      (effort) =>
+        !selectedModel?.supportedEfforts?.length || selectedModel.supportedEfforts.includes(effort)
+    );
+    return filterAutocompleteChoices(
+      [
+        { name: 'デフォルト', value: 'none' },
+        ...efforts.map((effort) => ({ name: effort, value: effort })),
+      ],
+      input.focusedValue
+    );
+  }
+
+  return [];
+}
+
 async function handleAutocomplete(
   interaction: AutocompleteInteraction,
-  skills: Skill[]
+  skills: Skill[],
+  resolver: BackendResolver,
+  discoverModels: typeof discoverBackendModels
 ): Promise<void> {
-  const focusedValue = interaction.options.getFocused().toLowerCase();
-
-  const filtered = skills
-    .filter(
-      (skill) =>
-        skill.name.toLowerCase().includes(focusedValue) ||
-        skill.description.toLowerCase().includes(focusedValue)
-    )
-    .slice(0, 25) // Discord制限: 最大25件
-    .map((skill) => ({
-      name: `${skill.name} - ${skill.description.slice(0, 50)}`,
-      value: skill.name,
-    }));
-
-  await interaction.respond(filtered);
+  const focused = interaction.options.getFocused(true);
+  const backend = interaction.options.getString('type') as AgentBackend | null;
+  const model = interaction.options.getString('model') ?? undefined;
+  const choices = await getDiscordAutocompleteChoices(
+    {
+      commandName: interaction.commandName,
+      focusedName: focused.name,
+      focusedValue: String(focused.value),
+      backend: backend ?? undefined,
+      model,
+    },
+    skills,
+    resolver,
+    discoverModels
+  );
+  await interaction.respond(choices);
 }
 
 /** スキル実行プロンプトをエージェントに投げて結果を返信する（/skill と個別スキルコマンド共通） */
@@ -528,6 +668,7 @@ export interface InteractionHandlerDeps {
   scheduler: Scheduler;
   workdir: string;
   skillsRef: SkillsRef;
+  discoverModels?: typeof discoverBackendModels;
   onReplySuggestion?: (interaction: ButtonInteraction, suggestion: string) => Promise<void>;
 }
 
@@ -555,12 +696,33 @@ export function formatThreadLeaveError(error: unknown): string {
 export function createInteractionHandler(
   deps: InteractionHandlerDeps
 ): (interaction: Interaction) => Promise<void> {
-  const { config, resolver, agentRunner, scheduler, workdir, skillsRef, onReplySuggestion } = deps;
+  const {
+    config,
+    resolver,
+    agentRunner,
+    scheduler,
+    workdir,
+    skillsRef,
+    discoverModels = discoverBackendModels,
+    onReplySuggestion,
+  } = deps;
+
+  const autocompleteDiscoverModels = createDiscordModelDiscoveryCache(discoverModels);
+  for (const backend of resolver.getAllowedBackends()) {
+    void autocompleteDiscoverModels(backend).catch((error) => {
+      console.warn(`[xangi] Failed to prewarm ${backend} model autocomplete:`, error);
+    });
+  }
 
   return async (interaction: Interaction) => {
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
-      await handleAutocomplete(interaction, skillsRef.current);
+      await handleAutocomplete(
+        interaction,
+        skillsRef.current,
+        resolver,
+        autocompleteDiscoverModels
+      );
       return;
     }
 

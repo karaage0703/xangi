@@ -91,12 +91,15 @@ flowchart LR
 
 ### Web Chat（web-chat.ts）
 
+- message permalinkは`/chat/<appSessionId>#message-<messageId>`。Web / Discord / Slack由来の各transcript entryに共通で付与する。React側はURLから対象sessionを復元し、必要なら履歴を前方pageして該当messageへ移動・強調する。Discord / Slack入力に同一instanceのpermalinkが含まれる場合、`session-reference.ts`がsessionとmessageの存在を検証し、その1 messageだけを命令ではないuntrustedな引用blockとしてpromptへ追加する。各IDは参照キーであり認証情報ではない
+
 `http.createServer` ベースの軽量サーバー（Express 依存なし）。
 
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
-- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前と追加promptを保存し、sessionの`projectId`で関連付ける。Project作成時にdirectory・Git repository・instruction fileは作成しない
+- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない
+- Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
 - `GET /api/sessions` は最新100件と`activity`だけを返す。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
 - `/monitor` は同じReactアプリの読み取り専用モード。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない

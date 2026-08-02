@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   buildSlashCommands,
+  createDiscordModelDiscoveryCache,
   formatThreadLeaveError,
+  getDiscordAutocompleteChoices,
   removeUserFromDiscordThread,
 } from '../src/discord/slash-commands.js';
 import type { Config } from '../src/config.js';
 import type { Skill } from '../src/skills.js';
+import type { BackendResolver } from '../src/backend-resolver.js';
 
 /**
  * annotateChannelMentions のテスト用に関数を再実装
@@ -292,6 +295,137 @@ describe('Discord Commands', () => {
       const modelsBackend = models.options.find((opt: any) => opt.name === 'backend');
       expect(modelsBackend.required).toBe(false);
       expect(modelsBackend.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
+    });
+
+    it('registers dynamic autocomplete for model and effort', () => {
+      const config = {
+        agent: { allowedBackends: ['codex'] },
+        discord: {},
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const backend = commands.find((cmd) => cmd.name === 'backend') as any;
+      const setSubcommand = backend.options.find((opt: any) => opt.name === 'set');
+      const modelOption = setSubcommand.options.find((opt: any) => opt.name === 'model');
+      const effortOption = setSubcommand.options.find((opt: any) => opt.name === 'effort');
+
+      expect(modelOption.autocomplete).toBe(true);
+      expect(modelOption.choices).toBeUndefined();
+      expect(effortOption.autocomplete).toBe(true);
+      expect(effortOption.choices).toBeUndefined();
+    });
+
+    it('discovers model candidates for the selected backend', async () => {
+      const resolver = {
+        isBackendAllowed: (backend: string) => backend === 'local-llm',
+        getAllowedModels: () => undefined,
+      } as BackendResolver;
+      const discover = vi.fn().mockResolvedValue({
+        backend: 'local-llm',
+        source: 'OpenAI-compatible /v1/models',
+        status: 'available',
+        models: [{ id: 'gemma-4-26b-a4b' }],
+      });
+
+      await expect(
+        getDiscordAutocompleteChoices(
+          {
+            commandName: 'backend',
+            focusedName: 'model',
+            focusedValue: 'gemma',
+            backend: 'local-llm',
+          },
+          [],
+          resolver,
+          discover
+        )
+      ).resolves.toEqual([{ name: 'gemma-4-26b-a4b', value: 'gemma-4-26b-a4b' }]);
+    });
+
+    it('returns only effort candidates supported by both xangi and the selected model', async () => {
+      const resolver = {
+        isBackendAllowed: (backend: string) => backend === 'codex',
+        getAllowedModels: () => undefined,
+      } as BackendResolver;
+      const discover = vi.fn().mockResolvedValue({
+        backend: 'codex',
+        source: 'codex app-server model/list',
+        status: 'available',
+        models: [
+          {
+            id: 'gpt-test',
+            supportedEfforts: ['medium', 'high', 'xhigh'],
+          },
+        ],
+      });
+
+      await expect(
+        getDiscordAutocompleteChoices(
+          {
+            commandName: 'backend',
+            focusedName: 'effort',
+            focusedValue: '',
+            backend: 'codex',
+            model: 'gpt-test',
+          },
+          [],
+          resolver,
+          discover
+        )
+      ).resolves.toEqual([
+        { name: 'デフォルト', value: 'none' },
+        { name: 'medium', value: 'medium' },
+        { name: 'high', value: 'high' },
+      ]);
+    });
+
+    it('reuses a cached backend discovery result', async () => {
+      const discovery = {
+        backend: 'cursor' as const,
+        source: 'cursor-agent models',
+        status: 'available' as const,
+        models: [{ id: 'cursor-model' }],
+      };
+      const discover = vi.fn().mockResolvedValue(discovery);
+      const cachedDiscover = createDiscordModelDiscoveryCache(discover, 60_000);
+
+      await expect(cachedDiscover('cursor')).resolves.toBe(discovery);
+      await expect(cachedDiscover('cursor')).resolves.toBe(discovery);
+      expect(discover).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns stale candidates immediately while refreshing in the background', async () => {
+      let now = 0;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const initial = {
+        backend: 'cursor' as const,
+        source: 'cursor-agent models',
+        status: 'available' as const,
+        models: [{ id: 'old-model' }],
+      };
+      const refreshed = { ...initial, models: [{ id: 'new-model' }] };
+      let finishRefresh: ((value: typeof refreshed) => void) | undefined;
+      const discover = vi
+        .fn()
+        .mockResolvedValueOnce(initial)
+        .mockImplementationOnce(
+          () =>
+            new Promise<typeof refreshed>((resolve) => {
+              finishRefresh = resolve;
+            })
+        );
+      const cachedDiscover = createDiscordModelDiscoveryCache(discover, 1);
+
+      await expect(cachedDiscover('cursor')).resolves.toBe(initial);
+      now = 2;
+      await expect(cachedDiscover('cursor')).resolves.toBe(initial);
+      expect(discover).toHaveBeenCalledTimes(2);
+
+      finishRefresh?.(refreshed);
+      await vi.waitFor(async () => {
+        await expect(cachedDiscover('cursor')).resolves.toBe(refreshed);
+      });
+      nowSpy.mockRestore();
     });
   });
 
