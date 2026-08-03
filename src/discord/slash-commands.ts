@@ -52,8 +52,10 @@ import {
   createReplySuggestionButtons,
   discordReplySuggestionsByMessageId,
   discordToolHistoryByMessageId,
+  parseDiscordHistoryCustomId,
 } from './ui.js';
-import { formatToolHistoryDisclosure } from '../tool-history.js';
+import { formatTurnHistoryDisclosure } from '../tool-history.js';
+import { readTurnHistory, type TurnHistoryEntry } from '../activity-store.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { formatNumberedSuggestions } from '../reply-suggestions.js';
@@ -63,6 +65,22 @@ import { discoverBackendModels, type BackendModelDiscovery } from '../backend-mo
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
   current: Skill[];
+}
+
+type DiscordHistoryInteraction = Pick<ButtonInteraction, 'deferReply' | 'editReply' | 'followUp'>;
+
+export async function respondWithDiscordTurnHistory(
+  interaction: DiscordHistoryInteraction,
+  loadHistory: () => TurnHistoryEntry[]
+): Promise<void> {
+  // Discord requires an initial interaction acknowledgement within about 3 seconds.
+  // Acknowledge before formatting or reading persisted history.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const chunks = splitMessage(formatTurnHistoryDisclosure(loadHistory()), DISCORD_SAFE_LENGTH);
+  await interaction.editReply({ content: chunks[0] || '履歴はありません' });
+  for (let i = 1; i < chunks.length; i++) {
+    await interaction.followUp({ content: chunks[i], flags: MessageFlags.Ephemeral });
+  }
 }
 
 const DISCORD_APPLICATION_COMMAND_LIMIT = 100;
@@ -794,22 +812,19 @@ export function createInteractionHandler(
         return;
       }
 
-      if (interaction.customId === 'xangi_tools') {
-        const toolHistory = discordToolHistoryByMessageId.get(interaction.message.id);
-        if (!toolHistory || toolHistory.length === 0) {
-          await interaction
-            .reply({ content: 'ツール履歴はありません', ephemeral: true })
-            .catch(() => {});
-          return;
-        }
-        const chunks = splitMessage(formatToolHistoryDisclosure(toolHistory), DISCORD_SAFE_LENGTH);
-        await interaction.reply({
-          content: chunks[0] || 'ツール履歴はありません',
-          ephemeral: true,
+      if (
+        interaction.customId === 'xangi_tools' ||
+        interaction.customId.startsWith('xangi_tools|')
+      ) {
+        const historyContext = parseDiscordHistoryCustomId(interaction.customId);
+        await respondWithDiscordTurnHistory(interaction, () => {
+          const cached = discordToolHistoryByMessageId.get(interaction.message.id);
+          if (cached?.length) return cached;
+          if (!historyContext) return [];
+          return readTurnHistory(historyContext.threadId, 200).filter(
+            (entry) => entry.turnId === historyContext.turnId
+          );
         });
-        for (let i = 1; i < chunks.length; i++) {
-          await interaction.followUp({ content: chunks[i], ephemeral: true }).catch(() => {});
-        }
         return;
       }
 

@@ -51,6 +51,7 @@ flowchart LR
 
 - 設定読み込みと検証（`config.ts` / `config-validate.ts`）
 - 有効化されたクライアントの起動分岐（Discord / Slack / Web Chat / LINE / Telegram。Web オンリー構成では Discord Client を生成しない）
+- Discord / Slack / LINE / Telegram は起動処理を並行開始する。Discord / Slack は `platform-startup-retry.ts` がDNS・timeout・reset等の一時障害だけを指数バックオフ（最大60秒）で同一process内再試行し、Telegram は Bot API・webhook登録・pollingの既存retryを使う。LINE / Telegram のwebhook待受は実際の `listening` まで、Telegram pollingは最初の`onStart`まで待機する。一方の待機中も他chatとWeb Chatは利用可能。認証失敗・待受port競合・恒久的なpolling停止は非0終了する
 - スケジューラー・各種 HTTP サーバー（tool-server / events-stream / event-trigger 等）の起動
 - SIGTERM/SIGINT ハンドリング（`stream-finalizer.ts` の確定処理を含む graceful shutdown）
 
@@ -84,7 +85,7 @@ flowchart LR
 - メンションで開始した active thread 内では、後続メッセージをメンション無しで処理する。対象外チャンネルの無関係なスレッド返信は拾わない
 - Slack API 投稿先は `channelId`、runner / timeout / Stop / processing 管理は `runKey = contextKey` で分離し、同じSlackチャンネル内の別スレッドを別実行単位として扱う
 - 同一 `runKey` の実行中は二重起動を抑止し、Slack の `app_mention` と `message` の重複配送は message ts de-dupe と bot mention skip で一本化する
-- 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は通常本文に混ぜず `Tools` ボタンから押した本人だけへ表示する
+- 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は途中コメントとツールを時系列で `History` ボタンから押した本人だけへ元スレッド内で表示する。ボタンにターン参照を保持するため、プロセス再起動後も永続ログから復元できる
 - スラッシュコマンドとリアクション対応
 - `chat.update` でメッセージ末尾に Stop / 延長 / 残り時間ボタン行を 1 秒粒度で差し替え
 - スレッド返信しないターンでは、一定時間以上かかった完了時に `✅ 完了しました（...）` の別メッセージを投稿して視認性を補う
@@ -216,7 +217,8 @@ interface AgentRunner {
 - `onToolUse` で `tool` と直近ツール行
 - `onComplete` / cancel / error で `complete` / `aborted` / `error`
 - 呼び出し元が `eventTextSanitizer` を指定した場合、activity と共通 events には整形後の本文を流し、Runner の生応答は transcript 用に保持する
-- スナップショットはプロセスメモリのみ。再起動後は復元せず、`sessions.json` と transcript を汚さない
+- 現在状態のスナップショットはプロセスメモリのみ。途中コメントとツールは境界ごとに `logs/monitor-activity/*.jsonl` へ時系列保存し、最終stream segmentは通常のassistant本文と重複するためHistoryへ保存しない
+- `sessions.json` と会話transcriptの形式は変更せず、Web Chatは`GET /api/sessions/:id/turn-history`からHistoryだけを遅延取得する
 - `GET /api/sessions` と Even Terminal 互換 `GET /api/sessions?provider=...` が同じ activity を参照する
 
 ### タイムアウトコントローラー（timeout-controller.ts）
@@ -279,7 +281,7 @@ xangiがAI CLIに注入するシステムプロンプトを管理：
 - **取得**: 各runnerが実際に使う`workdir`（未指定時は子プロセスと同じ`process.cwd()`）+ `git rev-parse --show-toplevel` / `git branch --show-current`（5 秒キャッシュ）。通常はconfigが`WORKSPACE_PATH`をrunnerのworkdirへ設定する。xangi本体のcloneとagent workspaceが別でも、またrunnerごとにworkdirが異なっても、AIが実際に操作するcwdを表示する
 - **注入タイミング**: 全 backend の `run()` / `runStream()` 入口で `prependRuntimeContext()`。常駐プロセス（`persistent-runner.ts`）は `--append-system-prompt` が起動時固定なので user message 本文に注入する
 - **無効化**: `XANGI_RUNTIME_CONTEXT_ENABLED=false`（既定 true）で注入をオフにできる。雑談中心のインスタンスや、cwd ブレが事故に繋がらない用途で
-- **ツール呼び出し表示**: Discord のツール履歴表示は `DISCORD_TOOL_HISTORY_MODE=button|inline|off` で制御する。既定は `button` で、完了後の通常メッセージには履歴を混ぜず、`Tools` ボタン押下時に押した本人だけへ ephemeral で表示する。Slack も同じ `Tools` ボタン方式を使い、完了後の本文へツール履歴を直出ししない。`DISCORD_SHOW_TOOL_BUTTON=false` なら Discord の `button` モードでも `Tools` ボタンを出さない。`inline` は従来どおり本文上部に表示、`off` は完全非表示。互換設定として `DISCORD_SHOW_TOOL_USE=false` は `off`、`true` は `inline` として扱う。実行中は `DISCORD_SHOW_LIVE_TOOL_USE=false` で無効化しない限り、実コマンドが分かる raw 表示を出す。完了後は `workspace-RAG検索` などの短い履歴ラベルへ正規化し、Bash/exec は `/bin/bash -lc` などの wrapper を落として短縮表示する。実行中の Bash/exec ツール呼び出しの引数表示の最大長は 200 文字で、env `XANGI_TOOL_DISPLAY_MAX` で変更可。
+- **ターン履歴表示**: 全バックエンドの共通イベント層で途中コメントとツール実行を時系列に永続化する。Discord の完了後表示は互換名の `DISCORD_TOOL_HISTORY_MODE=button|inline|off` で制御し、既定の `button` では通常本文へ混ぜず、`History` ボタンを押した本人だけへ ephemeral で表示する。ボタン操作はDiscordのinteraction期限に間に合うよう先にdeferし、プロセス再起動後はボタン内のターン参照から永続ログを復元する。DiscordとSlackは共通formatterで途中コメント内の連続改行を畳み、1イベント1行の同じコンパクト形式を使う。Slack も同じ `History` ボタン方式、Web Chat は各回答の `History` 折りたたみを使い、再読み込み後も `/api/sessions/:id/turn-history` から復元する。従来の `/tool-history` API と env 名は互換性のため維持する。`DISCORD_SHOW_TOOL_BUTTON=false` なら Discord のボタンを出さない。`inline` は従来どおりツール行だけ本文上部に表示し、`off` は完了後履歴を非表示にする。互換設定として `DISCORD_SHOW_TOOL_USE=false` は `off`、`true` は `inline` として扱う。実行中は `DISCORD_SHOW_LIVE_TOOL_USE=false` で無効化しない限り、実コマンドが分かる raw 表示を出す。完了後は `workspace-RAG検索` などの短い履歴ラベルへ正規化し、Bash/exec は `/bin/bash -lc` などの wrapper を落として短縮表示する。実行中の Bash/exec ツール呼び出しの引数表示の最大長は 200 文字で、env `XANGI_TOOL_DISPLAY_MAX` で変更可。
 - **返信候補**: Discord / Slack / Web Chat の通常会話では、同じAI応答の末尾に専用JSONブロックで返信候補を生成させ、表示前にブロックを除去する。Discord / Slackは通常メッセージに `返信候補` ボタンだけを置き、押した本人への ephemeral 応答で候補を表示する。Web Chatは回答下の折りたたみUIで表示する。選択文は同じセッションへユーザー入力として渡す。Discordの `/replysuggestions` は `settings.json` の全体overrideを更新し、各プラットフォームはメッセージ処理直前に参照する。OFF時は候補生成指示をプロンプトへ追加しない。タイトル・transcript表示では履歴先読みや候補生成の内部メタデータも除去する。
 
 AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI CLIの自動読み込み機能に委譲：
@@ -974,7 +976,7 @@ src/
 ├── index.ts            # エントリーポイント（起動シーケンス）
 ├── stream-session.ts   # ストリーミング表示の共通コア（思考表示/更新スロットリング、Discord/Slack/Web で使用）
 ├── stream-finalizer.ts # プロセス終了時に実行中ストリーミング表示を「中断」表示で確定させる registry
-├── tool-history.ts     # ツール履歴の整形・蓄積（TOOL_HISTORY_MAX_LINES で表示制限）
+├── tool-history.ts     # Turn Historyの表示整形（旧ツール履歴APIとの互換処理を含む）
 ├── message-split.ts    # 文字数上限に合わせたテキスト分割
 ├── discord/            # Discord統合
 │   ├── ui.ts               # ボタン行・タイムアウトUI・処理中メッセージ管理
@@ -1016,7 +1018,7 @@ src/
 ├── event-trigger.ts    # イベントトリガー（POST /api/trigger で外部からターン起動）
 ├── events-emitter.ts   # 応答ライフサイクルイベントの event bus
 ├── events-stream-server.ts # Pull型SSE配信（GET /api/events/stream、web-chatに相乗り）
-├── activity-store.ts   # 現在ターンの軽量スナップショット
+├── activity-store.ts   # 現在ターンの軽量スナップショット＋途中コメント/ツールの時系列永続化
 ├── pet-inbox-server.ts # xangi-pets からのテキスト送信受付（POST /api/pet/inbox）
 ├── even-terminal-server.ts # Even Terminal 互換 HTTP API
 ├── github-auth.ts      # GitHub App認証（秘密鍵メモリ管理・トークン生成）

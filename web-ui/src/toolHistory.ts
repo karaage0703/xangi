@@ -1,7 +1,8 @@
-import type { ToolHistoryEntry } from './types';
+import type { TurnHistoryEntry } from './types';
 
 export interface ToolHistoryMessage {
   role: string;
+  content?: string;
   createdAt?: string;
   platformMessageId?: string;
 }
@@ -22,9 +23,9 @@ function timestamp(value?: string): number | undefined {
 export function associateToolHistory(
   messages: ToolHistoryMessage[],
   platform: string | undefined,
-  tools: ToolHistoryEntry[]
-): ToolHistoryEntry[][] {
-  const associated = messages.map(() => [] as ToolHistoryEntry[]);
+  history: TurnHistoryEntry[]
+): TurnHistoryEntry[][] {
+  const associated = messages.map(() => [] as TurnHistoryEntry[]);
   let pendingUser: ToolHistoryMessage | undefined;
 
   messages.forEach((message, index) => {
@@ -38,14 +39,24 @@ export function associateToolHistory(
       pendingUser.platformMessageId && (platform === 'discord' || platform === 'slack')
         ? `${platform}-msg-${pendingUser.platformMessageId}`
         : undefined;
-    let matches = exactTurnId ? tools.filter((tool) => tool.turnId === exactTurnId) : [];
+    let matches = exactTurnId ? history.filter((entry) => entry.turnId === exactTurnId) : [];
 
     if (matches.length === 0) {
       const start = timestamp(pendingUser.createdAt);
       const end = timestamp(message.createdAt);
       if (start !== undefined && end !== undefined) {
-        matches = tools.filter((tool) => tool.at >= start && tool.at <= end + 5_000);
+        matches = history.filter((entry) => entry.at >= start && entry.at <= end + 5_000);
       }
+    }
+
+    const last = matches.at(-1);
+    if (
+      last?.kind === 'text' &&
+      last.text.trim() &&
+      message.content?.trim() &&
+      message.content.trim().endsWith(last.text.trim())
+    ) {
+      matches = matches.slice(0, -1);
     }
 
     associated[index] = matches;

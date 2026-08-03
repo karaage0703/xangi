@@ -44,6 +44,22 @@ export interface ToolHistoryEntry {
   inputPreview?: string;
 }
 
+export type TurnHistoryEntry =
+  | {
+      kind: 'text';
+      at: number;
+      turnId: string;
+      text: string;
+    }
+  | {
+      kind: 'tool';
+      at: number;
+      turnId: string;
+      toolName: string;
+      summary: string;
+      inputPreview?: string;
+    };
+
 interface ActivityRecord {
   state: ActivityState;
   summary: string;
@@ -58,6 +74,9 @@ interface ActivityRecord {
   startedAt: number;
   updatedAt: number;
   active: boolean;
+  turnHistory: TurnHistoryEntry[];
+  pendingText?: { at: number; text: string };
+  lastFullText?: string;
 }
 
 export interface ActivityContext {
@@ -194,12 +213,72 @@ export function readToolHistory(threadId: string, requestedLimit = 100): ToolHis
   }
 }
 
+export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHistoryEntry[] {
+  const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit) || 100));
+  const workdir = process.env.WORKSPACE_PATH || process.cwd();
+  const file = join(workdir, monitorActivityDir, `${safeFilePart(threadId)}.jsonl`);
+  if (!existsSync(file)) return [];
+
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const bytesToRead = Math.min(size, maxToolHistoryReadBytes);
+    const offset = size - bytesToRead;
+    const buffer = Buffer.alloc(bytesToRead);
+    readSync(fd, buffer, 0, bytesToRead, offset);
+    let text = buffer.toString('utf8');
+    if (offset > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+
+    const result: TurnHistoryEntry[] = [];
+    const lines = text.trimEnd().split('\n');
+    for (let index = lines.length - 1; index >= 0 && result.length < limit; index -= 1) {
+      try {
+        const event = JSON.parse(lines[index]) as {
+          ts?: string;
+          state?: string;
+          turnId?: string;
+          text?: string;
+          toolName?: string;
+          summary?: string;
+          toolInputPreview?: string;
+        };
+        if (!event.ts || !event.turnId) continue;
+        const at = Date.parse(event.ts);
+        if (!Number.isFinite(at)) continue;
+        if (event.state === 'streaming' && event.text) {
+          result.push({ kind: 'text', at, turnId: event.turnId, text: event.text });
+        } else if (event.state === 'tool' && event.toolName) {
+          result.push({
+            kind: 'tool',
+            at,
+            turnId: event.turnId,
+            toolName: event.toolName,
+            summary: event.summary || event.toolName,
+            inputPreview: event.toolInputPreview,
+          });
+        }
+      } catch {
+        // Ignore a partially written line and keep scanning older history.
+      }
+    }
+    return result.reverse();
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 function appendActivityLog(
   record: ActivityRecord,
   state: ActivityState,
   summary: string,
   at: number,
-  details: { toolName?: string; toolInputPreview?: string } = {}
+  details: { text?: string; toolName?: string; toolInputPreview?: string } = {}
 ): void {
   try {
     const workdir = process.env.WORKSPACE_PATH || process.cwd();
@@ -226,6 +305,24 @@ function appendActivityLog(
       }`
     );
   }
+}
+
+function flushPendingText(record: ActivityRecord): void {
+  const pending = record.pendingText;
+  if (!pending?.text.trim()) {
+    record.pendingText = undefined;
+    return;
+  }
+  const text = maskSensitive(pending.text);
+  const entry: TurnHistoryEntry = {
+    kind: 'text',
+    at: pending.at,
+    turnId: record.turnId,
+    text,
+  };
+  record.turnHistory.push(entry);
+  appendActivityLog(record, 'streaming', '途中コメント', pending.at, { text });
+  record.pendingText = undefined;
 }
 
 function pushHistory(
@@ -274,6 +371,7 @@ function getExisting(ctx: ActivityContext): ActivityRecord {
     startedAt: t,
     updatedAt: t,
     active: true,
+    turnHistory: [],
   };
   activities.set(ctx.threadId, record);
   appendActivityLog(record, record.state, record.summary, t);
@@ -296,13 +394,14 @@ export function startActivity(ctx: ActivityContext): void {
     startedAt: t,
     updatedAt: t,
     active: true,
+    turnHistory: [],
   });
   const record = activities.get(ctx.threadId);
   if (record) appendActivityLog(record, record.state, record.summary, t);
   notifyActivity(ctx.threadId);
 }
 
-export function updateActivityText(ctx: ActivityContext, fullText: string): void {
+export function updateActivityText(ctx: ActivityContext, fullText: string, chunk = fullText): void {
   const record = getExisting(ctx);
   const preview = truncate(fullText, maxPreviewChars);
   const t = now();
@@ -311,6 +410,14 @@ export function updateActivityText(ctx: ActivityContext, fullText: string): void
   record.textPreview = preview;
   record.updatedAt = t;
   record.active = true;
+  if (record.lastFullText && !fullText.startsWith(record.lastFullText)) {
+    flushPendingText(record);
+  }
+  if (chunk) {
+    if (!record.pendingText) record.pendingText = { at: t, text: '' };
+    record.pendingText.text += chunk;
+  }
+  record.lastFullText = fullText;
   pushHistory(
     record,
     record.state,
@@ -327,8 +434,10 @@ export function updateActivityTool(
   toolInput: Record<string, unknown>
 ): void {
   const record = getExisting(ctx);
+  flushPendingText(record);
   const line = summarizeTool(toolName, toolInput);
   const t = now();
+  const inputPreview = truncate(maskSensitive(JSON.stringify(toolInput)), maxToolInputChars);
   record.state = 'tool';
   record.summary = `実行中: ${line}`;
   record.toolLines = [...record.toolLines.filter((x) => x !== line), line].slice(-maxToolLines);
@@ -336,13 +445,29 @@ export function updateActivityTool(
   record.active = true;
   pushHistory(record, record.state, record.summary, t, {
     toolName,
-    toolInputPreview: truncate(maskSensitive(JSON.stringify(toolInput)), maxToolInputChars),
+    toolInputPreview: inputPreview,
+  });
+  record.turnHistory.push({
+    kind: 'tool',
+    at: t,
+    turnId: record.turnId,
+    toolName,
+    summary: record.summary,
+    inputPreview,
   });
   notifyActivity(ctx.threadId);
 }
 
 export function completeActivity(ctx: ActivityContext, resultText?: string): void {
   const record = getExisting(ctx);
+  const pendingText = record.pendingText?.text.trim();
+  if (pendingText && resultText?.trim().endsWith(pendingText)) {
+    // The final streamed segment is already preserved as the assistant reply.
+    // History keeps only the transient commentary that would otherwise disappear.
+    record.pendingText = undefined;
+  } else {
+    flushPendingText(record);
+  }
   const preview = resultText ? truncate(resultText, maxPreviewChars) : '';
   const historyPreview = resultText ? truncate(resultText, maxHistoryChars) : '';
   const t = now();
@@ -357,6 +482,7 @@ export function completeActivity(ctx: ActivityContext, resultText?: string): voi
 
 export function abortActivity(ctx: ActivityContext): void {
   const record = getExisting(ctx);
+  flushPendingText(record);
   const t = now();
   record.state = 'aborted';
   record.summary = '中断';
@@ -368,6 +494,7 @@ export function abortActivity(ctx: ActivityContext): void {
 
 export function errorActivity(ctx: ActivityContext, message: string): void {
   const record = getExisting(ctx);
+  flushPendingText(record);
   const t = now();
   record.state = 'error';
   record.summary = `エラー: ${truncate(maskSensitive(message), maxPreviewChars)}`;
@@ -375,6 +502,13 @@ export function errorActivity(ctx: ActivityContext, message: string): void {
   record.active = false;
   pushHistory(record, record.state, record.summary, t);
   notifyActivity(ctx.threadId);
+}
+
+export function getTurnHistory(threadId: string, turnId?: string): TurnHistoryEntry[] {
+  const record = activities.get(threadId);
+  if (!record || (turnId && record.turnId !== turnId)) return [];
+  flushPendingText(record);
+  return record.turnHistory.map((entry) => ({ ...entry }));
 }
 
 export function getActivity(threadId: string, at: number = now()): ActivitySnapshot | undefined {

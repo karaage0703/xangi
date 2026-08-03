@@ -29,7 +29,7 @@ import {
   sessionPath,
 } from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
-import type { RuntimeConfig as Config, ToolHistoryEntry, ToolHistoryResponse } from './types';
+import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } from './types';
 
 const MAX_PANES = 8;
 const PANE_STATE_KEY = 'xangi_pane_state_v1';
@@ -164,7 +164,7 @@ interface PendingFile {
   localUrl?: string;
 }
 
-function formatToolSummary(tool: ToolHistoryEntry): string {
+function formatToolSummary(tool: Extract<TurnHistoryEntry, { kind: 'tool' }>): string {
   const summary = tool.summary.replace(/^実行中:\s*/, '');
   const prefix = `${tool.toolName}: `;
   return summary.startsWith(prefix) ? summary.slice(prefix.length) : summary;
@@ -526,7 +526,7 @@ function CommandPalette({
 
 function MessageView({
   message,
-  tools,
+  history,
   sessionId,
   mutable,
   linked,
@@ -535,7 +535,7 @@ function MessageView({
   onSuggestion,
 }: {
   message: Message;
-  tools: ToolHistoryEntry[];
+  history: TurnHistoryEntry[];
   sessionId: string;
   mutable: boolean;
   linked: boolean;
@@ -601,33 +601,40 @@ function MessageView({
         {message.edited && <em>編集済み</em>}
         {usageText && <small>{usageText}</small>}
       </header>
-      {message.role === 'assistant' && tools.length > 0 && (
+      {message.role === 'assistant' && history.length > 0 && (
         <details className="message-tools">
           <summary>
-            <span>使用したツール</span>
+            <span>History</span>
             <small>
-              {tools.length}件 · <span className="tools-show-label">表示</span>
+              {history.length}件 · <span className="tools-show-label">表示</span>
               <span className="tools-hide-label">隠す</span>
             </small>
           </summary>
           <ol>
-            {tools.map((tool, index) => (
-              <li key={`${tool.turnId}-${tool.at}-${index}`}>
+            {history.map((entry, index) => (
+              <li
+                className={`history-entry history-${entry.kind}`}
+                key={`${entry.turnId}-${entry.at}-${index}`}
+              >
                 <div>
-                  <strong>{tool.toolName}</strong>
-                  <time dateTime={new Date(tool.at).toISOString()}>
-                    {new Date(tool.at).toLocaleTimeString('ja-JP', {
+                  <strong>{entry.kind === 'text' ? '途中コメント' : entry.toolName}</strong>
+                  <time dateTime={new Date(entry.at).toISOString()}>
+                    {new Date(entry.at).toLocaleTimeString('ja-JP', {
                       hour: '2-digit',
                       minute: '2-digit',
                       second: '2-digit',
                     })}
                   </time>
                 </div>
-                <code>{formatToolSummary(tool)}</code>
-                {tool.inputPreview && (
+                {entry.kind === 'text' ? (
+                  <MessageContent content={entry.text} markdown />
+                ) : (
+                  <code>{formatToolSummary(entry)}</code>
+                )}
+                {entry.kind === 'tool' && entry.inputPreview && (
                   <details>
                     <summary>入力の詳細</summary>
-                    <code>{tool.inputPreview}</code>
+                    <code>{entry.inputPreview}</code>
                   </details>
                 )}
               </li>
@@ -754,7 +761,7 @@ function ChatPane({
   const [toolLines, setToolLines] = useState<string[]>([]);
   const [observedLiveTurn, setObservedLiveTurn] = useState<ObservedLiveTurn>();
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
-  const [toolHistory, setToolHistory] = useState<ToolHistoryEntry[]>([]);
+  const [turnHistory, setTurnHistory] = useState<TurnHistoryEntry[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -769,7 +776,7 @@ function ChatPane({
   const messagesRef = useRef<HTMLDivElement>(null);
   const followBottomRef = useRef(true);
   const loadSequenceRef = useRef(0);
-  const toolHistorySequenceRef = useRef(0);
+  const turnHistorySequenceRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef(active);
@@ -784,16 +791,16 @@ function ChatPane({
     activeRef.current = active;
   }, [active]);
 
-  const loadToolHistory = useCallback(async () => {
+  const loadTurnHistory = useCallback(async () => {
     if (!sessionId) return;
-    const sequence = ++toolHistorySequenceRef.current;
+    const sequence = ++turnHistorySequenceRef.current;
     try {
-      const data = await requestJson<ToolHistoryResponse>(
-        `/api/sessions/${encodeURIComponent(sessionId)}/tool-history?limit=100`
+      const data = await requestJson<TurnHistoryResponse>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/turn-history?limit=100`
       );
-      if (sequence === toolHistorySequenceRef.current) setToolHistory(data.tools);
+      if (sequence === turnHistorySequenceRef.current) setTurnHistory(data.history);
     } catch (cause) {
-      console.warn('[web-chat] Failed to load tool history:', cause);
+      console.warn('[web-chat] Failed to load turn history:', cause);
     }
   }, [sessionId]);
 
@@ -856,7 +863,7 @@ function ChatPane({
     setToolLines([]);
     setObservedLiveTurn(undefined);
     setLiveToolsOpen(true);
-    setToolHistory([]);
+    setTurnHistory([]);
     setDiscordComposeEnabled(false);
     followBottomRef.current = !linkedMessageId;
     linkedMessageScrolledRef.current = undefined;
@@ -866,7 +873,7 @@ function ChatPane({
       timeoutMs: summary?.timeoutMs,
     });
     void loadDetail();
-    void loadToolHistory();
+    void loadTurnHistory();
   }, [sessionId]);
 
   useEffect(() => {
@@ -1180,7 +1187,7 @@ function ChatPane({
         await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/discord-continue`, {
           ...jsonInit('POST', { message: cleanMessage }),
         });
-        await Promise.all([loadDetail(), loadToolHistory(), onSessionsInvalidated()]);
+        await Promise.all([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
         await Promise.allSettled([loadDetail(), onSessionsInvalidated()]);
@@ -1264,7 +1271,7 @@ function ChatPane({
           if (eventName === 'error') throw new Error(String(data.message || '送信に失敗しました'));
         }
       }
-      await Promise.all([loadDetail(), loadToolHistory(), onSessionsInvalidated()]);
+      await Promise.all([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
       setStreamText('');
       setToolLines([]);
     } catch (cause) {
@@ -1309,9 +1316,9 @@ function ChatPane({
     timeout.maxTimeoutAt &&
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
-  const messageTools = useMemo(
-    () => associateToolHistory(detail?.messages ?? [], detail?.platform, toolHistory),
-    [detail?.messages, detail?.platform, toolHistory]
+  const messageHistory = useMemo(
+    () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
+    [detail?.messages, detail?.platform, turnHistory]
   );
 
   return (
@@ -1389,7 +1396,7 @@ function ChatPane({
           <MessageView
             key={message.id || `${message.role}-${index}`}
             message={message}
-            tools={messageTools[index] ?? []}
+            history={messageHistory[index] ?? []}
             sessionId={sessionId || ''}
             mutable={Boolean(detail)}
             linked={message.id === linkedMessageId}

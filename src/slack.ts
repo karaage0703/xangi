@@ -12,12 +12,18 @@ import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js'
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { getTurnHistory, readTurnHistory, type TurnHistoryEntry } from './activity-store.js';
 import { prefetchSlackHistory } from './slack-history-prefetch.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
 import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
-import { addToolHistory, appendToolHistory, formatToolHistoryDisclosure } from './tool-history.js';
+import {
+  addToolHistory,
+  appendToolHistory,
+  formatTurnHistoryDisclosure,
+  withoutFinalResponse,
+} from './tool-history.js';
 import { ensureSession, getActiveSessionId, getProviderSessionId } from './sessions.js';
 import { createSchedulerRunId } from './scheduler-run.js';
 import {
@@ -36,6 +42,7 @@ import {
 } from './reply-suggestions.js';
 import { executeModelsCommand } from './models-command.js';
 import { prependReferencedMessages } from './session-reference.js';
+import { startPlatformWithRetry } from './platform-startup-retry.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
@@ -202,6 +209,7 @@ function getSlackTimeoutInfoFor(
 /** Slack Block Kit: 完了後ボタン */
 export function createSlackCompletedBlocks(options?: {
   showTools?: boolean;
+  historyPayload?: { threadId: string; turnId: string; threadTs?: string };
   showReplySuggestions?: boolean;
   replySuggestionPayload?: { messageKey: string; suggestions: string[]; threadTs?: string };
 }): KnownBlock[] {
@@ -220,8 +228,9 @@ export function createSlackCompletedBlocks(options?: {
   if (options?.showTools) {
     elements.push({
       type: 'button',
-      text: { type: 'plain_text', text: 'Tools' },
+      text: { type: 'plain_text', text: 'History' },
       action_id: 'xangi_tools',
+      ...(options.historyPayload && { value: JSON.stringify(options.historyPayload) }),
     });
   }
   if (options?.showReplySuggestions) {
@@ -245,6 +254,23 @@ export function createSlackCompletedBlocks(options?: {
       elements,
     },
   ];
+}
+
+export function resolveSlackHistoryActionContext(
+  message: { thread_ts?: string } | undefined,
+  value: string | undefined
+): { threadTs?: string; threadId?: string; turnId?: string } {
+  let embedded: { threadTs?: string; threadId?: string; turnId?: string } = {};
+  try {
+    embedded = JSON.parse(value || '{}') as typeof embedded;
+  } catch {
+    // Old buttons have no embedded context and use the in-memory cache only.
+  }
+  return {
+    threadTs: message?.thread_ts ?? embedded.threadTs,
+    threadId: embedded.threadId,
+    turnId: embedded.turnId,
+  };
 }
 
 export function createSlackReplySuggestionBlocks(
@@ -290,7 +316,7 @@ type SlackProcessingEntry = {
   startedAt?: number;
 };
 const slackProcessingMessages = new Map<string, SlackProcessingEntry>();
-const slackToolHistoryByMessageKey = new Map<string, string[]>();
+const slackToolHistoryByMessageKey = new Map<string, TurnHistoryEntry[]>();
 const slackReplySuggestionsByMessageKey = new Map<string, string[]>();
 const busySlackConversations = new Set<string>();
 const processedSlackMessages = new Set<string>();
@@ -649,8 +675,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     await ack();
   });
 
-  // ボタンアクション: ツール履歴を押した本人だけに表示
-  app.action('xangi_tools', async ({ ack, body, client: actionClient }) => {
+  // ボタンアクション: 途中コメントとツールの履歴を押した本人だけに表示
+  app.action('xangi_tools', async ({ ack, action, body, client: actionClient }) => {
     await ack();
     const channelId = body.channel?.id;
     const userId = body.user?.id;
@@ -658,16 +684,31 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (!config.slack.allowedUsers?.includes('*') && !config.slack.allowedUsers?.includes(userId)) {
       return;
     }
-    const messageTs =
-      'message' in body ? (body.message as { ts?: string } | undefined)?.ts : undefined;
-    const toolHistory = messageTs
-      ? slackToolHistoryByMessageKey.get(slackMessageKey(channelId, messageTs))
+    const message =
+      'message' in body
+        ? (body.message as { ts?: string; thread_ts?: string } | undefined)
+        : undefined;
+    const value = 'value' in action ? action.value : undefined;
+    const historyContext = resolveSlackHistoryActionContext(message, value);
+    const turnHistory = message?.ts
+      ? slackToolHistoryByMessageKey.get(slackMessageKey(channelId, message.ts))
       : undefined;
-    const text = formatToolHistoryDisclosure(toolHistory ?? []);
+    const persistedHistory =
+      !turnHistory && historyContext.threadId && historyContext.turnId
+        ? readTurnHistory(historyContext.threadId, 200).filter(
+            (entry) => entry.turnId === historyContext.turnId
+          )
+        : undefined;
+    const text = formatTurnHistoryDisclosure(turnHistory ?? persistedHistory ?? []);
     const chunks = splitTextByBytes(text, SLACK_MAX_TEXT_BYTES);
-    for (const chunk of chunks.length > 0 ? chunks : ['ツール履歴はありません']) {
+    for (const chunk of chunks.length > 0 ? chunks : ['履歴はありません']) {
       await actionClient.chat
-        .postEphemeral({ channel: channelId, user: userId, text: chunk })
+        .postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: chunk,
+          ...(historyContext.threadTs && { thread_ts: historyContext.threadTs }),
+        })
         .catch(() => {});
     }
   });
@@ -1265,7 +1306,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     setTimeout(() => process.exit(0), 1000);
   });
 
-  await app.start();
+  await startPlatformWithRetry('Slack', () => app.start());
   console.log('[slack] ⚡️ Slack bot is running!');
 
   // runner の timeout-* イベントを Slack メッセージ更新に紐付け
@@ -1595,9 +1636,13 @@ export async function processMessage(
     const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
     // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
     const renderedText = markdownToSlackMrkdwn(displayText || '✅');
-    const showToolsButton = toolHistory.length > 0;
+    const turnHistory = withoutFinalResponse(
+      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
+      result
+    );
+    const showToolsButton = turnHistory.length > 0;
     if (showToolsButton) {
-      slackToolHistoryByMessageKey.set(slackMessageKey(channelId, messageTs), [...toolHistory]);
+      slackToolHistoryByMessageKey.set(slackMessageKey(channelId, messageTs), turnHistory);
     }
     if (extracted.suggestions.length > 0) {
       slackReplySuggestionsByMessageKey.set(
@@ -1635,6 +1680,11 @@ export async function processMessage(
             },
             ...createSlackCompletedBlocks({
               showTools: showToolsButton,
+              historyPayload: {
+                threadId: eventCtx.threadId,
+                turnId: eventCtx.turnId,
+                ...(threadTs && { threadTs }),
+              },
               showReplySuggestions: extracted.suggestions.length > 0,
               replySuggestionPayload: {
                 messageKey: slackMessageKey(channelId, messageTs),

@@ -12,7 +12,7 @@ import { join } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { startWebChat } from './web-chat.js';
 import { startLineBot } from './line.js';
-import { formatTelegramError, startTelegramBot } from './telegram.js';
+import { startTelegramBot } from './telegram.js';
 import { getEventsConfig } from './events-emitter.js';
 import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
 import { registerDiscordTimeoutUi } from './discord/ui.js';
@@ -33,6 +33,7 @@ import { getSelfLifecyclePermission } from './self-lifecycle.js';
 import { loadStoredSecrets } from './setup/runtime-secrets.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
 import { acquireDataDirLock } from './data-dir-lock.js';
+import { startPlatformWithRetry } from './platform-startup-retry.js';
 dotenvConfig({ override: true });
 await applySetupRuntimeEnvFromProcess();
 await loadStoredSecrets();
@@ -40,6 +41,7 @@ await loadStoredSecrets();
 async function main() {
   const config = loadConfig();
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
+  const platformStartupTasks: Promise<void>[] = [];
 
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
   const discordAllowed = config.discord.allowedUsers || [];
@@ -150,35 +152,41 @@ async function main() {
 
   // LINE Bot 起動 (Tailscale Funnel 等で外部公開して webhook を受ける想定)
   if (config.line.enabled) {
-    startLineBot({
-      agentRunner,
-      resolver,
-      channelSecret: config.line.channelSecret!,
-      channelAccessToken: config.line.channelAccessToken!,
-      allowedUsers: lineAllowed,
-      port: config.line.webhookPort,
-      path: config.line.webhookPath,
-      loadingAnimationEnabled: config.line.loadingAnimationEnabled,
-      loadingAnimationSeconds: config.line.loadingAnimationSeconds,
-      slowResponseEnabled: config.line.slowResponseEnabled,
-      slowResponseThresholdMs: config.line.slowResponseThresholdMs,
-      idleResetEnabled: config.line.idleResetEnabled,
-      idleResetHours: config.line.idleResetHours,
-      resetTextPatterns: config.line.resetTextPatterns,
-    });
+    platformStartupTasks.push(
+      startLineBot({
+        agentRunner,
+        resolver,
+        channelSecret: config.line.channelSecret!,
+        channelAccessToken: config.line.channelAccessToken!,
+        allowedUsers: lineAllowed,
+        port: config.line.webhookPort,
+        path: config.line.webhookPath,
+        loadingAnimationEnabled: config.line.loadingAnimationEnabled,
+        loadingAnimationSeconds: config.line.loadingAnimationSeconds,
+        slowResponseEnabled: config.line.slowResponseEnabled,
+        slowResponseThresholdMs: config.line.slowResponseThresholdMs,
+        idleResetEnabled: config.line.idleResetEnabled,
+        idleResetHours: config.line.idleResetHours,
+        resetTextPatterns: config.line.resetTextPatterns,
+      }).then(() => {
+        console.log('[xangi] LINE bot started');
+      })
+    );
   }
 
-  // Telegram Bot 起動。接続待ちはバックグラウンドで再試行し、他媒体の起動を妨げない。
-  // startTelegramBot は最初の await より前に scheduler sender/runner を登録する。
+  // Telegram Bot 起動。一時的な接続失敗は startTelegramBot 内で再試行する。
+  // 他platformと同時に開始し、恒久エラーは全体の起動失敗としてservice managerへ伝える。
   if (config.telegram.enabled) {
-    void startTelegramBot({
-      config,
-      agentRunner,
-      resolver,
-      scheduler,
-    }).catch((err) => {
-      console.error(`[xangi] Failed to start Telegram bot: ${formatTelegramError(err)}`);
-    });
+    platformStartupTasks.push(
+      startTelegramBot({
+        config,
+        agentRunner,
+        resolver,
+        scheduler,
+      }).then(() => {
+        console.log('[xangi] Telegram bot started');
+      })
+    );
   }
 
   // インスタンス間チャット起動 (INTER_INSTANCE_CHAT_ENABLED=true のときのみ実体起動)
@@ -285,28 +293,35 @@ async function main() {
       workdir,
     });
 
-    // Discordボットを起動
-    await client.login(config.discord.token);
-    console.log('[xangi] Discord bot started');
-
     // スケジューラに Discord 送信関数とエージェント実行関数を登録
     registerDiscordSchedulerBridge({ scheduler, client, config, agentRunner });
+
+    // Discordの初回接続は他platformと同時に開始。一時的なDNS/接続障害は
+    // WebやSlackを止めず、同一process内で回復するまで再試行する。
+    platformStartupTasks.push(
+      startPlatformWithRetry('Discord', () => client.login(config.discord.token)).then(() => {
+        console.log('[xangi] Discord bot started');
+      })
+    );
   } // if (config.discord.enabled)
 
   // Slackボットを起動
   if (config.slack.enabled) {
-    await startSlackBot({
-      config,
-      agentRunner,
-      resolver,
-      skills: skillsRef.current,
-      reloadSkills: () => {
-        skillsRef.current = loadSkills(workdir);
-        return skillsRef.current;
-      },
-      scheduler,
-    });
-    console.log('[xangi] Slack bot started');
+    platformStartupTasks.push(
+      startSlackBot({
+        config,
+        agentRunner,
+        resolver,
+        skills: skillsRef.current,
+        reloadSkills: () => {
+          skillsRef.current = loadSkills(workdir);
+          return skillsRef.current;
+        },
+        scheduler,
+      }).then(() => {
+        console.log('[xangi] Slack bot started');
+      })
+    );
   }
 
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
@@ -323,6 +338,10 @@ async function main() {
     process.exit(1);
   }
 
+  // Discord/Slackは同時に接続する。一方が再試行中でも他方とWebは利用できる。
+  // スケジューラのstartup taskは全ての有効platformのready後に開始する。
+  await Promise.all(platformStartupTasks);
+
   // スケジューラの全ジョブを開始
   scheduler.startAll(config.scheduler);
 
@@ -338,4 +357,7 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error('[xangi] Fatal startup error:', error);
+  process.exit(1);
+});

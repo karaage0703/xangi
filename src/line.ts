@@ -8,7 +8,7 @@
  * - contextKey = `line:<userId>` で per-userId セッション分離
  * - allowedUsers (LINE userId allowlist) で送受信を絞れる ("*" で全許可)
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
 import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
@@ -17,6 +17,7 @@ import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
 import { splitMessage } from './message-split.js';
+import { listenHttpServer } from './http-server-startup.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -136,7 +137,7 @@ export interface LineBotOptions {
  * `https://<funnel-host>/webhook` を LINE Developers コンソールの
  * Webhook URL に登録する。
  */
-export function startLineBot(options: LineBotOptions): void {
+export async function startLineBot(options: LineBotOptions): Promise<Server> {
   const { agentRunner, resolver, channelSecret, channelAccessToken } = options;
   const port = options.port ?? DEFAULT_PORT;
   const path = options.path ?? DEFAULT_PATH;
@@ -181,18 +182,20 @@ export function startLineBot(options: LineBotOptions): void {
     }
   });
 
-  server.listen(port, () => {
-    console.log(`[xangi-line] webhook listening on port ${port}, path ${path}`);
-    if (allowAll) {
-      console.log('[xangi-line] All LINE users are allowed');
-    } else if (allowedUsers.length > 0) {
-      console.log(`[xangi-line] Allowed users: ${allowedUsers.join(', ')}`);
-    } else {
-      console.warn(
-        '[xangi-line] ⚠️  LINE_ALLOWED_USER is empty — incoming messages will be ignored. Set "*" or a specific userId to enable.'
-      );
-    }
-  });
+  await listenHttpServer(server, port);
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : port;
+  console.log(`[xangi-line] webhook listening on port ${actualPort}, path ${path}`);
+  if (allowAll) {
+    console.log('[xangi-line] All LINE users are allowed');
+  } else if (allowedUsers.length > 0) {
+    console.log(`[xangi-line] Allowed users: ${allowedUsers.join(', ')}`);
+  } else {
+    console.warn(
+      '[xangi-line] ⚠️  LINE_ALLOWED_USER is empty — incoming messages will be ignored. Set "*" or a specific userId to enable.'
+    );
+  }
+  return server;
 }
 
 interface HandlerContext {

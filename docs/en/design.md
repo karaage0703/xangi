@@ -51,6 +51,7 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 
 - Configuration loading and validation (`config.ts` / `config-validate.ts`)
 - Startup branching for the enabled clients (Discord / Slack / Web Chat / LINE / Telegram; a Web-only setup does not create a Discord Client)
+- Discord, Slack, LINE, and Telegram begin startup concurrently. Discord and Slack use `platform-startup-retry.ts` to retry only transient DNS, timeout, and reset failures in the same process with exponential backoff capped at 60 seconds. Telegram uses its existing Bot API, webhook registration, and polling retries. LINE and Telegram webhook startup waits for the HTTP server's actual `listening` event, while Telegram polling waits for its first `onStart`. Web Chat and the other chat clients remain available while one connection is waiting. Permanent errors such as invalid credentials, a webhook port conflict, or a permanent polling stop terminate the process with a non-zero exit code
 - Starting the scheduler and the various HTTP servers (tool-server / events-stream / event-trigger, etc.)
 - SIGTERM/SIGINT handling (graceful shutdown, including the finalization pass in `stream-finalizer.ts`)
 
@@ -84,7 +85,7 @@ Based on `@slack/bolt`.
 - Handles follow-up messages without mentions inside active threads that xangi started from a mention, while ignoring unrelated thread replies in non-auto-reply channels
 - Keeps Slack API posting on `channelId`, but uses `runKey = contextKey` for runner / timeout / Stop / processing state so separate threads in the same Slack channel do not share an execution slot
 - Prevents duplicate runs with a per-`runKey` busy lock, message timestamp de-dupe, and message-handler bot-mention skip so `app_mention` owns mention events
-- Shows formatted tool-history lines while a Slack turn is running, then hides the final history behind a `Tools` button visible only to the clicking user
+- Shows formatted tool-history lines while a Slack turn is running, then exposes chronological commentary and tool history through a user-only `History` button in the source thread. The button retains a turn reference so persisted history can be restored after a process restart
 - Slash commands and reactions supported
 - Stop / extend / remaining-time button rows are refreshed every second via `chat.update`
 - For non-thread turns, xangi posts a separate `✅ 完了しました（...）` completion notice after long runs to improve visibility
@@ -216,7 +217,8 @@ events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refres
 - `onToolUse` sets `tool` and records recent tool lines
 - `onComplete` / cancel / error set `complete` / `aborted` / `error`
 - When a caller supplies `eventTextSanitizer`, activity and shared events receive sanitized display text while the raw Runner response remains available for transcripts
-- Snapshots are process-memory only. They are not restored after restart and do not write to `sessions.json` or transcripts
+- Current-state snapshots remain process-memory only. Commentary and tool boundaries are appended chronologically to `logs/monitor-activity/*.jsonl`; the final streamed segment is omitted because the assistant reply already preserves it
+- `sessions.json` and conversation transcript formats remain unchanged. Web Chat lazily loads History through `GET /api/sessions/:id/turn-history`
 - `GET /api/sessions` and the Even Terminal compatible `GET /api/sessions?provider=...` read the same activity data
 
 ### Timeout Controller (timeout-controller.ts)
@@ -268,7 +270,7 @@ Manages the system prompts that xangi injects into AI CLIs:
   - User-facing slash commands keep each platform's `/help` and command metadata as their source of truth
   - When the platform is unknown, no platform-specific rules are injected, preventing Discord and Slack instructions from being mixed
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
-- **Tool-use display** — Discord tool-use history is controlled by `DISCORD_TOOL_HISTORY_MODE=button|inline|off`. The default is `button`: completed messages do not include the history inline, and a `Tools` button shows it only to the user who clicked it via an ephemeral response. Slack uses the same `Tools` button pattern and does not inline tool history in the completed message. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Tools button for Discord even in `button` mode. `inline` keeps the previous top-of-message display, and `off` disables tool history display. For compatibility, `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. While a turn is running, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. After completion it normalizes internal context tools into short labels such as `workspace-RAG検索`; Bash/exec final history strips wrappers such as `/bin/bash -lc` and shows a shorter command summary. Live Bash/exec tool argument display is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
+- **Turn-history display** — The shared event layer persists streamed commentary and tool calls chronologically for every backend. Discord keeps the compatibility setting `DISCORD_TOOL_HISTORY_MODE=button|inline|off`; the default `button` mode leaves completed messages clean and exposes history only to the clicking user through an ephemeral `History` response. Discord defers the interaction before loading history to meet its acknowledgement deadline and restores persisted history from the turn reference embedded in new buttons after a process restart. Discord and Slack share one formatter that folds consecutive commentary line breaks and renders one event per line. Slack uses the same `History` button, while Web Chat adds a per-answer `History` disclosure restored through `/api/sessions/:id/turn-history` after reload. The previous `/tool-history` API and environment-variable names remain available for compatibility. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Discord button. `inline` retains the legacy tool-only lines above the message, and `off` hides completed history. `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. During a turn, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. Completed history normalizes internal context tools into labels such as `workspace-RAG検索`; Bash/exec entries strip wrappers such as `/bin/bash -lc`. Live Bash/exec input is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
 - **Reply suggestions** — Discord, Slack, and Web Chat generate suggestions in a dedicated JSON block within the same AI response and remove that block before display. Discord and Slack expose one public `返信候補` button and reveal choices ephemerally to the requesting user. Web Chat uses a collapsed control below the response. Selecting a choice continues the same session. Discord's `/replysuggestions` command persists a global override in `settings.json`; every platform checks it immediately before processing a message. OFF skips suggestion prompt injection. Session titles and transcript views also remove history-prefetch and suggestion-generation metadata.
 
 #### Runtime context injection (`runtime-context.ts`)
@@ -977,7 +979,7 @@ src/
 ├── index.ts            # Entry point (startup sequence)
 ├── stream-session.ts   # Shared streaming display core (thinking display / update throttling; used by Discord/Slack/Web)
 ├── stream-finalizer.ts # Registry that finalizes in-flight streaming displays as "interrupted" on process shutdown
-├── tool-history.ts     # Tool history formatting/accumulation (display capped via TOOL_HISTORY_MAX_LINES)
+├── tool-history.ts     # Turn-history presentation and legacy tool-history compatibility
 ├── message-split.ts    # Text splitting against per-platform length limits
 ├── discord/            # Discord integration
 │   ├── ui.ts               # Button rows, timeout UI, processing-message management
@@ -1019,7 +1021,7 @@ src/
 ├── event-trigger.ts    # Event trigger (start a turn externally via POST /api/trigger)
 ├── events-emitter.ts   # Event bus for response lifecycle events
 ├── events-stream-server.ts # Pull-based SSE delivery (GET /api/events/stream, piggybacks on web-chat)
-├── activity-store.ts   # Current-turn lightweight snapshots
+├── activity-store.ts   # Current-turn snapshots plus persisted commentary/tool timelines
 ├── pet-inbox-server.ts # Accepts text sent from xangi-pets (POST /api/pet/inbox)
 ├── even-terminal-server.ts # Even Terminal compatible HTTP API
 ├── github-auth.ts      # GitHub App authentication (in-memory key management & token generation)

@@ -5,6 +5,7 @@ import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
 import type { Scheduler } from './scheduler.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { listenHttpServer } from './http-server-startup.js';
 import { StreamSession, type StreamView } from './stream-session.js';
 import {
   ensureSession,
@@ -216,7 +217,7 @@ export async function retryTelegramEdit(
   return { ok: false, error: new Error('Telegram edit retry exhausted') };
 }
 
-async function superviseTelegramPolling(bot: Bot): Promise<void> {
+async function superviseTelegramPolling(bot: Bot, onReady: () => void): Promise<void> {
   let failures = 0;
 
   for (;;) {
@@ -224,6 +225,7 @@ async function superviseTelegramPolling(bot: Bot): Promise<void> {
     try {
       await bot.start({
         onStart: () => {
+          onReady();
           console.log(
             failures > 0
               ? '[xangi-telegram] Long polling restart initiated'
@@ -243,17 +245,14 @@ async function superviseTelegramPolling(bot: Bot): Promise<void> {
     } catch (error) {
       if (stableTimer) clearTimeout(stableTimer);
       if (telegramErrorStatus(error) === 409) {
-        console.error(
-          '[xangi-telegram] Polling stopped: another process is using this bot token. ' +
-            'Run only one polling instance (PM2 instances=1) and restart xangi.'
+        throw new Error(
+          '[xangi-telegram] Another process is using this bot token. ' +
+            'Run only one polling instance (PM2 instances=1) and restart xangi.',
+          { cause: error }
         );
-        return;
       }
       if (!isRetryableTelegramError(error)) {
-        console.error(
-          `[xangi-telegram] Polling stopped permanently: ${formatTelegramError(error)}`
-        );
-        return;
+        throw error;
       }
 
       failures++;
@@ -267,6 +266,43 @@ async function superviseTelegramPolling(bot: Bot): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
+}
+
+/**
+ * Start the polling supervisor and resolve only after grammY reports its first
+ * successful start. A permanent failure before readiness rejects startup. If
+ * polling later becomes permanently unavailable, exit so the service manager
+ * cannot leave Telegram silently stopped while other platforms remain alive.
+ */
+export function startSupervisedTelegramPolling(bot: Bot): Promise<void> {
+  let ready = false;
+  let resolveReady!: () => void;
+  let rejectReady!: (error: unknown) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+
+  void superviseTelegramPolling(bot, () => {
+    if (ready) return;
+    ready = true;
+    resolveReady();
+  })
+    .then(() => {
+      if (!ready) {
+        rejectReady(new Error('[xangi-telegram] Polling stopped before becoming ready'));
+      }
+    })
+    .catch((error) => {
+      if (!ready) {
+        rejectReady(error);
+        return;
+      }
+      console.error(`[xangi-telegram] Polling stopped permanently: ${formatTelegramError(error)}`);
+      process.exit(1);
+    });
+
+  return readyPromise;
 }
 
 // メッセージIDの重複処理防止用
@@ -1534,11 +1570,12 @@ export async function startTelegramBot(opts: {
         if (!res.headersSent) res.writeHead(500).end();
       }
     });
-    server.listen(port, () => {
-      console.log(`[xangi-telegram] Webhook server listening on port ${port}, path: ${path}`);
-    });
+    await listenHttpServer(server, port);
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : port;
+    console.log(`[xangi-telegram] Webhook server listening on port ${actualPort}, path: ${path}`);
   } else {
     console.log('[xangi-telegram] Starting bot with long polling...');
-    void superviseTelegramPolling(bot);
+    await startSupervisedTelegramPolling(bot);
   }
 }

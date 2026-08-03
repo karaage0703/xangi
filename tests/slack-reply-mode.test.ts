@@ -14,6 +14,7 @@ import {
   buildSlackCompletionNotification,
   processMessage,
   resolveSlackDeleteReactionTarget,
+  resolveSlackHistoryActionContext,
   shouldProcessSlackMessage,
   shouldReplyInSlackThread,
   slackConversationKey,
@@ -23,6 +24,11 @@ describe('Slack reply suggestion UI', () => {
   it('keeps reply suggestions collapsed behind one completed-message button', () => {
     const blocks = createSlackCompletedBlocks({
       showTools: true,
+      historyPayload: {
+        threadId: `slack:${AUTO_REPLY_CHANNEL}:${THREAD_TS}`,
+        turnId: 'slack-msg-123',
+        threadTs: THREAD_TS,
+      },
       showReplySuggestions: true,
       replySuggestionPayload: {
         messageKey: 'C1:1.2',
@@ -34,6 +40,15 @@ describe('Slack reply suggestion UI', () => {
       block.type === 'actions' ? block.elements.map((element) => element.action_id) : []
     );
     expect(actionIds).toEqual(['xangi_new', 'xangi_tools', 'xangi_reply_suggestions']);
+    const historyButton = blocks
+      .flatMap((block) => (block.type === 'actions' ? block.elements : []))
+      .find((element) => element.action_id === 'xangi_tools');
+    expect(historyButton?.text.text).toBe('History');
+    expect(JSON.parse(historyButton?.value ?? '{}')).toEqual({
+      threadId: `slack:${AUTO_REPLY_CHANNEL}:${THREAD_TS}`,
+      turnId: 'slack-msg-123',
+      threadTs: THREAD_TS,
+    });
     const suggestionButton = blocks
       .flatMap((block) => (block.type === 'actions' ? block.elements : []))
       .find((element) => element.action_id === 'xangi_reply_suggestions');
@@ -41,6 +56,22 @@ describe('Slack reply suggestion UI', () => {
       messageKey: 'C1:1.2',
       suggestions: ['a', 'b', 'c'],
       threadTs: THREAD_TS,
+    });
+  });
+
+  it('keeps History ephemeral replies in the source thread', () => {
+    expect(
+      resolveSlackHistoryActionContext(undefined, JSON.stringify({ threadTs: THREAD_TS }))
+    ).toEqual({ threadTs: THREAD_TS });
+    expect(
+      resolveSlackHistoryActionContext(
+        { thread_ts: 'message-thread' },
+        JSON.stringify({ threadTs: 'embedded-thread', threadId: 'slack:C:T', turnId: 'turn-1' })
+      )
+    ).toEqual({
+      threadTs: 'message-thread',
+      threadId: 'slack:C:T',
+      turnId: 'turn-1',
     });
   });
 

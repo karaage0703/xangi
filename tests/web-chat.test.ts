@@ -24,7 +24,13 @@ import {
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src/agent-runner.js';
-import { clearActivities, startActivity, updateActivityTool } from '../src/activity-store.js';
+import {
+  clearActivities,
+  completeActivity,
+  startActivity,
+  updateActivityText,
+  updateActivityTool,
+} from '../src/activity-store.js';
 import { events } from '../src/events-emitter.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
 import { logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
@@ -1672,6 +1678,34 @@ describe('web-chat HTTP API', () => {
       summary: '実行中: Bash: pwd',
       inputPreview: '{"command":"pwd"}',
     });
+  });
+
+  it('GET /api/sessions/:id/turn-history returns commentary and tools in turn order', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const activity = {
+      threadId: `web:${id}`,
+      turnId: 'web-turn-commentary',
+      platform: 'web' as const,
+      userText: '履歴を確認',
+    };
+    startActivity(activity);
+    updateActivityText(activity, '調べます。', '調べます。');
+    updateActivityTool(activity, 'Read', { file_path: '/tmp/example.txt' });
+    updateActivityText(activity, '最終回答です。', '最終回答です。');
+    completeActivity(activity, '最終回答です。');
+
+    const response = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/turn-history`);
+    const data = (await response.json()) as {
+      history: Array<{ kind: string; text?: string; toolName?: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(data.history).toEqual([
+      expect.objectContaining({ kind: 'text', text: '調べます。' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Read' }),
+    ]);
   });
 
   it('GET /api/sessions/:id/tool-history resolves an unmanaged Discord thread transcript', async () => {

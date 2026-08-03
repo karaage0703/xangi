@@ -83,7 +83,7 @@ INJECT_TIMESTAMP=false
   - `Stop` — `/stop` と同等。タスクを中断
   - `延長` — タイムアウトを「**残り時間 2 倍**」に延長（`TIMEOUT_MAX_MS` 上限内）
   - `⏱ MM:SS` — 残り時間表示（クリック無効、残り 30 秒以下で赤色に）
-- **完了後**: `New` ボタン — `/new` と同等。セッションをリセット
+- **完了後**: `New` はセッションをリセット。`History` は途中コメントとツール実行を時系列で本人だけに表示
 - **Discordスレッド内の完了後**: `Leave` ボタン — 押したユーザー自身をスレッドから退出させ、そのユーザーのサイドバーから消す。BotにDiscordの「スレッドの管理」権限が必要
 
 `DISCORD_SHOW_BUTTONS=false` でボタンを非表示にできます。
@@ -1218,13 +1218,13 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `DISCORD_REPLY_IN_THREAD`            | 返信をチャンネルではなく発言ごとに作成したスレッドへ投稿                                       | `false`    |
 | `DISCORD_STREAMING`                  | ストリーミング出力                                                                             | `true`     |
 | `DISCORD_SHOW_THINKING`              | 思考過程を表示                                                                                 | `true`     |
-| `DISCORD_SHOW_BUTTONS`               | Stop/New Sessionボタン表示                                                                     | `true`     |
+| `DISCORD_SHOW_BUTTONS`               | Stop/New/Historyボタン表示                                                                      | `true`     |
 | `DISCORD_REPLY_SUGGESTIONS`          | 本人だけに候補を展開する `返信候補` ボタンを表示                                               | `false`    |
 | `DISCORD_REPLY_SUGGESTIONS_COUNT`    | 返信候補数（1〜5）                                                                             | `3`        |
-| `DISCORD_TOOL_HISTORY_MODE`          | ツール利用履歴表示（`button` / `inline` / `off`）                                              | `button`   |
-| `DISCORD_SHOW_TOOL_BUTTON`           | `button` モード時に Tools ボタンを表示                                                         | `true`     |
+| `DISCORD_TOOL_HISTORY_MODE`          | Turn History表示（`button` / `inline` / `off`、env名は互換維持）                               | `button`   |
+| `DISCORD_SHOW_TOOL_BUTTON`           | `button` モード時に History ボタン（途中コメント＋ツール履歴）を表示                            | `true`     |
 | `DISCORD_SHOW_LIVE_TOOL_USE`         | 実行中だけ raw ツール履歴を表示                                                                | `true`     |
-| `TOOL_HISTORY_MAX_LINES`             | ツール履歴の最大表示行数（超過分は `… (+N 件省略)`、`0` 以下で無制限）                         | `10`       |
+| `TOOL_HISTORY_MAX_LINES`             | 実行中・`inline`互換モードのツール最大行数（`0` 以下で無制限）                                 | `10`       |
 | `DISCORD_SHOW_TOOL_USE`              | 互換設定。`false` は `off`、`true` は `inline` として扱う                                      | -          |
 | `DISCORD_COMPLETION_NOTIFY`          | 一定時間以上かかった Discord ターン完了時に別メッセージで通知（`off` / `message` / `mention`） | `message`  |
 | `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | 完了通知を出す最短経過時間（ms）                                                               | `10000`    |
