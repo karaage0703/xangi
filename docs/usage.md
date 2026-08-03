@@ -1415,11 +1415,15 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
 
-非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。Agy CLI 1.1.2 以降の最終JSONから `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトと同じ値（通常 `1800s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
+非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.10の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトと同じ値（通常 `1800s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
 
-ストリーミングでは Agy CLI 1.1.3 以降の `--output-format stream-json` を使用します。`step_update.text_delta` を逐次表示し、`init` / `result` の `conversation_id` を provider session として保持します。tool の `ACTIVE` は進捗として通知します。tool 単体の `ERROR` は agent が回復できるため即座に会話全体を失敗させず、最終 `result` を待ちます。
+ストリーミングでは `--output-format stream-json` を使用します。`step_update.text_delta` を逐次表示し、`init` / `result` の `conversation_id` を provider session として保持します。tool の `ACTIVE` は進捗として通知します。tool 単体の `ERROR` は agent が回復できるため即座に会話全体を失敗させず、最終 `result` を待ちます。`tool_info.output` と `subagent_info` は互換性のため受理しますが、大容量または機密情報を含み得るtool出力をチャットへそのまま転送せず、子agentのconversation IDで親sessionを上書きしません。
 
-Agy CLI 1.1.2 が `stream-json` 指定を無視してプレーンテキストを返した場合、その出力を最終応答として採用し、プロンプトを再実行しません。`--output-format` を明確に未対応と報告するさらに古い Agy は、旧プレーン出力モードへ一度だけフォールバックします。判定結果は runner 内でキャッシュします。timeout、認証、quota、無効なmodelなど通常の実行エラーでは再実行しません。
+Agy CLI 1.1.2から1.1.7までの先行実装も従来どおり互換対象です。1.1.2が`stream-json`指定を無視してプレーンテキストを返した場合、その出力を最終応答として採用し、プロンプトを再実行しません。`--output-format`を明確に未対応と報告するさらに古いAgyは、旧プレーン出力モードへ一度だけフォールバックします。判定結果はrunner内でキャッシュします。timeout、認証、quota、無効なmodelなど通常の実行エラーでは再実行しません。
+
+Agy CLI 1.1.9以降はprint modeでもslash command・skillを展開します。xangiは各platformのcommand処理を正本にするため、`agy --help`を確認し、対応版には`--disable-slash-commands`を渡します。対応・未対応を確認できた結果はrunner内で保持します。help確認は5秒で打ち切り、timeout・起動失敗・異常終了時はフラグなしで今回の実行を続け、次回リクエストで再確認します。実プロンプトをcapability確認のために再送することはありません。Agy側へ展開を委ねる場合は`ANTIGRAVITY_DISABLE_SLASH_COMMANDS=false`を設定します。
+
+headless実行はMCP初期化完了後に`init`イベントを返します。`Streaming`ログの後、`init`前で長く待つ場合はAgyログとMCP serverの起動状態を確認してください。
 
 Agy が成功終了しても stdout が空の場合、stderr に出力された timeout・quota・認証などの詳細をエラーとして表示します。
 
