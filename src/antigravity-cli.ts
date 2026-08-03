@@ -257,6 +257,10 @@ export class AntigravityRunner extends CliRunnerBase {
         // in tests whose mock kill emits close synchronously before cancel() clears ownership.
         queueMicrotask(() => {
           if (settled) return;
+          if (spawned.killed) {
+            finish('unknown', 'error', new Error('Antigravity CLI capability probe was cancelled'));
+            return;
+          }
           const stillOwned = channelId
             ? this.activeProcesses.get(channelId) === spawned
             : this.currentProcess === spawned;

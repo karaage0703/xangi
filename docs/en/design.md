@@ -302,7 +302,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | codex-cli.ts         | Codex CLI                | Made by OpenAI, 0.98.0 compatible, cancel support                                      |
 | cursor-cli.ts        | Cursor CLI               | `cursor-agent` command, JSON/stream-json, tool call display support                    |
 | grok-cli.ts          | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
-| antigravity-cli.ts   | Antigravity CLI          | Google `agy` command, Agy 1.1.2 final JSON with legacy plain-output fallback           |
+| antigravity-cli.ts   | Antigravity CLI          | Google `agy`, Agy 1.1.8+ JSON/stream-json, slash-expansion probing, legacy fallback     |
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
 `backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi-cmd models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.

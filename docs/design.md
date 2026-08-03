@@ -300,7 +300,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | codex-cli.ts         | Codex CLI           | OpenAI製、0.98.0対応、cancel対応                                                |
 | cursor-cli.ts        | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                    |
 | grok-cli.ts          | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                     |
-| antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.2最終JSONと旧版プレーン出力フォールバック        |
+| antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.8以降のJSON/stream-json、slash展開の能力判定、旧版フォールバック |
 | local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi-cmd models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。

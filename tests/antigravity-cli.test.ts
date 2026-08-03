@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AntigravityRunner } from '../src/antigravity-cli.js';
+import { processManager } from '../src/process-manager.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -264,6 +265,32 @@ describe('AntigravityRunner', () => {
     await waitForProcess();
     expect(runner.cancel('channel-1')).toBe(true);
 
+    await expect(promise).rejects.toThrow('capability probe was cancelled');
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it('does not start a prompt when the managed capability probe is stopped', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello', { channelId: 'channel-managed-stop' });
+
+    await waitForProcess();
+    expect(processManager.stop('channel-managed-stop')).toBe(true);
+
+    await expect(promise).rejects.toThrow('capability probe was cancelled');
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it('does not start a prompt after the managed capability probe times out', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({ timeoutMs: 5 });
+    const promise = runner.run('hello', { channelId: 'channel-probe-timeout' });
+
+    await waitForProcess();
     await expect(promise).rejects.toThrow('capability probe was cancelled');
     await tick();
     expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);

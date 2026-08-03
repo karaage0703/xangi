@@ -1421,7 +1421,7 @@ Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使�
 
 Agy CLI 1.1.2から1.1.7までの先行実装も従来どおり互換対象です。1.1.2が`stream-json`指定を無視してプレーンテキストを返した場合、その出力を最終応答として採用し、プロンプトを再実行しません。`--output-format`を明確に未対応と報告するさらに古いAgyは、旧プレーン出力モードへ一度だけフォールバックします。判定結果はrunner内でキャッシュします。timeout、認証、quota、無効なmodelなど通常の実行エラーでは再実行しません。
 
-Agy CLI 1.1.9以降はprint modeでもslash command・skillを展開します。xangiは各platformのcommand処理を正本にするため、`agy --help`を確認し、対応版には`--disable-slash-commands`を渡します。対応・未対応を確認できた結果はrunner内で保持します。help確認は5秒で打ち切り、timeout・起動失敗・異常終了時はフラグなしで今回の実行を続け、次回リクエストで再確認します。実プロンプトをcapability確認のために再送することはありません。Agy側へ展開を委ねる場合は`ANTIGRAVITY_DISABLE_SLASH_COMMANDS=false`を設定します。
+Agy CLI 1.1.9以降はprint modeでもslash command・skillを展開します。xangiは各platformのcommand処理を正本にするため、`agy --help`を確認し、対応版には`--disable-slash-commands`を渡します。対応・未対応を確認できた結果はrunner内で保持します。help確認は5秒で打ち切り、timeout・起動失敗・異常終了時はフラグなしで今回の実行を続け、次回リクエストで再確認します。probe中にユーザーがStopした場合は今回の実行自体を中止し、実プロンプトを開始しません。実プロンプトをcapability確認のために再送することはありません。Agy側へ展開を委ねる場合は`ANTIGRAVITY_DISABLE_SLASH_COMMANDS=false`を設定します。
 
 headless実行はMCP初期化完了後に`init`イベントを返します。`Streaming`ログの後、`init`前で長く待つ場合はAgyログとMCP serverの起動状態を確認してください。
 
