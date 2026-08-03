@@ -1,5 +1,6 @@
 import { isGitHubAppEnabled } from './github-auth.js';
 import { capToolLines } from './stream-session.js';
+import type { TurnHistoryEntry } from './activity-store.js';
 
 /**
  * ツール入力の要約を生成（Discord表示用）
@@ -66,6 +67,33 @@ export function formatToolHistoryDisclosure(toolHistory: string[]): string {
   const lines = capToolLines(toolHistory);
   if (lines.length === 0) return 'ツール履歴はありません';
   return `ツール履歴\n${lines.join('\n')}`;
+}
+
+export function withoutFinalResponse(
+  history: TurnHistoryEntry[],
+  finalResponse: string
+): TurnHistoryEntry[] {
+  const result = [...history];
+  const last = result.at(-1);
+  if (
+    last?.kind === 'text' &&
+    last.text.trim() &&
+    finalResponse.trim() &&
+    finalResponse.trim().endsWith(last.text.trim())
+  ) {
+    result.pop();
+  }
+  return result;
+}
+
+export function formatTurnHistoryDisclosure(history: TurnHistoryEntry[]): string {
+  if (history.length === 0) return '履歴はありません';
+  const compactLine = (value: string): string => value.trim().replace(/\s*\r?\n+\s*/g, ' ');
+  const body = history.map((entry) => {
+    if (entry.kind === 'text') return `💬 ${compactLine(entry.text)}`;
+    return `🔧 ${compactLine(entry.summary.replace(/^実行中:\s*/, ''))}`;
+  });
+  return `History\n${body.join('\n')}`;
 }
 
 export function formatInternalContextCommand(command: string): string | null {

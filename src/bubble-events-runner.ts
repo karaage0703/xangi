@@ -74,7 +74,7 @@ export async function runWithBubbleEvents(
               ? publicFullText.slice(lastPublicText.length)
               : eventTextSanitizer(chunk)
             : chunk;
-          updateActivityText(ctx, publicFullText);
+          updateActivityText(ctx, publicFullText, publicChunk);
           if (publicChunk) {
             events.messageDelta({
               ...eventBase,

@@ -12,6 +12,7 @@ import { formatAgentErrorForUser, shouldSendErrorFollowUp } from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
+import { getTurnHistory } from '../activity-store.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from '../file-utils.js';
 import { splitMessage } from '../message-split.js';
@@ -69,7 +70,7 @@ import {
   sanitizeReplySuggestionOutput,
   stripReplySuggestionMarkup,
 } from '../reply-suggestions.js';
-import { appendToolHistory, addToolHistory } from '../tool-history.js';
+import { appendToolHistory, addToolHistory, withoutFinalResponse } from '../tool-history.js';
 import {
   fetchDiscordLinkContent,
   fetchReplyContent,
@@ -484,12 +485,16 @@ export async function processPrompt(
     const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
+    const turnHistory = withoutFinalResponse(
+      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
+      result
+    );
     const showToolsButton =
       toolHistoryMode === 'button' &&
       (config.discord.showToolButton ?? true) &&
-      toolHistory.length > 0;
+      turnHistory.length > 0;
     if (showToolsButton && replyMessage) {
-      discordToolHistoryByMessageId.set(replyMessage.id, [...toolHistory]);
+      discordToolHistoryByMessageId.set(replyMessage.id, turnHistory);
     } else if (replyMessage) {
       discordToolHistoryByMessageId.delete(replyMessage.id);
     }
@@ -517,6 +522,10 @@ export async function processPrompt(
         components: [
           createCompletedButtons({
             showTools: showToolsButton,
+            historyContext: {
+              threadId: eventCtx.threadId,
+              turnId: eventCtx.turnId,
+            },
             showLeave: target.isThread,
             showReplySuggestions: extracted.suggestions.length > 0,
           }),

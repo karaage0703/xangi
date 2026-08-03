@@ -166,7 +166,9 @@ describe('runWithBubbleEvents', () => {
 
   it('updates current activity snapshots through the turn lifecycle', async () => {
     const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
-    const { getActivity, clearActivities } = await import('../src/activity-store.js');
+    const { getActivity, getTurnHistory, readTurnHistory, clearActivities } = await import(
+      '../src/activity-store.js'
+    );
     clearActivities();
     const runner = new FakeRunner(async (_p, cb) => {
       cb.onToolUse?.('Bash', { command: 'npm test' });
@@ -208,12 +210,73 @@ describe('runWithBubbleEvents', () => {
             toolInputPreview?: string;
           }
       );
-    expect(logged.map((e) => e.state)).toEqual(['thinking', 'tool', 'complete']);
+    expect(logged.map((e) => e.state)).toEqual(['thinking', 'tool', 'streaming', 'complete']);
     expect(logged[1]).toMatchObject({
       toolName: 'Bash',
       toolInputPreview: '{"command":"npm test"}',
     });
     expect(logged.at(-1)?.summary).toContain('完了');
+    expect(getTurnHistory('web:s1')).toEqual([
+      expect.objectContaining({ kind: 'tool', turnId: 'u-activity', toolName: 'Bash' }),
+      expect.objectContaining({ kind: 'text', turnId: 'u-activity', text: 'o' }),
+    ]);
+    expect(readTurnHistory('web:s1')).toEqual(getTurnHistory('web:s1'));
+  });
+
+  it('keeps commentary and tools in order while separating replaced Codex messages', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getTurnHistory, clearActivities } = await import('../src/activity-store.js');
+    clearActivities();
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onText?.('調べます。', '調べます。');
+      cb.onToolUse?.('Read', { file_path: '/tmp/a.txt' });
+      cb.onText?.('確認できました。', '確認できました。');
+      cb.onToolUse?.('Bash', { command: 'pwd' });
+      cb.onText?.('最終回答です。', '最終回答です。');
+      const result = { result: '最終回答です。', sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      'hi',
+      { threadId: 'discord:1', turnId: 'discord-msg-1', platform: 'discord' },
+      {}
+    );
+
+    expect(getTurnHistory('discord:1')).toEqual([
+      expect.objectContaining({ kind: 'text', text: '調べます。' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Read' }),
+      expect.objectContaining({ kind: 'text', text: '確認できました。' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Bash' }),
+    ]);
+  });
+
+  it('separates cumulative Claude-style text at tool boundaries', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getTurnHistory, clearActivities } = await import('../src/activity-store.js');
+    clearActivities();
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onText?.('調査します。', '調査します。');
+      cb.onToolUse?.('Read', { file_path: '/tmp/a.txt' });
+      cb.onText?.('最終回答です。', '調査します。最終回答です。');
+      const result = { result: '調査します。最終回答です。', sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      'hi',
+      { threadId: 'slack:1', turnId: 'slack-msg-1', platform: 'slack' },
+      {}
+    );
+
+    expect(getTurnHistory('slack:1')).toEqual([
+      expect.objectContaining({ kind: 'text', text: '調査します。' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Read' }),
+    ]);
   });
 
   it('coalesces repeated streaming activity history entries', async () => {

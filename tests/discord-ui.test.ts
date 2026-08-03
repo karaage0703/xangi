@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createCompletedButtons, createReplySuggestionButtons } from '../src/discord/ui.js';
+import {
+  createCompletedButtons,
+  createDiscordHistoryCustomId,
+  parseDiscordHistoryCustomId,
+  createReplySuggestionButtons,
+} from '../src/discord/ui.js';
+import { respondWithDiscordTurnHistory } from '../src/discord/slash-commands.js';
 
 function customIds(options?: {
   showTools?: boolean;
@@ -16,13 +22,46 @@ describe('createCompletedButtons', () => {
     expect(customIds({ showLeave: true })).toEqual(['xangi_new', 'xangi_thread_leave']);
   });
 
-  it('keeps New, Tools, and Leave in one row', () => {
-    expect(customIds({ showTools: true, showLeave: true, showReplySuggestions: true })).toEqual([
+  it('keeps New, History, and Leave in one row', () => {
+    const row = createCompletedButtons({
+      showTools: true,
+      showLeave: true,
+      showReplySuggestions: true,
+    });
+    expect(row.components.map((button) => button.data.custom_id ?? '')).toEqual([
       'xangi_new',
       'xangi_tools',
       'xangi_thread_leave',
       'xangi_reply_suggestions',
     ]);
+    expect(row.components[1]?.data.label).toBe('History');
+  });
+
+  it('embeds the persisted turn reference in a History button', () => {
+    const context = { threadId: 'discord:123', turnId: 'discord-msg-456' };
+    const customId = createDiscordHistoryCustomId(context);
+    expect(customId).toBe('xangi_tools|discord:123|discord-msg-456');
+    expect(parseDiscordHistoryCustomId(customId)).toEqual(context);
+  });
+
+  it('acknowledges History before loading and formatting it', async () => {
+    const calls: string[] = [];
+    const interaction = {
+      deferReply: async () => {
+        calls.push('defer');
+      },
+      editReply: async () => {
+        calls.push('edit');
+      },
+      followUp: async () => {
+        calls.push('followUp');
+      },
+    };
+    await respondWithDiscordTurnHistory(interaction as never, () => {
+      calls.push('load');
+      return [{ kind: 'text', at: 1, turnId: 'discord-msg-456', text: '途中コメント' }];
+    });
+    expect(calls).toEqual(['defer', 'load', 'edit']);
   });
 });
 

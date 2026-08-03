@@ -69,9 +69,32 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
  * エージェント実行のタイムアウトや利用上限はリトライ対象にしない。
  */
 export function isTransientNetworkError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  return /EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ConnectTimeoutError|Connect Timeout|fetch failed|socket hang up/i.test(
-    msg
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  const parts: string[] = [];
+
+  while (pending.length > 0 && seen.size < 8) {
+    const current = pending.shift();
+    if (current === undefined || current === null || seen.has(current)) continue;
+    seen.add(current);
+
+    if (typeof current !== 'object') {
+      parts.push(String(current));
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+    for (const field of ['message', 'code', 'errno']) {
+      if (record[field] !== undefined) parts.push(String(record[field]));
+    }
+    if (record.cause !== undefined) pending.push(record.cause);
+    if (record.error !== undefined) pending.push(record.error);
+    if (record.original !== undefined) pending.push(record.original);
+    if (Array.isArray(record.errors)) pending.push(...record.errors);
+  }
+
+  return /EAI_AGAIN|ENOTFOUND|ENETDOWN|ENETRESET|ENETUNREACH|EHOSTDOWN|EHOSTUNREACH|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT|EPIPE|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_SOCKET|ConnectTimeoutError|Connect Timeout|fetch failed|socket hang up/i.test(
+    parts.join(' ')
   );
 }
 

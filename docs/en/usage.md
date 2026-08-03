@@ -84,7 +84,7 @@ Buttons are displayed on response messages.
   - `Stop` — equivalent to `/stop`. Interrupts the task
   - `延長` (Extend) — **doubles the remaining time** (adds residual to the deadline, capped at `TIMEOUT_MAX_MS`)
   - `⏱ MM:SS` — remaining time badge (click does nothing, turns red under 30s)
-- **After completion**: `New` button — equivalent to `/new`. Resets the session
+- **After completion**: `New` resets the session. `History` shows chronological commentary and tool calls only to the user who clicked it
 - **After completion in a Discord thread**: `Leave` button — removes the user who clicked it from the thread, removing the thread from that user's sidebar. The bot requires the Discord Manage Threads permission
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
@@ -1194,13 +1194,13 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 | `DISCORD_REPLY_IN_THREAD`            | Post replies into a per-message thread instead of the channel                                                      | `false`      |
 | `DISCORD_STREAMING`                  | Streaming output                                                                                                   | `true`       |
 | `DISCORD_SHOW_THINKING`              | Show thinking process                                                                                              | `true`       |
-| `DISCORD_SHOW_BUTTONS`               | Show Stop/New Session buttons                                                                                      | `true`       |
+| `DISCORD_SHOW_BUTTONS`               | Show Stop/New/History buttons                                                                                      | `true`       |
 | `DISCORD_REPLY_SUGGESTIONS`          | Show a user-only `返信候補` button for reply suggestions                                                           | `false`      |
 | `DISCORD_REPLY_SUGGESTIONS_COUNT`    | Number of reply suggestions (1-5)                                                                                  | `3`          |
-| `DISCORD_TOOL_HISTORY_MODE`          | Tool-use history display (`button` / `inline` / `off`)                                                             | `button`     |
-| `DISCORD_SHOW_TOOL_BUTTON`           | Show the Tools button in `button` mode                                                                             | `true`       |
+| `DISCORD_TOOL_HISTORY_MODE`          | Turn History display (`button` / `inline` / `off`; env name kept for compatibility)                               | `button`     |
+| `DISCORD_SHOW_TOOL_BUTTON`           | Show the History button (commentary + tools) in `button` mode                                                      | `true`       |
 | `DISCORD_SHOW_LIVE_TOOL_USE`         | Show raw tool history while running                                                                                | `true`       |
-| `TOOL_HISTORY_MAX_LINES`             | Max tool history lines shown (older lines collapse into a `… (+N 件省略)` summary line; `0` or less for unlimited) | `10`         |
+| `TOOL_HISTORY_MAX_LINES`             | Max tool lines in live and legacy `inline` displays (`0` or less for unlimited)                                   | `10`         |
 | `DISCORD_SHOW_TOOL_USE`              | Compatibility setting. `false` maps to `off`, `true` maps to `inline`                                              | -            |
 | `DISCORD_COMPLETION_NOTIFY`          | Send a separate completion notification after long Discord turns (`off` / `message` / `mention`)                   | `message`    |
 | `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notification (ms)                                                 | `10000`      |

@@ -44,7 +44,12 @@ import {
   ensureVisibleAssistantResponse,
 } from './transcript-logger.js';
 import { threadIdFor, turnIdFor, events, subscribeEvents } from './events-emitter.js';
-import { getActivity, readToolHistory, subscribeActivity } from './activity-store.js';
+import {
+  getActivity,
+  readToolHistory,
+  readTurnHistory,
+  subscribeActivity,
+} from './activity-store.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import {
@@ -1172,7 +1177,37 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // GET /api/sessions/:id/tool-history — 永続化されたツール実行履歴を遅延取得
+    // GET /api/sessions/:id/turn-history — 永続化された途中コメント・ツール履歴を遅延取得
+    // `/history` は Even Terminal の会話履歴APIが使用済みなので分離する。
+    const historyMatch = url.match(/^\/api\/sessions\/([^/]+)\/turn-history$/);
+    if (historyMatch && req.method === 'GET') {
+      const appSessionId = decodeURIComponent(historyMatch[1]);
+      const entry = getSessionEntry(appSessionId);
+      const transcriptPath = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
+      if (!entry && !existsSync(transcriptPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      const threadId =
+        (entry ? sessionThreadId(entry) : null) ||
+        deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
+      const requestedLimit = Number(new URL(rawUrl, 'http://localhost').searchParams.get('limit'));
+      const history = threadId
+        ? readTurnHistory(
+            threadId,
+            Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 100
+          )
+        : [];
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ history }));
+      return;
+    }
+
+    // 旧クライアント互換: ツールだけを返す従来endpointも維持する
     const toolHistoryMatch = url.match(/^\/api\/sessions\/([^/]+)\/tool-history$/);
     if (toolHistoryMatch && req.method === 'GET') {
       const appSessionId = decodeURIComponent(toolHistoryMatch[1]);

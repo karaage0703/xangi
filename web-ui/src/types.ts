@@ -138,6 +138,21 @@ export interface ToolHistoryResponse {
   tools: ToolHistoryEntry[];
 }
 
+export type TurnHistoryEntry =
+  | { kind: 'text'; at: number; turnId: string; text: string }
+  | {
+      kind: 'tool';
+      at: number;
+      turnId: string;
+      toolName: string;
+      summary: string;
+      inputPreview?: string;
+    };
+
+export interface TurnHistoryResponse {
+  history: TurnHistoryEntry[];
+}
+
 export interface RuntimeConfig {
   uploadAccept: string | null;
   timeoutExtendEnabled: boolean;
