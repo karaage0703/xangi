@@ -4,7 +4,10 @@ import type { BaseRunnerOptions } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
 import type { ChatPlatform } from './prompts/index.js';
+import { configuredBackendCommand } from './setup/backend-executable.js';
+import { spawn } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
@@ -17,7 +20,7 @@ interface AntigravityJsonResponse {
   status?: string;
   duration_seconds?: number;
   num_turns?: number;
-  usage?: unknown;
+  usage?: AntigravityUsage;
   result?: string;
   text?: string;
   content?: string;
@@ -32,11 +35,34 @@ interface AntigravityJsonResponse {
   message?: string | { content?: unknown };
 }
 
+interface AntigravityUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  thinking_tokens?: number;
+  cache_read_tokens?: number;
+  total_tokens?: number;
+}
+
+interface AntigravityToolInfo {
+  name?: string;
+  parameters?: unknown;
+  output?: unknown;
+  error?: string | { message?: string; type?: string };
+}
+
+interface AntigravitySubagentInfo {
+  conversation_id?: string;
+  log_uri?: string;
+}
+
 interface AntigravityStreamEvent {
   event?: string;
   conversation_id?: string;
   init?: {
     conversation_id?: string;
+    cwd?: string;
+    tools?: string[];
+    permission_mode?: string;
   };
   step_update?: {
     conversation_id?: string;
@@ -45,11 +71,9 @@ interface AntigravityStreamEvent {
     step_type?: string;
     text_delta?: string;
     tool_name?: string;
-    tool_info?: {
-      name?: string;
-      parameters?: unknown;
-      error?: string | { message?: string; type?: string };
-    };
+    tool_info?: AntigravityToolInfo;
+    subagent_info?: AntigravitySubagentInfo;
+    usage?: AntigravityUsage;
   };
   result?: AntigravityJsonResponse;
 }
@@ -57,6 +81,9 @@ interface AntigravityStreamEvent {
 type ConversationSnapshot = Map<string, number>;
 type OutputCapability = 'unknown' | 'json' | 'legacy';
 type StreamOutputCapability = 'unknown' | 'stream-json' | 'legacy';
+type SlashCommandCapabilityProbeResult = 'supported' | 'unsupported' | 'unknown';
+
+const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 
 interface AntigravityOutputError extends Error {
   antigravityStdout?: string;
@@ -70,6 +97,12 @@ export class AntigravityRunner extends CliRunnerBase {
 
   private systemPrompt: string;
   private readonly printTimeout: string;
+  private readonly disableSlashCommands: boolean;
+  private slashCommandCapability?: boolean;
+  private readonly slashCommandCapabilityProbes = new Map<
+    string | undefined,
+    Promise<SlashCommandCapabilityProbeResult>
+  >();
   /** Capability is intentionally per runner: different agy binaries may be used by different runners. */
   private outputCapability: OutputCapability = 'unknown';
   private streamOutputCapability: StreamOutputCapability = 'unknown';
@@ -79,14 +112,19 @@ export class AntigravityRunner extends CliRunnerBase {
     this.systemPrompt = buildSystemPrompt(options?.platform);
     this.printTimeout =
       process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${Math.ceil(this.timeoutMs / 1000)}s`;
+    this.disableSlashCommands = process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS !== 'false';
   }
 
-  private buildArgs(
+  private async buildArgs(
     prompt: string,
     options?: RunOptions,
     outputFormat?: 'json' | 'stream-json'
-  ): string[] {
+  ): Promise<string[]> {
     const args: string[] = [];
+
+    if (await this.supportsDisableSlashCommands(options?.channelId)) {
+      args.push('--disable-slash-commands');
+    }
 
     const skip = options?.skipPermissions ?? this.skipPermissions;
     if (skip) {
@@ -116,6 +154,140 @@ export class AntigravityRunner extends CliRunnerBase {
     }
     args.push('-p', prompt);
     return args;
+  }
+
+  private async supportsDisableSlashCommands(channelId?: string): Promise<boolean> {
+    if (!this.disableSlashCommands) return false;
+    if (this.slashCommandCapability !== undefined) return this.slashCommandCapability;
+
+    // Share only within the same channel. This preserves per-channel cancellation while ensuring
+    // concurrent requests cannot overwrite each other's managed probe process.
+    let probe = this.slashCommandCapabilityProbes.get(channelId);
+    if (!probe) {
+      probe = this.probeDisableSlashCommands(channelId);
+      this.slashCommandCapabilityProbes.set(channelId, probe);
+    }
+
+    let result: SlashCommandCapabilityProbeResult;
+    try {
+      result = await probe;
+    } finally {
+      if (this.slashCommandCapabilityProbes.get(channelId) === probe) {
+        this.slashCommandCapabilityProbes.delete(channelId);
+      }
+    }
+
+    if (result === 'supported') this.slashCommandCapability = true;
+    if (result === 'unsupported') this.slashCommandCapability = false;
+    // A timeout, spawn failure, or non-zero exit is transient: omit the flag now and retry the
+    // capability probe on the next request instead of poisoning this long-lived runner's cache.
+    return result === 'supported';
+  }
+
+  /**
+   * Agy 1.1.9 added print-mode slash expansion and its opt-out flag. Probe help instead of
+   * retrying a real prompt, so old binaries stay compatible without risking duplicate turns.
+   */
+  private probeDisableSlashCommands(
+    channelId?: string
+  ): Promise<SlashCommandCapabilityProbeResult> {
+    return new Promise((resolve, reject) => {
+      const env = this.buildEnv(channelId);
+      let settled = false;
+      let output = '';
+      let proc: ReturnType<typeof spawn> | undefined;
+
+      const cleanup = (status: 'completed' | 'error') => {
+        if (!proc) return;
+        if (this.currentProcess === proc) this.currentProcess = null;
+        if (channelId && this.activeProcesses.get(channelId) === proc) {
+          clearManagedCliProcess(channelId, this.activeProcesses, this.timeoutController, status);
+        }
+      };
+
+      const finish = (
+        result: SlashCommandCapabilityProbeResult,
+        status: 'completed' | 'error',
+        error?: Error
+      ) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup(status);
+        if (error) reject(error);
+        else resolve(result);
+      };
+
+      try {
+        proc = spawn(configuredBackendCommand(this.command, env), ['--help'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          cwd: this.workdir,
+          env,
+        });
+      } catch (error) {
+        settled = true;
+        console.warn(
+          `[antigravity] Could not probe --disable-slash-commands; will retry on the next request: ${error instanceof Error ? error.message : String(error)}`
+        );
+        resolve('unknown');
+        return;
+      }
+
+      const spawned = proc;
+      const timer = setTimeout(() => {
+        console.warn(
+          '[antigravity] agy --help capability probe timed out; will retry on the next request'
+        );
+        finish('unknown', 'error');
+        spawned.kill();
+      }, CAPABILITY_PROBE_TIMEOUT_MS);
+      timer.unref?.();
+
+      this.currentProcess = spawned;
+      registerManagedCliProcess(channelId, spawned, this.activeProcesses, this.timeoutController);
+
+      spawned.stdout?.on('data', (data) => {
+        output += data.toString();
+      });
+      spawned.stderr?.on('data', (data) => {
+        output += data.toString();
+      });
+      spawned.on('close', (code) => {
+        // ChildProcess close is asynchronous in production. Deferring also preserves that order
+        // in tests whose mock kill emits close synchronously before cancel() clears ownership.
+        queueMicrotask(() => {
+          if (settled) return;
+          if (spawned.killed) {
+            finish('unknown', 'error', new Error('Antigravity CLI capability probe was cancelled'));
+            return;
+          }
+          const stillOwned = channelId
+            ? this.activeProcesses.get(channelId) === spawned
+            : this.currentProcess === spawned;
+          if (!stillOwned) {
+            finish('unknown', 'error', new Error('Antigravity CLI capability probe was cancelled'));
+            return;
+          }
+          if (code === 0) {
+            finish(
+              output.includes('--disable-slash-commands') ? 'supported' : 'unsupported',
+              'completed'
+            );
+            return;
+          }
+          console.warn(
+            `[antigravity] agy --help exited with code ${code}; will retry the capability probe on the next request`
+          );
+          finish('unknown', 'error');
+        });
+      });
+      spawned.on('error', (error) => {
+        console.warn(
+          `[antigravity] Could not probe --disable-slash-commands; will retry on the next request: ${error.message}`
+        );
+        finish('unknown', 'error');
+      });
+    });
   }
 
   private async collectAntigravityOutput(
@@ -178,7 +350,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
     try {
       execution = await this.collectAntigravityOutput(
-        this.buildArgs(fullPrompt, options, wantsJson ? 'json' : undefined),
+        await this.buildArgs(fullPrompt, options, wantsJson ? 'json' : undefined),
         options?.channelId
       );
     } catch (error) {
@@ -197,7 +369,7 @@ export class AntigravityRunner extends CliRunnerBase {
       this.outputCapability = 'legacy';
       usedJson = false;
       execution = await this.collectAntigravityOutput(
-        this.buildArgs(fullPrompt, options),
+        await this.buildArgs(fullPrompt, options),
         options?.channelId
       );
     }
@@ -255,7 +427,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
     try {
       return await this.executeStreamCore(
-        this.buildArgs(fullPrompt, options, 'stream-json'),
+        await this.buildArgs(fullPrompt, options, 'stream-json'),
         callbacks,
         {
           channelId: options?.channelId,

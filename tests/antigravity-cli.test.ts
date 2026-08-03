@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AntigravityRunner } from '../src/antigravity-cli.js';
+import { processManager } from '../src/process-manager.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,7 @@ describe('AntigravityRunner', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     delete process.env.ANTIGRAVITY_PRINT_TIMEOUT;
+    process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS = 'false';
     const { resetMockProcesses } = await import('child_process');
     (resetMockProcesses as () => void)();
   });
@@ -106,9 +108,193 @@ describe('AntigravityRunner', () => {
       ...(conversationId ? { conversation_id: conversationId } : {}),
       duration_seconds: 1.2,
       num_turns: 2,
-      usage: { input_tokens: 3, output_tokens: 4 },
+      usage: {
+        input_tokens: 3,
+        output_tokens: 4,
+        thinking_tokens: 2,
+        cache_read_tokens: 1,
+        total_tokens: 9,
+      },
     });
   }
+
+  it('probes Agy 1.1.9 once and disables slash expansion for run and stream', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+
+    let promise: Promise<unknown> = runner.run('first');
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from('  --disable-slash-commands  Disable slash command expansion\n')
+    );
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(2);
+    mockProcess.stdout.emit('data', Buffer.from(success('first answer', 'conv-1')));
+    mockProcess.emit('close', 0);
+    await promise;
+
+    promise = runner.runStream('second', {});
+    mockProcess = await waitForProcess(3);
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          event: 'result',
+          result: { conversation_id: 'conv-2', status: 'SUCCESS', response: 'second answer' },
+        })}\n`
+      )
+    );
+    mockProcess.emit('close', 0);
+    await promise;
+
+    const calls = (spawn as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[0][1]).toEqual(['--help']);
+    expect(calls[1][1]).toContain('--disable-slash-commands');
+    expect(calls[2][1]).toContain('--disable-slash-commands');
+  });
+
+  it('omits the slash opt-out flag when an older Agy help does not advertise it', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    let promise = runner.run('hello');
+
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit('data', Buffer.from('Usage of agy:\n  --print  Print a response\n'));
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(2);
+    mockProcess.stdout.emit('data', Buffer.from(success('old answer', 'conv-old')));
+    mockProcess.emit('close', 0);
+    await promise;
+
+    promise = runner.run('again');
+    mockProcess = await waitForProcess(3);
+    mockProcess.stdout.emit('data', Buffer.from(success('cached old answer', 'conv-old-2')));
+    mockProcess.emit('close', 0);
+    await promise;
+
+    const calls = (spawn as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[1][1]).not.toContain('--disable-slash-commands');
+    expect(calls[2][1]).not.toContain('--disable-slash-commands');
+  });
+
+  it('retries the slash capability probe on the next request after a transient failure', async () => {
+    const { spawn } = await import('child_process');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    let promise = runner.run('hello');
+
+    let mockProcess = await waitForProcess();
+    mockProcess.emit('error', new Error('help unavailable'));
+
+    mockProcess = await waitForProcess(2);
+    mockProcess.stdout.emit('data', Buffer.from(success('fallback answer', 'conv-fallback')));
+    mockProcess.emit('close', 0);
+    await promise;
+
+    promise = runner.run('again');
+    mockProcess = await waitForProcess(3);
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from('  --disable-slash-commands  Disable slash command expansion\n')
+    );
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(4);
+    mockProcess.stdout.emit('data', Buffer.from(success('recovered answer', 'conv-recovered')));
+    mockProcess.emit('close', 0);
+    await promise;
+
+    const calls = (spawn as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(4);
+    expect(calls[1][1]).not.toContain('--disable-slash-commands');
+    expect(calls[2][1]).toEqual(['--help']);
+    expect(calls[3][1]).toContain('--disable-slash-commands');
+  });
+
+  it('shares a managed in-flight capability probe within the same channel', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    const timeoutStarted = vi.fn();
+    const timeoutCleared = vi.fn();
+    runner.on('timeout-started', timeoutStarted);
+    runner.on('timeout-cleared', timeoutCleared);
+
+    const probeRunner = runner as unknown as {
+      supportsDisableSlashCommands(channelId?: string): Promise<boolean>;
+    };
+    const first = probeRunner.supportsDisableSlashCommands('channel-shared');
+    const second = probeRunner.supportsDisableSlashCommands('channel-shared');
+    const mockProcess = await waitForProcess();
+
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect(runner.hasRunner('channel-shared')).toBe(true);
+    expect(runner.getTimeoutState('channel-shared').active).toBe(true);
+    expect(timeoutStarted).toHaveBeenCalledOnce();
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from('  --disable-slash-commands  Disable slash command expansion\n')
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(runner.hasRunner('channel-shared')).toBe(false);
+    expect(runner.getTimeoutState('channel-shared').active).toBe(false);
+    expect(timeoutCleared).toHaveBeenCalledWith({
+      channelId: 'channel-shared',
+      reason: 'completed',
+    });
+  });
+
+  it('does not start a prompt when the slash capability probe is cancelled', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello', { channelId: 'channel-1' });
+
+    await waitForProcess();
+    expect(runner.cancel('channel-1')).toBe(true);
+
+    await expect(promise).rejects.toThrow('capability probe was cancelled');
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it('does not start a prompt when the managed capability probe is stopped', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello', { channelId: 'channel-managed-stop' });
+
+    await waitForProcess();
+    expect(processManager.stop('channel-managed-stop')).toBe(true);
+
+    await expect(promise).rejects.toThrow('capability probe was cancelled');
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it('does not start a prompt after the managed capability probe times out', async () => {
+    const { spawn } = await import('child_process');
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const runner = new AntigravityRunner({ timeoutMs: 5 });
+    const promise = runner.run('hello', { channelId: 'channel-probe-timeout' });
+
+    await waitForProcess();
+    await expect(promise).rejects.toThrow('capability probe was cancelled');
+    await tick();
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
 
   it('builds headless JSON args with permission skip by default', async () => {
     const runner = new AntigravityRunner({ skipPermissions: true });
@@ -404,7 +590,7 @@ describe('AntigravityRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('streams Agy 1.1.3 text deltas, tool starts, and the conversation id', async () => {
+  it('streams Agy 1.1.10 text deltas, tool starts, and the root conversation id', async () => {
     const { spawn } = await import('child_process');
     const runner = new AntigravityRunner({});
     const onText = vi.fn();
@@ -420,7 +606,11 @@ describe('AntigravityRunner', () => {
     const mockProcess = await waitForProcess();
 
     const events = [
-      { event: 'init', conversation_id: 'conv-stream', init: {} },
+      {
+        event: 'init',
+        conversation_id: 'conv-stream',
+        init: { cwd: '/tmp/project', tools: ['list_dir'], permission_mode: 'request-review' },
+      },
       {
         event: 'step_update',
         step_update: {
@@ -449,6 +639,19 @@ describe('AntigravityRunner', () => {
           conversation_id: 'conv-stream',
           step_index: 4,
           state: 'ACTIVE',
+          step_type: 'subagent',
+          subagent_info: {
+            conversation_id: 'conv-child',
+            log_uri: 'file:///tmp/conv-child.log',
+          },
+        },
+      },
+      {
+        event: 'step_update',
+        step_update: {
+          conversation_id: 'conv-stream',
+          step_index: 5,
+          state: 'ACTIVE',
           step_type: 'agent_response',
           text_delta: '水田',
         },
@@ -457,10 +660,17 @@ describe('AntigravityRunner', () => {
         event: 'step_update',
         step_update: {
           conversation_id: 'conv-stream',
-          step_index: 4,
+          step_index: 5,
           state: 'DONE',
           step_type: 'agent_response',
           text_delta: 'チェック\n',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 4,
+            thinking_tokens: 2,
+            cache_read_tokens: 3,
+            total_tokens: 16,
+          },
         },
       },
       {
@@ -469,6 +679,13 @@ describe('AntigravityRunner', () => {
           conversation_id: 'conv-stream',
           status: 'SUCCESS',
           response: '水田チェック\n',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 4,
+            thinking_tokens: 2,
+            cache_read_tokens: 3,
+            total_tokens: 16,
+          },
         },
       },
     ];
