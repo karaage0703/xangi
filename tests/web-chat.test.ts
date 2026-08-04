@@ -1116,6 +1116,22 @@ describe('web-chat HTTP API', () => {
     expect(sourceStylesheet).toMatch(
       /\.pane-tabs > span > button:last-child\s*\{[^}]*z-index:\s*1[^}]*flex:\s*0 0 28px/s
     );
+    expect(sourceStylesheet).toMatch(
+      /\.panes-toolbar\s*\{[^}]*min-height:\s*40px[^}]*padding-top:\s*1px[^}]*padding-bottom:\s*1px/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.pane-tabs\s*\{[^}]*display:\s*flex[^}]*overflow-x:\s*auto[^}]*padding-top:\s*1px[^}]*padding-bottom:\s*1px[^}]*scrollbar-width:\s*none/s
+    );
+    expect(sourceStylesheet).toMatch(/\.pane-tabs::\-webkit-scrollbar\s*\{[^}]*display:\s*none/s);
+    expect(sourceStylesheet).toMatch(
+      /\.pane-tabs button\s*\{[^}]*min-height:\s*36px/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.add-pane\s*\{[^}]*min-height:\s*36px[^}]*padding:\s*4px 8px/s
+    );
+    expect(chatSource).toMatch(
+      /<header className="panes-toolbar">[\s\S]*className="add-pane"[\s\S]*<\/header>[\s\S]*<div className="pane-tabs" role="tablist">/
+    );
     expect(sourceStylesheet).toMatch(/\.session-copy strong\s*\{[^}]*font-weight:\s*500/s);
     expect(sourceStylesheet).toMatch(
       /\.session-row\.current \.session-copy strong\s*\{[^}]*font-weight:\s*600/s

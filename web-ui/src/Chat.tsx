@@ -2667,6 +2667,8 @@ export function Chat() {
               <button
                 type="button"
                 className="add-pane"
+                aria-label="ペインを追加"
+                title="ペインを追加"
                 disabled={panes.length >= MAX_PANES}
                 onClick={() => addPane()}
               >

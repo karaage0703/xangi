@@ -84,7 +84,7 @@ Buttons are displayed on response messages.
   - `Stop` — equivalent to `/stop`. Interrupts the task
   - `延長` (Extend) — **doubles the remaining time** (adds residual to the deadline, capped at `TIMEOUT_MAX_MS`)
   - `⏱ MM:SS` — remaining time badge (click does nothing, turns red under 30s)
-- **After completion**: `New` resets the session. `History` shows chronological commentary and tool calls only to the user who clicked it
+- **After completion**: `New` resets the session. `History` shows chronological commentary and tool calls only to the user who clicked it; on Slack, `Close` removes only that ephemeral display
 - **After completion in a Discord thread**: `Leave` button — removes the user who clicked it from the thread, removing the thread from that user's sidebar. The bot requires the Discord Manage Threads permission
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.

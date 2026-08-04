@@ -256,6 +256,31 @@ export function createSlackCompletedBlocks(options?: {
   ];
 }
 
+export function createSlackHistoryBlocks(text: string): KnownBlock[] {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '閉じる' },
+          action_id: 'xangi_history_dismiss',
+        },
+      ],
+    },
+  ];
+}
+
+export async function dismissSlackHistory(
+  respond: (payload: { delete_original: true }) => Promise<unknown>
+): Promise<void> {
+  await respond({ delete_original: true });
+}
+
 export function resolveSlackHistoryActionContext(
   message: { thread_ts?: string } | undefined,
   value: string | undefined
@@ -707,10 +732,16 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
           channel: channelId,
           user: userId,
           text: chunk,
+          blocks: createSlackHistoryBlocks(chunk),
           ...(historyContext.threadTs && { thread_ts: historyContext.threadTs }),
         })
         .catch(() => {});
     }
+  });
+
+  app.action('xangi_history_dismiss', async ({ ack, respond }) => {
+    await ack();
+    await dismissSlackHistory(respond);
   });
 
   app.action('xangi_reply_suggestions', async ({ ack, action, body, client: actionClient }) => {

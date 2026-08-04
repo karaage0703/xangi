@@ -3065,7 +3065,7 @@ video.media-preview {
 
   .project-context-chip {
     max-width: calc(100vw - 142px - var(--safe-left) - var(--safe-right));
-    min-height: 40px;
+    min-height: 36px;
   }
 
   .project-context-chip small {
@@ -3073,11 +3073,11 @@ video.media-preview {
   }
 
   .panes-toolbar {
-    min-height: 48px;
-    padding-top: max(2px, var(--safe-top));
-    padding-right: max(10px, var(--safe-right));
-    padding-bottom: 2px;
-    padding-left: max(10px, var(--safe-left));
+    min-height: 40px;
+    padding-top: 1px;
+    padding-right: max(8px, var(--safe-right));
+    padding-bottom: 1px;
+    padding-left: max(8px, var(--safe-left));
   }
 
   .pane-tabs {
@@ -3086,15 +3086,25 @@ video.media-preview {
     overflow-x: auto;
     border-bottom: 1px solid var(--hairline);
     background: var(--surface-muted);
-    padding-top: 2px;
+    padding-top: 1px;
     padding-right: max(5px, var(--safe-right));
-    padding-bottom: 2px;
+    padding-bottom: 1px;
     padding-left: max(5px, var(--safe-left));
+    scrollbar-width: none;
+  }
+
+  .pane-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .add-pane {
+    min-height: 36px;
+    padding: 4px 8px;
   }
 
   .pane-tabs button {
     min-width: 96px;
-    min-height: 44px;
+    min-height: 36px;
     max-width: 180px;
     overflow: hidden;
     border: 0;
