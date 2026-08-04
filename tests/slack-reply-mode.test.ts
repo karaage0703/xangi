@@ -10,8 +10,10 @@ import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import {
   _resetSlackStateForTest,
   createSlackCompletedBlocks,
+  createSlackHistoryBlocks,
   createSlackReplySuggestionBlocks,
   buildSlackCompletionNotification,
+  dismissSlackHistory,
   processMessage,
   resolveSlackDeleteReactionTarget,
   resolveSlackHistoryActionContext,
@@ -73,6 +75,30 @@ describe('Slack reply suggestion UI', () => {
       threadId: 'slack:C:T',
       turnId: 'turn-1',
     });
+  });
+
+  it('adds a dismiss button that deletes only the ephemeral History response', async () => {
+    const blocks = createSlackHistoryBlocks('History\n🔧 Bash実行: pwd');
+    expect(blocks).toEqual([
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: 'History\n🔧 Bash実行: pwd' },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '閉じる' },
+            action_id: 'xangi_history_dismiss',
+          },
+        ],
+      },
+    ]);
+
+    const respond = vi.fn().mockResolvedValue(undefined);
+    await dismissSlackHistory(respond);
+    expect(respond).toHaveBeenCalledWith({ delete_original: true });
   });
 
   it('uses unique action IDs for the ephemeral number buttons', () => {
