@@ -1,6 +1,7 @@
 import type { ChatSseDataMap, ChatSseEvent, ParsedSsePackets, Platform, SsePacket } from './types';
 
 export const AUTOTALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
+const READ_RETRY_DELAYS_MS = [200, 800];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -27,10 +28,43 @@ function errorMessage(body: string, fallback: string): string {
 }
 
 export async function request(url: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(url, init);
-  if (response.ok) return response;
-  const body = await response.text();
-  throw new ApiError(response.status, body, response.statusText);
+  const method = (init?.method || 'GET').toUpperCase();
+  const retryable = method === 'GET' || method === 'HEAD';
+  let attempt = 0;
+
+  while (true) {
+    try {
+      const response = await fetch(url, init);
+      if (response.ok) return response;
+      const body = await response.text();
+      throw new ApiError(response.status, body, response.statusText);
+    } catch (cause) {
+      if (
+        cause instanceof ApiError ||
+        !retryable ||
+        init?.signal?.aborted ||
+        attempt >= READ_RETRY_DELAYS_MS.length
+      ) {
+        throw cause;
+      }
+      await waitForRetry(READ_RETRY_DELAYS_MS[attempt], init?.signal);
+      attempt += 1;
+    }
+  }
+}
+
+function waitForRetry(milliseconds: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, milliseconds);
+    const abort = () => {
+      globalThis.clearTimeout(timer);
+      reject(signal?.reason || new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {

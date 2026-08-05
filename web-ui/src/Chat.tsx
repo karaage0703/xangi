@@ -12,6 +12,7 @@ import { requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
 import {
   applyPublishedLiveEvent,
+  isPaneProcessing,
   liveThreadId,
   selectLiveTurn,
   syncObservedLiveTurn,
@@ -867,14 +868,23 @@ function ChatPane({
     setDiscordComposeEnabled(false);
     followBottomRef.current = !linkedMessageId;
     linkedMessageScrolledRef.current = undefined;
-    setTimeoutState({
-      timeoutAt: summary?.timeoutAt,
-      maxTimeoutAt: summary?.maxTimeoutAt,
-      timeoutMs: summary?.timeoutMs,
-    });
+    setTimeoutState({});
     void loadDetail();
     void loadTurnHistory();
   }, [sessionId]);
+
+  useEffect(() => {
+    if (busy) return;
+    setTimeoutState(
+      summary?.isActive
+        ? {
+            timeoutAt: summary.timeoutAt,
+            maxTimeoutAt: summary.maxTimeoutAt,
+            timeoutMs: summary.timeoutMs,
+          }
+        : {}
+    );
+  }, [busy, summary?.isActive, summary?.maxTimeoutAt, summary?.timeoutAt, summary?.timeoutMs]);
 
   useEffect(() => {
     if (!linkedMessageId || !detail || loadingOlder) return;
@@ -1316,6 +1326,7 @@ function ChatPane({
     timeout.maxTimeoutAt &&
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
+  const processing = isPaneProcessing(busy, summary?.isActive);
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
     [detail?.messages, detail?.platform, turnHistory]
@@ -1496,7 +1507,7 @@ function ChatPane({
         </div>
       )}
       <form
-        className={busy ? 'pane-input-area busy' : 'pane-input-area'}
+        className={processing ? 'pane-input-area busy' : 'pane-input-area'}
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
           void send();
@@ -1507,7 +1518,7 @@ function ChatPane({
             <button
               type="button"
               className="pane-command-btn"
-              disabled={!editable || busy || discordRemoteMode}
+              disabled={!editable || processing || discordRemoteMode}
               aria-label="コマンドとスキルを選択"
               aria-expanded={paletteOpen}
               onClick={() => {
@@ -1521,7 +1532,7 @@ function ChatPane({
             <button
               type="button"
               className="pane-attach-btn"
-              disabled={!editable || busy || uploading || discordRemoteMode}
+              disabled={!editable || processing || uploading || discordRemoteMode}
               onClick={() => fileInputRef.current?.click()}
               aria-label="ファイルを添付"
             >
@@ -1549,7 +1560,7 @@ function ChatPane({
                     ? 'メッセージを入力'
                     : 'セッションを選択するか、新しい会話を開始'
               }
-              disabled={!editable || busy}
+              disabled={!editable || processing}
               value={draft}
               onChange={(event) => {
                 setDraft(event.target.value);
@@ -1589,7 +1600,7 @@ function ChatPane({
             onExecute={executeCommand}
           />
         </div>
-        {busy ? (
+        {processing ? (
           <button type="button" className="pane-stop action-btn" onClick={() => void stopChat()}>
             停止
           </button>
@@ -1602,7 +1613,7 @@ function ChatPane({
             送信
           </button>
         )}
-        {busy && config.timeoutExtendEnabled && (
+        {processing && config.timeoutExtendEnabled && (
           <button
             type="button"
             className="pane-extend action-btn"
@@ -1615,7 +1626,7 @@ function ChatPane({
             延長
           </button>
         )}
-        {busy && timeoutText && (
+        {processing && timeoutText && (
           <span className={timeoutWarning ? 'pane-timeout warning' : 'pane-timeout'}>
             ⏱ {timeoutText}
           </span>

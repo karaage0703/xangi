@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyPublishedLiveEvent,
+  isPaneProcessing,
   liveThreadId,
   selectLiveTurn,
   syncObservedLiveTurn,
 } from '../web-ui/src/liveTurn.js';
 
 describe('Web Chat live turn', () => {
+  it('keeps a reopened pane in processing state while the server session is active', () => {
+    expect(isPaneProcessing(false, true)).toBe(true);
+    expect(isPaneProcessing(false, false)).toBe(false);
+    expect(isPaneProcessing(true, false)).toBe(true);
+  });
+
   it('maps Web and external sessions to their event thread IDs', () => {
     expect(liveThreadId({ id: 'web-1', platform: 'web', contextKey: 'ctx-web' })).toBe(
       'web:web-1'

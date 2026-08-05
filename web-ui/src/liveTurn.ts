@@ -29,6 +29,10 @@ export interface PublishedLiveEvent {
   text?: string;
 }
 
+export function isPaneProcessing(localBusy: boolean, sessionActive?: boolean): boolean {
+  return localBusy || sessionActive === true;
+}
+
 export function liveThreadId(session?: LiveSessionIdentity): string | undefined {
   if (!session) return undefined;
   if (session.platform === 'web') return `web:${session.id}`;
