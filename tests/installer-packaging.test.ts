@@ -21,6 +21,7 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   const nodeBinary = join(root, 'node-fixture');
 
   await mkdir(join(project, 'dist'), { recursive: true });
+  await mkdir(join(project, 'bin'), { recursive: true });
   await mkdir(join(project, 'docs', 'en'), { recursive: true });
   await mkdir(join(project, 'web'), { recursive: true });
   await mkdir(join(project, 'web', 'node_modules'), { recursive: true });
@@ -40,6 +41,10 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await mkdir(join(project, 'memory'), { recursive: true });
 
   await writeFile(join(project, 'dist', 'index.js'), 'console.log("xangi")\n');
+  await writeFile(join(project, 'bin', 'xangi'), '#!/bin/sh\nexit 0\n');
+  await chmod(join(project, 'bin', 'xangi'), 0o755);
+  await writeFile(join(project, 'bin', 'xangi-cmd'), '#!/bin/sh\nexit 0\n');
+  await chmod(join(project, 'bin', 'xangi-cmd'), 0o755);
   await writeFile(join(project, 'dist', '.env'), 'TOKEN=do-not-package\n');
   await writeFile(join(project, 'dist', 'server.pem'), 'private material\n');
   await writeFile(join(project, 'README.md'), '# xangi\n');
@@ -188,6 +193,8 @@ describe('packaging/build-bundle.sh', () => {
     const root = 'xangi-1.2.3-darwin-arm64';
 
     expect(entries).toContain(`${root}/dist/index.js`);
+    expect(entries).toContain(`${root}/bin/xangi`);
+    expect(entries).toContain(`${root}/bin/xangi-cmd`);
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
     expect(entries).toContain(`${root}/web/inter-chat.html`);
@@ -222,6 +229,10 @@ describe('packaging/build-bundle.sh', () => {
     await expect(
       readFile(join(unpacked, root, 'runtime', 'bin', 'node'), 'utf8')
     ).resolves.toContain('fixture-node');
+    const canonical = join(unpacked, root, 'bin', 'xangi');
+    await expect(readFile(canonical, 'utf8')).resolves.toContain('#!/bin/sh');
+    const shim = join(unpacked, root, 'bin', 'xangi-cmd');
+    await expect(readFile(shim, 'utf8')).resolves.toContain('#!/bin/sh');
   });
 
   it('release targetと一致しないNode runtimeを拒否する', async () => {

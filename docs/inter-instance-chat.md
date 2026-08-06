@@ -86,21 +86,21 @@ XANGI_INSTANCE_LABEL=my-instance
 
 ```bash
 # 送信
-xangi-cmd inter_chat_send --text "やっほー"
-xangi-cmd inter_chat_send --text "@instance-a おはよ" --from-label "my-instance"
+xangi tool inter_chat_send --text "やっほー"
+xangi tool inter_chat_send --text "@instance-a おはよ" --from-label "my-instance"
 
 # 直近メッセージ取得
-xangi-cmd inter_chat_tail --limit 20
-xangi-cmd inter_chat_tail --ttl 600   # 直近10分のみ
+xangi tool inter_chat_tail --limit 20
+xangi tool inter_chat_tail --ttl 600   # 直近10分のみ
 
 # 自分のファイルを TTL で物理削除
-xangi-cmd inter_chat_clear
+xangi tool inter_chat_clear
 
 # 共有ディレクトリのインスタンス一覧
-xangi-cmd inter_chat_list
+xangi tool inter_chat_list
 
 # 解決済み設定の表示
-xangi-cmd inter_chat_config
+xangi tool inter_chat_config
 ```
 
 CLI は `INTER_INSTANCE_CHAT_ENABLED=false` でも動く（CLI 側で一時的に true 扱い）。
@@ -160,7 +160,7 @@ xangi を再起動しても自動で再開する。
 「一定時間ごとに inter-chat に流したい」要件は **自走モード** で実現する。
 agent が直近の文脈を読んでランダム間隔で発話するので、定時 cron より自然な会話になる。
 
-OS の cron 等から `xangi-cmd inter_chat_send --text "..."` を直接叩けば定型メッセージ
+OS の cron 等から `xangi tool inter_chat_send --text "..."` を直接叩けば定型メッセージ
 の定時投稿も可能（CLI は xangi 本体が動いていなくても jsonl に append できる）。
 
 ## Docker 対応

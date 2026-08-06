@@ -388,7 +388,7 @@ describe('buildAttachmentResult', () => {
     expect(displayText).toBe(getMissingMediaNotice());
   });
 
-  it('strips the marker without a notice when a real file is outside allowed roots', () => {
+  it('warns without exposing the path when a real file is outside allowed roots', () => {
     const outsideDir = mkdtempSync(join(process.env.HOME ?? tmpdir(), 'xangi-outside-'));
     const outsideFile = join(outsideDir, 'real.ehpk');
     writeFileSync(outsideFile, 'fake ehpk');
@@ -399,7 +399,27 @@ describe('buildAttachmentResult', () => {
         workspace
       );
       expect(filePaths).toEqual([]);
-      expect(displayText).toBe('生成した');
+      expect(displayText).toContain('生成した');
+      expect(displayText).toContain('送信が許可された保存先の外');
+      expect(displayText).not.toContain(outsideFile);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns only the warning for an outside-allowed marker without body text', () => {
+    const outsideDir = mkdtempSync(join(process.env.HOME ?? tmpdir(), 'xangi-outside-'));
+    const outsideFile = join(outsideDir, 'real.ehpk');
+    writeFileSync(outsideFile, 'fake ehpk');
+    try {
+      const { filePaths, displayText } = buildAttachmentResult(
+        `MEDIA:${outsideFile}`,
+        undefined,
+        workspace
+      );
+      expect(filePaths).toEqual([]);
+      expect(displayText).toContain('送信が許可された保存先の外');
+      expect(displayText).not.toContain(outsideFile);
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
     }

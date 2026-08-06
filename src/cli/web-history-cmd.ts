@@ -1,7 +1,7 @@
 /**
  * Web Chat の現ペイン履歴を取得するCLIモジュール
  *
- * Discord/Slack の `xangi-cmd discord_history` 相当を Web 用に提供する。
+ * Discord/Slack の `xangi tool discord_history` 相当を Web 用に提供する。
  * Claude Code セッションが切れても xangi の app session jsonl は残るので、
  * これを開けば現ペインの過去会話を取り戻せる。
  *

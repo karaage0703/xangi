@@ -1,7 +1,7 @@
 /**
  * Slack Web API direct command module.
  *
- * xangi-cmd uses this for Slack operations that do not need the running Bolt app.
+ * xangi tool uses this for Slack operations that do not need the running Bolt app.
  */
 
 import { ValidationError } from '../errors.js';

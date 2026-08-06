@@ -33,12 +33,16 @@ function canonical(value: unknown): unknown {
   );
 }
 
-async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
+async function fixture(
+  platform: 'darwin' | 'linux' = 'darwin',
+  options: { includeCompatibilityShim?: boolean } = {}
+) {
   const root = await mkdtemp(join(tmpdir(), 'xangi-bootstrap-'));
   roots.push(root);
   const archiveRoot = `xangi-1.2.3-${platform}-arm64`;
   const payload = join(root, archiveRoot);
   await mkdir(join(payload, 'runtime', 'bin'), { recursive: true });
+  await mkdir(join(payload, 'bin'), { recursive: true });
   await mkdir(join(payload, 'dist', 'cli'), { recursive: true });
   await mkdir(join(payload, 'web'), { recursive: true });
   await mkdir(join(payload, 'web', 'app', 'assets'), { recursive: true });
@@ -47,6 +51,12 @@ async function fixture(platform: 'darwin' | 'linux' = 'darwin') {
     '#!/bin/sh\nif [ "${1:-}" = -e ]; then rm -f -- "$4"; mv -- "$3" "$4"; exit 0; fi\n[ -z "${XANGI_FIXTURE_NODE_LOG:-}" ] || printf "NODE_OPTIONS=%s ARGS=%s\\n" "${NODE_OPTIONS:-}" "$*" >> "$XANGI_FIXTURE_NODE_LOG"\n[ "${XANGI_FIXTURE_FAIL_INSTALL:-0}" = 1 ] && [ "${2:-}" = install ] && exit 9\n[ "${XANGI_FIXTURE_SETUP_EXIT:-0}" != 0 ] && [ "${2:-}" = setup ] && exit "$XANGI_FIXTURE_SETUP_EXIT"\nexit 0\n'
   );
   await chmod(join(payload, 'runtime', 'bin', 'node'), 0o755);
+  await writeFile(join(payload, 'bin', 'xangi'), '#!/bin/sh\nexit 0\n');
+  await chmod(join(payload, 'bin', 'xangi'), 0o755);
+  if (options.includeCompatibilityShim !== false) {
+    await writeFile(join(payload, 'bin', 'xangi-cmd'), '#!/bin/sh\nexit 0\n');
+    await chmod(join(payload, 'bin', 'xangi-cmd'), 0o755);
+  }
   await writeFile(join(payload, 'dist', 'cli', 'xangi-main.js'), '// fixture\n');
   await writeFile(join(payload, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(payload, 'web', 'monitor.html'), '<main>Monitor</main>\n');
@@ -407,6 +417,15 @@ describe('authenticated macOS bootstrap installer', () => {
     await expect(runInstaller(installer, data)).rejects.toMatchObject({ code: 1 });
     const installed = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
     await expect(readFile(join(installed, 'current'))).rejects.toThrow();
+  });
+
+  it('xangi-cmd互換shimを欠くbundleをinstall時に拒否する', async () => {
+    const data = await fixture('darwin', { includeCompatibilityShim: false });
+    const installer = await buildInstaller(data);
+
+    await expect(runInstaller(installer, data)).rejects.toMatchObject({
+      stderr: expect.stringContaining('bundle is missing the xangi-cmd compatibility shim'),
+    });
   });
 
   it('signature不正manifestからinstallerを生成しない', async () => {

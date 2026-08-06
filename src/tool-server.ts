@@ -2,11 +2,11 @@
  * xangi Tool Server — Claude Code向けHTTPエンドポイント
  *
  * xangiプロセス内で起動し、Discord/Schedule/System操作のHTTP APIを提供。
- * Claude CodeはBashツールでxangi-cmdを使ってこのサーバーに問い合わせる。
+ * Claude CodeはBashツールでxangi toolを使ってこのサーバーに問い合わせる。
  *
  * ポートはOS自動割り当て（競合なし）。起動後に
  * process.env.XANGI_TOOL_SERVER に接続先URLを設定し、
- * xangi-cmdを使う子プロセスへ渡す。
+ * xangi toolを使う子プロセスへ渡す。
  */
 import { createServer, type Server } from 'http';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';

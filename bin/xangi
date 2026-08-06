@@ -21,6 +21,12 @@ source_cli="$ROOT_DIR/src/cli/xangi-main.ts"
 local_tsx="$ROOT_DIR/node_modules/.bin/tsx"
 checkout_updater="$ROOT_DIR/packaging/update-checkout.sh"
 
+# Managed bundles run with their bundled Node.js runtime. Keeping this launcher
+# inside current/bin also makes `xangi tool` available on the agent's pinned PATH.
+if [ -x "$ROOT_DIR/runtime/bin/node" ] && [ -f "$ROOT_DIR/dist/cli/xangi-main.js" ]; then
+  exec "$ROOT_DIR/runtime/bin/node" "$ROOT_DIR/dist/cli/xangi-main.js" "$@"
+fi
+
 if { [ -d "$ROOT_DIR/.git" ] || [ -f "$ROOT_DIR/.git" ]; } && [ "${1:-}" = "update" ]; then
   managed_update=false
   for arg in "$@"; do

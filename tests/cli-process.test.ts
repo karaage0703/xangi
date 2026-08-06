@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildCliEnv } from '../src/cli-process.js';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const repoBin = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin');
 
 describe('buildCliEnv', () => {
   const originalChannelId = process.env.XANGI_CHANNEL_ID;
@@ -40,5 +44,11 @@ describe('buildCliEnv', () => {
     const env = buildCliEnv('channel');
 
     expect(env.XANGI_PLATFORM).toBeUndefined();
+  });
+
+  it('pins the current instance bin directory ahead of the inherited PATH', () => {
+    const env = buildCliEnv('channel');
+
+    expect(env.PATH?.split(':')[0]).toBe(repoBin);
   });
 });

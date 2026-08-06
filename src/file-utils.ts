@@ -306,6 +306,8 @@ export function hasUnresolvedMediaMarker(text: string, workspaceRootOverride?: s
 
 const DEFAULT_MISSING_MEDIA_NOTICE =
   '⚠️ 指定されたファイルを添付できませんでした。ファイルが存在しません。';
+const OUTSIDE_ALLOWED_MEDIA_NOTICE =
+  '⚠️ 指定されたファイルは送信が許可された保存先の外にあるため、添付できませんでした。';
 
 /**
  * 添付できなかったことをユーザに伝える注記。環境変数 `ATTACHMENT_MISSING_NOTICE` で上書き可能。
@@ -344,7 +346,13 @@ export function buildAttachmentResult(
     return { filePaths, displayText: stripped ? `${stripped}\n\n${notice}` : notice };
   }
   if (unattachedMarkers.hasOutsideAllowedExisting) {
-    return { filePaths, displayText: stripFilePaths(result) };
+    const stripped = stripFilePaths(result);
+    return {
+      filePaths,
+      displayText: stripped
+        ? `${stripped}\n\n${OUTSIDE_ALLOWED_MEDIA_NOTICE}`
+        : OUTSIDE_ALLOWED_MEDIA_NOTICE,
+    };
   }
   return { filePaths, displayText: result };
 }

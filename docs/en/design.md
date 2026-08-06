@@ -266,7 +266,7 @@ Manages the system prompts that xangi injects into AI CLIs:
 
 - **Chat platform info** — A short fixed text indicating the conversation is via Discord/Slack
 - **XANGI_COMMANDS** — Keeps only runtime contracts such as long-running work, self restart, `MEDIA:`, and platform-specific identifiers in the persistent prompt
-  - Command usage is stored in `xangi-cmd help <topic|command>` metadata and loaded only when needed
+  - Command usage is stored in `xangi tool help <topic|command>` metadata and loaded only when needed
   - User-facing slash commands keep each platform's `/help` and command metadata as their source of truth
   - When the platform is unknown, no platform-specific rules are injected, preventing Discord and Slack instructions from being mixed
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
@@ -307,7 +307,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | antigravity-cli.ts   | Antigravity CLI          | Google `agy`, Agy 1.1.8+ JSON/stream-json, slash-expansion probing, legacy fallback     |
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
-`backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi-cmd models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
+`backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi tool models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
@@ -568,7 +568,7 @@ Design rationale: Step A's skill hinting is usually decisive — by surfacing "w
 | Category                    | Allowed                                                                                                                                                                                                                                                    |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Direct read-only tools      | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                                           |
-| `exec` / `bash` subcommands | Only commands starting with `xangi-cmd {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` (`models --use` is excluded because it changes state) |
+| `exec` / `bash` subcommands | Only commands starting with `xangi tool {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` (`models --use` is excluded because it changes state) |
 | Shell metacharacters        | If the command contains any of `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` redirect → immediate reject                                                                                                                   |
 
 Anything else returns `{safe: false, reason}`, leading to an `unsafe_tool_in_pseudo_format` structured error that nudges the LLM toward the proper function_calling structure.
@@ -661,7 +661,7 @@ An HTTP API server that allows AI CLIs to safely invoke xangi features (Discord 
 
 ```
 AI CLI (Claude Code, etc.)
-  → xangi-cmd (shell script)
+  → xangi tool (canonical CLI; xangi-cmd is a compatibility shim)
   → HTTP POST http://localhost:<port>/api/execute
   → tool-server (inside xangi process)
   → Discord REST API / Scheduler / Settings
@@ -671,7 +671,8 @@ AI CLI (Claude Code, etc.)
 
 - The previously used port is saved in dataDir and reused across restarts (keeps stale `XANGI_TOOL_SERVER` references in resumed sessions working). Falls back to OS auto-assign if busy; `XANGI_TOOL_SERVER_PORT` pins a fixed port
 - The started URL is injected into child processes as `XANGI_TOOL_SERVER`
-- `xangi-cmd` connects using `XANGI_TOOL_SERVER`
+- `xangi tool` connects using `XANGI_TOOL_SERVER`
+- Without `XANGI_TOOL_SERVER`, it fails instead of guessing a target and risking cross-instance routing
 - Execution context such as the current channel ID is passed to tool-server via the `context` field of the HTTP request
 
 **Security:**
@@ -703,7 +704,7 @@ External process (build script / CI / watcher cron)
 
 - Explicit opt-in via `TRIGGER_ENABLED` (default: false)
 - HTTP requests require Bearer auth with `XANGI_TRIGGER_TOKEN`. If the token is not configured, all requests are rejected even when enabled (the tool-server binds 0.0.0.0, so unauthenticated acceptance would allow arbitrary prompt injection over the network). Token comparison is constant-time
-- `xangi-cmd trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still requires the opt-in
+- `xangi tool trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still requires the opt-in
 - Abuse protection: per-source rate limiting (`TRIGGER_MIN_INTERVAL_MS`, default 10s, `429` on excess) and a concurrent-run guard (`409` while the same source is running). Message length capped at 4000 chars
 
 ### GitHub App Authentication (github-auth.ts)
@@ -833,16 +834,16 @@ Detects and automatically executes special commands output by the AI:
 
 | Method        | Command Example                                                | Action                                                                                                                                            |
 | ------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLI tool      | `xangi-cmd discord_send --channel ID --message "..."`          | Send a Discord message                                                                                                                            |
-| CLI tool      | `xangi-cmd schedule_add --input "Daily 9:00 ..." --channel ID` | Schedule operations                                                                                                                               |
-| CLI tool      | `xangi-cmd system_restart`                                     | Process restart                                                                                                                                   |
+| CLI tool      | `xangi tool discord_send --channel ID --message "..."`          | Send a Discord message                                                                                                                            |
+| CLI tool      | `xangi tool schedule_add --input "Daily 9:00 ..." --channel ID` | Schedule operations                                                                                                                               |
+| CLI tool      | `xangi tool system_restart`                                     | Process restart                                                                                                                                   |
 | Text parsing  | `MEDIA:/path/to/file`                                          | File sending                                                                                                                                      |
 | Text parsing  | `\n===\n`                                                      | Message splitting                                                                                                                                 |
 | Slash command | `/autoreply`                                                   | Show or configure per-channel mention-free auto-reply (persisted to `settings.json`)                                                              |
 | Slash command | `/respondtobots`                                               | Toggle bot-to-bot reply (whitelist via `RESPOND_TO_BOTS`, capped by `RESPOND_TO_BOTS_MAX_CONSECUTIVE`)                                            |
 | Slash command | `/threadmode`                                                  | Show or toggle per-channel Discord per-message thread reply mode (persisted to `settings.json`; global default remains `DISCORD_REPLY_IN_THREAD`) |
 
-CLI tools (`xangi-cmd`) are executed via xangi's built-in tool-server (HTTP endpoint).
+CLI tools (`xangi tool`) are executed via xangi's built-in tool-server (HTTP endpoint).
 Secrets such as DISCORD_TOKEN are confined to the xangi process and cannot be accessed from AI CLIs.
 
 ### Attachment extraction (read leniently, attach narrowly)
@@ -860,6 +861,7 @@ Defense is three-layered: canonical tool route + lenient parsing of explicit mar
    - `![alt](path)` / `[label](path)` (markdown)
    - No "bare path in prose" tier — the false-positive risk (an incidental path string getting attached) outweighs the benefit and widens the attack surface.
 3. Sandbox = every candidate is canonicalized via `fs.realpathSync` before a `startsWith` check against allowlist roots (entire WORKSPACE subtree, the attachment store, `/tmp`, `ATTACHMENT_ALLOWED_DIRS`). This blocks `..` / symlink escapes and doubles as the existence / file-vs-directory check.
+   - An existing candidate outside the allowlist is not attached. Instead of silently dropping it, xangi shows a generic warning that does not expose the local absolute path. It neither expands the allowlist automatically nor bypasses the sandbox to send the file.
 
 - Relative paths are resolved against `WORKSPACE_PATH` (the old code resolved against cwd and missed them).
 - Crucially, the leniency change also closes the "unconditional absolute-path attachment" hole — adding leniency alone would otherwise loosen security.
@@ -972,8 +974,8 @@ This is a representative responsibility map, not a fixed exhaustive inventory. R
 
 ```
 bin/
-├── xangi               # User-facing terminal CLI (calls Web / Even Terminal compatible API)
-└── xangi-cmd           # CLI wrapper (shell script, relays to tool-server)
+├── xangi               # Canonical session/service/tool CLI; managed bundles use bundled Node.js
+└── xangi-cmd           # Backward-compatible shim that delegates to xangi tool
 
 src/
 ├── index.ts            # Entry point (startup sequence)
@@ -1043,7 +1045,8 @@ src/
 │   ├── inter-chat-cmd.ts       # Inter-instance chat operations
 │   ├── terminal-session-cmd.ts # Terminal session operations
 │   ├── xangi.ts        #   User-facing terminal CLI entry point
-│   └── xangi-cmd.ts    #   Node.js CLI entry point
+│   ├── tool-command.ts #   Shared tool-server dispatcher
+│   └── xangi-cmd.ts    #   Backward-compatible entry point
 ├── inter-instance-chat/ # Inter-instance chat (per-instance jsonl / auto-talk / history viewer)
 ├── local-llm/          # Local LLM adapter
 │   ├── runner.ts       #   Main runner (session management, tool execution loop)
@@ -1061,7 +1064,7 @@ src/
 │   ├── xangi-commands.ts          # Per-platform assembly
 │   ├── xangi-commands-common.ts   # Common (timeout handling, etc.)
 │   ├── xangi-commands-chat-platform.ts # Chat platform common (MEDIA:/schedule/system)
-│   ├── xangi-commands-discord.ts  # Discord-specific (xangi-cmd discord_*)
+│   ├── xangi-commands-discord.ts  # Discord-specific (xangi tool discord_*)
 │   ├── xangi-commands-slack.ts    # Slack-specific
 │   ├── xangi-commands-web.ts      # Web-specific
 │   ├── xangi-commands-line.ts     # LINE-specific

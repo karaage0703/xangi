@@ -12,7 +12,7 @@ xangiの詳細な使い方ガイドです。
 - [セッション管理](#セッション管理)
 - [スケジューラー](#スケジューラー)
 - [Terminal CLI（xangi）](#terminal-clixangi)
-- [チャット操作（xangi-cmd）](#チャット操作xangi-cmd)
+- [チャット操作（xangi tool）](#チャット操作xangi-tool)
 - [イベントトリガー](#イベントトリガー)
 - [ランタイム設定](#ランタイム設定)
 - [AIによる自律操作](#aiによる自律操作)
@@ -124,7 +124,7 @@ API（プログラマブル操作）:
 
 ## スケジューラー
 
-定期実行やリマインダーを設定できます。AI に自然言語で頼むと、AI が `xangi-cmd schedule_add` などを呼び出してスケジュールを登録します。
+定期実行やリマインダーを設定できます。AI に自然言語で頼むと、AI が `xangi tool schedule_add` などを呼び出してスケジュールを登録します。
 
 ### 操作方法
 
@@ -132,7 +132,7 @@ API（プログラマブル操作）:
 | -------------------------------- | ----------------------------------------------- |
 | `/schedule` (Discord スラッシュ) | GUI でスケジュールを追加・一覧・削除・切替      |
 | Web UI の「予定」                | 全対応platformの予定を追加・編集・停止・削除    |
-| `xangi-cmd schedule_*`           | AI または CLI から操作（下記）                  |
+| `xangi tool schedule_*`           | AI または CLI から操作（下記）                  |
 | 自然言語                         | 「毎日 9 時におはようって言って」等で AI が登録 |
 
 ### 時間指定の書き方
@@ -173,29 +173,29 @@ API（プログラマブル操作）:
 | 月         | 1-12 |                     |
 | 曜日       | 0-6  | 0=日曜, 1=月曜, ... |
 
-### `xangi-cmd schedule_*`
+### `xangi tool schedule_*`
 
 AI ／ シェルから直接スケジュール操作できます。`schedule_add`では送信先を曖昧にしないため、`--channel`が必須です。Web Chatへ送る場合は`--platform web`とWeb session IDを指定します。
 
 ```bash
 # スケジュール追加（自然言語）
-xangi-cmd schedule_add --input "毎日 9:00 おはよう" --channel <channelId>
-xangi-cmd schedule_add --input "30分後 ミーティング" --channel <channelId>
-xangi-cmd schedule_add --input "15:00 レビュー" --channel <channelId>
-xangi-cmd schedule_add --input "毎週月曜 10:00 週次MTG" --channel <channelId>
-xangi-cmd schedule_add --input "cron 0 9 * * * おはよう" --channel <channelId>
+xangi tool schedule_add --input "毎日 9:00 おはよう" --channel <channelId>
+xangi tool schedule_add --input "30分後 ミーティング" --channel <channelId>
+xangi tool schedule_add --input "15:00 レビュー" --channel <channelId>
+xangi tool schedule_add --input "毎週月曜 10:00 週次MTG" --channel <channelId>
+xangi tool schedule_add --input "cron 0 9 * * * おはよう" --channel <channelId>
 
 # Webセッションに送りたい場合
-xangi-cmd schedule_add --input "毎日 9:00 状況確認" --platform web --channel <sessionId>
+xangi tool schedule_add --input "毎日 9:00 状況確認" --platform web --channel <sessionId>
 
 # 一覧表示
-xangi-cmd schedule_list
+xangi tool schedule_list
 
 # 削除（ID 指定）
-xangi-cmd schedule_remove --id <スケジュールID>
+xangi tool schedule_remove --id <スケジュールID>
 
 # 有効/無効切り替え
-xangi-cmd schedule_toggle --id <スケジュールID>
+xangi tool schedule_toggle --id <スケジュールID>
 ```
 
 ### データ保存
@@ -219,7 +219,7 @@ curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install
 
 `xangi` は人間が端末から xangi Web セッションに接続するための薄いクライアントです。既存の Even Terminal 互換 API (`/api/sessions` / `/api/prompt` / `/api/messages` / `/api/status`) を使い、Claude Code / Codex CLI などのバックエンドを直接起動しません。実際の backend / model は xangi 本体の設定または `XANGI_EVEN_TERMINAL_BACKEND` 系の設定で決まります。
 
-`xangi-cmd` は AI エージェント内部や運用スクリプト向けの管理CLIです。`xangi` はセッション読み書きだけを行うユーザー向けCLIなので、権限境界を分けています。
+`xangi` はセッション操作・サービス操作・AI向けtool操作をまとめた正規CLIです。AIエージェントや運用スクリプトは `xangi tool <operation>` を使います。従来の `xangi-cmd <operation>` も互換shimとして同じdispatcherへ中継しますが、新しい文書とスクリプトでは `xangi tool` を使ってください。
 
 ```bash
 # 開発中に xangi コマンドを PATH に通す
@@ -325,30 +325,30 @@ GitHub Releaseでは共通入口を`install.sh`として公開します。`packa
 }
 ```
 
-## チャット操作（xangi-cmd）
+## チャット操作（xangi tool）
 
-AIが `xangi-cmd` CLIツール経由でDiscord / Slack操作を実行します。xangi内蔵のtool-server（HTTP API）を介するため、DISCORD_TOKEN / SLACK_BOT_TOKEN 等のシークレットはAI CLIからアクセスできません。
+AIが `xangi tool` CLIツール経由でDiscord / Slack操作を実行します。xangi内蔵のtool-server（HTTP API）を介するため、DISCORD_TOKEN / SLACK_BOT_TOKEN 等のシークレットはAI CLIからアクセスできません。
 
-常駐システムプロンプトには全コマンド例を埋め込みません。AIは操作方法や引数が必要な時に `xangi-cmd help`、`xangi-cmd help <topic>`、`xangi-cmd help <command>` で現在のusageを確認します。topicは `discord` / `slack` / `web` / `schedule` / `models` / `trigger` / `system` / `local` です。ユーザー向けslash commandの正本は各platformの `/help` です。
+常駐システムプロンプトには全コマンド例を埋め込みません。AIは操作方法や引数が必要な時に `xangi tool help`、`xangi tool help <topic>`、`xangi tool help <command>` で現在のusageを確認します。topicは `discord` / `slack` / `web` / `schedule` / `models` / `trigger` / `system` / `local` です。ユーザー向けslash commandの正本は各platformの `/help` です。
 
 | コマンド                                                                        | 説明                                                                                                       |
 | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `xangi-cmd discord_history --channel <ID> [--count N] [--offset M]`             | チャンネル履歴取得                                                                                         |
-| `xangi-cmd discord_message --channel <ID> --message-id <ID>`                    | 特定メッセージの全文取得                                                                                   |
-| `xangi-cmd discord_send --channel <ID> --message "text"`                        | メッセージ送信                                                                                             |
-| `xangi-cmd discord_channels --guild <ID>`                                       | チャンネル一覧                                                                                             |
-| `xangi-cmd discord_search --channel <ID> --keyword "text"`                      | メッセージ検索                                                                                             |
-| `xangi-cmd discord_edit --channel <ID> --message-id <ID> --content "text"`      | メッセージ編集                                                                                             |
-| `xangi-cmd discord_delete --channel <ID> --message-id <ID>`                     | メッセージ削除                                                                                             |
-| `xangi-cmd discord_thread_leave --user <ID> [--channel <ID>]`                   | スレッドから指定ユーザーを退出させる＝そのユーザーのサイドバーから消す（`--channel` 省略で現在のスレッド） |
-| `xangi-cmd media_send --channel <ID> --file /path/to/file`                      | ファイル送信                                                                                               |
-| `xangi-cmd web_history [--session <id>] [--count N]`                            | Web Chat 現ペイン履歴取得（`XANGI_CHANNEL_ID=web-chat:<id>` 自動解決）                                     |
-| `xangi-cmd slack_history [--channel <id>] [--count N]`                          | Slack 現チャンネル履歴取得（`XANGI_CHANNEL_ID=<channel>` 自動解決）                                        |
-| `xangi-cmd slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Slackメッセージ送信                                                                                        |
-| `xangi-cmd slack_channels [--types public_channel,private_channel] [--limit N]` | Slackチャンネル一覧                                                                                        |
-| `xangi-cmd slack_search --channel <id> --keyword "text" [--count N]`            | Slackメッセージ検索                                                                                        |
-| `xangi-cmd slack_edit --channel <id> --message-ts <ts> --content "text"`        | Slackメッセージ編集                                                                                        |
-| `xangi-cmd slack_delete --channel <id> --message-ts <ts>`                       | Slackメッセージ削除                                                                                        |
+| `xangi tool discord_history --channel <ID> [--count N] [--offset M]`             | チャンネル履歴取得                                                                                         |
+| `xangi tool discord_message --channel <ID> --message-id <ID>`                    | 特定メッセージの全文取得                                                                                   |
+| `xangi tool discord_send --channel <ID> --message "text"`                        | メッセージ送信                                                                                             |
+| `xangi tool discord_channels --guild <ID>`                                       | チャンネル一覧                                                                                             |
+| `xangi tool discord_search --channel <ID> --keyword "text"`                      | メッセージ検索                                                                                             |
+| `xangi tool discord_edit --channel <ID> --message-id <ID> --content "text"`      | メッセージ編集                                                                                             |
+| `xangi tool discord_delete --channel <ID> --message-id <ID>`                     | メッセージ削除                                                                                             |
+| `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | スレッドから指定ユーザーを退出させる＝そのユーザーのサイドバーから消す（`--channel` 省略で現在のスレッド） |
+| `xangi tool media_send --channel <ID> --file /path/to/file`                      | ファイル送信                                                                                               |
+| `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat 現ペイン履歴取得（`XANGI_CHANNEL_ID=web-chat:<id>` 自動解決）                                     |
+| `xangi tool slack_history [--channel <id>] [--count N]`                          | Slack 現チャンネル履歴取得（`XANGI_CHANNEL_ID=<channel>` 自動解決）                                        |
+| `xangi tool slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Slackメッセージ送信                                                                                        |
+| `xangi tool slack_channels [--types public_channel,private_channel] [--limit N]` | Slackチャンネル一覧                                                                                        |
+| `xangi tool slack_search --channel <id> --keyword "text" [--count N]`            | Slackメッセージ検索                                                                                        |
+| `xangi tool slack_edit --channel <id> --message-ts <ts> --content "text"`        | Slackメッセージ編集                                                                                        |
+| `xangi tool slack_delete --channel <id> --message-ts <ts>`                       | Slackメッセージ削除                                                                                        |
 
 Slack では `SLACK_REACTION_DELETE_ENABLED=true`（デフォルト）かつ Slack App が `reaction_added` event / `reactions:read` scope を持つ場合、許可ユーザーが bot 投稿に `:wastebasket:` または `:x:` リアクションを付けると、その投稿を削除できます。対象リアクションは `SLACK_DELETE_REACTIONS=wastebasket,x` で変更できます。
 
@@ -356,49 +356,52 @@ Slack では `SLACK_REACTION_DELETE_ENABLED=true`（デフォルト）かつ Sla
 
 ```bash
 # チャンネル履歴を取得
-xangi-cmd discord_history --count 10
-xangi-cmd discord_history --channel 1234567890 --count 10
-xangi-cmd discord_history --channel 1234567890 --count 30 --offset 30  # 遡り
-xangi-cmd discord_message --channel 1234567890 --message-id 111222333  # 履歴で省略された本文を全文取得
+xangi tool discord_history --count 10
+xangi tool discord_history --channel 1234567890 --count 10
+xangi tool discord_history --channel 1234567890 --count 30 --offset 30  # 遡り
+xangi tool discord_message --channel 1234567890 --message-id 111222333  # 履歴で省略された本文を全文取得
 
 # 別チャンネルにメッセージ送信
-xangi-cmd discord_send --channel 1234567890 --message "作業完了しました！"
+xangi tool discord_send --channel 1234567890 --message "作業完了しました！"
 
 # チャンネル一覧
-xangi-cmd discord_channels --guild 9876543210
+xangi tool discord_channels --guild 9876543210
 
 # メッセージ検索
-xangi-cmd discord_search --channel 1234567890 --keyword "PR"
+xangi tool discord_search --channel 1234567890 --keyword "PR"
 
 # Slack操作
-xangi-cmd slack_send --channel C01234567 --message "作業完了しました！"
-xangi-cmd slack_send --channel C01234567 --thread-ts 1719876543.000100 --message "スレッド返信"
-xangi-cmd slack_channels --types public_channel,private_channel --limit 100
-xangi-cmd slack_search --channel C01234567 --keyword "PR" --count 15
+xangi tool slack_send --channel C01234567 --message "作業完了しました！"
+xangi tool slack_send --channel C01234567 --thread-ts 1719876543.000100 --message "スレッド返信"
+xangi tool slack_channels --types public_channel,private_channel --limit 100
+xangi tool slack_search --channel C01234567 --keyword "PR" --count 15
 ```
 
 `--channel` を省略した場合、xangi上で実行中なら現在のチャンネルIDが使われます。CLI単体実行では `--channel` が必要です。
 
 ```bash
 # メッセージ編集・削除
-xangi-cmd discord_edit --channel 1234567890 --message-id 111222333 --content "修正後の内容"
-xangi-cmd discord_delete --channel 1234567890 --message-id 111222333
+xangi tool discord_edit --channel 1234567890 --message-id 111222333 --content "修正後の内容"
+xangi tool discord_delete --channel 1234567890 --message-id 111222333
 
 # スレッドから指定ユーザーを退出させる＝そのユーザーのサイドバーから消す（--channel 省略で現在のスレッド）
-xangi-cmd discord_thread_leave --user 111222333
-xangi-cmd discord_thread_leave --user 111222333 --channel 1234567890
-xangi-cmd slack_edit --channel C01234567 --message-ts 1719876543.000100 --content "修正後の内容"
-xangi-cmd slack_delete --channel C01234567 --message-ts 1719876543.000100
+xangi tool discord_thread_leave --user 111222333
+xangi tool discord_thread_leave --user 111222333 --channel 1234567890
+xangi tool slack_edit --channel C01234567 --message-ts 1719876543.000100 --content "修正後の内容"
+xangi tool slack_delete --channel C01234567 --message-ts 1719876543.000100
 ```
 
 ### Tool Server
 
-xangi-cmdはxangiプロセス内のtool-server（HTTP API）に中継します。
+xangi toolはxangiプロセス内のtool-server（HTTP API）に中継します。
 
 - ポートはOS自動割り当て（複数インスタンスでも競合なし）
 - xangi本体が起動時に `XANGI_TOOL_SERVER` を子プロセスへ注入
-- `xangi-cmd` は `XANGI_TOOL_SERVER` を使って接続先を解決
+- `xangi tool` は `XANGI_TOOL_SERVER` を使って接続先を解決
+- `XANGI_TOOL_SERVER` が無い場合は接続先を推測せずエラー終了（別instanceへの誤接続を防止）
 - 現在のチャンネルIDなど、xangi実行時の文脈は `context` としてtool-serverに引き渡されます
+
+複数instanceを同じPCで動かす場合も、各xangiが自分の子プロセスへ異なる `XANGI_TOOL_SERVER` を注入するため混線しません。外部スクリプトから使う場合は、対象instanceの `XANGI_TOOL_SERVER` を明示して実行してください。
 
 ## イベントトリガー
 
@@ -436,15 +439,15 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 
 成功すると `202 { "ok": true, "triggerId": "trg_..." }` が即座に返ります（ターンの完了は待ちません）。Discord / Slack / Telegramではチャンネルに `⚡ trigger: <source>` のラベルが投稿され、続けてエージェントの応答が流れます。Webでは `web-chat:<sessionId>` と生の`sessionId`のどちらも受け付け、同じWeb会話へ新しいターンが追加されます。
 
-### xangi-cmd で発火する
+### xangi tool で発火する
 
-ローカルのスクリプトからは `xangi-cmd` でも発火できます（トークン不要、`TRIGGER_ENABLED=true` は必要）:
+ローカルのスクリプトからは `xangi tool` でも発火できます（トークン不要、`TRIGGER_ENABLED=true` は必要）:
 
 ```bash
-xangi-cmd trigger --channel <チャンネルID> --message "ビルドが終わった。結果を報告して" --source build
+xangi tool trigger --channel <チャンネルID> --message "ビルドが終わった。結果を報告して" --source build
 ```
 
-`TRIGGER_ENABLED=true` の場合、AIのシステムプロンプトには成功・失敗の両方で終了状態とログを保存してからtriggerする、という安全契約だけを注入します。詳細な引数は `xangi-cmd help trigger`、具体的な起動・確認方法は各ワークスペースの指示を正本にします。
+`TRIGGER_ENABLED=true` の場合、AIのシステムプロンプトには成功・失敗の両方で終了状態とログを保存してからtriggerする、という安全契約だけを注入します。詳細な引数は `xangi tool help trigger`、具体的な起動・確認方法は各ワークスペースの指示を正本にします。
 
 ### 活用例
 
@@ -534,8 +537,8 @@ Discordの`/backend set`でもmodelとeffortはautocomplete候補として表示
 AIへ自然言語でモデルの利用可否を尋ねた場合も、システムプロンプトは回答前に次の読み取り専用コマンドで実測するよう指示します。
 
 ```bash
-xangi-cmd models --backend codex
-xangi-cmd models --backend codex --use gpt-5.4 --effort high
+xangi tool models --backend codex
+xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
 
 `ALLOWED_MODELS`が設定されている場合、動的取得結果も許可モデルだけに絞り込みます。
@@ -614,8 +617,8 @@ RESPOND_TO_BOTS_MAX_CONSECUTIVE=3
 #### 制約・既知の制限
 
 - bot メッセージへの応答は **メンション・DM・`/autoreply` で有効化したチャンネル経由** でのみ発火する。bot メッセージだからといってチャンネル全体で勝手に反応する仕様ではない。bot 同士の応答テストを行う場合は対象チャンネルで `/autoreply` を有効化する必要がある。
-- `xangi-cmd discord_send` は通知抑止のため `allowed_mentions: { parse: [] }` 固定で送信する。そのため xangi-cmd 経由で送信されたメッセージ中の `<@user_id>` / `<@&role_id>` / `@everyone` は受信側の `message.mentions` に含まれない (Discord 公式仕様)。bot 同士のテストでメンション経由のトリガーは現状動かない。
-- 上記の `xangi-cmd discord_send` の mention 抑制を一時的に解除したい場合は別途オプトイン機能の追加が必要（このスキル/機能のスコープ外）。
+- `xangi tool discord_send` は通知抑止のため `allowed_mentions: { parse: [] }` 固定で送信する。そのため xangi tool 経由で送信されたメッセージ中の `<@user_id>` / `<@&role_id>` / `@everyone` は受信側の `message.mentions` に含まれない (Discord 公式仕様)。bot 同士のテストでメンション経由のトリガーは現状動かない。
+- 上記の `xangi tool discord_send` の mention 抑制を一時的に解除したい場合は別途オプトイン機能の追加が必要（このスキル/機能のスコープ外）。
 
 ### メッセージ分割セパレータ
 
@@ -636,9 +639,9 @@ AIの応答テキストに `\n===\n`（前後に改行を含む `===`）が含�
 
 `xangi service start|stop|restart|status`と`xangi service autostart enable|disable`はmanaged版とcheckout版で共通です。managed版ではOS service、checkout版ではPM2を操作します。`stop`は自動起動登録を残したまま一時停止し、`start`で再開します。`autostart enable`だけがOSログイン・再起動後の自動起動を登録し、`autostart disable`で解除します。解除しても現在動いているxangiは停止しません。`xangi install`と`service start`は現在のセッションで起動するだけで、自動起動を勝手に有効化しません。checkout版ではcloneの`.env`にある`XANGI_PROCESS_NAME`のプロセスを対象にします。
 
-`/restart` や `xangi-cmd system_restart` は、起動中の xangi 自身に graceful shutdown を要求する低レベル操作です。実際に再起動して復帰させるのは、xangiの外側にある Docker / pm2 / systemd などの supervisor です。
+`/restart` や `xangi tool system_restart` は、起動中の xangi 自身に graceful shutdown を要求する低レベル操作です。実際に再起動して復帰させるのは、xangiの外側にある Docker / pm2 / systemd などの supervisor です。
 
-現在の会話を処理しているxangi自身を再起動するときは、子プロセスやスケジューラへ遅延委譲せず、`xangi-cmd system_restart`を直接使います。このコマンドの成功は再起動リクエストの受付を表し、再起動完了は新しいプロセスのstatus・起動時刻・起動ログで確認します。別cloneのサービス操作には、対象cloneの`./bin/xangi service restart`を直接実行して完了を待ちます。
+現在の会話を処理しているxangi自身を再起動するときは、子プロセスやスケジューラへ遅延委譲せず、`xangi tool system_restart`を直接使います。このコマンドの成功は再起動リクエストの受付を表し、再起動完了は新しいプロセスのstatus・起動時刻・起動ログで確認します。別cloneのサービス操作には、対象cloneの`./bin/xangi service restart`を直接実行して完了を待ちます。
 
 自己再起動の許可は管理者が `.env` の `XANGI_SELF_LIFECYCLE` で設定します。AI が runtime setting で変更するものではありません。停止は xangi 内部からは保証できないため、Docker / pm2 / systemd など外側のライフサイクル管理で行います。
 
@@ -1350,13 +1353,13 @@ Even 側の provider 選択は `claude` / `codex` ラベルとして受け取る
 | `XANGI_EVEN_TERMINAL_MODEL`          | Even Terminal 経由だけの model default                                                                               | `AGENT_MODEL` / backend側の既定 |
 | `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `lite` / `chat`)                                          | `LOCAL_LLM_MODE` / `agent`      |
 
-### Terminal / Device セッション (`xangi-cmd terminal_session`)
+### Terminal / Device セッション (`xangi tool terminal_session`)
 
-`xangi-cmd terminal_session` は Web Chat セッションを作成し、外部 device / terminal 側が使う inbox URL と thread filter 付き events URL を表示する。Even G2 向けには alias として `xangi-cmd g2_session` も使える。
+`xangi tool terminal_session` は Web Chat セッションを作成し、外部 device / terminal 側が使う inbox URL と thread filter 付き events URL を表示する。Even G2 向けには alias として `xangi tool g2_session` も使える。
 
 ```bash
-xangi-cmd terminal_session --base-url http://127.0.0.1:18888 --title "Terminal Session"
-xangi-cmd g2_session --base-url http://127.0.0.1:18888 --title "Even G2 Terminal"
+xangi tool terminal_session --base-url http://127.0.0.1:18888 --title "Terminal Session"
+xangi tool g2_session --base-url http://127.0.0.1:18888 --title "Even G2 Terminal"
 ```
 
 ### GitHub App認証（オプション）

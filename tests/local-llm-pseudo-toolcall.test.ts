@@ -288,6 +288,13 @@ describe('isSafeForRescue', () => {
     ).toBe(true);
   });
 
+  it('exec で正規の xangi tool discord_history も safe', () => {
+    expect(
+      isSafeForRescue('exec', { command: 'xangi tool discord_history --channel 123 --count 10' })
+        .safe
+    ).toBe(true);
+  });
+
   it('exec で xangi-cmd discord_message は safe (allowlist)', () => {
     expect(
       isSafeForRescue('exec', {
@@ -338,6 +345,14 @@ describe('isSafeForRescue', () => {
     });
     expect(check.safe).toBe(false);
     expect(check.reason).toContain('changes');
+  });
+
+  it('exec でモデルを変更する xangi tool models --use も unsafe', () => {
+    expect(
+      isSafeForRescue('exec', {
+        command: 'xangi tool models --backend codex --use gpt-test',
+      }).safe
+    ).toBe(false);
   });
 
   it('exec で xangi-cmd discord_history にパイプ付き = unsafe (shell metachar)', () => {
