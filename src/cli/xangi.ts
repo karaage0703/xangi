@@ -3,7 +3,7 @@
  * xangi — user-facing terminal client.
  *
  * This CLI talks to xangi's public Web Chat / Even Terminal compatible API.
- * Keep it separate from xangi-cmd, which is an internal management/tool CLI.
+ * `xangi tool` is the canonical management/tool namespace; xangi-cmd is its compatibility shim.
  */
 import { existsSync, readFileSync } from 'fs';
 import { arch, homedir, platform } from 'os';
@@ -28,6 +28,7 @@ import { updateCmd } from './update-cmd.js';
 import { settingsCmd } from './settings-cmd.js';
 import { resolveAppLayout } from '../installer/layout.js';
 import { installConfiguredWorkspaceTemplate } from '../installer/workspace-template.js';
+import { runToolCommand } from './tool-command.js';
 
 type ProviderLabel = 'claude' | 'codex';
 
@@ -115,6 +116,7 @@ Usage:
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi settings
+  xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
 
@@ -146,7 +148,8 @@ Config:
 Note:
   For service operations, prefer running ./bin/xangi from the target clone
   or using named symlinks such as xangi-dev / xangi-prod.
-  xangi is the human/operator CLI. xangi-cmd remains the internal platform/tool CLI.`);
+  xangi tool is the canonical agent/tool-server CLI.
+  xangi-cmd remains available as a compatibility shim.`);
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -420,6 +423,10 @@ async function chat(config: CliConfig, flags: Record<string, string | boolean>):
 
 export async function run(argv = process.argv): Promise<void> {
   loadEnvFiles();
+  if (argv[2] === 'tool') {
+    console.log(await runToolCommand(argv.slice(3)));
+    return;
+  }
   const parsed = parseArgs(argv);
   if (!parsed.command || parsed.command === 'help' || parsed.command === '--help') {
     printHelp();

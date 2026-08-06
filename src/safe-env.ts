@@ -41,7 +41,7 @@ export function getSafeEnv(): NodeJS.ProcessEnv {
     }
   }
 
-  // xangi-cmd (bin/) をPATHに追加
+  // 現在のinstanceに付属するxangi / xangi-cmd (bin/) をPATH先頭に固定
   if (env.PATH && XANGI_BIN_DIR) {
     env.PATH = `${XANGI_BIN_DIR}:${env.PATH}`;
   }

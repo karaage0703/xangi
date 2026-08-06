@@ -12,7 +12,7 @@ Detailed usage guide for xangi.
 - [Session Management](#session-management)
 - [Scheduler](#scheduler)
 - [Terminal CLI (xangi)](#terminal-cli-xangi)
-- [Chat Operations (xangi-cmd)](#chat-operations-xangi-cmd)
+- [Chat Operations (xangi tool)](#chat-operations-xangi-tool)
 - [Event Trigger](#event-trigger)
 - [Runtime Settings](#runtime-settings)
 - [Autonomous AI Operations](#autonomous-ai-operations)
@@ -122,7 +122,7 @@ Programmatic API:
 
 ## Scheduler
 
-Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi-cmd schedule_add` etc. on your behalf.
+Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi tool schedule_add` etc. on your behalf.
 
 ### How to Operate
 
@@ -130,7 +130,7 @@ Set up periodic tasks and reminders. Ask the AI in natural language, and it call
 | --------------------------- | -------------------------------------------------------------- |
 | `/schedule` (Discord slash) | Add / list / remove / toggle schedules via GUI                 |
 | Web UI Schedules            | Add, edit, pause, and delete jobs for every supported platform |
-| `xangi-cmd schedule_*`      | Operate from AI or CLI (see below)                             |
+| `xangi tool schedule_*`      | Operate from AI or CLI (see below)                             |
 | Natural language            | Say e.g. "remind me at 9am every day" and the AI registers it  |
 
 ### Time Specification Formats
@@ -171,29 +171,29 @@ For more fine-grained control, cron expressions are also supported:
 | Month       | 1-12  |                         |
 | Day of Week | 0-6   | 0=Sunday, 1=Monday, ... |
 
-### `xangi-cmd schedule_*`
+### `xangi tool schedule_*`
 
 Operate schedules directly from the AI or shell. `schedule_add` requires `--channel` so the destination is always explicit. For Web Chat, also pass `--platform web` and the Web session ID.
 
 ```bash
 # Add a schedule (natural language)
-xangi-cmd schedule_add --input "Every day 9:00 good morning" --channel <channelId>
-xangi-cmd schedule_add --input "30 minutes later, meeting" --channel <channelId>
-xangi-cmd schedule_add --input "15:00 review" --channel <channelId>
-xangi-cmd schedule_add --input "Every Monday 10:00 weekly MTG" --channel <channelId>
-xangi-cmd schedule_add --input "cron 0 9 * * * good morning" --channel <channelId>
+xangi tool schedule_add --input "Every day 9:00 good morning" --channel <channelId>
+xangi tool schedule_add --input "30 minutes later, meeting" --channel <channelId>
+xangi tool schedule_add --input "15:00 review" --channel <channelId>
+xangi tool schedule_add --input "Every Monday 10:00 weekly MTG" --channel <channelId>
+xangi tool schedule_add --input "cron 0 9 * * * good morning" --channel <channelId>
 
 # Send to a Web session
-xangi-cmd schedule_add --input "Every day 9:00 status check" --platform web --channel <sessionId>
+xangi tool schedule_add --input "Every day 9:00 status check" --platform web --channel <sessionId>
 
 # List schedules
-xangi-cmd schedule_list
+xangi tool schedule_list
 
 # Remove by ID
-xangi-cmd schedule_remove --id <scheduleId>
+xangi tool schedule_remove --id <scheduleId>
 
 # Enable/disable toggle
-xangi-cmd schedule_toggle --id <scheduleId>
+xangi tool schedule_toggle --id <scheduleId>
 ```
 
 ### Data Storage
@@ -217,7 +217,7 @@ The common `install.sh` detects the operating system and CPU, then selects a tar
 
 `xangi` is a thin terminal client for humans to connect to xangi Web sessions. It consumes the existing Even Terminal compatible API (`/api/sessions`, `/api/prompt`, `/api/messages`, `/api/status`) and does not spawn Claude Code, Codex CLI, or other backends directly. The actual backend / model is resolved by the xangi server or the `XANGI_EVEN_TERMINAL_BACKEND` settings.
 
-`xangi` is the human/operator CLI for sessions and service operations. `xangi-cmd` remains the internal platform/tool CLI used by agents and integration scripts.
+`xangi` is the canonical CLI for session, service, and agent-facing tool operations. Agents and integration scripts use `xangi tool <operation>`. The legacy `xangi-cmd <operation>` command remains a compatibility shim backed by the same dispatcher, but new documentation and scripts should use `xangi tool`.
 
 ```bash
 # Put the development xangi command on PATH
@@ -323,30 +323,30 @@ Example config:
 }
 ```
 
-## Chat Operations (xangi-cmd)
+## Chat Operations (xangi tool)
 
-The AI performs Discord / Slack operations via the `xangi-cmd` CLI tool. Because it routes through xangi's built-in tool-server (HTTP API), secrets like `DISCORD_TOKEN` / `SLACK_BOT_TOKEN` are never accessible to the AI CLI.
+The AI performs Discord / Slack operations via the `xangi tool` CLI tool. Because it routes through xangi's built-in tool-server (HTTP API), secrets like `DISCORD_TOKEN` / `SLACK_BOT_TOKEN` are never accessible to the AI CLI.
 
-The persistent system prompt does not embed every command example. When the AI needs current syntax, it uses `xangi-cmd help`, `xangi-cmd help <topic>`, or `xangi-cmd help <command>`. Topics are `discord`, `slack`, `web`, `schedule`, `models`, `trigger`, `system`, and `local`. Each platform's `/help` remains the source of truth for user-facing slash commands.
+The persistent system prompt does not embed every command example. When the AI needs current syntax, it uses `xangi tool help`, `xangi tool help <topic>`, or `xangi tool help <command>`. Topics are `discord`, `slack`, `web`, `schedule`, `models`, `trigger`, `system`, and `local`. Each platform's `/help` remains the source of truth for user-facing slash commands.
 
 | Command                                                                         | Description                                                                                                                 |
 | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `xangi-cmd discord_history --channel <ID> [--count N] [--offset M]`             | Get channel history                                                                                                         |
-| `xangi-cmd discord_message --channel <ID> --message-id <ID>`                    | Get one message without truncating its content                                                                              |
-| `xangi-cmd web_history [--session <id>] [--count N]`                            | Web Chat current pane history (auto-resolves from `XANGI_CHANNEL_ID=web-chat:<id>`)                                         |
-| `xangi-cmd slack_history [--channel <id>] [--count N]`                          | Slack current channel history (auto-resolves from `XANGI_CHANNEL_ID=<channel>`)                                             |
-| `xangi-cmd discord_send --channel <ID> --message "text"`                        | Send a message                                                                                                              |
-| `xangi-cmd discord_channels --guild <ID>`                                       | List channels                                                                                                               |
-| `xangi-cmd discord_search --channel <ID> --keyword "text"`                      | Search messages                                                                                                             |
-| `xangi-cmd discord_edit --channel <ID> --message-id <ID> --content "text"`      | Edit a message                                                                                                              |
-| `xangi-cmd discord_delete --channel <ID> --message-id <ID>`                     | Delete a message                                                                                                            |
-| `xangi-cmd discord_thread_leave --user <ID> [--channel <ID>]`                   | Remove a user from a thread = drop it from that user's sidebar (defaults to the current thread when `--channel` is omitted) |
-| `xangi-cmd media_send --channel <ID> --file /path/to/file`                      | Send a file                                                                                                                 |
-| `xangi-cmd slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Send a Slack message                                                                                                        |
-| `xangi-cmd slack_channels [--types public_channel,private_channel] [--limit N]` | List Slack channels                                                                                                         |
-| `xangi-cmd slack_search --channel <id> --keyword "text" [--count N]`            | Search Slack messages                                                                                                       |
-| `xangi-cmd slack_edit --channel <id> --message-ts <ts> --content "text"`        | Edit a Slack message                                                                                                        |
-| `xangi-cmd slack_delete --channel <id> --message-ts <ts>`                       | Delete a Slack message                                                                                                      |
+| `xangi tool discord_history --channel <ID> [--count N] [--offset M]`             | Get channel history                                                                                                         |
+| `xangi tool discord_message --channel <ID> --message-id <ID>`                    | Get one message without truncating its content                                                                              |
+| `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat current pane history (auto-resolves from `XANGI_CHANNEL_ID=web-chat:<id>`)                                         |
+| `xangi tool slack_history [--channel <id>] [--count N]`                          | Slack current channel history (auto-resolves from `XANGI_CHANNEL_ID=<channel>`)                                             |
+| `xangi tool discord_send --channel <ID> --message "text"`                        | Send a message                                                                                                              |
+| `xangi tool discord_channels --guild <ID>`                                       | List channels                                                                                                               |
+| `xangi tool discord_search --channel <ID> --keyword "text"`                      | Search messages                                                                                                             |
+| `xangi tool discord_edit --channel <ID> --message-id <ID> --content "text"`      | Edit a message                                                                                                              |
+| `xangi tool discord_delete --channel <ID> --message-id <ID>`                     | Delete a message                                                                                                            |
+| `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | Remove a user from a thread = drop it from that user's sidebar (defaults to the current thread when `--channel` is omitted) |
+| `xangi tool media_send --channel <ID> --file /path/to/file`                      | Send a file                                                                                                                 |
+| `xangi tool slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Send a Slack message                                                                                                        |
+| `xangi tool slack_channels [--types public_channel,private_channel] [--limit N]` | List Slack channels                                                                                                         |
+| `xangi tool slack_search --channel <id> --keyword "text" [--count N]`            | Search Slack messages                                                                                                       |
+| `xangi tool slack_edit --channel <id> --message-ts <ts> --content "text"`        | Edit a Slack message                                                                                                        |
+| `xangi tool slack_delete --channel <id> --message-ts <ts>`                       | Delete a Slack message                                                                                                      |
 
 On Slack, when `SLACK_REACTION_DELETE_ENABLED=true` (default) and the Slack App subscribes to the `reaction_added` event with the `reactions:read` scope, an allowed user can delete a bot message by adding a `:wastebasket:` or `:x:` reaction. Customize the reaction names with `SLACK_DELETE_REACTIONS=wastebasket,x`.
 
@@ -354,49 +354,52 @@ On Slack, when `SLACK_REACTION_DELETE_ENABLED=true` (default) and the Slack App 
 
 ```bash
 # Get channel history
-xangi-cmd discord_history --count 10
-xangi-cmd discord_history --channel 1234567890 --count 10
-xangi-cmd discord_history --channel 1234567890 --count 30 --offset 30  # scroll back
-xangi-cmd discord_message --channel 1234567890 --message-id 111222333  # get the full message selected from history
+xangi tool discord_history --count 10
+xangi tool discord_history --channel 1234567890 --count 10
+xangi tool discord_history --channel 1234567890 --count 30 --offset 30  # scroll back
+xangi tool discord_message --channel 1234567890 --message-id 111222333  # get the full message selected from history
 
 # Send a message to another channel
-xangi-cmd discord_send --channel 1234567890 --message "Work completed!"
+xangi tool discord_send --channel 1234567890 --message "Work completed!"
 
 # List channels
-xangi-cmd discord_channels --guild 9876543210
+xangi tool discord_channels --guild 9876543210
 
 # Search messages
-xangi-cmd discord_search --channel 1234567890 --keyword "PR"
+xangi tool discord_search --channel 1234567890 --keyword "PR"
 
 # Slack operations
-xangi-cmd slack_send --channel C01234567 --message "Work completed!"
-xangi-cmd slack_send --channel C01234567 --thread-ts 1719876543.000100 --message "Thread reply"
-xangi-cmd slack_channels --types public_channel,private_channel --limit 100
-xangi-cmd slack_search --channel C01234567 --keyword "PR" --count 15
+xangi tool slack_send --channel C01234567 --message "Work completed!"
+xangi tool slack_send --channel C01234567 --thread-ts 1719876543.000100 --message "Thread reply"
+xangi tool slack_channels --types public_channel,private_channel --limit 100
+xangi tool slack_search --channel C01234567 --keyword "PR" --count 15
 ```
 
 If `--channel` is omitted while running inside xangi, the current channel ID is used automatically. When running the CLI standalone, `--channel` is required.
 
 ```bash
 # Edit and delete messages
-xangi-cmd discord_edit --channel 1234567890 --message-id 111222333 --content "updated content"
-xangi-cmd discord_delete --channel 1234567890 --message-id 111222333
+xangi tool discord_edit --channel 1234567890 --message-id 111222333 --content "updated content"
+xangi tool discord_delete --channel 1234567890 --message-id 111222333
 
 # Remove a user from a thread = drop it from that user's sidebar (omit --channel to target the current thread)
-xangi-cmd discord_thread_leave --user 111222333
-xangi-cmd discord_thread_leave --user 111222333 --channel 1234567890
-xangi-cmd slack_edit --channel C01234567 --message-ts 1719876543.000100 --content "updated content"
-xangi-cmd slack_delete --channel C01234567 --message-ts 1719876543.000100
+xangi tool discord_thread_leave --user 111222333
+xangi tool discord_thread_leave --user 111222333 --channel 1234567890
+xangi tool slack_edit --channel C01234567 --message-ts 1719876543.000100 --content "updated content"
+xangi tool slack_delete --channel C01234567 --message-ts 1719876543.000100
 ```
 
 ### Tool Server
 
-`xangi-cmd` relays requests to the tool-server (HTTP API) running inside the xangi process.
+`xangi tool` relays requests to the tool-server (HTTP API) running inside the xangi process.
 
 - Port is assigned automatically by the OS (no conflicts when running multiple instances)
 - xangi injects `XANGI_TOOL_SERVER` into child processes at startup
-- `xangi-cmd` uses `XANGI_TOOL_SERVER` to resolve the connection endpoint
+- `xangi tool` uses `XANGI_TOOL_SERVER` to resolve the connection endpoint
+- If `XANGI_TOOL_SERVER` is missing, the command fails instead of guessing a target instance
 - Runtime context such as the current channel ID is passed to the tool-server as `context`
+
+Multiple instances on the same machine remain isolated because each xangi process injects its own `XANGI_TOOL_SERVER` into its child processes. External scripts must explicitly provide the endpoint of the intended instance.
 
 ## Event Trigger
 
@@ -434,15 +437,15 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 
 On success it returns `202 { "ok": true, "triggerId": "trg_..." }` immediately (it does not wait for the turn to finish). Discord, Slack, and Telegram receive a `⚡ trigger: <source>` label followed by the agent response. Web accepts either `web-chat:<sessionId>` or the raw `sessionId` and appends a new turn to that Web conversation.
 
-### Firing via xangi-cmd
+### Firing via xangi tool
 
-Local scripts can also fire a trigger via `xangi-cmd` (no token needed; `TRIGGER_ENABLED=true` is still required):
+Local scripts can also fire a trigger via `xangi tool` (no token needed; `TRIGGER_ENABLED=true` is still required):
 
 ```bash
-xangi-cmd trigger --channel <channel ID> --message "Build finished. Report the result." --source build
+xangi tool trigger --channel <channel ID> --message "Build finished. Report the result." --source build
 ```
 
-When `TRIGGER_ENABLED=true`, the system prompt injects only the safety contract: persist the exit status and log, then fire the trigger on both success and failure. Detailed arguments come from `xangi-cmd help trigger`, while each workspace remains the source of truth for its launch and verification method.
+When `TRIGGER_ENABLED=true`, the system prompt injects only the safety contract: persist the exit status and log, then fire the trigger on both success and failure. Detailed arguments come from `xangi tool help trigger`, while each workspace remains the source of truth for its launch and verification method.
 
 ### Abuse protection
 
@@ -516,8 +519,8 @@ Discord `/backend set` also displays model and effort as autocomplete choices. M
 When a user asks about model availability in natural language, the system prompt also instructs the agent to measure it first through this read-only command:
 
 ```bash
-xangi-cmd models --backend codex
-xangi-cmd models --backend codex --use gpt-5.4 --effort high
+xangi tool models --backend codex
+xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
 
 When `ALLOWED_MODELS` is configured, the dynamically discovered output is filtered to those allowed models.
@@ -596,8 +599,8 @@ Use case: run multiple xangi instances (e.g. xangi-prod=Claude / xangi-dev=Local
 #### Constraints / Known Limitations
 
 - Responding to bot messages still requires the normal gate: **mention / DM / channel enabled via `/autoreply`**. Whitelisting a bot via `RESPOND_TO_BOTS` does not make it reply across all channels. To test bot-to-bot replies, enable `/autoreply` in the test channel.
-- `xangi-cmd discord_send` always sends with `allowed_mentions: { parse: [] }` to suppress notifications. As a result, mentions (`<@user_id>` / `<@&role_id>` / `@everyone`) embedded in messages sent via `xangi-cmd` are _not_ parsed into `message.mentions` on the receiving side (Discord-spec behaviour). Mention-based triggers from another bot using `xangi-cmd discord_send` will therefore not fire.
-- Lifting that mention suppression would require an opt-in flag on `xangi-cmd discord_send` (out of scope of this feature).
+- `xangi tool discord_send` always sends with `allowed_mentions: { parse: [] }` to suppress notifications. As a result, mentions (`<@user_id>` / `<@&role_id>` / `@everyone`) embedded in messages sent via `xangi tool` are _not_ parsed into `message.mentions` on the receiving side (Discord-spec behaviour). Mention-based triggers from another bot using `xangi tool discord_send` will therefore not fire.
+- Lifting that mention suppression would require an opt-in flag on `xangi tool discord_send` (out of scope of this feature).
 
 ### Message Split Separator
 
@@ -618,9 +621,9 @@ The above response is sent as two separate messages to Discord.
 
 `xangi service start|stop|restart|status` and `xangi service autostart enable|disable` have the same actions in managed and checkout installations. Managed installations control the OS service, while checkouts control PM2. `stop` temporarily stops the service without removing an existing automatic-start registration, and `start` runs it again. `autostart enable` registers startup after login or reboot, while `autostart disable` removes that registration without stopping the currently running xangi process. `xangi install` and `service start` never enable it implicitly. In a checkout, the target is the process named by `XANGI_PROCESS_NAME` in that clone's `.env`.
 
-`/restart` and `xangi-cmd system_restart` are low-level operations that ask the running xangi process to gracefully shut down. The external supervisor, such as Docker, pm2, or systemd, is responsible for starting xangi again.
+`/restart` and `xangi tool system_restart` are low-level operations that ask the running xangi process to gracefully shut down. The external supervisor, such as Docker, pm2, or systemd, is responsible for starting xangi again.
 
-To restart the xangi instance handling the current conversation, call `xangi-cmd system_restart` directly instead of delegating a delayed restart to a child process or scheduler. A successful response means that the restart request was accepted; confirm completion from the new process status, start time, and startup log. To operate a different clone, run that clone's `./bin/xangi service restart` directly and wait for completion.
+To restart the xangi instance handling the current conversation, call `xangi tool system_restart` directly instead of delegating a delayed restart to a child process or scheduler. A successful response means that the restart request was accepted; confirm completion from the new process status, start time, and startup log. To operate a different clone, run that clone's `./bin/xangi service restart` directly and wait for completion.
 
 Self restart permission is configured by the administrator in `.env` with `XANGI_SELF_LIFECYCLE`. It is not a runtime setting that the AI changes. Shutdown cannot be guaranteed from inside xangi itself, so stopping xangi is handled by the external lifecycle manager such as Docker, pm2, or systemd.
 
@@ -1313,13 +1316,13 @@ The Even UI only offers `claude` and `codex` provider labels. xangi accepts thos
 | `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Local LLM mode default used only for Even Terminal traffic (`agent` / `lite` / `chat`)                                                     | `LOCAL_LLM_MODE` / `agent`      |
 | `XANGI_EVEN_TERMINAL_MAX_CHARS`      | Maximum plain-text response length prepared for the G2 display                                                                             | `400`                           |
 
-### Terminal / Device Sessions (`xangi-cmd terminal_session`)
+### Terminal / Device Sessions (`xangi tool terminal_session`)
 
-`xangi-cmd terminal_session` creates a Web Chat session and prints inbox and thread-filtered event URLs for an external device or terminal. `xangi-cmd g2_session` is an alias for Even G2.
+`xangi tool terminal_session` creates a Web Chat session and prints inbox and thread-filtered event URLs for an external device or terminal. `xangi tool g2_session` is an alias for Even G2.
 
 ```bash
-xangi-cmd terminal_session --base-url http://127.0.0.1:18888 --title "Terminal Session"
-xangi-cmd g2_session --base-url http://127.0.0.1:18888 --title "Even G2 Terminal"
+xangi tool terminal_session --base-url http://127.0.0.1:18888 --title "Terminal Session"
+xangi tool g2_session --base-url http://127.0.0.1:18888 --title "Even G2 Terminal"
 ```
 
 ### Scheduler

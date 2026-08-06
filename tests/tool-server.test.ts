@@ -146,7 +146,7 @@ describe('tool-server HTTP status codes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; result: string };
     expect(body.ok).toBe(true);
-    expect(body.result).toContain('Usage: xangi-cmd schedule_add');
+    expect(body.result).toContain('Usage: xangi tool schedule_add');
   });
 
   it('returns 400 for unknown help topic', async () => {

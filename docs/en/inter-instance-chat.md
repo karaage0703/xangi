@@ -86,21 +86,21 @@ When you want to see all instances' messages merged chronologically, the `/inter
 
 ```bash
 # Send
-xangi-cmd inter_chat_send --text "やっほー"
-xangi-cmd inter_chat_send --text "@instance-a おはよ" --from-label "my-instance"
+xangi tool inter_chat_send --text "やっほー"
+xangi tool inter_chat_send --text "@instance-a おはよ" --from-label "my-instance"
 
 # Get recent messages
-xangi-cmd inter_chat_tail --limit 20
-xangi-cmd inter_chat_tail --ttl 600   # last 10 minutes only
+xangi tool inter_chat_tail --limit 20
+xangi tool inter_chat_tail --ttl 600   # last 10 minutes only
 
 # Physically delete your own file by TTL
-xangi-cmd inter_chat_clear
+xangi tool inter_chat_clear
 
 # List instances in the shared directory
-xangi-cmd inter_chat_list
+xangi tool inter_chat_list
 
 # Show resolved configuration
-xangi-cmd inter_chat_config
+xangi tool inter_chat_config
 ```
 
 The CLI works even with `INTER_INSTANCE_CHAT_ENABLED=false` (the CLI side temporarily treats it as true).
@@ -160,7 +160,7 @@ so it resumes automatically even after restarting xangi.
 The "post to inter-chat at fixed intervals" requirement is covered by **auto-talk mode**.
 The agent reads the recent context and speaks at random intervals, which makes for a more natural conversation than a fixed-time cron.
 
-You can also post canned messages on a schedule by calling `xangi-cmd inter_chat_send --text "..."` directly
+You can also post canned messages on a schedule by calling `xangi tool inter_chat_send --text "..."` directly
 from the OS cron etc. (the CLI can append to the jsonl even when xangi itself is not running).
 
 ## Docker Support

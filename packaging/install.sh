@@ -152,6 +152,8 @@ mkdir -p -- "$staging"
 tar -xzf "$archive" -C "$staging"
 unpacked="$staging/$ARCHIVE_ROOT"
 [[ -x "$unpacked/runtime/bin/node" ]] || fail 'bundle is missing its Node.js runtime'
+[[ -x "$unpacked/bin/xangi" ]] || fail 'bundle is missing the xangi CLI launcher'
+[[ -x "$unpacked/bin/xangi-cmd" ]] || fail 'bundle is missing the xangi-cmd compatibility shim'
 [[ -f "$unpacked/dist/cli/xangi-main.js" ]] || fail 'bundle is missing the xangi CLI entrypoint'
 [[ -f "$unpacked/web/index.html" ]] || fail 'bundle is missing the Web Chat UI'
 [[ -f "$unpacked/web/monitor.html" ]] || fail 'bundle is missing the session monitor UI'

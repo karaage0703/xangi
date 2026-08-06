@@ -108,8 +108,8 @@ xangi operates in Socket Mode (no Webhook required).
 | `im:history`        | Read DM history                  | For DM support                  |
 | `im:read`           | Read DMs                         | For DM support                  |
 | `im:write`          | Send DMs                         | For DM support                  |
-| `channels:read`     | Read public channel information  | For `xangi-cmd slack_channels`  |
-| `groups:read`       | Read private channel information | For `xangi-cmd slack_channels`  |
+| `channels:read`     | Read public channel information  | For `xangi tool slack_channels`  |
+| `groups:read`       | Read private channel information | For `xangi tool slack_channels`  |
 | `channels:history`  | Read public channel history      | For responding without mentions |
 | `groups:history`    | Read private channel history     | For responding without mentions |
 

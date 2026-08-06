@@ -16,7 +16,7 @@ export type ChatPlatform = 'discord' | 'slack' | 'web' | 'line' | 'telegram';
  * - discord: 共通 + チャットPF共通 + Discord専用
  * - slack: 共通 + チャットPF共通 + Slack専用
  * - web: 共通 + チャットPF共通 + Web専用
- * - line: 共通 + LINE専用 (Markdown非対応、Discord/Slack 用 xangi-cmd は注入しない)
+ * - line: 共通 + LINE専用 (Markdown非対応、Discord/Slack 用 xangi tool は注入しない)
  * - undefined: 共通のみ（platform固有の指示を混在させない）
  *
  * イベントトリガーのセクションは TRIGGER_ENABLED=true のときだけ注入する
@@ -34,7 +34,7 @@ export function buildXangiCommands(platform?: ChatPlatform): string {
     parts.push(XANGI_COMMANDS_WEB);
   } else if (platform === 'line') {
     // LINE は Markdown 非対応 + ファイル送信非対応のため、Discord/Slack 用の
-    // チャット PF 共通 (MEDIA: / xangi-cmd 系) は注入しない。LINE 専用ルールだけ。
+    // チャット PF 共通 (MEDIA: / xangi tool 系) は注入しない。LINE 専用ルールだけ。
     parts.push(XANGI_COMMANDS_LINE);
   } else if (platform === 'telegram') {
     // Telegram も Markdown はエスケープされるためプレーンテキストを基本とし、

@@ -108,8 +108,8 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `im:history`        | DM の履歴読み取り                    | DM対応時                          |
 | `im:read`           | DM の読み取り                        | DM対応時                          |
 | `im:write`          | DM の送信                            | DM対応時                          |
-| `channels:read`     | パブリックチャンネル情報の読み取り   | `xangi-cmd slack_channels` 使用時 |
-| `groups:read`       | プライベートチャンネル情報の読み取り | `xangi-cmd slack_channels` 使用時 |
+| `channels:read`     | パブリックチャンネル情報の読み取り   | `xangi tool slack_channels` 使用時 |
+| `groups:read`       | プライベートチャンネル情報の読み取り | `xangi tool slack_channels` 使用時 |
 | `channels:history`  | パブリックチャンネルの履歴読み取り   | メンションなし応答時              |
 | `groups:history`    | プライベートチャンネルの履歴読み取り | メンションなし応答時              |
 

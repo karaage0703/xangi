@@ -20,16 +20,16 @@ describe('buildXangiCommands', () => {
   it('操作マニュアルを常駐させずオンデマンドhelpへ誘導する', () => {
     const prompt = buildXangiCommands('discord');
 
-    expect(prompt).toContain('xangi-cmd help <topic|command>');
+    expect(prompt).toContain('xangi tool help <topic|command>');
     expect(prompt).not.toContain('毎日 9:00 おはよう');
-    expect(prompt).not.toContain('xangi-cmd discord_send --channel');
+    expect(prompt).not.toContain('xangi tool discord_send --channel');
     expect(prompt).not.toContain('./bin/xangi service start');
   });
 
   it('実行時に必要な長時間処理・自己再起動・モデル契約を残す', () => {
     expect(XANGI_COMMANDS_COMMON).toContain('ワークスペース指定の永続方式');
-    expect(XANGI_COMMANDS_COMMON).toContain('xangi-cmd system_restart');
-    expect(XANGI_COMMANDS_COMMON).toContain('xangi-cmd models --backend <backend>');
+    expect(XANGI_COMMANDS_COMMON).toContain('xangi tool system_restart');
+    expect(XANGI_COMMANDS_COMMON).toContain('xangi tool models --backend <backend>');
     expect(XANGI_COMMANDS_COMMON).toContain('--use <exact-model-id>');
     expect(XANGI_COMMANDS_COMMON).toContain('次のturnから適用');
     expect(XANGI_COMMANDS_COMMON).not.toContain('ユーザー向け操作方法');

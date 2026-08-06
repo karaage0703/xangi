@@ -1,111 +1,13 @@
-#!/bin/bash
-# xangi-cmd — xangi tool-serverへのCLIラッパー
-#
-# 使い方:
-#   xangi-cmd discord_history --channel 123456 --count 10
-#   xangi-cmd discord_message --channel 123456 --message-id 789012
-#   xangi-cmd discord_send --channel 123456 --message "hello"
-#   xangi-cmd schedule_list
-#
-# 接続先は環境変数 XANGI_TOOL_SERVER で明示指定する。
-# xangi本体が子プロセス起動時に注入する前提。
+#!/bin/sh
+# Compatibility shim. The canonical interface is: xangi tool <operation>.
+set -eu
 
-# ポート検出
-resolve_server() {
-  if [ -n "$XANGI_TOOL_SERVER" ]; then
-    echo "$XANGI_TOOL_SERVER"
-    return
-  fi
-  return 1
-}
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
-COMMAND="$1"
-shift || true
-
-if [ "$COMMAND" = "help" ]; then
-  TOPIC="$1"
-  if [ -n "$TOPIC" ]; then
-    set -- --topic "$TOPIC"
-  else
-    set --
-  fi
+# Managed bundles contain their own Node runtime but no globally available Node.
+if [ -x "$ROOT_DIR/runtime/bin/node" ] && [ -f "$ROOT_DIR/dist/cli/xangi-main.js" ]; then
+  exec "$ROOT_DIR/runtime/bin/node" "$ROOT_DIR/dist/cli/xangi-main.js" tool "$@"
 fi
 
-TOOL_SERVER=$(resolve_server) || {
-  echo "Error: XANGI_TOOL_SERVER が設定されていません" >&2
-  echo "xangi配下で起動するか、XANGI_TOOL_SERVER=http://127.0.0.1:<port> を指定してください" >&2
-  exit 1
-}
-
-if [ -z "$COMMAND" ]; then
-  COMMAND="help"
-fi
-
-# 引数を --key value ペアからJSONオブジェクトに変換
-FLAGS="{"
-FIRST=true
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --*)
-      KEY="${1#--}"
-      shift
-      VALUE="$1"
-      shift
-      if [ "$FIRST" = true ]; then
-        FIRST=false
-      else
-        FLAGS+=","
-      fi
-      # JSONエスケープ（改行・ダブルクォート・バックスラッシュ）
-      VALUE=$(printf '%s' "$VALUE" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed '$ s/\\n$//')
-      FLAGS+="\"$KEY\":\"$VALUE\""
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-FLAGS+="}"
-
-CONTEXT="{}"
-# XANGI_CHANNEL_ID（xangi本体から注入）またはXANGI_DEFAULT_CHANNEL（手動設定）を使う
-_CHANNEL_ID="${XANGI_CHANNEL_ID:-$XANGI_DEFAULT_CHANNEL}"
-if [ -n "$_CHANNEL_ID" ]; then
-  ESCAPED_CHANNEL_ID=$(printf '%s' "$_CHANNEL_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  CONTEXT="{\"channelId\":\"$ESCAPED_CHANNEL_ID\"}"
-fi
-
-# tool-serverにリクエスト送信
-# -f は使わない: 4xx/5xx でも body を読めるようにする（サーバー側エラー詳細を表示するため）
-RESPONSE=$(curl -s "$TOOL_SERVER/api/execute" \
-  -H 'Content-Type: application/json' \
-  -d "{\"command\":\"$COMMAND\",\"flags\":$FLAGS,\"context\":$CONTEXT}" 2>&1)
-
-CURL_EXIT=$?
-
-# curl 自体が失敗した場合のみ「接続できません」を表示
-if [ $CURL_EXIT -ne 0 ]; then
-  echo "Error: tool-server に接続できません ($TOOL_SERVER)" >&2
-  echo "XANGI_TOOL_SERVER の値と xangiプロセスの起動状態を確認してください" >&2
-  exit 1
-fi
-
-# JSONレスポンスからresultを抽出（jqがあれば使う、なければそのまま出力）
-if command -v jq &>/dev/null; then
-  OK=$(echo "$RESPONSE" | jq -r '.ok // false' 2>/dev/null)
-  if [ "$OK" = "true" ]; then
-    echo "$RESPONSE" | jq -r '.result'
-  else
-    # サーバー側のエラーメッセージを表示（HTTP 4xx/5xx で返ってきたJSONも読める）
-    ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null)
-    if [ -n "$ERROR_MSG" ]; then
-      echo "Error: $ERROR_MSG" >&2
-    else
-      # JSONとしてパースできない場合は生のレスポンスを出す
-      echo "Error: 予期しないレスポンス: $RESPONSE" >&2
-    fi
-    exit 1
-  fi
-else
-  echo "$RESPONSE"
-fi
+exec "$SCRIPT_DIR/xangi" tool "$@"

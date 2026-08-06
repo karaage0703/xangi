@@ -1,7 +1,7 @@
 /** 全プラットフォーム共通の、実行時に必要な契約だけを保持する。 */
 export const XANGI_COMMANDS_COMMON = `## オンデマンドヘルプ
 
-xangiの操作方法や引数を推測しない。必要な時だけ xangi-cmd help <topic|command> を確認する。
+xangiの操作方法や引数を推測しない。必要な時だけ xangi tool help <topic|command> を確認する。
 
 ## 長時間処理
 
@@ -9,16 +9,16 @@ xangiの操作方法や引数を推測しない。必要な時だけ xangi-cmd h
 
 ## 自己再起動
 
-- 現在のxangi自身は xangi-cmd system_restart をこのターンから直接呼び、遅延・子プロセス・スケジューラへ委譲しない
+- 現在のxangi自身は xangi tool system_restart をこのターンから直接呼び、遅延・子プロセス・スケジューラへ委譲しない
 - 受付を完了とみなさず、復帰後に状態・起動時刻・ログを確認する
 
 ## AI向けバックエンドモデル確認・選択
 
-利用可能なモデルは回答前に xangi-cmd models --backend <backend> で取得し、返った正確なIDだけを案内する。取得非対応・失敗時に固定名で補わない。
+利用可能なモデルは回答前に xangi tool models --backend <backend> で取得し、返った正確なIDだけを案内する。取得非対応・失敗時に固定名で補わない。
 
-ユーザーがモデル選択を明示依頼した場合だけ、説明・effort・タスク特性を比較し、xangi-cmd models --backend <backend> --use <exact-model-id> [--effort <level>] [--channel <settings-channel-id>] を実行する。選択は次のturnから適用される。Discordスレッドでは親設定チャンネルIDを指定し、明示依頼なしに自動変更しない。`;
+ユーザーがモデル選択を明示依頼した場合だけ、説明・effort・タスク特性を比較し、xangi tool models --backend <backend> --use <exact-model-id> [--effort <level>] [--channel <settings-channel-id>] を実行する。選択は次のturnから適用される。Discordスレッドでは親設定チャンネルIDを指定し、明示依頼なしに自動変更しない。`;
 
 /** TRIGGER_ENABLED=true かつ対応platformの時だけ注入する。 */
 export const XANGI_COMMANDS_TRIGGER = `## イベントトリガー
 
-長時間処理の終了時は、終了状態とログを保存してから成功・失敗どちらでも xangi-cmd trigger --channel <id> --message <message> --source <source> を呼ぶ。具体的な永続方式はワークスペースの指示に従う。同一sourceの即時再試行と実行中turnへの重複発火を避ける。定刻確認はschedule、完了時通知はtriggerを使う。`;
+長時間処理の終了時は、終了状態とログを保存してから成功・失敗どちらでも xangi tool trigger --channel <id> --message <message> --source <source> を呼ぶ。具体的な永続方式はワークスペースの指示に従う。同一sourceの即時再試行と実行中turnへの重複発火を避ける。定刻確認はschedule、完了時通知はtriggerを使う。`;

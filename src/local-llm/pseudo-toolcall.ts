@@ -187,7 +187,7 @@ export function parsePseudoToolCall(
 
 /**
  * 擬似 tool_call を救済実行してよいかの安全判定 (allowlist)。
- * 副作用のないツール / 副作用のない xangi-cmd サブコマンドだけ救済対象にする。
+ * 副作用のないツール / 副作用のない xangi tool サブコマンドだけ救済対象にする。
  *
  * denylist 方式 (例えば `rm/curl/git` を弾く) は抜け道が多いため使わない。allowlist で
  * 安全なツール/サブコマンドのみを明示的に許可する。`exec` 系は shell metacharacter
@@ -254,7 +254,7 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
           'shell metacharacters (pipe/redirect/&&/;/$()/backtick) detected — not safe to rescue',
       };
     }
-    const match = cmd.match(/^xangi-cmd\s+([a-z_]+)/);
+    const match = cmd.match(/^(?:xangi\s+tool|xangi-cmd)\s+([a-z_]+)/);
     if (match && SAFE_XANGI_SUBCOMMANDS.has(match[1])) {
       if (match[1] === 'models' && /(?:^|\s)--use(?:\s|$)/.test(cmd)) {
         return { safe: false, reason: 'models --use changes the next-turn model' };
@@ -263,13 +263,13 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
     }
     return {
       safe: false,
-      reason: `exec command not in rescue allowlist (only xangi-cmd ${[...SAFE_XANGI_SUBCOMMANDS].join('/')} allowed)`,
+      reason: `exec command not in rescue allowlist (only xangi tool ${[...SAFE_XANGI_SUBCOMMANDS].join('/')} allowed)`,
     };
   }
 
   return {
     safe: false,
-    reason: `tool '${name}' is not in rescue allowlist (read-only tools and safe xangi-cmd subcommands only)`,
+    reason: `tool '${name}' is not in rescue allowlist (read-only tools and safe xangi tool subcommands only)`,
   };
 }
 

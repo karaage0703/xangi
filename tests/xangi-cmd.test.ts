@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const XANGI = join(__dirname, '..', 'bin', 'xangi');
 const XANGI_CMD = join(__dirname, '..', 'bin', 'xangi-cmd');
 
 /**
@@ -40,7 +41,8 @@ function setMockResponse(res: MockResponse): void {
 
 function runCli(
   args: string[],
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  binary = XANGI_CMD
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     // env に明示的に空文字を渡すと「未設定」扱いにしたいので、空文字キーは削る
@@ -58,7 +60,7 @@ function runCli(
         finalEnv[k] = v;
       }
     }
-    const proc = spawn(XANGI_CMD, args, { env: finalEnv });
+    const proc = spawn(binary, args, { env: finalEnv });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => {
@@ -167,6 +169,53 @@ describe('xangi-cmd CLI error handling', () => {
 
     expect(stderr).toContain('接続できません');
     expect(code).not.toBe(0);
+  });
+});
+
+describe('xangi tool canonical CLI and compatibility shim', () => {
+  it('routes canonical xangi tool through the same dispatcher', async () => {
+    setMockResponse({
+      status: 200,
+      body: JSON.stringify({ ok: true, result: 'canonical result' }),
+    });
+
+    const { stdout, code } = await runCli(
+      ['tool', 'discord_history', '--channel', 'canonical-channel'],
+      {},
+      XANGI
+    );
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('canonical result');
+    expect(lastRequest).toEqual({
+      command: 'discord_history',
+      flags: { channel: 'canonical-channel' },
+      context: {},
+    });
+  });
+
+  it('keeps xangi-cmd as an output-compatible shim', async () => {
+    setMockResponse({
+      status: 200,
+      body: JSON.stringify({ ok: true, result: 'same result' }),
+    });
+
+    const canonical = await runCli(['tool', 'help', 'schedule_add'], {}, XANGI);
+    const legacy = await runCli(['help', 'schedule_add']);
+
+    expect(canonical).toEqual(legacy);
+  });
+
+  it('fails closed instead of guessing an instance without XANGI_TOOL_SERVER', async () => {
+    const { stderr, code } = await runCli(
+      ['tool', 'schedule_list'],
+      { XANGI_TOOL_SERVER: '' },
+      XANGI
+    );
+
+    expect(code).not.toBe(0);
+    expect(stderr).toContain('XANGI_TOOL_SERVER is not set');
+    expect(stderr).toContain('target instance is never guessed');
   });
 });
 
