@@ -1407,6 +1407,46 @@ button:disabled {
   font-size: 12px;
 }
 
+.upload-progress {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--hairline);
+  padding: 9px 12px;
+  color: var(--ink-secondary);
+  background: var(--surface-muted);
+  font-size: 11px;
+}
+
+.upload-progress-label {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.upload-progress-label span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-progress-label span:last-child {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-progress progress {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--surface-subtle);
+  accent-color: var(--accent);
+}
+
 .workspace > .notice {
   grid-row: 2;
 }
@@ -3185,7 +3225,8 @@ video.media-preview {
 
   .pane-error,
   .resume-bar,
-  .attachment-tray {
+  .attachment-tray,
+  .upload-progress {
     padding-right: max(9px, var(--safe-right));
     padding-left: max(9px, var(--safe-left));
   }

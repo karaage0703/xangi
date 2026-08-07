@@ -258,6 +258,9 @@ xangi setup
 # config / service healthの診断（秘密値は表示しない）
 xangi doctor
 
+# 現在のreleaseまたはcheckoutのバージョンを表示
+xangi --version
+
 # 署名済みreleaseへ安全に更新（installerが保存した公開鍵とmanifest URLを使用）
 xangi update
 
@@ -290,6 +293,8 @@ AIオンボーディングを置き換えるsetup用browser UIはありません
 
 checkout版の`./bin/xangi update`は、未commit変更、detached HEAD、upstreamなしを先に拒否し、`git pull --ff-only`、`npm ci`、`npm run build`を順に実行します。署名済みmanaged appのupdaterをcheckoutから明示的に呼ぶ場合は`./bin/xangi update --managed`を使います。
 
+`xangi --version`（`xangi -V`、`xangi version`も可）は、managed版では現在有効な署名済みrelease番号を、checkout版ではGitのtagまたはcommitを表示します。
+
 managed版の`xangi uninstall`は定期update、OS service、xangi本体の順に削除します。workspace、設定、token、履歴は保持するため、表示されたinstall commandを再実行すれば以前の設定を使って再インストールできます。設定、token、履歴も削除する場合だけ`xangi uninstall --purge --yes`を使います。`--purge`は`--yes`が無ければ何も削除せず終了し、どちらの方法でもworkspaceは削除しません。
 
 開発checkoutの`./bin/xangi`は、`git pull`後もGit管理外の古い`dist/`を実行しないよう、`npm ci`で入れたlocal `tsx`から現在のsourceを起動します。配布bundleはsourceを含まないため、同梱`dist`とNode runtimeを使い、AIが参照するREADMEと利用者向けdocsも同梱します。
@@ -300,13 +305,14 @@ GitHub Releaseでは共通入口を`install.sh`として公開します。`packa
 
 主なオプション:
 
-| オプション       | 説明                                                                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `--url`          | xangi Web Chat URL。未指定時は `XANGI_URL` / `XANGI_CLI_URL` / `~/.config/xangi/config.json` / `http://127.0.0.1:18888` の順で解決 |
-| `--token`        | Even Terminal 互換 API token。未指定時は `.env` / `XANGI_TOKEN` / `XANGI_EVEN_TERMINAL_TOKEN` / config を使う                      |
-| `--provider`     | Even Terminal 互換ラベル (`claude` / `codex`)。実 backend 選択ではなく互換用                                                       |
-| `--session`      | attach する Web session ID                                                                                                         |
-| `--detach`, `-d` | `send` 後に応答を待たず、session ID だけを返す                                                                                     |
+| オプション        | 説明                                                                                                                               |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`, `-V` | 現在有効なrelease番号、またはcheckoutのGit tag・commitを表示                                                                       |
+| `--url`           | xangi Web Chat URL。未指定時は `XANGI_URL` / `XANGI_CLI_URL` / `~/.config/xangi/config.json` / `http://127.0.0.1:18888` の順で解決 |
+| `--token`         | Even Terminal 互換 API token。未指定時は `.env` / `XANGI_TOKEN` / `XANGI_EVEN_TERMINAL_TOKEN` / config を使う                      |
+| `--provider`      | Even Terminal 互換ラベル (`claude` / `codex`)。実 backend 選択ではなく互換用                                                       |
+| `--session`       | attach する Web session ID                                                                                                         |
+| `--detach`, `-d`  | `send` 後に応答を待たず、session ID だけを返す                                                                                     |
 
 `send` はデフォルトで `/api/messages` をポーリングして最終応答を表示します。待たずに戻したい場合だけ `--detach` を指定します。
 
@@ -1283,6 +1289,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `XANGI_HOOKS_FILE`    | hooks 設定ファイルのパス                                                                                             | `<workspace>/hooks/hooks.json` |
 
 ### WebチャットUI
+
+添付の転送中はPC・スマートフォンともファイル名、複数選択時の順番、進捗率を入力欄の直上に表示する。音声・動画はbyte Range配信に対応し、スマートフォンでもmetadata取得・seek・再生を行える。
 
 | 変数               | 説明                                                                                                                                                                                     | デフォルト |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |

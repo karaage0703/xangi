@@ -256,6 +256,9 @@ xangi setup
 # Diagnose config and service health without printing secrets
 xangi doctor
 
+# Print the active release or checkout version
+xangi --version
+
 # Update from the signed release channel saved by the installer
 xangi update
 
@@ -288,6 +291,8 @@ There is no browser UI that replaces AI onboarding. Token entry alone uses the l
 
 In a checkout, `./bin/xangi update` first refuses uncommitted changes, detached HEAD, and a branch without an upstream, then runs `git pull --ff-only`, `npm ci`, and `npm run build`. Use `./bin/xangi update --managed` to explicitly invoke the signed managed updater from a checkout.
 
+`xangi --version` (`xangi -V` and `xangi version` are aliases) prints the active signed release for a managed installation, or the Git tag or commit for a checkout.
+
 For a managed installation, `xangi uninstall` removes scheduled updates, the OS service, and the xangi application in that order. It retains the workspace, settings, tokens, and history, so rerunning the printed install command restores the application with the previous configuration. Use `xangi uninstall --purge --yes` only when settings, tokens, and history should also be removed. Without `--yes`, `--purge` exits before deleting anything. Neither mode removes the workspace.
 
 In a development checkout, `./bin/xangi` starts current source through the local `tsx` installed by `npm ci`, preventing an ignored, stale `dist/` tree from surviving a `git pull`. A distribution contains no source tree and uses its bundled `dist` and Node.js runtime; it also bundles the README and user-facing documentation consumed during onboarding.
@@ -298,13 +303,14 @@ GitHub Releases publish the common entry point as `install.sh`. `packaging/boots
 
 Main options:
 
-| Option           | Description                                                                                                                      |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `--url`          | xangi Web Chat URL. Resolution order: `XANGI_URL`, `XANGI_CLI_URL`, `~/.config/xangi/config.json`, then `http://127.0.0.1:18888` |
-| `--token`        | Even Terminal compatible API token. Falls back to `.env`, `XANGI_TOKEN`, `XANGI_EVEN_TERMINAL_TOKEN`, then config                |
-| `--provider`     | Even Terminal compatibility label (`claude` / `codex`), not a direct backend selector                                            |
-| `--session`      | Web session ID to attach to                                                                                                      |
-| `--detach`, `-d` | Return after sending the prompt and printing the session ID                                                                      |
+| Option            | Description                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`, `-V` | Print the active release version or the Git tag or commit for a checkout                                                         |
+| `--url`           | xangi Web Chat URL. Resolution order: `XANGI_URL`, `XANGI_CLI_URL`, `~/.config/xangi/config.json`, then `http://127.0.0.1:18888` |
+| `--token`         | Even Terminal compatible API token. Falls back to `.env`, `XANGI_TOKEN`, `XANGI_EVEN_TERMINAL_TOKEN`, then config                |
+| `--provider`      | Even Terminal compatibility label (`claude` / `codex`), not a direct backend selector                                            |
+| `--session`       | Web session ID to attach to                                                                                                      |
+| `--detach`, `-d`  | Return after sending the prompt and printing the session ID                                                                      |
 
 `send` polls `/api/messages` and prints the final response by default. Use `--detach` only when the command should return immediately.
 
@@ -1256,6 +1262,8 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 | `XANGI_HOOKS_FILE`    | Path to the hooks config file                                                                            | `<workspace>/hooks/hooks.json` |
 
 ### Web Chat UI
+
+While an attachment is transferring, desktop and mobile show its name, position in a multi-file selection, and upload percentage above the composer. Audio and video use byte-range delivery so mobile browsers can load metadata, seek, and play.
 
 | Variable                    | Description                                                                                                                                                                                             | Default             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |

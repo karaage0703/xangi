@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { requestJson } from './api';
+import { clearRecoveredReadError, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
 import {
   applyPublishedLiveEvent,
@@ -31,6 +31,7 @@ import {
 } from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
 import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } from './types';
+import { uploadForm } from './upload';
 
 const MAX_PANES = 8;
 const PANE_STATE_KEY = 'xangi_pane_state_v1';
@@ -165,6 +166,14 @@ interface PendingFile {
   localUrl?: string;
 }
 
+interface UploadState {
+  fileName: string;
+  fileIndex: number;
+  fileCount: number;
+  loaded: number;
+  total?: number;
+}
+
 function formatToolSummary(tool: Extract<TurnHistoryEntry, { kind: 'tool' }>): string {
   const summary = tool.summary.replace(/^実行中:\s*/, '');
   const prefix = `${tool.toolName}: `;
@@ -247,6 +256,12 @@ function formatRemaining(timeoutAt?: number): string {
     2,
     '0'
   )}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function isMobile(): boolean {
@@ -765,6 +780,7 @@ function ChatPane({
   const [turnHistory, setTurnHistory] = useState<TurnHistoryEntry[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadState, setUploadState] = useState<UploadState>();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number>();
   const [clock, setClock] = useState(Date.now());
@@ -777,6 +793,7 @@ function ChatPane({
   const messagesRef = useRef<HTMLDivElement>(null);
   const followBottomRef = useRef(true);
   const loadSequenceRef = useRef(0);
+  const loadErrorRef = useRef('');
   const turnHistorySequenceRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -830,6 +847,8 @@ function ChatPane({
           )}`
         );
         if (sequence !== loadSequenceRef.current) return;
+        setError((current) => clearRecoveredReadError(current, loadErrorRef.current));
+        loadErrorRef.current = '';
         data.messages = data.messages.filter(
           (message) =>
             message.role !== 'error' &&
@@ -845,7 +864,9 @@ function ChatPane({
         }
       } catch (cause) {
         if (sequence === loadSequenceRef.current) {
-          setError(cause instanceof Error ? cause.message : String(cause));
+          const message = cause instanceof Error ? cause.message : String(cause);
+          loadErrorRef.current = message;
+          setError(message);
         }
       } finally {
         if (sequence === loadSequenceRef.current) {
@@ -860,6 +881,7 @@ function ChatPane({
   useEffect(() => {
     setDetail(null);
     setError('');
+    loadErrorRef.current = '';
     setStreamText('');
     setToolLines([]);
     setObservedLiveTurn(undefined);
@@ -1030,13 +1052,28 @@ function ChatPane({
   async function uploadFiles(files: File[]) {
     setUploading(true);
     try {
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
+        setUploadState({
+          fileName: file.name,
+          fileIndex: index + 1,
+          fileCount: files.length,
+          loaded: 0,
+          total: file.size,
+        });
         const body = new FormData();
         body.append('file', file);
-        const result = await requestJson<{
+        const result = await uploadForm<{
           files?: Array<{ name: string; path: string }>;
           rejected?: Array<{ name: string; reason: string }>;
-        }>('/api/upload', { method: 'POST', body });
+        }>('/api/upload', body, ({ loaded, total }) => {
+          setUploadState({
+            fileName: file.name,
+            fileIndex: index + 1,
+            fileCount: files.length,
+            loaded,
+            total: total || file.size || undefined,
+          });
+        });
         if (result.rejected?.length) {
           window.alert(result.rejected.map((item) => `${item.name}: ${item.reason}`).join('\n'));
         }
@@ -1055,6 +1092,7 @@ function ChatPane({
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setUploading(false);
+      setUploadState(undefined);
     }
   }
 
@@ -1306,6 +1344,9 @@ function ChatPane({
   const elapsed = thinkingStartedAt
     ? Math.max(0, Math.floor((clock - thinkingStartedAt) / 1000))
     : 0;
+  const uploadPercent = uploadState?.total
+    ? Math.min(100, Math.round((uploadState.loaded / uploadState.total) * 100))
+    : undefined;
   const liveTurn = selectLiveTurn({
     localBusy: busy,
     localText: streamText,
@@ -1461,6 +1502,24 @@ function ChatPane({
       {error && (
         <div className="pane-error" role="alert">
           {error}
+        </div>
+      )}
+      {uploadState && (
+        <div className="upload-progress" aria-live="polite">
+          <div className="upload-progress-label">
+            <span>
+              アップロード中 {uploadState.fileIndex}/{uploadState.fileCount} ·{' '}
+              {uploadState.fileName}
+            </span>
+            <span>
+              {uploadPercent === undefined ? formatBytes(uploadState.loaded) : `${uploadPercent}%`}
+            </span>
+          </div>
+          <progress
+            aria-label={`${uploadState.fileName} のアップロード進捗`}
+            max={uploadState.total || undefined}
+            value={uploadState.total ? uploadState.loaded : undefined}
+          />
         </div>
       )}
       {detail && detail.platform !== 'web' && (

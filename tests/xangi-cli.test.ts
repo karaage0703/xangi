@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -195,6 +195,7 @@ exit 0
     const result = await runCli(['help']);
 
     expect(result.code).toBe(0);
+    expect(result.stdout).toContain('xangi --version');
     expect(result.stdout).toContain('xangi install');
     expect(result.stdout).toContain('xangi uninstall');
     expect(result.stdout).toContain('xangi update');
@@ -205,6 +206,40 @@ exit 0
     expect(result.stdout).toContain('setup --apply');
     expect(result.stdout).toContain('--workspace-mode');
     expect(result.stdout).not.toContain('--browser');
+  });
+
+  it.each([['--version'], ['-V'], ['version']])(
+    'prints the Git description for a source checkout with %s',
+    async (argument) => {
+      const expected = spawnSync(
+        'git',
+        ['-C', join(__dirname, '..'), 'describe', '--tags', '--always', '--dirty'],
+        { encoding: 'utf8' }
+      )
+        .stdout.trim()
+        .replace(/^v(?=\d)/, '');
+
+      const result = await runCli([argument]);
+
+      expect(result).toEqual({ stdout: `xangi ${expected}\n`, stderr: '', code: 0 });
+    }
+  );
+
+  it('prints the active managed release from the current version link', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'xangi-cli-version-'));
+    const releaseDir = join(appRoot, 'versions', '1.2.3');
+    mkdirSync(releaseDir, { recursive: true });
+    symlinkSync(releaseDir, join(appRoot, 'current'), 'dir');
+    try {
+      const result = await runCli(['--version'], {
+        XANGI_INSTALLATION_KIND: 'managed',
+        XANGI_APP_ROOT: appRoot,
+      });
+
+      expect(result).toEqual({ stdout: 'xangi 1.2.3\n', stderr: '', code: 0 });
+    } finally {
+      rmSync(appRoot, { recursive: true, force: true });
+    }
   });
 
   it('starts when the CLI path includes the managed current symlink', async () => {

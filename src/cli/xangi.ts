@@ -5,9 +5,10 @@
  * This CLI talks to xangi's public Web Chat / Even Terminal compatible API.
  * `xangi tool` is the canonical management/tool namespace; xangi-cmd is its compatibility shim.
  */
-import { existsSync, readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { arch, homedir, platform } from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
@@ -60,6 +61,7 @@ interface SendResult {
 }
 
 const DEFAULT_URL = 'http://127.0.0.1:18888';
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function configuredWebChatPort(): number {
   const value = Number.parseInt(process.env.WEB_CHAT_PORT ?? '18888', 10);
@@ -103,6 +105,7 @@ function printHelp(): void {
   console.log(`xangi — terminal client for xangi sessions
 
 Usage:
+  xangi --version
   xangi sessions [--url URL] [--token TOKEN] [--limit N]
   xangi send [--session ID] [--detach] "message"
   git diff | xangi send -
@@ -121,6 +124,7 @@ Usage:
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
 
 Options:
+  --version, -V   Print the installed release or checkout version
   --url URL       xangi Web Chat URL (default: ${DEFAULT_URL})
   --token TOKEN   API token. Env: XANGI_TOKEN or XANGI_EVEN_TERMINAL_TOKEN
   --provider P    Compatibility label: claude or codex (default: codex)
@@ -150,6 +154,47 @@ Note:
   or using named symlinks such as xangi-dev / xangi-prod.
   xangi tool is the canonical agent/tool-server CLI.
   xangi-cmd remains available as a compatibility shim.`);
+}
+
+function printVersion(): void {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const checkoutRoot = join(moduleDir, '..', '..');
+
+  if (process.env.XANGI_INSTALLATION_KIND === 'managed') {
+    const currentPlatform = platform();
+    if (currentPlatform !== 'darwin' && currentPlatform !== 'linux') {
+      throw new Error(`Unsupported managed installation platform: ${currentPlatform}`);
+    }
+    const layout = resolveAppLayout({
+      platform: currentPlatform,
+      arch: arch(),
+      homeDir: homedir(),
+      xdgDataHome: process.env.XDG_DATA_HOME,
+      xdgConfigHome: process.env.XDG_CONFIG_HOME,
+      xdgStateHome: process.env.XDG_STATE_HOME,
+    });
+    const appRoot = process.env.XANGI_APP_ROOT || layout.appRoot;
+    const version = basename(realpathSync(join(appRoot, 'current')));
+    if (!RELEASE_VERSION.test(version)) {
+      throw new Error(`Managed installation has an invalid version path: ${version}`);
+    }
+    console.log(`xangi ${version}`);
+    return;
+  }
+
+  const described = spawnSync(
+    'git',
+    ['-C', checkoutRoot, 'describe', '--tags', '--always', '--dirty'],
+    {
+      encoding: 'utf8',
+      timeout: 5_000,
+    }
+  );
+  const version = described.status === 0 ? described.stdout.trim().replace(/^v(?=\d)/, '') : '';
+  if (!version) {
+    throw new Error('Unable to determine the xangi checkout version');
+  }
+  console.log(`xangi ${version}`);
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -423,6 +468,10 @@ async function chat(config: CliConfig, flags: Record<string, string | boolean>):
 
 export async function run(argv = process.argv): Promise<void> {
   loadEnvFiles();
+  if (argv[2] === '--version' || argv[2] === '-V' || argv[2] === 'version') {
+    printVersion();
+    return;
+  }
   if (argv[2] === 'tool') {
     console.log(await runToolCommand(argv.slice(3)));
     return;

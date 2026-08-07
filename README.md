@@ -78,6 +78,7 @@ xangi doctor
 - Web Chat: ローカル公開を選んだ場合は`http://127.0.0.1:18888`
 - Discord、Slack、Telegram、LINE: セットアップしたbotへメッセージを送信
 - 状態確認: `xangi doctor`
+- バージョン確認: `xangi --version`
 - 接続情報の変更: `xangi settings`
 - サービスを起動していない場合: `xangi service start`
 

@@ -53,6 +53,10 @@ export async function request(url: string, init?: RequestInit): Promise<Response
   }
 }
 
+export function clearRecoveredReadError(current: string, lastReadError: string): string {
+  return current === lastReadError ? '' : current;
+}
+
 function waitForRetry(milliseconds: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = globalThis.setTimeout(() => {
