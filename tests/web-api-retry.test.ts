@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, request } from '../web-ui/src/api.js';
+import { ApiError, clearRecoveredReadError, request } from '../web-ui/src/api.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -47,5 +47,10 @@ describe('Web API transient retry', () => {
 
     await expect(request('/api/sessions')).rejects.toBeInstanceOf(ApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a recovered read error without hiding a newer action error', () => {
+    expect(clearRecoveredReadError('Load failed', 'Load failed')).toBe('');
+    expect(clearRecoveredReadError('Upload failed', 'Load failed')).toBe('Upload failed');
   });
 });

@@ -1576,6 +1576,23 @@ describe('web-chat HTTP API', () => {
     );
     expect(receivedImage.status).toBe(200);
     expect(receivedImage.headers.get('content-type')).toBe('image/png');
+    expect(receivedImage.headers.get('accept-ranges')).toBe('bytes');
+
+    const ranged = await fetch(
+      `${baseUrl}/api/workspace-file?path=${encodeURIComponent(receivedImagePath)}`,
+      { headers: { Range: 'bytes=2-5' } }
+    );
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get('content-range')).toBe('bytes 2-5/13');
+    expect(ranged.headers.get('content-length')).toBe('4');
+    expect(await ranged.text()).toBe('scor');
+
+    const unsatisfiable = await fetch(
+      `${baseUrl}/api/workspace-file?path=${encodeURIComponent(receivedImagePath)}`,
+      { headers: { Range: 'bytes=99-100' } }
+    );
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get('content-range')).toBe('bytes */13');
   });
 
   it('POST /api/upload rejects a request above the configured byte limit', async () => {

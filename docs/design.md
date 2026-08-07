@@ -99,6 +99,9 @@ flowchart LR
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
+- 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
+- workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
+- session詳細の一時的な読込失敗は安全なGET retry後に表示するが、後続の正常読込でその読込エラーだけを消す。より新しい送信・upload等の操作エラーは消さない
 - Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
 - `GET /api/sessions` は最新100件と`activity`だけを返す。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する

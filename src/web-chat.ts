@@ -4,8 +4,9 @@
  * 各 Web セッションは contextKey = `web-chat:<appSessionId>` で独立。
  * 同時に複数のセッションを保持・操作できる。
  */
-import { createServer } from 'http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import {
+  createReadStream,
   readFileSync,
   writeFileSync,
   existsSync,
@@ -180,6 +181,68 @@ function uploadMaxBytes(): number {
   return Number.isFinite(configured) && configured > 0
     ? Math.floor(configured)
     : DEFAULT_UPLOAD_MAX_BYTES;
+}
+
+function serveFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  filePath: string,
+  mime: string,
+  disposition?: string
+): void {
+  const size = statSync(filePath).size;
+  const baseHeaders: Record<string, string | number> = {
+    'Content-Type': mime,
+    'Content-Length': size,
+    'Accept-Ranges': 'bytes',
+    'X-Content-Type-Options': 'nosniff',
+  };
+  if (disposition) baseHeaders['Content-Disposition'] = disposition;
+
+  const range = req.headers.range;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    let start = 0;
+    let end = size - 1;
+    if (match && size > 0) {
+      if (match[1]) {
+        start = Number(match[1]);
+        end = match[2] ? Number(match[2]) : end;
+      } else if (match[2]) {
+        const suffixLength = Number(match[2]);
+        start = Math.max(0, size - suffixLength);
+      }
+    }
+    if (
+      !match ||
+      (!match[1] && !match[2]) ||
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < start ||
+      start >= size
+    ) {
+      res.writeHead(416, {
+        'Content-Range': `bytes */${size}`,
+        'Accept-Ranges': 'bytes',
+      });
+      res.end();
+      return;
+    }
+    end = Math.min(end, size - 1);
+    res.writeHead(206, {
+      ...baseHeaders,
+      'Content-Length': end - start + 1,
+      'Content-Range': `bytes ${start}-${end}/${size}`,
+    });
+    if (req.method === 'HEAD') res.end();
+    else createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, baseHeaders);
+  if (req.method === 'HEAD') res.end();
+  else createReadStream(filePath).pipe(res);
 }
 
 /** appSessionId に対応する contextKey を返す */
@@ -1777,7 +1840,7 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    if (url.startsWith('/api/files/') && req.method === 'GET') {
+    if (url.startsWith('/api/files/') && (req.method === 'GET' || req.method === 'HEAD')) {
       const filename = decodeURIComponent(url.replace('/api/files/', ''));
       const uploadDir = join(workdir, 'tmp', 'web-uploads');
       const filePath = join(uploadDir, filename);
@@ -1799,6 +1862,7 @@ export function startWebChat(options: WebChatOptions): void {
         '.webp': 'image/webp',
         '.svg': 'image/svg+xml',
         '.pdf': 'application/pdf',
+        '.aac': 'audio/aac',
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
         '.wav': 'audio/wav',
@@ -1822,20 +1886,15 @@ export function startWebChat(options: WebChatOptions): void {
       // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
       // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
       const mappedMime = mimeTypes[ext];
-      const headers: Record<string, string> = {
-        'Content-Type': mappedMime || 'application/octet-stream',
-        'X-Content-Type-Options': 'nosniff',
-      };
-      if (!mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)) {
-        const filename = basename(filePath);
-        headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
-      }
-      res.writeHead(200, headers);
-      res.end(readFileSync(filePath));
+      const disposition =
+        !mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)
+          ? `attachment; filename="${encodeURIComponent(basename(filePath))}"`
+          : undefined;
+      serveFile(req, res, filePath, mappedMime || 'application/octet-stream', disposition);
       return;
     }
 
-    if (url.startsWith('/api/workspace-file') && req.method === 'GET') {
+    if (url.startsWith('/api/workspace-file') && (req.method === 'GET' || req.method === 'HEAD')) {
       const urlObj = new URL(rawUrl, 'http://localhost');
       const requestedPath = urlObj.searchParams.get('path') || '';
       if (!requestedPath) {
@@ -1879,6 +1938,7 @@ export function startWebChat(options: WebChatOptions): void {
         '.webp': 'image/webp',
         '.svg': 'image/svg+xml',
         '.pdf': 'application/pdf',
+        '.aac': 'audio/aac',
         '.mp3': 'audio/mpeg',
         '.mp4': 'video/mp4',
         '.wav': 'audio/wav',
@@ -1904,16 +1964,11 @@ export function startWebChat(options: WebChatOptions): void {
       // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
       // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
       const mappedMime = mimeTypes[ext];
-      const headers: Record<string, string> = {
-        'Content-Type': mappedMime || 'application/octet-stream',
-        'X-Content-Type-Options': 'nosniff',
-      };
-      if (!mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)) {
-        const filename = basename(filePath);
-        headers['Content-Disposition'] = `attachment; filename="${encodeURIComponent(filename)}"`;
-      }
-      res.writeHead(200, headers);
-      res.end(readFileSync(filePath));
+      const disposition =
+        !mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)
+          ? `attachment; filename="${encodeURIComponent(basename(filePath))}"`
+          : undefined;
+      serveFile(req, res, filePath, mappedMime || 'application/octet-stream', disposition);
       return;
     }
 
