@@ -8,7 +8,8 @@ import type { LLMMessage, LLMTool } from '../src/local-llm/types.js';
  * 背景: 旧実装の chatStream は body から tools パラメータが完全に欠落しており、
  * Gemma 4 等の OpenAI 互換モデルで streaming 経路の tool calling 機構が無効化されていた。
  * 結果として LLM が「tool 呼ぶべき」と判断した場面で擬似 tool_call 文字列を text として
- * 吐く format drift が発生。最終応答用には tool_choice='none' を渡すことで text 応答を強制する。
+ * 吐く format drift が発生。最終応答用には toolChoice='none' 時に tools 自体を
+ * 外し、tool_choice を無視する OpenAI 互換サーバでも text 応答を強制する。
  */
 describe('LLMClient chatStream payload', () => {
   let capturedBody: Record<string, unknown> | null = null;
@@ -22,9 +23,7 @@ describe('LLMClient chatStream payload', () => {
       }
       // SSE ストリームを 1 chunk + [DONE] で返すスタブ
       const encoder = new TextEncoder();
-      const sse =
-        'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' +
-        'data: [DONE]\n\n';
+      const sse = 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' + 'data: [DONE]\n\n';
       return new Response(
         new ReadableStream({
           start(controller) {
@@ -48,7 +47,11 @@ describe('LLMClient chatStream payload', () => {
     {
       name: 'tool_search',
       description: '検索',
-      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+      },
     },
   ];
 
@@ -80,11 +83,11 @@ describe('LLMClient chatStream payload', () => {
     expect(capturedBody!.tool_choice).toBeUndefined();
   });
 
-  it("toolChoice='none': 最終応答用に tool 強制無効化を payload に乗せる", async () => {
+  it("toolChoice='none': 最終応答用に tools/tool_choice を payload から外す", async () => {
     const client = buildClient();
     await drain(client.chatStream(messages, { tools: sampleTools, toolChoice: 'none' }));
-    expect(capturedBody!.tools).toBeDefined();
-    expect(capturedBody!.tool_choice).toBe('none');
+    expect(capturedBody!.tools).toBeUndefined();
+    expect(capturedBody!.tool_choice).toBeUndefined();
   });
 
   it("toolChoice='auto': 明示 auto も正しく載る", async () => {
@@ -93,7 +96,7 @@ describe('LLMClient chatStream payload', () => {
     expect(capturedBody!.tool_choice).toBe('auto');
   });
 
-  it("toolChoice (function 指定): 特定 tool 強制も正しく載る", async () => {
+  it('toolChoice (function 指定): 特定 tool 強制も正しく載る', async () => {
     const client = buildClient();
     await drain(
       client.chatStream(messages, {
@@ -107,7 +110,7 @@ describe('LLMClient chatStream payload', () => {
     });
   });
 
-  it('chat (non-stream) でも toolChoice が payload に乗る', async () => {
+  it("chat (non-stream) でも toolChoice='none' は tools/tool_choice を外す", async () => {
     // non-stream の OpenAI レスポンスを返すモック
     fetchSpy.mockImplementation(async (_input, init) => {
       if (init?.body && typeof init.body === 'string') {
@@ -122,6 +125,58 @@ describe('LLMClient chatStream payload', () => {
     });
     const client = buildClient();
     await client.chat(messages, { tools: sampleTools, toolChoice: 'none' });
-    expect(capturedBody!.tool_choice).toBe('none');
+    expect(capturedBody!.tools).toBeUndefined();
+    expect(capturedBody!.tool_choice).toBeUndefined();
+  });
+
+  it('OpenAI 互換応答の Step XML tool call を構造化 call へ復元する', async () => {
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content:
+                    '<tool_call>\n<function=tool_search>\n<parameter=query>\n国歌\n</parameter>\n</function>\n</tool_call>',
+                },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    );
+
+    const client = buildClient();
+    const result = await client.chat(messages, { tools: sampleTools });
+    expect(result.content).toBe('');
+    expect(result.finishReason).toBe('tool_calls');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0]).toMatchObject({
+      name: 'tool_search',
+      arguments: { query: '国歌' },
+    });
+  });
+
+  it('tools に存在しない XML function は実行用に復元しない', async () => {
+    const leaked =
+      '<tool_call>\n<function=unknown_tool>\n<parameter=query>\n国歌\n</parameter>\n</function>\n</tool_call>';
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: 'assistant', content: leaked }, finish_reason: 'stop' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    );
+
+    const client = buildClient();
+    const result = await client.chat(messages, { tools: sampleTools });
+    expect(result.content).toBe(leaked);
+    expect(result.toolCalls).toBeUndefined();
+    expect(result.finishReason).toBe('stop');
   });
 });

@@ -29,6 +29,19 @@ describe('containsPseudoToolCall', () => {
     ).toBe(true);
   });
 
+  it('Step/Qwen XML tool call を検出', () => {
+    const input =
+      '<tool_call>\n<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>';
+    expect(containsPseudoToolCall(input)).toBe(true);
+  });
+
+  it('開き tool_call が欠けた Step XML 断片も検出', () => {
+    const input =
+      '<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>';
+    expect(containsPseudoToolCall(input)).toBe(true);
+    expect(stripPseudoToolCalls(input)).toBe('');
+  });
+
   it('stream 途中の open のみ (close 不在) も検出', () => {
     expect(containsPseudoToolCall('まずは <|channel>thought\ncall:tool_search{quer')).toBe(true);
   });
@@ -64,6 +77,12 @@ describe('stripPseudoToolCalls', () => {
 
   it('tool_call タグ全体を削除', () => {
     const input = '結果: <|tool_call>call:fetch{url:http://example.com}<tool_call|> done.';
+    expect(stripPseudoToolCalls(input)).toBe('結果:  done.');
+  });
+
+  it('Step/Qwen XML tool call 全体を削除', () => {
+    const input =
+      '結果: <tool_call>\n<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call> done.';
     expect(stripPseudoToolCalls(input)).toBe('結果:  done.');
   });
 
@@ -147,6 +166,52 @@ describe('StreamingDriftBuffer', () => {
     expect(r2.release).not.toContain('call:');
   });
 
+  it('chunk 途中の Step XML open は hold、close 後に drop', () => {
+    const buf = new StreamingDriftBuffer();
+    const r1 = buf.feed('先頭テキスト <tool_call');
+    expect(r1.release).toBe('先頭テキスト ');
+    expect(buf.peek()).toContain('<tool_call');
+
+    const r2 = buf.feed(
+      '>\n<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>続けます。'
+    );
+    expect(r2.dropped).toBe(true);
+    expect(r2.release).toBe('続けます。');
+  });
+
+  it('Step XML が複数 chunk に分かれても close まで一切 release しない', () => {
+    const buf = new StreamingDriftBuffer();
+    const chunks = [
+      '<tool',
+      '_call>',
+      '\n',
+      '<func',
+      'tion=exec>',
+      '\n',
+      '<parameter=command>',
+      '\n',
+      'pwd',
+      '\n',
+      '</parameter>',
+      '\n',
+      '</function>',
+      '\n',
+      '</tool_call>',
+    ];
+
+    let released = '';
+    let dropped = false;
+    for (const chunk of chunks) {
+      const result = buf.feed(chunk);
+      released += result.release;
+      dropped ||= result.dropped;
+    }
+
+    expect(released).toBe('');
+    expect(dropped).toBe(true);
+    expect(buf.flush()).toEqual({ release: '', droppedAny: true });
+  });
+
   it('bare call: 末尾は hold (直前の改行も hold 側に含める)', () => {
     const buf = new StreamingDriftBuffer();
     const r1 = buf.feed('結果は\ncall:fetch{url:http');
@@ -227,6 +292,30 @@ describe('parsePseudoToolCall', () => {
       '<|channel>thought\ncall:tool_search{query:calendar}<channel|>'
     );
     expect(parsed).toEqual({ name: 'tool_search', args: { query: 'calendar' } });
+  });
+
+  it('Step/Qwen XML tool call の複数 parameter を parse', () => {
+    const parsed = parsePseudoToolCall(
+      '<tool_call>\n<function=grep>\n<parameter=pattern>\n国歌\n</parameter>\n<parameter=path>\n/workspace\n</parameter>\n</function>\n</tool_call>'
+    );
+    expect(parsed).toEqual({ name: 'grep', args: { pattern: '国歌', path: '/workspace' } });
+  });
+
+  it('開き tool_call が欠けた Step XML 断片も parse', () => {
+    const parsed = parsePseudoToolCall(
+      '<function=grep>\n<parameter=pattern>\n国歌\n</parameter>\n</function>\n</tool_call>'
+    );
+    expect(parsed).toEqual({ name: 'grep', args: { pattern: '国歌' } });
+  });
+
+  it('今回漏れた Step XML exec を parse', () => {
+    const command =
+      'cd /workspace && grep -ri "からあげ王国" --include="*.md" 2>/dev/null | head -60';
+    const parsed = parsePseudoToolCall(
+      `<tool_call>\n<function=exec>\n<parameter=command>\n${command}\n</parameter>\n</function>\n</tool_call>`
+    );
+    expect(parsed).toEqual({ name: 'exec', args: { command } });
+    expect(isSafeForRescue(parsed!.name, parsed!.args).safe).toBe(false);
   });
 
   it('proper JSON 形式の args も parse', () => {

@@ -75,6 +75,13 @@ describe('stripToolCallArtifacts', () => {
     );
   });
 
+  it('Step/Qwen XML tool call も除去する', () => {
+    const leaked =
+      '<tool_call>\n<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>';
+    expect(stripToolCallArtifacts(leaked, { trim: true })).toBe('');
+    expect(finalizeDisplayText(leaked)).toBe(FRIENDLY_FALLBACK_MESSAGE);
+  });
+
   // --- 両ファミリ混在（汎用化の意義）---
 
   it('Anthropic 形式と擬似 tool_call が混在しても両方除去する', () => {
