@@ -66,6 +66,19 @@ describe('formatLlmError', () => {
     expect(result).toContain('LLMサーバーに接続できませんでした');
   });
 
+  it('should not report a generic fetch failure as a stopped server', () => {
+    const result = formatLlmError(new TypeError('fetch failed'));
+    expect(result).toContain('通信が一時的に失敗');
+    expect(result).not.toContain('サーバーが起動しているか');
+  });
+
+  it('should inspect a nested ECONNREFUSED cause', () => {
+    const cause = Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+    const error = new TypeError('fetch failed', { cause });
+    const result = formatLlmError(error);
+    expect(result).toContain('サーバーが起動しているか');
+  });
+
   it('should format timeout error', () => {
     const result = formatLlmError(new Error('request timeout'));
     expect(result).toContain('タイムアウト');
@@ -875,5 +888,56 @@ describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStre
       channelId: 'ch2',
     });
     expect(result).toBe('明日は晴れ時々曇り、最高20℃だよ🐾');
+  });
+
+  it('複数 chunk の Step XML を表示せず plain text 回答へ再生成する', async () => {
+    const runner = makeStreamRunner([
+      [
+        '<tool_call>',
+        '\n<function=exec>',
+        '\n<parameter=command>',
+        '\npwd',
+        '\n</parameter>',
+        '\n</function>',
+        '\n</tool_call>',
+      ],
+      ['該当する記録は見つからなかったよ。'],
+    ]);
+    let streamed = '';
+
+    const { result } = await runner.runStream(
+      '国歌を探して',
+      { onText: (chunk) => (streamed += chunk) },
+      { sessionId: 'st-xml', channelId: 'ch-xml' }
+    );
+
+    expect(result).toBe('該当する記録は見つからなかったよ。');
+    expect(streamed).toBe('該当する記録は見つからなかったよ。');
+    expect(streamed).not.toContain('<tool_call>');
+    expect(streamed).not.toContain('<function=');
+  });
+
+  it('最終回答の system prompt からツール利用指示を外す', async () => {
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    let finalSystemPrompt = '';
+    (
+      runner as unknown as {
+        llm: {
+          chat: () => Promise<unknown>;
+          chatStream: (m: unknown, o?: { systemPrompt?: string }) => AsyncGenerator<string>;
+        };
+      }
+    ).llm = {
+      chat: async () => ({ content: '', toolCalls: [], finishReason: 'stop' }),
+      chatStream: async function* (_messages, options) {
+        finalSystemPrompt = options?.systemPrompt ?? '';
+        yield '調査結果は見つからなかったよ。';
+      },
+    };
+
+    await runner.runStream('国歌を探して', {}, { sessionId: 'st3', channelId: 'ch3' });
+
+    expect(finalSystemPrompt).not.toContain('## ツール利用契約');
+    expect(finalSystemPrompt).toContain('ツール呼び出しを生成せず');
   });
 });

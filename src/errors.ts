@@ -99,6 +99,57 @@ export function isTransientNetworkError(error: unknown): boolean {
 }
 
 /**
+ * Error.cause を含む通信エラーの診断情報を、ログへ残せる短い文字列にする。
+ * Node.js の fetch は最上位を `TypeError: fetch failed` に丸めるため、cause 側の
+ * code / errno / address / port を残さないと接続拒否・reset・DNS失敗を区別できない。
+ */
+export function formatErrorDiagnostic(error: unknown): string {
+  const pending: Array<{ value: unknown; label: string }> = [{ value: error, label: 'error' }];
+  const seen = new Set<unknown>();
+  const entries: string[] = [];
+
+  while (pending.length > 0 && seen.size < 8) {
+    const current = pending.shift();
+    if (!current || current.value === undefined || current.value === null) continue;
+    if (seen.has(current.value)) continue;
+    seen.add(current.value);
+
+    if (typeof current.value !== 'object') {
+      entries.push(
+        `${current.label}=${String(current.value)
+          .replace(/[\r\n]+/g, ' ')
+          .slice(0, 300)}`
+      );
+      continue;
+    }
+
+    const record = current.value as Record<string, unknown>;
+    const fields: string[] = [];
+    for (const field of ['name', 'message', 'code', 'errno', 'syscall', 'address', 'port']) {
+      const value = record[field];
+      if (value === undefined || value === null || value === '') continue;
+      fields.push(
+        `${field}=${String(value)
+          .replace(/[\r\n]+/g, ' ')
+          .slice(0, 300)}`
+      );
+    }
+    if (fields.length > 0) entries.push(`${current.label}(${fields.join(', ')})`);
+
+    if (record.cause !== undefined) pending.push({ value: record.cause, label: 'cause' });
+    if (record.error !== undefined) pending.push({ value: record.error, label: 'nested_error' });
+    if (record.original !== undefined) {
+      pending.push({ value: record.original, label: 'original' });
+    }
+    if (Array.isArray(record.errors)) {
+      record.errors.forEach((value, index) => pending.push({ value, label: `errors[${index}]` }));
+    }
+  }
+
+  return entries.join(' <- ').slice(0, 1200) || 'unknown error';
+}
+
+/**
  * エラー後にエージェントへ「途中経過の報告」フォローアップを送ってよいか。
  * - timeout / circuit-breaker: 壊れたセッションに負荷を重ねるだけなので不可
  * - usage-limit: フォローアップ自体が同じ上限に当たるので不可

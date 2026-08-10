@@ -11,6 +11,7 @@ import type { LocalLlmMode } from '../backend-resolver.js';
 import type { AgentConfig } from '../config.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
 import { LLMClient } from './llm-client.js';
+import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
 import { loadWorkspaceContext } from './context.js';
 import {
@@ -602,11 +603,15 @@ export function loadMessagesFromTranscript(workdir: string, appSessionId: string
 export function formatLlmError(err: unknown): string {
   if (!(err instanceof Error)) return 'LLMとの通信中に予期しないエラーが発生しました。';
   const msg = err.message;
-  if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+  const diagnostic = formatErrorDiagnostic(err);
+  if (diagnostic.includes('ECONNREFUSED')) {
     return 'LLMサーバーに接続できませんでした。サーバーが起動しているか確認してください。';
   }
-  if (msg.includes('timeout') || msg.includes('aborted')) {
+  if (/timeout|aborted/i.test(diagnostic)) {
     return 'LLMからの応答がタイムアウトしました。しばらくしてから再試行してください。';
+  }
+  if (isTransientNetworkError(err)) {
+    return 'LLMとの通信が一時的に失敗しました。しばらくしてから再試行してください。';
   }
   if (msg.includes('401') || msg.includes('403')) {
     return 'LLMサーバーへの認証に失敗しました。APIキーを確認してください。';
@@ -1063,6 +1068,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.bumpTurnIndex(appSid);
     const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
     const systemPrompt = this.buildSystemPrompt(callFlags);
+    const finalSystemPrompt = callFlags.tools
+      ? this.buildFinalResponseSystemPrompt(callFlags)
+      : systemPrompt;
     const tools = callFlags.tools ? getAllTools() : [];
     const llmTools = callFlags.tools ? toLLMTools(tools) : [];
 
@@ -1085,6 +1093,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       let fullText = await this.executeStreamLoop(
         session,
         systemPrompt,
+        finalSystemPrompt,
         llmTools,
         channelId,
         sessionId,
@@ -1110,6 +1119,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             this.executeStreamLoop(
               session,
               systemPrompt,
+              finalSystemPrompt,
               llmTools,
               channelId,
               sessionId,
@@ -1161,6 +1171,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           const fullText = await this.executeStreamLoop(
             session,
             systemPrompt,
+            finalSystemPrompt,
             llmTools,
             channelId,
             sessionId,
@@ -1274,7 +1285,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           signal: abortController.signal,
         });
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
@@ -1304,7 +1315,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           signal: abortController.signal,
         });
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
@@ -1567,6 +1578,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   private async executeStreamLoop(
     session: Session,
     systemPrompt: string,
+    finalSystemPrompt: string,
     llmTools: ReturnType<typeof toLLMTools>,
     channelId: string,
     sessionId: string,
@@ -1600,7 +1612,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             signal: abortController.signal,
           });
         } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
+          const errorMsg = formatErrorDiagnostic(err);
           console.error(`[local-llm] LLM chat call failed (stream tool loop): ${errorMsg}`);
           logError(this.workdir, logId, `LLM chat call failed (stream tool loop): ${errorMsg}`);
           throw err;
@@ -1745,11 +1757,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     }
 
     // 最終応答をストリーミングで取得
-    // tools + tool_choice='none' を明示することで、LLM が「tool 呼び出し必要」と
-    // 判断しても擬似 tool_call 文字列を text で吐く format drift を防ぐ。
-    // (chatStream が tools を渡さないと一部の OpenAI 互換 LLM で
-    //  `<|tool_call>call:...<tool_call|>` 形式が text として漏れることがある。
-    //  Chat Completions のまま tool_choice='none' で text 応答を強制する)
+    // 最終回答では toolChoice='none' を指定する。LLMClient は OpenAI 互換実装の
+    // 差を吸収するため、none 時は tools/tool_choice 自体を payload から外す。
+    // tools が残ると、tool_choice を無視する chat template が tool call 指示を再注入し、
+    // Step/Qwen 系の XML tool call が通常 text として漏れる。
     //
     // Step C: chatStream 完了後に drift 検出。検知時は LLM に feedback して 1 回だけ retry する。
     //   - assistant に raw drift を積む (LLM が「自分が何を吐いたか」を見られるように)
@@ -1770,7 +1781,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       let totalDroppedDuringStream = false;
       try {
         for await (const chunk of this.llm.chatStream(session.messages, {
-          systemPrompt,
+          systemPrompt: finalSystemPrompt,
           tools: finalIterTools.length > 0 ? finalIterTools : undefined,
           toolChoice: 'none',
           signal: abortController.signal,
@@ -1784,7 +1795,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           // release が空でも続行 (次の chunk で確定するまで hold)
         }
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chatStream failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chatStream failed: ${errorMsg}`);
         throw err;
@@ -2184,6 +2195,19 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     }
 
     return parts.join('\n\n');
+  }
+
+  /**
+   * ツールループ後の最終回答用 system prompt。
+   * tools payload だけ外しても「function call で実行」という契約が残ると、
+   * モデルは利用不可な tool call をテキストで生成しうる。
+   */
+  private buildFinalResponseSystemPrompt(flags: ModeFlags): string {
+    const promptWithoutTools = this.buildSystemPrompt({ ...flags, tools: false });
+    const finalResponseInstruction = `## 最終回答
+
+ツール実行フェーズは終了しました。会話履歴にあるツール結果を使い、ユーザー向けの通常テキストだけで回答してください。ツール呼び出しを生成せず、XML、function call、思考用マーカーを出力しないでください。`;
+    return [promptWithoutTools, finalResponseInstruction].filter(Boolean).join('\n\n');
   }
 
   private getOrCreateSession(sessionId: string, appSessionId?: string): Session {

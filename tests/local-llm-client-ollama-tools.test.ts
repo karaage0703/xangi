@@ -216,9 +216,15 @@ describe('LLMClient internal helpers', () => {
       expect(tools[0].function.name).toBe('tool_search');
     });
 
-    it("toolChoice 'none' / 'auto' / 'required' / function 指定すべて body.tool_choice に反映", () => {
+    it("toolChoice 'none' → tools/tool_choice を送らない", () => {
+      const body: Record<string, unknown> = { model: 'x' };
+      applyOpenAITools(body, { tools: sampleTools, toolChoice: 'none' });
+      expect(body.tools).toBeUndefined();
+      expect(body.tool_choice).toBeUndefined();
+    });
+
+    it("toolChoice 'auto' / 'required' / function 指定 → body.tool_choice に反映", () => {
       for (const choice of [
-        'none',
         'auto',
         'required',
         { type: 'function' as const, function: { name: 'tool_search' } },
