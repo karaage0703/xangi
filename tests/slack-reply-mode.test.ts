@@ -569,7 +569,10 @@ describe('processMessage', () => {
 
   it('uses the same byte limit for completed Block Kit text and message splitting', async () => {
     const result = 'あ'.repeat(2000); // 6000 UTF-8 bytes
-    const postMessage = vi.fn().mockResolvedValue({ ts: '1783402634.549099' });
+    const postMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ts: '1783402634.549099' })
+      .mockResolvedValueOnce({ ts: '1783402635.000200' });
     const update = vi.fn().mockResolvedValue({});
     const client = {
       chat: { postMessage, update },
@@ -577,6 +580,7 @@ describe('processMessage', () => {
       reactions: { remove: vi.fn().mockResolvedValue({}) },
     } as unknown as WebClient;
     const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
       callbacks.onText?.(result, result);
       callbacks.onComplete?.({ result, sessionId: 'provider-1' });
       return { result, sessionId: 'provider-1' };
@@ -603,13 +607,29 @@ describe('processMessage', () => {
     );
 
     const completedUpdate = update.mock.calls.at(-1)?.[0] as {
+      ts: string;
       text: string;
-      blocks: Array<{ type: string; text?: { text: string } }>;
+      blocks: Array<{
+        type: string;
+        text?: { text: string };
+        elements?: Array<{ action_id?: string }>;
+      }>;
     };
     const completedBlockText = completedUpdate.blocks.find((block) => block.type === 'section')
       ?.text?.text;
+    expect(completedUpdate.ts).toBe('1783402635.000200');
     expect(new TextEncoder().encode(completedUpdate.text)).toHaveLength(3000);
     expect(completedBlockText).toBe(completedUpdate.text);
+    expect(
+      completedUpdate.blocks.some((block) =>
+        block.elements?.some((element) => element.action_id === 'xangi_tools')
+      )
+    ).toBe(true);
+    expect(
+      update.mock.calls.some(
+        ([payload]) => payload.ts === '1783402634.549099' && payload.blocks?.length === 0
+      )
+    ).toBe(true);
 
     const continuationPayload = postMessage.mock.calls
       .map(([payload]) => payload as { text?: string; thread_ts?: string })
@@ -617,6 +637,85 @@ describe('processMessage', () => {
     expect(continuationPayload).toEqual(
       expect.objectContaining({ thread_ts: THREAD_TS, text: 'あ'.repeat(1000) })
     );
+  });
+
+  it('splits explicit separators and puts completed buttons on the final message', async () => {
+    const result = '最初の投稿\n\n===\n\n途中の投稿\n\n===\n\n最後の投稿';
+    const postMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ ts: '1783402634.549099' })
+      .mockResolvedValueOnce({ ts: '1783402635.000200' })
+      .mockResolvedValueOnce({ ts: '1783402636.000300' });
+    const update = vi.fn().mockResolvedValue({});
+    const client = {
+      chat: { postMessage, update },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
+      callbacks.onText?.(result, result);
+      callbacks.onComplete?.({ result, sessionId: 'provider-1' });
+      return { result, sessionId: 'provider-1' };
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      slack: { streaming: true, showThinking: true },
+    } as Config;
+    const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+
+    await processMessage(
+      AUTO_REPLY_CHANNEL,
+      runKey,
+      THREAD_TS,
+      '明示分割テスト',
+      '1783402632.322829',
+      client,
+      agentRunner,
+      config
+    );
+
+    const postedTexts = postMessage.mock.calls
+      .slice(1)
+      .map(([payload]) => (payload as { text?: string }).text);
+    expect(postedTexts).toEqual(['途中の投稿', '最後の投稿']);
+    expect(update.mock.calls.some(([payload]) => payload.text === '最初の投稿')).toBe(true);
+    expect(
+      update.mock.calls
+        .filter(([payload]) => payload.blocks?.length === 0)
+        .some(([payload]) => String(payload.text).includes('==='))
+    ).toBe(false);
+    expect(postedTexts.some((text) => text?.includes('==='))).toBe(false);
+
+    const completedUpdate = update.mock.calls.at(-1)?.[0] as {
+      ts: string;
+      text: string;
+      blocks: Array<{
+        type: string;
+        elements?: Array<{ action_id?: string }>;
+      }>;
+    };
+    expect(completedUpdate.ts).toBe('1783402636.000300');
+    expect(completedUpdate.text).toBe('最後の投稿');
+    expect(
+      completedUpdate.blocks.some((block) =>
+        block.elements?.some((element) => element.action_id === 'xangi_tools')
+      )
+    ).toBe(true);
+    expect(
+      completedUpdate.blocks.some((block) =>
+        block.elements?.some((element) => element.action_id === 'xangi_reply_suggestions')
+      )
+    ).toBe(true);
+    expect(
+      update.mock.calls.some(
+        ([payload]) => payload.ts === '1783402634.549099' && payload.blocks?.length === 0
+      )
+    ).toBe(true);
   });
 
   it('skips a second run while the same conversationKey is busy', async () => {

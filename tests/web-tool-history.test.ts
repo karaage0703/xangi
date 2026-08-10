@@ -50,16 +50,16 @@ describe('associateToolHistory', () => {
     expect(associateToolHistory(messages, 'web', tools)[1]).toEqual([tools[0]]);
   });
 
-  it('does not repeat a turn on consecutive assistant entries', () => {
+  it('attaches Web history to the final consecutive assistant entry', () => {
     const messages = [
-      { role: 'user', createdAt: '2026-07-29T08:00:00.000Z', platformMessageId: '123' },
+      { role: 'user', createdAt: '2026-07-29T08:00:00.000Z' },
       { role: 'assistant', createdAt: '2026-07-29T08:00:10.000Z' },
       { role: 'assistant', createdAt: '2026-07-29T08:00:11.000Z' },
     ];
 
-    expect(
-      associateToolHistory(messages, 'discord', tools).map((entries) => entries.length)
-    ).toEqual([0, 1, 0]);
+    expect(associateToolHistory(messages, 'web', tools).map((entries) => entries.length)).toEqual([
+      0, 0, 1,
+    ]);
   });
 
   it('associates commentary with its reply and removes a duplicate final response', () => {
