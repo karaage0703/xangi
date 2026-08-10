@@ -98,6 +98,34 @@ export interface DiscordMessageTarget {
   sendInitial: (options: Parameters<Message['reply']>[0]) => Promise<Message>;
 }
 
+export async function sendDiscordCompletedResult(options: {
+  replyMessage: Message;
+  outputChannel: DiscordMessageTarget['outputChannel'];
+  messageParts: string[];
+  completedButtons?: ActionRowBuilder<ButtonBuilder>;
+}): Promise<Message> {
+  const chunks = options.messageParts.flatMap((part) => splitMessage(part, DISCORD_SAFE_LENGTH));
+  if (chunks.length === 0) chunks.push('✅');
+
+  const completedComponents = options.completedButtons ? [options.completedButtons] : [];
+  await options.replyMessage.edit({
+    content: chunks[0] || '✅',
+    components: chunks.length === 1 ? completedComponents : [],
+  });
+
+  let finalMessage = options.replyMessage;
+  for (let index = 1; index < chunks.length; index++) {
+    await waitBeforeFollowupDiscordSend();
+    const isFinal = index === chunks.length - 1;
+    finalMessage = await options.outputChannel.send(
+      isFinal && completedComponents.length > 0
+        ? { content: chunks[index], components: completedComponents }
+        : chunks[index]
+    );
+  }
+  return finalMessage;
+}
+
 async function resolveDiscordMessageTarget(
   message: Message,
   channelId: string,
@@ -493,17 +521,6 @@ export async function processPrompt(
       toolHistoryMode === 'button' &&
       (config.discord.showToolButton ?? true) &&
       turnHistory.length > 0;
-    if (showToolsButton && replyMessage) {
-      discordToolHistoryByMessageId.set(replyMessage.id, turnHistory);
-    } else if (replyMessage) {
-      discordToolHistoryByMessageId.delete(replyMessage.id);
-    }
-    if (replyMessage && showButtons && extracted.suggestions.length > 0) {
-      discordReplySuggestionsByMessageId.set(replyMessage.id, extracted.suggestions);
-    } else if (replyMessage) {
-      discordReplySuggestionsByMessageId.delete(replyMessage.id);
-    }
-
     // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
     // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
     const SEPARATOR_REGEX = /\n\s*===\s*\n/;
@@ -514,42 +531,31 @@ export async function processPrompt(
           .filter(Boolean)
       : [displayTextWithTools];
 
-    // 最初のパートは既存のreplyMessageを編集して送信
-    const firstChunks = splitMessage(messageParts[0], DISCORD_SAFE_LENGTH);
-    await replyMessage!.edit({
-      content: firstChunks[0] || '✅',
-      ...(showButtons && {
-        components: [
-          createCompletedButtons({
-            showTools: showToolsButton,
-            historyContext: {
-              threadId: eventCtx.threadId,
-              turnId: eventCtx.turnId,
-            },
-            showLeave: target.isThread,
-            showReplySuggestions: extracted.suggestions.length > 0,
-          }),
-        ],
-      }),
+    const completedButtons = showButtons
+      ? createCompletedButtons({
+          showTools: showToolsButton,
+          historyContext: {
+            threadId: eventCtx.threadId,
+            turnId: eventCtx.turnId,
+          },
+          showLeave: target.isThread,
+          showReplySuggestions: extracted.suggestions.length > 0,
+        })
+      : undefined;
+    const finalReplyMessage = await sendDiscordCompletedResult({
+      replyMessage: replyMessage!,
+      outputChannel,
+      messageParts,
+      completedButtons,
     });
 
-    if ('send' in outputChannel) {
-      const channel = outputChannel as unknown as {
-        send: (content: string) => Promise<unknown>;
-      };
-      // 最初のパートの残りチャンク
-      for (let i = 1; i < firstChunks.length; i++) {
-        await waitBeforeFollowupDiscordSend();
-        await channel.send(firstChunks[i]);
-      }
-      // 2つ目以降のパートは新規メッセージとして送信
-      for (let p = 1; p < messageParts.length; p++) {
-        const chunks = splitMessage(messageParts[p], DISCORD_SAFE_LENGTH);
-        for (const chunk of chunks) {
-          await waitBeforeFollowupDiscordSend();
-          await channel.send(chunk);
-        }
-      }
+    discordToolHistoryByMessageId.delete(replyMessage!.id);
+    discordReplySuggestionsByMessageId.delete(replyMessage!.id);
+    if (showToolsButton) {
+      discordToolHistoryByMessageId.set(finalReplyMessage.id, turnHistory);
+    }
+    if (showButtons && extracted.suggestions.length > 0) {
+      discordReplySuggestionsByMessageId.set(finalReplyMessage.id, extracted.suggestions);
     }
 
     if (filePaths.length > 0 && 'send' in outputChannel) {

@@ -377,18 +377,31 @@ function sliceByBytes(str: string, maxBytes: number): string {
   return str.slice(0, lo);
 }
 
-// 結果送信（長い場合は分割）
-async function sendSlackResult(
+const SLACK_EXPLICIT_SEPARATOR_REGEX = /\n\s*===\s*\n/;
+
+function splitSlackResult(text: string): string[] {
+  const parts = SLACK_EXPLICIT_SEPARATOR_REGEX.test(text)
+    ? text
+        .split(SLACK_EXPLICIT_SEPARATOR_REGEX)
+        .map((part) => part.trim())
+        .filter(Boolean)
+    : [text];
+  return parts.flatMap((part) => splitTextByBytes(part, SLACK_MAX_TEXT_BYTES));
+}
+
+// 結果送信（長文または行単独の === がある場合は分割）
+export async function sendSlackResult(
   client: WebClient,
   channelId: string,
   messageTs: string,
   threadTs: string | undefined,
   result: string,
   blocks?: KnownBlock[]
-): Promise<void> {
+): Promise<{ messageTs: string; text: string; firstText: string }> {
   // result は呼び出し側で mrkdwn へ変換済みの前提（ここでは変換しない）。
   // 変換は「finalテキスト確定時に一度だけ」行う（冪等でないため二重変換を避ける）。
-  const text = sliceByBytes(result, SLACK_MAX_TEXT_BYTES);
+  const chunks = splitSlackResult(result);
+  const text = chunks[0] ?? '✅';
   const textBytes = new TextEncoder().encode(text).length;
   console.log(
     `[slack] sendSlackResult: textChars=${text.length}, textBytes=${textBytes}, resultChars=${result.length}`
@@ -402,21 +415,23 @@ async function sendSlackResult(
       ...(blocks !== undefined && { blocks }),
     });
 
+    let finalMessageTs = messageTs;
+    let finalText = text;
+
     // 残りのテキストがあれば分割送信
-    if (text.length < result.length) {
-      const remaining = result.slice(text.length);
-      const chunks = splitTextByBytes(remaining, SLACK_MAX_TEXT_BYTES);
-      console.log(
-        `[slack] Sending remaining ${chunks.length} chunks (${remaining.length} chars left)`
-      );
-      for (const chunk of chunks) {
-        await client.chat.postMessage({
+    if (chunks.length > 1) {
+      console.log(`[slack] Sending remaining ${chunks.length - 1} chunks`);
+      for (const chunk of chunks.slice(1)) {
+        const response = await client.chat.postMessage({
           channel: channelId,
           text: chunk,
           ...(threadTs && { thread_ts: threadTs }),
         });
+        if (response.ts) finalMessageTs = response.ts;
+        finalText = chunk;
       }
     }
+    return { messageTs: finalMessageTs, text: finalText, firstText: text };
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.error('[slack] Failed to update final message:', errorMessage);
@@ -444,16 +459,25 @@ async function sendSlackResult(
       }
 
       // 残りを分割送信
-      const chunks = splitTextByBytes(result, SLACK_MAX_TEXT_BYTES);
-      console.log(`[slack] Fallback: sending ${chunks.length} chunks`);
-      for (const chunk of chunks) {
-        await client.chat.postMessage({
+      const fallbackChunks = splitSlackResult(result);
+      console.log(`[slack] Fallback: sending ${fallbackChunks.length} chunks`);
+      let finalMessageTs = messageTs;
+      let finalText = sliceByBytes(result, 2000);
+      for (const chunk of fallbackChunks) {
+        const response = await client.chat.postMessage({
           channel: channelId,
           text: chunk,
           ...(threadTs && { thread_ts: threadTs }),
         });
+        if (response.ts) finalMessageTs = response.ts;
+        finalText = chunk;
       }
       console.log(`[slack] Fallback: all chunks sent`);
+      return {
+        messageTs: finalMessageTs,
+        text: finalText,
+        firstText: sliceByBytes(result, 2000),
+      };
     } else {
       // その他のエラーは再throw
       throw err;
@@ -1672,18 +1696,22 @@ export async function processMessage(
       result
     );
     const showToolsButton = turnHistory.length > 0;
+    // 最終結果を更新（長い場合は分割送信）
+    const finalMessage = await sendSlackResult(
+      client,
+      channelId,
+      messageTs,
+      threadTs,
+      renderedText
+    );
+    const finalMessageKey = slackMessageKey(channelId, finalMessage.messageTs);
     if (showToolsButton) {
-      slackToolHistoryByMessageKey.set(slackMessageKey(channelId, messageTs), turnHistory);
+      slackToolHistoryByMessageKey.set(finalMessageKey, turnHistory);
     }
     if (extracted.suggestions.length > 0) {
-      slackReplySuggestionsByMessageKey.set(
-        slackMessageKey(channelId, messageTs),
-        extracted.suggestions
-      );
+      slackReplySuggestionsByMessageKey.set(finalMessageKey, extracted.suggestions);
     }
-
-    // 最終結果を更新（長い場合は分割送信）
-    await sendSlackResult(client, channelId, messageTs, threadTs, renderedText);
+    lastBotMessages.set(channelId, finalMessage.messageTs);
 
     // 完了後: StopボタンをNewボタンに切り替え
     // ただしタイムアウト UI ([+5m][⏱ MM:SS]) が表示された直後だと一瞬で
@@ -1696,17 +1724,27 @@ export async function processMessage(
         const wait = Math.max(0, MIN_TIMEOUT_DISPLAY_MS - elapsed);
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       }
+      if (finalMessage.messageTs !== messageTs) {
+        await client.chat
+          .update({
+            channel: channelId,
+            ts: messageTs,
+            text: finalMessage.firstText,
+            blocks: [],
+          })
+          .catch(() => {});
+      }
       await client.chat
         .update({
           channel: channelId,
-          ts: messageTs,
-          text: sliceByBytes(renderedText, SLACK_MAX_TEXT_BYTES),
+          ts: finalMessage.messageTs,
+          text: finalMessage.text,
           blocks: [
             {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: sliceByBytes(renderedText, SLACK_MAX_TEXT_BYTES),
+                text: finalMessage.text,
               },
             },
             ...createSlackCompletedBlocks({
@@ -1718,7 +1756,7 @@ export async function processMessage(
               },
               showReplySuggestions: extracted.suggestions.length > 0,
               replySuggestionPayload: {
-                messageKey: slackMessageKey(channelId, messageTs),
+                messageKey: finalMessageKey,
                 suggestions: extracted.suggestions,
                 threadTs,
               },

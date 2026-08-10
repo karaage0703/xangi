@@ -610,7 +610,7 @@ Use case: run multiple xangi instances (e.g. xangi-prod=Claude / xangi-dev=Local
 
 ### Message Split Separator
 
-When the AI's response text contains `\n===\n` (i.e. `===` surrounded by newlines), the response is split and sent as separate messages. This works not only for scheduler-triggered responses but also for direct Discord mention messages. Useful when you want to generate multiple independent posts from a single LLM response.
+When the AI's response text contains `\n===\n` (i.e. `===` surrounded by newlines), the response is split and sent as separate messages. This works not only for scheduler-triggered responses but also for direct Discord and Slack messages. It is useful when you want to generate multiple independent posts from a single LLM response.
 
 ```
 Post explanation 1
@@ -621,7 +621,7 @@ Post explanation 2
 > Post content...
 ```
 
-The above response is sent as two separate messages to Discord.
+The above response is sent as two separate messages to Discord or Slack. When action buttons are enabled, they appear only on the final message.
 
 ### Restart Mechanism
 

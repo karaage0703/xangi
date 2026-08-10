@@ -18,7 +18,7 @@ function timestamp(value?: string): number | undefined {
  *
  * Discord and Slack can use the incoming platform message ID exactly. Web
  * turns (and older transcripts without that ID) fall back to the interval
- * between a user message and the following assistant reply.
+ * between a user message and the final consecutive assistant reply.
  */
 export function associateToolHistory(
   messages: ToolHistoryMessage[],
@@ -27,13 +27,12 @@ export function associateToolHistory(
 ): TurnHistoryEntry[][] {
   const associated = messages.map(() => [] as TurnHistoryEntry[]);
   let pendingUser: ToolHistoryMessage | undefined;
+  let pendingAssistantIndexes: number[] = [];
 
-  messages.forEach((message, index) => {
-    if (message.role === 'user') {
-      pendingUser = message;
-      return;
-    }
-    if (message.role !== 'assistant' || !pendingUser) return;
+  const associatePendingTurn = () => {
+    const targetIndex = pendingAssistantIndexes.at(-1);
+    if (!pendingUser || targetIndex === undefined) return;
+    const targetMessage = messages[targetIndex];
 
     const exactTurnId =
       pendingUser.platformMessageId && (platform === 'discord' || platform === 'slack')
@@ -43,7 +42,7 @@ export function associateToolHistory(
 
     if (matches.length === 0) {
       const start = timestamp(pendingUser.createdAt);
-      const end = timestamp(message.createdAt);
+      const end = timestamp(targetMessage.createdAt);
       if (start !== undefined && end !== undefined) {
         matches = history.filter((entry) => entry.at >= start && entry.at <= end + 5_000);
       }
@@ -53,15 +52,29 @@ export function associateToolHistory(
     if (
       last?.kind === 'text' &&
       last.text.trim() &&
-      message.content?.trim() &&
-      message.content.trim().endsWith(last.text.trim())
+      targetMessage.content?.trim() &&
+      targetMessage.content.trim().endsWith(last.text.trim())
     ) {
       matches = matches.slice(0, -1);
     }
 
-    associated[index] = matches;
+    associated[targetIndex] = matches;
     pendingUser = undefined;
+    pendingAssistantIndexes = [];
+  };
+
+  messages.forEach((message, index) => {
+    if (message.role === 'user') {
+      associatePendingTurn();
+      pendingUser = message;
+      pendingAssistantIndexes = [];
+      return;
+    }
+    if (message.role === 'assistant' && pendingUser) {
+      pendingAssistantIndexes.push(index);
+    }
   });
+  associatePendingTurn();
 
   return associated;
 }
