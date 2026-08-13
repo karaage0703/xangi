@@ -1,4 +1,8 @@
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
+import {
+  extractAntigravityErrorMessage,
+  reportsUnsupportedOutputFormat,
+} from './antigravity-output.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
@@ -706,12 +710,7 @@ export class AntigravityRunner extends CliRunnerBase {
     ]
       .filter(Boolean)
       .join('\n');
-    const mentionsOutputFormat = /-{1,2}output-format/i.test(detail);
-    const reportsUnsupported =
-      /(?:unknown|unrecognized|undefined|unexpected)\s+(?:option|flag|argument)/i.test(detail) ||
-      /(?:option|flag|argument)s?\s+provided\s+but\s+not\s+defined/i.test(detail) ||
-      /(?:option|flag|argument)s?\s+(?:is|are)\s+not\s+defined/i.test(detail);
-    return mentionsOutputFormat && reportsUnsupported;
+    return reportsUnsupportedOutputFormat(detail);
   }
 
   private looksLikeNativeJsonEnvelope(output: string): boolean {
@@ -824,12 +823,6 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   private extractErrorMessage(event: AntigravityJsonResponse): string | undefined {
-    const error = event.error;
-    if (typeof error === 'string') return error;
-    if (error?.message) return error.message;
-    if (typeof event.message === 'string' && event.is_error) return event.message;
-    if (typeof event.message === 'string' && event.status === 'ERROR') return event.message;
-    if (typeof event.response === 'string' && event.status === 'ERROR') return event.response;
-    return undefined;
+    return extractAntigravityErrorMessage(event);
   }
 }

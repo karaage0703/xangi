@@ -54,7 +54,7 @@ describe('backend model parsers', () => {
     ]);
   });
 
-  it('parses Grok and Antigravity output', () => {
+  it('parses Grok and legacy Antigravity output', () => {
     expect(parseGrokModels('Available models:\n  * grok-4.5 (default)\n')).toEqual([
       { id: 'grok-4.5', isDefault: true },
     ]);
@@ -65,6 +65,38 @@ describe('backend model parsers', () => {
     ).toEqual([
       { id: 'gemini-3.6-flash-high' },
       { id: 'Gemini 3.5 Flash (Medium)' },
+    ]);
+  });
+
+  it('parses Antigravity 1.1.12 JSON and tab-delimited model output', () => {
+    expect(
+      parseAntigravityModels(
+        JSON.stringify({
+          conversation_id: '',
+          status: 'SUCCESS',
+          command: {
+            name: 'models',
+            data: {
+              models: [
+                { id: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' },
+                { id: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
+              ],
+            },
+          },
+        })
+      )
+    ).toEqual([
+      { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
+      { id: 'gemini-3.6-flash-medium', displayName: 'Gemini 3.6 Flash (Medium)' },
+    ]);
+
+    expect(
+      parseAntigravityModels(
+        'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\ngemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)\n'
+      )
+    ).toEqual([
+      { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
+      { id: 'gemini-3.6-flash-medium', displayName: 'Gemini 3.6 Flash (Medium)' },
     ]);
   });
 });
@@ -96,7 +128,20 @@ describe('discoverBackendModels', () => {
       if (command === 'grok') {
         return { stdout: '  * grok-4.5 (default)\n', stderr: '' };
       }
-      return { stdout: 'gemini-3.6-flash-high\n', stderr: '' };
+      return {
+        stdout: JSON.stringify({
+          status: 'SUCCESS',
+          command: {
+            name: 'models',
+            data: {
+              models: [
+                { id: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' },
+              ],
+            },
+          },
+        }),
+        stderr: 'Fetching available models...\n',
+      };
     });
 
     await expect(discoverBackendModels('codex', { runner })).resolves.toMatchObject({
@@ -113,15 +158,108 @@ describe('discoverBackendModels', () => {
     });
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',
-      source: 'agy models',
+      source: 'agy --output-format json models',
     });
 
     expect(runner.mock.calls.map(([command, args]) => [command, args])).toEqual([
       ['codex', ['app-server', '--stdio']],
       ['cursor-agent', ['models']],
       ['grok', ['models']],
+      ['agy', ['--output-format', 'json', 'models']],
+    ]);
+  });
+
+  it('falls back to legacy agy models only when output-format is unsupported', async () => {
+    const runner = vi
+      .fn<ModelDiscoveryCommandRunner>()
+      .mockRejectedValueOnce(new Error('flags provided but not defined: -output-format'))
+      .mockResolvedValueOnce({
+        stdout: 'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n',
+        stderr: '',
+      });
+
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'available',
+      source: 'agy models (legacy fallback)',
+      models: [
+        { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
+      ],
+    });
+    expect(runner.mock.calls.map(([command, args]) => [command, args])).toEqual([
+      ['agy', ['--output-format', 'json', 'models']],
       ['agy', ['models']],
     ]);
+  });
+
+  it('preserves an Antigravity JSON error message', async () => {
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockResolvedValue({
+      stdout: JSON.stringify({
+        status: 'ERROR',
+        error: { code: 'quota_exceeded', message: 'Daily quota exceeded' },
+      }),
+      stderr: '',
+    });
+
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'unavailable',
+      source: 'agy --output-format json models',
+      models: [],
+      message: 'Daily quota exceeded',
+    });
+  });
+
+  it.each([
+    ['null', null],
+    ['an empty object', {}],
+    ['an empty string', ''],
+  ])('does not treat error: %s in a success response as an Antigravity error', async (_, error) => {
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockResolvedValue({
+      stdout: JSON.stringify({
+        status: 'SUCCESS',
+        error,
+        message: 'Models fetched successfully',
+        response: 'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n',
+        command: {
+          name: 'models',
+          data: {
+            models: [{ id: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' }],
+          },
+        },
+      }),
+      stderr: '',
+    });
+
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'available',
+      models: [{ id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' }],
+    });
+  });
+
+  it('preserves structured Antigravity JSON error details without a message', async () => {
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockResolvedValue({
+      stdout: JSON.stringify({
+        status: 'ERROR',
+        error: { code: 'internal_error', request_id: 'request-123' },
+      }),
+      stderr: '',
+    });
+
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'unavailable',
+      models: [],
+      message: '{"code":"internal_error","request_id":"request-123"}',
+    });
+  });
+
+  it('does not retry agy model discovery after an ordinary failure', async () => {
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockRejectedValue(new Error('network down'));
+
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'unavailable',
+      models: [],
+      message: 'network down',
+    });
+    expect(runner).toHaveBeenCalledTimes(1);
   });
 
   it('reports unauthenticated Grok as unavailable instead of showing a guessed model', async () => {
