@@ -1,4 +1,8 @@
 import { spawn } from 'node:child_process';
+import {
+  extractAntigravityOutputError,
+  reportsUnsupportedOutputFormat,
+} from './antigravity-output.js';
 import type { AgentBackend } from './config.js';
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
@@ -156,15 +160,60 @@ export function parseGrokModels(output: string): BackendModel[] {
   return models;
 }
 
-export function parseAntigravityModels(output: string): BackendModel[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line.length > 0 && !/^(available models|usage|you are not authenticated|error:)/i.test(line)
+interface AntigravityModelsCommand {
+  name?: string;
+  data?: {
+    models?: Array<{ id?: string; label?: string }>;
+  };
+}
+
+function parseAntigravityModelsCommand(value: unknown): BackendModel[] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const envelope = value as {
+    command?: AntigravityModelsCommand;
+    result?: { command?: AntigravityModelsCommand };
+  };
+  const command = envelope.command ?? envelope.result?.command;
+  if (command?.name !== 'models' || !Array.isArray(command.data?.models)) return undefined;
+
+  return command.data.models
+    .filter((model): model is { id: string; label?: string } =>
+      Boolean(model && typeof model === 'object' && typeof model.id === 'string' && model.id.trim())
     )
-    .map((id) => ({ id }));
+    .map((model) => ({
+      id: model.id.trim(),
+      displayName: model.label?.trim() || undefined,
+    }));
+}
+
+export function parseAntigravityModels(output: string): BackendModel[] {
+  for (const candidate of [output, ...output.split('\n')]) {
+    try {
+      const models = parseAntigravityModelsCommand(JSON.parse(candidate.trim()));
+      if (models) return models;
+    } catch {
+      // Fall through to the plain-text formats used by older agy versions.
+    }
+  }
+
+  return output.split('\n').flatMap((line): BackendModel[] => {
+    const trimmed = line.trim();
+    if (
+      !trimmed ||
+      trimmed.startsWith('{') ||
+      /^(available models|usage|you are not authenticated|error:)/i.test(trimmed)
+    ) {
+      return [];
+    }
+    const [id, ...labelParts] = trimmed.split('\t');
+    const displayName = labelParts.join('\t').trim();
+    return [{ id: id.trim(), displayName: displayName || undefined }];
+  });
+}
+
+function isUnsupportedAntigravityOutputFormat(error: unknown): boolean {
+  const detail = error instanceof Error ? error.message : String(error);
+  return reportsUnsupportedOutputFormat(detail);
 }
 
 async function discoverLocalLlmModels(fetchFn: typeof fetch): Promise<BackendModelDiscovery> {
@@ -222,6 +271,7 @@ export async function discoverBackendModels(
   options: { runner?: ModelDiscoveryCommandRunner; fetchFn?: typeof fetch } = {}
 ): Promise<BackendModelDiscovery> {
   const runner = options.runner ?? runCommand;
+  let antigravitySource = 'agy --output-format json models';
   try {
     if (backend === 'claude-code') {
       return {
@@ -270,12 +320,21 @@ export async function discoverBackendModels(
       if (models.length === 0) throw new Error('grok models returned no models');
       return { backend, source: 'grok models', status: 'available', models };
     }
-    const result = await runner('agy', ['models']);
+    let result: CommandResult;
+    try {
+      result = await runner('agy', ['--output-format', 'json', 'models']);
+    } catch (error) {
+      if (!isUnsupportedAntigravityOutputFormat(error)) throw error;
+      antigravitySource = 'agy models (legacy fallback)';
+      result = await runner('agy', ['models']);
+    }
     if (hasAuthenticationError(result)) throw new Error('Antigravity CLI is not authenticated');
     const { stdout } = result;
+    const outputError = extractAntigravityOutputError(stdout);
+    if (outputError) throw new Error(outputError);
     const models = parseAntigravityModels(stdout);
     if (models.length === 0) throw new Error('agy models returned no models');
-    return { backend, source: 'agy models', status: 'available', models };
+    return { backend, source: antigravitySource, status: 'available', models };
   } catch (error) {
     return {
       backend,
@@ -286,7 +345,7 @@ export async function discoverBackendModels(
             ? 'cursor-agent models'
             : backend === 'grok'
               ? 'grok models'
-              : 'agy models',
+              : antigravitySource,
       status: 'unavailable',
       models: [],
       message: error instanceof Error ? error.message : String(error),
