@@ -6,7 +6,7 @@ This document explains the architecture and design philosophy of xangi.
 
 ## Overview
 
-xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
+xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -40,7 +40,7 @@ flowchart LR
 | Chat               | User interface                           | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                  |
 | xangi              | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                    |
 | Backend Resolution | Per-channel backend resolution           | backend-resolver.ts, settings.ts                                                         |
-| AI Backend         | Actual AI processing                     | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
+| AI Backend         | Actual AI processing                     | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, Local LLM (Ollama / vLLM) |
 | Workspace          | Files & skills                           | skills/, AGENTS.md, local docs                                                           |
 
 ## Components
@@ -102,14 +102,15 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - Attachment uploads use `XMLHttpRequest.upload` progress events to show the file name, position within a multi-file selection, and transfer percentage above the composer on both desktop and mobile
 - Workspace and uploaded files honor byte `Range` requests with `206 Content-Range`, allowing media elements including iPhone Safari to load metadata, seek, and play. Unsatisfiable ranges return `416`
 - A transient session-detail read failure appears only after the safe GET retries are exhausted. A later successful read clears that read error without hiding a newer send or upload error
-- Web Projects are logical namespaces equivalent to Discord channels. Names, extra prompts, and optional backend/model/effort defaults are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. An existing Web session can change or clear its `projectId` while it is idle. Creating a Project never creates a directory, Git repository, or instruction file
+- Web Projects are logical namespaces equivalent to Discord channels. Names, extra prompts, and optional backend/model/effort defaults are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. An existing Web session can change or clear its `projectId` while it is idle. Creating a Project never creates a directory, Git repository, or instruction file. An invalid Project entry is skipped in isolation, while unavailable backend/model/effort settings are disabled for that Project so the rest of xangi can keep starting
+- `xangi service restart` and `xangi tool system_restart` use the new CLI to validate the production Web Project state read-only before requesting a restart. An incompatible state blocks the restart without modifying the state file
 - Web backend resolution uses conversation override (`/backend set`) first, then the Project default, then the runtime default. `/backend reset` removes only the conversation override. If moving a conversation changes provider backend, xangi does not reuse the old provider session ID and preloads the saved transcript into the next turn to preserve context
-- `GET /api/sessions` returns only the latest 100 sessions plus `activity`; title derivation reads the first JSONL line in chunks instead of each complete log
+- `GET /api/sessions` returns the latest 100 sessions plus `activity` by default and supports server-side `lifecycle=open|closed` and `updatedSince` filters. Title derivation reads the first JSONL line in chunks instead of each complete log
 - Project filtering happens server-side in both `GET /api/sessions` and `GET /api/sessions/stream`. Typing in search no longer reconnects SSE, and the redundant initial search request is skipped
-- `/monitor` is a read-only mode of the same React app. It receives turn-boundary snapshots from `GET /api/sessions/stream` and does not poll
-- `/workspace` is the workspace browser/editor mode of the same React app. `workspace-browser.ts` accepts only workspace-relative paths below `WORKSPACE_PATH`; it excludes hidden/state/dependency/build paths, symlinks, non-text files, and files larger than 1 MiB. It extracts `tags` from Markdown YAML frontmatter so the UI can filter tags and sort by name or modification time. Saves compare the SHA-256 captured at read time and atomically rename a temporary file in the same directory. External changes return 409 so the UI can require a reload
+- `/monitor` is the session-monitoring mode of the same React app. It presents Sessions in three columns: Running, Waiting for input, and Completed, without exposing the internal Open / Closed lifecycle. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and use the card's status label and colored dot instead of a separate column. The detail panel can open the conversation or mark the Session completed through `POST /api/sessions/:id/close` while preserving history. Completed history keeps the existing actions for continuing in the original Discord conversation or branching into a history-inheriting Web conversation. It receives turn-boundary snapshots from `GET /api/sessions/stream` and does not poll
+- `/workspace` is the workspace browser/editor mode of the same React app. `workspace-browser.ts` accepts workspace-relative paths and normalizes absolute paths that remain inside `WORKSPACE_PATH`; hidden/state/dependency/build paths, symlinks, non-text files, and files larger than 1 MiB remain unavailable. Web Chat text-file links become `/workspace?path=...&line=...` deep links that open the parent directory and file, then select the requested line. `MEDIA:` inside fenced, inline, or indented code is excluded from media splitting so only real media notation leaves the Markdown stream. Markdown YAML frontmatter provides `tags` for filtering, and files can be sorted by name or modification time. Saves compare the SHA-256 captured at read time and atomically rename a temporary file in the same directory. External changes return 409 so the UI can require a reload
 - `/schedules` is the schedule-management mode. Its HTTP APIs add, edit, enable, disable, and delete jobs for Web, Discord, Slack, and Telegram. Web jobs store a reserved new-conversation value as `channelId` plus an optional `projectId`. At run time the Project is validated again, a fresh Web session is created, and the normal Web agent-runner path appends the turn to that session
-- Chat, Files, Schedules, and Monitor share a common top bar and theme selector so navigation and display controls stay fixed. The system/light/dark preference is stored in localStorage and switches semantic color tokens through `data-theme`
+- Chat, Files, Schedules, and Monitor share a common top bar and theme selector so navigation and display controls stay fixed. The system/light/dark preference is stored in localStorage and switches semantic color tokens through `data-theme`. Monitor displays an active Session as Running, an inactive Open Session as Waiting, and a Closed Session as Completed. Internally, `lifecycle` still tracks Open / Closed while `isCurrent` remains the separate next-input routing pointer. Existing sessions without `lifecycle` are Closed regardless of stale routing pointers and become explicitly Open only when they receive the next input
 - React is bundled into static assets at build time, so distributed installations add no frontend runtime dependency beyond Node.js
 
 ### macOS, Linux, and WSL2 setup and update core
@@ -118,7 +119,7 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - `installer/manifest.ts` and `updater.ts` provide Ed25519 and SHA-256 verification, an update lock, staging, and atomic current switching. Initial service activation performs a health check and rolls back on failure
 - `installer/platform/darwin.ts` owns LaunchAgent behavior, keeping OS-specific lifecycle code outside the shared updater
 - `installer/platform/linux.ts` owns the XDG layout and `systemd --user` lifecycle. It emits `WorkingDirectory=` without quoting the whole value and escapes spaces and other special path characters with systemd path syntax. WSL2 requires systemd; setup URLs use `wslview` when available and otherwise open in the Windows browser through `cmd.exe`
-- `setup/guided-onboarding.ts` deterministically detects supported agent CLIs through `PATH`, `NVM_BIN`, `~/.nvm/versions/node/*/bin`, and `--version`. The detected absolute executable path is shared by the service PATH and runner. It sends only a short start prompt to the agent UI, stores detailed instructions in a temporary mode-0600 file, and removes that file when the agent exits. The agent asks one explicit Web Chat access-scope question (local / tailscale / lan) in addition to workspace choices. Local and Tailscale modes keep the runtime on loopback; Tailscale adds a same-port TCP forward through Tailscale Serve only after the user selects it. LAN mode warns that Web Chat has no application-level authentication before binding to `0.0.0.0`. xangi's `setup --apply` and `setup --complete` remain responsible for configuration persistence, workspace-mode validation, repository-template application, and BOOTSTRAP completion checks
+- `setup/guided-onboarding.ts` deterministically detects supported agent CLIs through `PATH`, `NVM_BIN`, `~/.nvm/versions/node/*/bin`, and `--version`. The detected absolute executable path is shared by the service PATH and runner. It sends only a short start prompt to the agent UI, stores detailed instructions in a temporary mode-0600 file, and removes that file when the agent exits. The initial flow fixes Web Chat to local access and does not inspect Tailscale until the service starts and `doctor` succeeds. Only after the local setup works does the agent offer Tailscale or LAN as optional access settings. `setup --access` changes only the access scope without returning completed onboarding to the bootstrap phase. Local and Tailscale modes keep the runtime on loopback; Tailscale adds a same-port TCP forward through Tailscale Serve only after the user selects it. LAN mode warns that Web Chat has no application-level authentication before binding to `0.0.0.0`. xangi's `setup --apply` and `setup --complete` remain responsible for configuration persistence, workspace-mode validation, repository-template application, and BOOTSTRAP completion checks
 - `onboarding.json` atomically records `preflight`, `bootstrap_in_progress`, and `minimum_ready` in the configuration area as the source of truth for resume and diagnostics. There is no browser UI that replaces AI onboarding; when no supported agent is available it prints installation guidance and exits
 - `secrets.json` is atomically stored with mode 0600 in the OS-specific configuration area. `xangi settings` opens a temporary GUI for Discord allowed-user IDs and tokens on loopback with a one-time URL, Host validation, no-store, and CSP. It never sends stored values to the browser and closes after saving, keeping connection settings out of the AI, workspace, setup JSON, and shell history
 - `packaging/bootstrap.sh` is published as the shared `install.sh` entry point for every supported operating system. It detects Darwin / Linux and arm64 / x64, then dispatches to the target installer in the same GitHub Release. WSL2 follows the Linux path. A piped invocation always defers setup and service activation, installs the verified CLI, and tells the user to run `xangi setup` from a normal terminal. Shell/readline and an AI TUI never hand terminal ownership to each other inside the pipe
@@ -207,7 +208,7 @@ interface AgentRunner {
 }
 ```
 
-Every Runner implementation (Claude Code / Codex / Cursor / Grok / Antigravity / Local LLM / Dynamic) is also
+Every Runner implementation (Claude Code / Codex / Cursor / Grok / Antigravity / GitHub Copilot / Local LLM / Dynamic) is also
 an `EventEmitter` and emits `timeout-started` / `timeout-extended` / `timeout-cleared`
 events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI.
 
@@ -308,13 +309,14 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | cursor-cli.ts        | Cursor CLI               | `cursor-agent` command, JSON/stream-json, tool call display support                    |
 | grok-cli.ts          | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
 | antigravity-cli.ts   | Antigravity CLI          | Google `agy`, Agy 1.1.8+ JSON/stream-json, slash-expansion probing, legacy fallback     |
+| github-copilot-cli.ts | GitHub Copilot CLI      | JSONL streaming, session resume, permission control tied to SKIP_PERMISSIONS             |
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
 `backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi tool models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
-The five adapters (claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli) are built on the
+The six adapters (claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli) are built on the
 abstract base class `CliRunnerBase`. The base class owns the shared scaffolding, so each
 adapter only implements "command argument building" and "JSONL event interpretation
 (`CliStreamParser`)":
@@ -826,7 +828,7 @@ Hides AI CLI implementation details and makes them interchangeable:
 
 ```bash
 # Switch backends via configuration
-AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / local-llm
+AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / github-copilot / local-llm
 ```
 
 When new AI CLIs emerge in the future, support can be added simply by creating a new adapter.
@@ -861,7 +863,8 @@ Defense is three-layered: canonical tool route + lenient parsing of explicit mar
 2. Lenient parser = `extractFilePaths`. Rescue for when the LLM doesn't call send_file and instead writes attachment intent into the response text. **Explicit markers only**:
    - `MEDIA:path`
    - `[IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:path]` (bracket markers)
-   - `![alt](path)` / `[label](path)` (markdown)
+   - `![alt](path)` (Markdown image)
+   - A regular `[label](path)` remains a reference link and is not attached even when it targets an existing local file. Sending the file itself requires one of the explicit markers above or `send_file`.
    - No "bare path in prose" tier — the false-positive risk (an incidental path string getting attached) outweighs the benefit and widens the attack surface.
 3. Sandbox = every candidate is canonicalized via `fs.realpathSync` before a `startsWith` check against allowlist roots (entire WORKSPACE subtree, the attachment store, `/tmp`, `ATTACHMENT_ALLOWED_DIRS`). This blocks `..` / symlink escapes and doubles as the existence / file-vs-directory check.
    - An existing candidate outside the allowlist is not attached. Instead of silently dropping it, xangi shows a generic warning that does not expose the local absolute path. It neither expands the allowlist automatically nor bypasses the sandbox to send the file.
@@ -1007,6 +1010,7 @@ src/
 ├── cursor-cli.ts       # Cursor CLI adapter
 ├── grok-cli.ts         # Grok CLI adapter
 ├── antigravity-cli.ts  # Antigravity CLI adapter
+├── github-copilot-cli.ts # GitHub Copilot CLI adapter
 ├── cli-process.ts      # Shared process/env/timeout helpers for one-shot CLI runners
 ├── jsonl-buffer.ts     # Shared JSONL stream line splitter
 ├── runner-manager.ts   # Multi-channel concurrent processing (RunnerManager)

@@ -273,13 +273,13 @@ export async function discoverBackendModels(
   const runner = options.runner ?? runCommand;
   let antigravitySource = 'agy --output-format json models';
   try {
-    if (backend === 'claude-code') {
+    if (backend === 'claude-code' || backend === 'github-copilot') {
       return {
         backend,
-        source: 'Claude Code CLI',
+        source: backend === 'claude-code' ? 'Claude Code CLI' : 'GitHub Copilot CLI',
         status: 'unsupported',
         models: [],
-        message: 'CLIに機械可読なモデル一覧取得機能がありません',
+        message: 'CLIに独立した機械可読モデル一覧コマンドがありません',
       };
     }
     if (backend === 'local-llm') {

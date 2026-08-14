@@ -19,7 +19,10 @@ import {
   listAllSessions,
   hasSessionGoneIdle,
   updateSessionProject,
+  updateSessionTitle,
   WEB_CHAT_CONTEXT_PREFIX,
+  closeSession,
+  getSessionLifecycle,
 } from '../src/sessions.js';
 
 describe('sessions', () => {
@@ -86,6 +89,34 @@ describe('sessions', () => {
       expect(entry!.scope).toBe('interactive');
       expect(entry!.agent?.providerSessionId).toBe('session-abc');
       expect(getSession('channel-1')).toBe('session-abc');
+    });
+
+    it('repairs lone surrogates in persisted session titles', () => {
+      const sessionsPath = join(testDir, 'sessions.json');
+      const appId = 'invalid_title_001';
+      const data = {
+        activeByContext: { 'channel-1': appId },
+        sessions: {
+          [appId]: {
+            id: appId,
+            title: 'broken\uD83D',
+            platform: 'discord',
+            contextKey: 'channel-1',
+            scope: 'interactive',
+            bootId: 'boot-old',
+            createdAt: '2026-03-18T00:00:00Z',
+            updatedAt: '2026-03-18T00:00:00Z',
+            messageCount: 0,
+            archived: false,
+          },
+        },
+      };
+      require('fs').writeFileSync(sessionsPath, JSON.stringify(data));
+
+      initSessions(testDir);
+
+      expect(getSessionEntry(appId)?.title).toBe('broken');
+      expect(readFileSync(sessionsPath, 'utf-8')).not.toContain('\\ud83d');
     });
 
     it('should purge scheduler sessions on init', () => {
@@ -205,6 +236,40 @@ describe('sessions', () => {
     });
   });
 
+  describe('closeSession', () => {
+    it('marks the session closed, detaches routing, and keeps the session record', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-close', { platform: 'discord' });
+
+      expect(getSessionLifecycle(appId)).toBe('open');
+      expect(closeSession(appId, 'monitor')).toBe(true);
+
+      expect(getActiveSessionId('channel-close')).toBeUndefined();
+      expect(getSessionEntry(appId)).toMatchObject({
+        id: appId,
+        lifecycle: 'closed',
+        closeReason: 'monitor',
+      });
+      expect(getSessionEntry(appId)?.closedAt).toBeTruthy();
+      expect(getSessionLifecycle(appId)).toBe('closed');
+    });
+
+    it('treats existing entries without lifecycle as closed', () => {
+      initSessions(testDir);
+      const openId = createSession('channel-open');
+      const closedId = createSession('channel-detached');
+      deleteSession('channel-detached');
+
+      const openEntry = getSessionEntry(openId)!;
+      const closedEntry = getSessionEntry(closedId)!;
+      delete openEntry.lifecycle;
+      delete closedEntry.lifecycle;
+
+      expect(getSessionLifecycle(openId)).toBe('closed');
+      expect(getSessionLifecycle(closedId)).toBe('closed');
+    });
+  });
+
   describe('ensureSession', () => {
     it('should create new session if none exists', () => {
       initSessions(testDir);
@@ -218,6 +283,18 @@ describe('sessions', () => {
       const id1 = ensureSession('channel-1');
       const id2 = ensureSession('channel-1');
       expect(id1).toBe(id2);
+    });
+
+    it('marks a legacy active session open when it receives a new input', () => {
+      initSessions(testDir);
+      const id = createSession('legacy-channel');
+      const entry = getSessionEntry(id)!;
+      delete entry.lifecycle;
+
+      expect(getSessionLifecycle(id)).toBe('closed');
+      expect(ensureSession('legacy-channel')).toBe(id);
+      expect(getSessionEntry(id)?.lifecycle).toBe('open');
+      expect(getSessionLifecycle(id)).toBe('open');
     });
   });
 
@@ -233,6 +310,21 @@ describe('sessions', () => {
     });
   });
 
+  describe('session title persistence', () => {
+    it('sanitizes titles on create and update', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-unicode', { title: 'create\uD83D📎' });
+      expect(getSessionEntry(appId)?.title).toBe('create📎');
+
+      updateSessionTitle(appId, 'update\uDCCE📎');
+      expect(getSessionEntry(appId)?.title).toBe('update📎');
+
+      const saved = readFileSync(join(testDir, 'sessions.json'), 'utf-8');
+      expect(saved).not.toContain('\\ud83d');
+      expect(saved).not.toContain('\\udcce');
+    });
+  });
+
   describe('setProviderSessionId', () => {
     it('should set providerSessionId on existing session', () => {
       initSessions(testDir);
@@ -241,6 +333,20 @@ describe('sessions', () => {
       const entry = getSessionEntry(appId);
       expect(entry!.agent?.providerSessionId).toBe('provider-abc');
       expect(entry!.agent?.backend).toBe('claude-code');
+    });
+
+    it('persists resolved model and effort across provider session updates', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-1');
+      setProviderSessionId(appId, 'provider-abc', 'codex', 'gpt-5.6', 'high');
+      setProviderSessionId(appId, 'provider-def');
+
+      expect(getSessionEntry(appId)?.agent).toEqual({
+        backend: 'codex',
+        model: 'gpt-5.6',
+        effort: 'high',
+        providerSessionId: 'provider-def',
+      });
     });
   });
 

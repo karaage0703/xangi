@@ -9,6 +9,7 @@ import {
   readSync,
 } from 'fs';
 import { join } from 'path';
+import { withoutFinalResponse } from './tool-history.js';
 
 export type ActivityState =
   'thinking' | 'streaming' | 'tool' | 'complete' | 'aborted' | 'error' | 'stale';
@@ -234,6 +235,8 @@ export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHis
     }
 
     const result: TurnHistoryEntry[] = [];
+    const snapshottedTurns = new Set<string>();
+    const legacyCompletedTurns = new Set<string>();
     const lines = text.trimEnd().split('\n');
     for (let index = lines.length - 1; index >= 0 && result.length < limit; index -= 1) {
       try {
@@ -245,11 +248,38 @@ export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHis
           toolName?: string;
           summary?: string;
           toolInputPreview?: string;
+          turnHistory?: TurnHistoryEntry[];
         };
         if (!event.ts || !event.turnId) continue;
         const at = Date.parse(event.ts);
         if (!Number.isFinite(at)) continue;
+        if (event.state === 'complete') {
+          if (Array.isArray(event.turnHistory)) {
+            snapshottedTurns.add(event.turnId);
+            for (
+              let historyIndex = event.turnHistory.length - 1;
+              historyIndex >= 0 && result.length < limit;
+              historyIndex -= 1
+            ) {
+              const entry = event.turnHistory[historyIndex];
+              if (
+                entry?.turnId === event.turnId &&
+                (entry.kind === 'text' || entry.kind === 'tool')
+              ) {
+                result.push(entry);
+              }
+            }
+          } else {
+            // Logs written before completed snapshots cannot distinguish final
+            // response fragments from genuine commentary. Keep their tools, but
+            // do not expose raw streamed text after a process restart.
+            legacyCompletedTurns.add(event.turnId);
+          }
+          continue;
+        }
+        if (snapshottedTurns.has(event.turnId)) continue;
         if (event.state === 'streaming' && event.text) {
+          if (legacyCompletedTurns.has(event.turnId)) continue;
           result.push({ kind: 'text', at, turnId: event.turnId, text: event.text });
         } else if (event.state === 'tool' && event.toolName) {
           result.push({
@@ -278,7 +308,12 @@ function appendActivityLog(
   state: ActivityState,
   summary: string,
   at: number,
-  details: { text?: string; toolName?: string; toolInputPreview?: string } = {}
+  details: {
+    text?: string;
+    toolName?: string;
+    toolInputPreview?: string;
+    turnHistory?: TurnHistoryEntry[];
+  } = {}
 ): void {
   try {
     const workdir = process.env.WORKSPACE_PATH || process.cwd();
@@ -335,6 +370,7 @@ function pushHistory(
     persist?: boolean;
     toolName?: string;
     toolInputPreview?: string;
+    turnHistory?: TurnHistoryEntry[];
   } = {}
 ): void {
   const last = record.history.at(-1);
@@ -349,6 +385,7 @@ function pushHistory(
     appendActivityLog(record, state, summary, at, {
       toolName: options.toolName,
       toolInputPreview: options.toolInputPreview,
+      turnHistory: options.turnHistory,
     });
   }
 }
@@ -468,6 +505,7 @@ export function completeActivity(ctx: ActivityContext, resultText?: string): voi
   } else {
     flushPendingText(record);
   }
+  const completedTurnHistory = withoutFinalResponse(record.turnHistory, resultText ?? '');
   const preview = resultText ? truncate(resultText, maxPreviewChars) : '';
   const historyPreview = resultText ? truncate(resultText, maxHistoryChars) : '';
   const t = now();
@@ -476,7 +514,9 @@ export function completeActivity(ctx: ActivityContext, resultText?: string): voi
   record.textPreview = preview || record.textPreview;
   record.updatedAt = t;
   record.active = false;
-  pushHistory(record, record.state, historyPreview ? `完了: ${historyPreview}` : '完了', t);
+  pushHistory(record, record.state, historyPreview ? `完了: ${historyPreview}` : '完了', t, {
+    turnHistory: completedTurnHistory.map((entry) => ({ ...entry })),
+  });
   notifyActivity(ctx.threadId);
 }
 

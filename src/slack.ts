@@ -1254,7 +1254,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   });
 
   // /skill コマンド
-  app.command('/skill', async ({ command, ack, respond }) => {
+  app.command('/skill', async ({ command, ack, respond, client }) => {
     await ack();
 
     if (
@@ -1276,26 +1276,15 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
-    const channelId = command.channel_id;
-    const skipPermissions = config.agent.config.skipPermissions ?? false;
-
-    try {
-      const prompt = `スキル「${skillName}」を実行してください。${skillArgs ? `引数: ${skillArgs}` : ''}`;
-      const sessionId = sessions.get(channelId);
-      const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
-        skipPermissions,
-        sessionId,
-        channelId,
-      });
-
-      sessions.set(channelId, newSessionId);
-      await respond({
-        text: sliceByBytes(markdownToSlackMrkdwn(result), SLACK_MAX_TEXT_BYTES),
-      });
-    } catch (error) {
-      console.error('[slack] Error:', error);
-      await respond({ text: 'エラーが発生しました' });
-    }
+    await processSlackSkillCommand(
+      command.channel_id,
+      skillName,
+      skillArgs,
+      command.trigger_id,
+      client,
+      agentRunner,
+      config
+    );
   });
 
   // /settings コマンド
@@ -1454,7 +1443,8 @@ export async function processMessage(
   originalTs: string,
   client: WebClient,
   agentRunner: AgentRunner,
-  config: Config
+  config: Config,
+  removeReaction = true
 ): Promise<void> {
   const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1830,16 +1820,42 @@ export async function processMessage(
     // 正常完了・エラー処理後は shutdown finalizer の対象から外す
     unregisterStreamFinalizer?.();
     // 👀 リアクションを削除
-    await client.reactions
-      .remove({
-        channel: channelId,
-        timestamp: originalTs,
-        name: 'eyes',
-      })
-      .catch((err) => {
-        console.error('[slack] Failed to remove reaction:', err.message || err);
-      });
+    if (removeReaction) {
+      await client.reactions
+        .remove({
+          channel: channelId,
+          timestamp: originalTs,
+          name: 'eyes',
+        })
+        .catch((err) => {
+          console.error('[slack] Failed to remove reaction:', err.message || err);
+        });
+    }
   }
+}
+
+/** Slack `/skill` も通常メッセージと同じ streaming / History / 返信候補経路で実行する。 */
+export async function processSlackSkillCommand(
+  channelId: string,
+  skillName: string,
+  skillArgs: string,
+  triggerId: string,
+  client: WebClient,
+  agentRunner: AgentRunner,
+  config: Config
+): Promise<void> {
+  const prompt = `スキル「${skillName}」を実行してください。${skillArgs ? `引数: ${skillArgs}` : ''}`;
+  await processMessage(
+    channelId,
+    slackConversationKey(channelId),
+    undefined,
+    prompt,
+    `slash-${triggerId}`,
+    client,
+    agentRunner,
+    config,
+    false
+  );
 }
 
 export function _resetSlackStateForTest(): void {

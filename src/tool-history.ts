@@ -73,17 +73,19 @@ export function withoutFinalResponse(
   history: TurnHistoryEntry[],
   finalResponse: string
 ): TurnHistoryEntry[] {
-  const result = [...history];
-  const last = result.at(-1);
-  if (
-    last?.kind === 'text' &&
-    last.text.trim() &&
-    finalResponse.trim() &&
-    finalResponse.trim().endsWith(last.text.trim())
-  ) {
-    result.pop();
-  }
-  return result;
+  const canonical = finalResponse.trim().replace(/\r\n/g, '\n');
+  if (!canonical) return [...history];
+
+  // Some backends reconcile streamed deltas with a canonical final message.
+  // That can split the final answer into multiple text history entries (for
+  // example a large body followed by `_reply`). Remove every text entry that
+  // is already represented in the final response while preserving genuine
+  // transient commentary and all tool events.
+  return history.filter((entry) => {
+    if (entry.kind !== 'text') return true;
+    const text = entry.text.trim().replace(/\r\n/g, '\n');
+    return !text || !canonical.includes(text);
+  });
 }
 
 export function formatTurnHistoryDisclosure(history: TurnHistoryEntry[]): string {

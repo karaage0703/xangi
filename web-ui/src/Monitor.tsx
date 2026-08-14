@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
+import { sessionPath } from './sessionPermalink';
 
 export interface MonitorActivityHistory {
   state: string;
@@ -16,6 +17,20 @@ export interface MonitorActivity {
   startedAt?: number;
   updatedAt?: number;
   elapsedSec?: number;
+  threadLabel?: string;
+}
+
+interface MonitorBackend {
+  backend: string;
+  model?: string;
+  effort?: string;
+}
+
+interface MonitorOrigin {
+  channelId?: string;
+  channelName?: string;
+  threadId?: string;
+  threadName?: string;
 }
 
 export interface MonitorSession {
@@ -27,7 +42,13 @@ export interface MonitorSession {
   updatedAt?: string;
   messageCount?: number;
   isActive?: boolean;
+  isCurrent?: boolean;
+  lifecycle?: 'open' | 'closed';
+  closedAt?: string;
+  closeReason?: string;
   activity?: MonitorActivity;
+  backend?: MonitorBackend;
+  origin?: MonitorOrigin;
 }
 
 export interface MonitorSessionsResponse {
@@ -35,6 +56,8 @@ export interface MonitorSessionsResponse {
   meta?: {
     limit?: number;
     total?: number;
+    hasMore?: boolean;
+    nextOffset?: number | null;
     processCwd?: string;
     workdir?: string;
   };
@@ -51,19 +74,22 @@ interface MonitorActivityEvent {
   ts: number;
 }
 
-type MonitorFilter = 'watch' | 'running' | 'recent' | 'chat' | 'web' | 'all';
+type MonitorFilter = 'chat' | 'web' | 'all';
+export type MonitorLane = 'running' | 'waiting' | 'completed';
 
-const MAX_ROWS = 150;
-const WATCH_ROWS = 30;
+const PAGE_SIZE = 200;
 const RECENT_MS = 24 * 60 * 60 * 1000;
 
 const FILTERS: Array<{ value: MonitorFilter; label: string }> = [
-  { value: 'watch', label: '監視中' },
-  { value: 'running', label: '実行中' },
-  { value: 'recent', label: '最近' },
+  { value: 'all', label: 'All' },
   { value: 'chat', label: 'Chat' },
   { value: 'web', label: 'Web' },
-  { value: 'all', label: 'All' },
+];
+
+const LANES: Array<{ value: MonitorLane; label: string; description: string }> = [
+  { value: 'running', label: '実行中', description: '返答・tool実行中' },
+  { value: 'waiting', label: '入力待ち', description: '次の入力を待機・継続可能' },
+  { value: 'completed', label: '完了', description: '24時間以内に完了・再開可能' },
 ];
 
 function isRunning(session: MonitorSession): boolean {
@@ -79,17 +105,16 @@ function isRecent(session: MonitorSession, now = Date.now()): boolean {
   return Number.isFinite(updatedAt) && now - updatedAt < RECENT_MS;
 }
 
-function isWatchTarget(session: MonitorSession, now = Date.now()): boolean {
-  return isRunning(session) || isRecent(session, now);
-}
-
-function matchesFilter(session: MonitorSession, filter: MonitorFilter, now = Date.now()): boolean {
-  if (filter === 'watch') return isWatchTarget(session, now);
-  if (filter === 'running') return isRunning(session);
-  if (filter === 'recent') return isRecent(session, now);
+function matchesFilter(session: MonitorSession, filter: MonitorFilter): boolean {
   if (filter === 'chat') return isChatPlatform(session);
   if (filter === 'web') return session.platform === 'web';
   return true;
+}
+
+export function monitorLane(session: MonitorSession): MonitorLane {
+  if (session.lifecycle !== 'open') return 'completed';
+  if (isRunning(session)) return 'running';
+  return 'waiting';
 }
 
 function platformLabel(platform?: string): string {
@@ -99,8 +124,20 @@ function platformLabel(platform?: string): string {
   return (platform || '?').slice(0, 1);
 }
 
+function platformName(platform?: string): string {
+  if (platform === 'discord') return 'Discord';
+  if (platform === 'slack') return 'Slack';
+  if (platform === 'web') return 'Web';
+  return platform || 'Unknown';
+}
+
 function stateLabel(session: MonitorSession): string {
-  if (!isRunning(session)) return '履歴';
+  if (monitorLane(session) === 'completed') return '完了';
+  if (!isRunning(session)) {
+    if (session.activity?.state === 'error') return 'エラー';
+    if (session.activity?.state === 'aborted') return '中断';
+    return '入力待ち';
+  }
   if (session.activity?.state === 'tool') return 'tool実行中';
   if (session.activity?.state === 'streaming') return '応答中';
   if (session.activity?.state === 'thinking') return '考え中';
@@ -108,11 +145,26 @@ function stateLabel(session: MonitorSession): string {
 }
 
 function stateDescription(session: MonitorSession): string {
-  return isRunning(session) ? '今このターンが動いている' : '過去の会話ログ。現在の処理はない';
+  if (monitorLane(session) === 'completed') return '履歴から再開・分岐できる';
+  if (isRunning(session)) return '今このターンが動いている';
+  if (monitorLane(session) === 'waiting') return 'このセッションで会話を継続できる';
+  return 'このセッションで会話を継続できる';
 }
 
 function sessionLine(session: MonitorSession): string {
-  return session.activity?.summary || '履歴: 現在の処理なし';
+  return (
+    session.activity?.summary ||
+    (monitorLane(session) === 'completed' ? '完了: 現在の処理なし' : '次の入力を待っています')
+  );
+}
+
+function conversationLabel(session: MonitorSession): string {
+  if (session.platform === 'web') return 'Web Chat';
+  const channelName = session.origin?.channelName || session.activity?.threadLabel;
+  const channel = channelName ? `#${channelName.replace(/^#/, '')}` : session.origin?.channelId;
+  const thread = session.origin?.threadName || session.origin?.threadId;
+  const target = channel && thread ? `${channel} / ${thread}` : channel || thread || '-';
+  return `${platformName(session.platform)} · ${target}`;
 }
 
 function shortId(id?: string): string {
@@ -137,7 +189,10 @@ function formatTime(time?: number): string {
   return Number.isFinite(time) ? new Date(time as number).toLocaleTimeString() : '--';
 }
 
-function activityFromEvent(session: MonitorSession, event: MonitorActivityEvent): MonitorSession {
+export function activityFromEvent(
+  session: MonitorSession,
+  event: MonitorActivityEvent
+): MonitorSession {
   const active = event.type === 'turn.started';
   const state =
     event.type === 'turn.started'
@@ -167,6 +222,13 @@ function activityFromEvent(session: MonitorSession, event: MonitorActivityEvent)
 
   return {
     ...session,
+    ...(active
+      ? {
+          lifecycle: 'open' as const,
+          closedAt: undefined,
+          closeReason: undefined,
+        }
+      : {}),
     isActive: active,
     updatedAt: new Date(at).toISOString(),
     activity: {
@@ -182,6 +244,25 @@ function activityFromEvent(session: MonitorSession, event: MonitorActivityEvent)
   };
 }
 
+export function applyActivitySnapshot(
+  session: MonitorSession,
+  activity: MonitorActivity
+): MonitorSession {
+  return {
+    ...session,
+    ...(activity.active
+      ? {
+          lifecycle: 'open' as const,
+          closedAt: undefined,
+          closeReason: undefined,
+        }
+      : {}),
+    isActive: activity.active,
+    updatedAt: new Date(activity.updatedAt || Date.now()).toISOString(),
+    activity,
+  };
+}
+
 function eventMatchesSession(event: MonitorActivityEvent, session: MonitorSession): boolean {
   const separator = event.thread_id.indexOf(':');
   if (separator < 0) return false;
@@ -193,16 +274,47 @@ function eventMatchesSession(event: MonitorActivityEvent, session: MonitorSessio
   );
 }
 
+export function revealMonitorDetail(
+  element: Pick<HTMLElement, 'getBoundingClientRect' | 'scrollIntoView'>,
+  prefersReducedMotion: boolean,
+  viewportHeight: number
+): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.top >= 0 && rect.bottom <= viewportHeight) return false;
+  element.scrollIntoView({
+    behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    block: 'start',
+  });
+  return true;
+}
+
 export function Monitor() {
   const [sessions, setSessions] = useState<MonitorSession[]>([]);
-  const [filter, setFilter] = useState<MonitorFilter>('watch');
+  const [filter, setFilter] = useState<MonitorFilter>('all');
   const [selectedId, setSelectedId] = useState('');
   const [online, setOnline] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number>();
   const [clock, setClock] = useState(Date.now());
   const [source, setSource] = useState('source --');
+  const [closingId, setClosingId] = useState('');
+  const [actionError, setActionError] = useState('');
   const sessionsRef = useRef<MonitorSession[]>([]);
   const loadSequenceRef = useRef(0);
+  const detailRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const detail = detailRef.current;
+      if (!detail) return;
+      revealMonitorDetail(
+        detail,
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        window.innerHeight
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedId]);
 
   const applySnapshot = useCallback((data: MonitorSessionsResponse) => {
     const nextSessions = data.sessions || [];
@@ -220,11 +332,64 @@ export function Monitor() {
 
   const loadSessions = useCallback(async () => {
     const sequence = ++loadSequenceRef.current;
-    const response = await fetch(`/api/sessions?limit=${MAX_ROWS}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = (await response.json()) as MonitorSessionsResponse;
-    if (sequence === loadSequenceRef.current) applySnapshot(data);
+    const loadLifecycle = async (lifecycle: 'open' | 'closed') => {
+      const collected: MonitorSession[] = [];
+      let offset = 0;
+      while (true) {
+        const params = new URLSearchParams({
+          limit: String(PAGE_SIZE),
+          offset: String(offset),
+          lifecycle,
+        });
+        if (lifecycle === 'closed') {
+          params.set('updatedSince', new Date(Date.now() - RECENT_MS).toISOString());
+        }
+        const response = await fetch(`/api/sessions?${params}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as MonitorSessionsResponse;
+        collected.push(...(data.sessions || []));
+        if (!data.meta?.hasMore) return { sessions: collected, meta: data.meta };
+        offset = data.meta.nextOffset ?? collected.length;
+      }
+    };
+    const [open, closed] = await Promise.all([loadLifecycle('open'), loadLifecycle('closed')]);
+    if (sequence === loadSequenceRef.current) {
+      applySnapshot({
+        sessions: [...open.sessions, ...closed.sessions],
+        meta: {
+          ...open.meta,
+          total: open.sessions.length + closed.sessions.length,
+          limit: open.sessions.length + closed.sessions.length,
+        },
+      });
+    }
   }, [applySnapshot]);
+
+  const closeSelectedSession = useCallback(
+    async (session: MonitorSession) => {
+      if (
+        !window.confirm(
+          `「${session.title || session.id}」を完了にしますか？\n会話履歴は残ります。`
+        )
+      ) {
+        return;
+      }
+      setClosingId(session.id);
+      setActionError('');
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
+          method: 'POST',
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await loadSessions();
+      } catch (cause) {
+        setActionError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setClosingId('');
+      }
+    },
+    [loadSessions]
+  );
 
   const hasRunningSession = sessions.some(isRunning);
   useEffect(() => {
@@ -243,17 +408,8 @@ export function Monitor() {
     eventSource.onerror = () => setOnline(false);
     eventSource.addEventListener('sessions', (rawEvent) => {
       try {
-        const data = JSON.parse((rawEvent as MessageEvent<string>).data) as MonitorSessionsResponse;
-        const snapshotCount = data.sessions?.length || 0;
-        const total = data.meta?.total;
-        if (
-          (data.meta?.limit || 0) >= MAX_ROWS ||
-          (typeof total === 'number' && total <= snapshotCount)
-        ) {
-          applySnapshot(data);
-        } else {
-          void loadSessions().catch(() => setOnline(false));
-        }
+        JSON.parse((rawEvent as MessageEvent<string>).data);
+        void loadSessions().catch(() => setOnline(false));
       } catch {
         setOnline(false);
       }
@@ -291,14 +447,7 @@ export function Monitor() {
             session.platform === platform &&
             (platform === 'web' ? session.id === context : session.contextKey === context);
           if (isMatch) matched = true;
-          return isMatch
-            ? {
-                ...session,
-                isActive: data.activity.active,
-                updatedAt: new Date(data.activity.updatedAt || Date.now()).toISOString(),
-                activity: data.activity,
-              }
-            : session;
+          return isMatch ? applyActivitySnapshot(session, data.activity) : session;
         });
         sessionsRef.current = updatedSessions;
         setSessions(updatedSessions);
@@ -314,8 +463,8 @@ export function Monitor() {
   }, [applySnapshot, loadSessions]);
 
   const filteredSessions = useMemo(
-    () => sessions.filter((session) => matchesFilter(session, filter, clock)),
-    [clock, filter, sessions]
+    () => sessions.filter((session) => matchesFilter(session, filter)),
+    [filter, sessions]
   );
 
   const visibleSessions = useMemo(
@@ -326,13 +475,25 @@ export function Monitor() {
             Number(isRunning(b)) - Number(isRunning(a)) ||
             String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
         )
-        .slice(0, filter === 'watch' ? WATCH_ROWS : MAX_ROWS),
-    [filter, filteredSessions]
+        .filter((session) => monitorLane(session) !== 'completed' || isRecent(session, clock)),
+    [clock, filteredSessions]
+  );
+
+  const sessionsByLane = useMemo(
+    () =>
+      Object.fromEntries(
+        LANES.map((lane) => [
+          lane.value,
+          visibleSessions.filter((session) => monitorLane(session) === lane.value),
+        ])
+      ) as Record<MonitorLane, MonitorSession[]>,
+    [visibleSessions]
   );
 
   const selected = sessions.find((session) => session.id === selectedId);
-  const runningCount = sessions.filter(isRunning).length;
-  const recentCount = sessions.filter((session) => isRecent(session, clock)).length;
+  const runningCount = sessionsByLane.running.length;
+  const waitingCount = sessionsByLane.waiting.length;
+  const completedCount = sessionsByLane.completed.length;
 
   return (
     <main className="monitor-page">
@@ -358,6 +519,7 @@ export function Monitor() {
       </header>
 
       <nav className="monitor-toolbar" aria-label="filters">
+        <span className="monitor-toolbar-label">表示</span>
         {FILTERS.map((item) => (
           <button
             type="button"
@@ -376,28 +538,32 @@ export function Monitor() {
         <section className="monitor-summary" aria-label="summary">
           <div className="monitor-metric">
             <div className="monitor-metric-value">{runningCount}</div>
-            <div className="monitor-metric-label">実行中ターン</div>
+            <div className="monitor-metric-label">実行中</div>
           </div>
           <div className="monitor-metric">
-            <div className="monitor-metric-value">{recentCount}</div>
-            <div className="monitor-metric-label">24時間以内の更新</div>
+            <div className="monitor-metric-value">{waitingCount}</div>
+            <div className="monitor-metric-label">入力待ち</div>
           </div>
           <div className="monitor-metric">
-            <div className="monitor-metric-value">{visibleSessions.length}</div>
-            <div className="monitor-metric-label">表示中</div>
+            <div className="monitor-metric-value">{completedCount}</div>
+            <div className="monitor-metric-label">完了（24時間）</div>
           </div>
         </section>
 
         <section className="monitor-legend" aria-label="legend">
-          <span>実行中: 返答・tool実行中</span>
-          <span>履歴: 過去ログ</span>
-          <span>監視中: 実行中/直近履歴</span>
+          <span>状態に応じてカードを自動分類</span>
           <span>内部イベント保存: logs/monitor-activity</span>
-          <span>行をタップで詳細</span>
+          <span>カードをタップして詳細を表示</span>
         </section>
 
+        {actionError && (
+          <p className="monitor-action-error" role="alert">
+            完了への変更に失敗しました: {actionError}
+          </p>
+        )}
+
         {selected && (
-          <section className="monitor-detail-region" aria-label="selected session">
+          <section className="monitor-detail-region" aria-label="selected session" ref={detailRef}>
             <article className="monitor-detail">
               <div className="monitor-detail-head">
                 <div className="monitor-detail-heading">
@@ -406,38 +572,78 @@ export function Monitor() {
                     {stateLabel(selected)} - {stateDescription(selected)}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className="monitor-detail-close"
-                  onClick={() => setSelectedId('')}
-                >
-                  閉じる
-                </button>
+                <div className="monitor-detail-actions">
+                  <a className="monitor-detail-open" href={sessionPath(selected.id)}>
+                    会話を開く
+                  </a>
+                  {monitorLane(selected) !== 'completed' && (
+                    <button
+                      type="button"
+                      className="monitor-detail-session-close"
+                      disabled={closingId === selected.id}
+                      onClick={() => void closeSelectedSession(selected)}
+                    >
+                      {closingId === selected.id ? '変更中…' : '完了にする'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="monitor-detail-close"
+                    onClick={() => setSelectedId('')}
+                  >
+                    詳細を閉じる
+                  </button>
+                </div>
               </div>
 
               <dl className="monitor-detail-grid">
                 {[
                   ['状態', stateLabel(selected)],
-                  ['platform', selected.platform || '-'],
-                  ['updated', formatAge(selected.updatedAt || selected.createdAt, clock)],
-                  ['messages', String(selected.messageCount || 0)],
-                  ['session id', selected.id],
-                  ['context', selected.contextKey || '-'],
+                  ['会話先', conversationLabel(selected)],
+                  ['更新', formatAge(selected.updatedAt || selected.createdAt, clock)],
+                  ['完了ターン数', String(selected.messageCount || 0)],
                 ].map(([label, value]) => (
                   <div className="monitor-detail-kv" key={label}>
                     <dt>{label}</dt>
-                    <dd
-                      className={
-                        label.includes('id') || label === 'context'
-                          ? 'monitor-detail-value mono'
-                          : 'monitor-detail-value'
-                      }
-                    >
-                      {value}
-                    </dd>
+                    <dd className="monitor-detail-value">{value}</dd>
                   </div>
                 ))}
               </dl>
+
+              <section className="monitor-runtime" aria-label="実行設定">
+                <h3>実行設定</h3>
+                <dl>
+                  <div>
+                    <dt>バックエンド</dt>
+                    <dd>{selected.backend?.backend || '-'}</dd>
+                  </div>
+                  <div>
+                    <dt>モデル</dt>
+                    <dd>{selected.backend ? selected.backend.model || 'デフォルト' : '-'}</dd>
+                  </div>
+                  <div>
+                    <dt>effort</dt>
+                    <dd>{selected.backend?.effort || '-'}</dd>
+                  </div>
+                </dl>
+              </section>
+
+              <details className="monitor-technical-details">
+                <summary>内部ID</summary>
+                <dl>
+                  {[
+                    ['conversation key', selected.contextKey || '-'],
+                    ['channel ID', selected.origin?.channelId || '-'],
+                    ['thread ID', selected.origin?.threadId || '-'],
+                    ['session ID', selected.id],
+                  ].map(([label, value]) => (
+                    <div key={label}>
+                      <dt>{label}</dt>
+                      <dd className="mono">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
 
               <div className="monitor-events">
                 {selected.activity?.history?.length ? (
@@ -458,81 +664,126 @@ export function Monitor() {
           </section>
         )}
 
-        <section className="monitor-sessions" aria-label="sessions">
-          {visibleSessions.length === 0 ? (
-            <div className="monitor-empty">
-              {filter === 'watch' ? '実行中または最近のセッションはありません' : 'No sessions'}
-            </div>
-          ) : (
-            visibleSessions.map((session) => {
-              const running = isRunning(session);
-              const errored = session.activity?.state === 'error';
-              const selectedRow = session.id === selectedId;
-              const elapsed =
-                session.activity?.active && Number.isFinite(session.activity.startedAt)
-                  ? ` ${Math.max(
-                      0,
-                      Math.floor((clock - (session.activity.startedAt as number)) / 1000)
-                    )}s`
-                  : session.activity?.active && Number.isFinite(session.activity.elapsedSec)
-                    ? ` ${session.activity.elapsedSec}s`
-                    : '';
+        <section className="monitor-board" aria-label="sessions">
+          {LANES.map((lane) => {
+            const laneSessions = sessionsByLane[lane.value];
+            const column = (
+              <section
+                className={`monitor-column monitor-column-${lane.value}`}
+                aria-labelledby={`monitor-column-${lane.value}`}
+                key={lane.value}
+              >
+                <header className="monitor-column-header">
+                  <div className="monitor-column-title-row">
+                    <span className={`monitor-column-dot ${lane.value}`} aria-hidden="true" />
+                    <h2 id={`monitor-column-${lane.value}`}>{lane.label}</h2>
+                    <span className="monitor-column-count">{laneSessions.length}</span>
+                  </div>
+                  <p>{lane.description}</p>
+                </header>
+                <div className="monitor-column-list">
+                  {laneSessions.length === 0 ? (
+                    <div className="monitor-column-empty">該当するセッションはありません</div>
+                  ) : (
+                    laneSessions.map((session) => {
+                      const running = isRunning(session);
+                      const activityState = session.activity?.state;
+                      const hasError = activityState === 'error';
+                      const wasAborted = activityState === 'aborted';
+                      const selectedRow = session.id === selectedId;
+                      const elapsed =
+                        session.activity?.active && Number.isFinite(session.activity.startedAt)
+                          ? ` ${Math.max(
+                              0,
+                              Math.floor((clock - (session.activity.startedAt as number)) / 1000)
+                            )}s`
+                          : session.activity?.active && Number.isFinite(session.activity.elapsedSec)
+                            ? ` ${session.activity.elapsedSec}s`
+                            : '';
 
-              return (
-                <button
-                  type="button"
-                  className={[
-                    'monitor-session-row',
-                    running ? 'running' : '',
-                    errored ? 'error' : '',
-                    selectedRow ? 'selected' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  aria-expanded={selectedRow}
-                  key={session.id}
-                  onClick={() =>
-                    setSelectedId((current) => (current === session.id ? '' : session.id))
-                  }
-                >
-                  <span
-                    className={['monitor-state-dot', errored ? 'error' : running ? 'running' : '']
-                      .filter(Boolean)
-                      .join(' ')}
-                    aria-hidden="true"
-                  />
+                      return (
+                        <article
+                          className={[
+                            'monitor-session-row',
+                            'monitor-session-card',
+                            running ? 'running' : '',
+                            hasError ? 'error' : '',
+                            wasAborted ? 'aborted' : '',
+                            selectedRow ? 'selected' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          key={session.id}
+                        >
+                          <button
+                            type="button"
+                            className="monitor-session-open"
+                            aria-label={`${session.title || session.id}の詳細を表示`}
+                            aria-expanded={selectedRow}
+                            onClick={() => setSelectedId(session.id)}
+                          >
+                            <span
+                              className={[
+                                'monitor-state-dot',
+                                hasError
+                                  ? 'error'
+                                  : wasAborted
+                                    ? 'aborted'
+                                    : running
+                                      ? 'running'
+                                      : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ')}
+                              aria-hidden="true"
+                            />
 
-                  <span className="monitor-session-body">
-                    <strong className="monitor-session-title">{session.title || session.id}</strong>
-                    <span className="monitor-session-meta">
-                      {platformLabel(session.platform)} #{shortId(session.id)}
-                      {session.contextKey ? ` / ${shortId(session.contextKey)}` : ''} /{' '}
-                      {formatAge(session.updatedAt || session.createdAt, clock)}
-                    </span>
-                    <span className="monitor-session-activity">{sessionLine(session)}</span>
-                    {!!session.activity?.toolLines?.length && (
-                      <span className="monitor-tool-lines">
-                        {session.activity.toolLines.slice(-3).map((line, index) => (
-                          <code className="monitor-tool-line" key={`${line}-${index}`}>
-                            {line}
-                          </code>
-                        ))}
-                      </span>
-                    )}
-                  </span>
+                            <span className="monitor-session-body">
+                              <strong className="monitor-session-title">
+                                {session.title || session.id}
+                              </strong>
+                              <span className="monitor-session-meta">
+                                {platformLabel(session.platform)} #{shortId(session.id)}
+                                {session.contextKey
+                                  ? ` / ${shortId(session.contextKey)}`
+                                  : ''} / {formatAge(session.updatedAt || session.createdAt, clock)}
+                              </span>
+                              <span className="monitor-session-activity">
+                                {sessionLine(session)}
+                              </span>
+                              {!!session.activity?.toolLines?.length && (
+                                <span className="monitor-tool-lines">
+                                  {session.activity.toolLines.slice(-3).map((line, index) => (
+                                    <code className="monitor-tool-line" key={`${line}-${index}`}>
+                                      {line}
+                                    </code>
+                                  ))}
+                                </span>
+                              )}
+                            </span>
 
-                  <span className="monitor-session-right">
-                    <span className="monitor-platform">{platformLabel(session.platform)}</span>
-                    <span className="monitor-session-state">
-                      {stateLabel(session)}
-                      {elapsed}
-                    </span>
-                    <time>{formatAge(session.updatedAt || session.createdAt, clock)}</time>
-                  </span>
-                </button>
-              );
-            })
-          )}
+                            <span className="monitor-session-right">
+                              <span className="monitor-platform">
+                                {platformLabel(session.platform)}
+                              </span>
+                              <span className="monitor-session-state">
+                                {stateLabel(session)}
+                                {elapsed}
+                              </span>
+                              <time>
+                                {formatAge(session.updatedAt || session.createdAt, clock)}
+                              </time>
+                            </span>
+                          </button>
+                        </article>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            );
+            return column;
+          })}
         </section>
       </section>
     </main>

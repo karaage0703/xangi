@@ -7,6 +7,7 @@ export const SETUP_BACKENDS = [
   'cursor',
   'grok',
   'antigravity',
+  'github-copilot',
   'local-llm',
 ] as const;
 

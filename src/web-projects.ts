@@ -38,6 +38,13 @@ interface PersistedWebProjects {
   projects: WebProject[];
 }
 
+export interface WebProjectStateIssue {
+  projectId?: string;
+  projectName?: string;
+  message: string;
+  recovery: 'disable-backend-settings' | 'skip-project';
+}
+
 export class WebProjectStore {
   private state: PersistedWebProjects;
 
@@ -113,7 +120,16 @@ export class WebProjectStore {
   private load(): PersistedWebProjects {
     if (!existsSync(this.filePath)) return { version: PROJECTS_VERSION, projects: [] };
     try {
-      return parseProjects(readFileSync(this.filePath, 'utf8'));
+      return parseProjects(readFileSync(this.filePath, 'utf8'), (issue) => {
+        const project = issue.projectName || issue.projectId || '(unknown)';
+        const action =
+          issue.recovery === 'disable-backend-settings'
+            ? 'backend/model/effortを無効化して継続します'
+            : 'このProjectをスキップして継続します';
+        console.warn(
+          `[web-projects] Project ${JSON.stringify(project)}: ${issue.message}。${action}`
+        );
+      });
     } catch (error) {
       throw new Error(
         `Web Project設定を読み込めません: ${error instanceof Error ? error.message : String(error)}`
@@ -143,6 +159,21 @@ export class WebProjectStore {
   }
 }
 
+export function validateWebProjectsState(dataDir: string): WebProjectStateIssue[] {
+  const filePath = join(dataDir, PROJECTS_FILE);
+  if (!existsSync(filePath)) return [];
+  const issues: WebProjectStateIssue[] = [];
+  try {
+    parseProjects(readFileSync(filePath, 'utf8'), (issue) => issues.push(issue));
+  } catch (error) {
+    issues.push({
+      message: error instanceof Error ? error.message : String(error),
+      recovery: 'skip-project',
+    });
+  }
+  return issues;
+}
+
 export class WebProjectError extends Error {
   constructor(
     message: string,
@@ -157,40 +188,69 @@ export function prependWebProjectPrompt(project: WebProject | undefined, prompt:
   return `<web-project-context name=${JSON.stringify(project.name)}>\n${project.prompt}\n</web-project-context>\n\n${prompt}`;
 }
 
-function parseProjects(raw: string): PersistedWebProjects {
+function parseProjects(
+  raw: string,
+  onIssue: (issue: WebProjectStateIssue) => void = () => {}
+): PersistedWebProjects {
   const parsed = JSON.parse(raw) as Partial<PersistedWebProjects>;
   if (parsed.version !== PROJECTS_VERSION || !Array.isArray(parsed.projects)) {
     throw new Error('形式が不正です');
   }
   const ids = new Set<string>();
   const names = new Set<string>();
-  const projects = parsed.projects.map((candidate) => {
-    if (
-      !candidate ||
-      typeof candidate.id !== 'string' ||
-      typeof candidate.name !== 'string' ||
-      typeof candidate.prompt !== 'string' ||
-      typeof candidate.createdAt !== 'string' ||
-      typeof candidate.updatedAt !== 'string'
-    ) {
-      throw new Error('Project項目が不正です');
+  const projects: WebProject[] = [];
+  for (const candidate of parsed.projects) {
+    const projectId = candidate && typeof candidate.id === 'string' ? candidate.id : undefined;
+    const projectName =
+      candidate && typeof candidate.name === 'string' ? candidate.name.trim() : undefined;
+    try {
+      if (
+        !candidate ||
+        typeof candidate.id !== 'string' ||
+        typeof candidate.name !== 'string' ||
+        typeof candidate.prompt !== 'string' ||
+        typeof candidate.createdAt !== 'string' ||
+        typeof candidate.updatedAt !== 'string'
+      ) {
+        throw new Error('Project項目が不正です');
+      }
+      const name = normalizeName(candidate.name);
+      const normalizedName = name.toLocaleLowerCase();
+      if (ids.has(candidate.id) || names.has(normalizedName)) {
+        throw new Error('Project IDまたは名前が重複しています');
+      }
+      const prompt = normalizePrompt(candidate.prompt);
+
+      let backendSettings: WebProjectBackendSettings = {};
+      try {
+        backendSettings = normalizeBackendSettings(candidate);
+      } catch (error) {
+        onIssue({
+          projectId: candidate.id,
+          projectName: name,
+          message: error instanceof Error ? error.message : String(error),
+          recovery: 'disable-backend-settings',
+        });
+      }
+      ids.add(candidate.id);
+      names.add(normalizedName);
+      projects.push({
+        id: candidate.id,
+        name,
+        prompt,
+        ...backendSettings,
+        createdAt: candidate.createdAt,
+        updatedAt: candidate.updatedAt,
+      });
+    } catch (error) {
+      onIssue({
+        projectId,
+        projectName,
+        message: error instanceof Error ? error.message : String(error),
+        recovery: 'skip-project',
+      });
     }
-    const name = normalizeName(candidate.name);
-    const normalizedName = name.toLocaleLowerCase();
-    if (ids.has(candidate.id) || names.has(normalizedName)) {
-      throw new Error('Project IDまたは名前が重複しています');
-    }
-    ids.add(candidate.id);
-    names.add(normalizedName);
-    return {
-      id: candidate.id,
-      name,
-      prompt: normalizePrompt(candidate.prompt),
-      ...normalizeBackendSettings(candidate),
-      createdAt: candidate.createdAt,
-      updatedAt: candidate.updatedAt,
-    };
-  });
+  }
   return { version: PROJECTS_VERSION, projects };
 }
 

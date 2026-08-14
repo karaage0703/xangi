@@ -61,9 +61,9 @@ describe('extractFilePaths', () => {
     expect(extractFilePaths(text, workspace)).toEqual([imageAbs]);
   });
 
-  it('handles markdown link [label](path)', () => {
+  it('does not treat a regular markdown link as an attachment marker', () => {
     const text = `[完成図](${imageAbs})`;
-    expect(extractFilePaths(text, workspace)).toEqual([imageAbs]);
+    expect(extractFilePaths(text, workspace)).toEqual([]);
   });
 
   it('handles [FILE:path] marker', () => {
@@ -433,5 +433,12 @@ describe('buildAttachmentResult', () => {
     );
     expect(filePaths).toEqual([]);
     expect(displayText).toBe('今日はいい天気だね');
+  });
+
+  it('preserves a regular markdown link without attaching its local target', () => {
+    const text = `[実装](${imageAbs})`;
+    const { filePaths, displayText } = buildAttachmentResult(text, undefined, workspace);
+    expect(filePaths).toEqual([]);
+    expect(displayText).toBe(text);
   });
 });

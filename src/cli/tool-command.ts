@@ -1,7 +1,12 @@
+import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
+
 export interface ToolCommandEnvironment {
   XANGI_TOOL_SERVER?: string;
   XANGI_CHANNEL_ID?: string;
   XANGI_DEFAULT_CHANNEL?: string;
+  DATA_DIR?: string;
+  WORKSPACE_PATH?: string;
+  WEB_CHAT_ENABLED?: string;
 }
 
 interface ToolServerResponse {
@@ -54,6 +59,10 @@ export async function runToolCommand(
   const env = options.env ?? process.env;
   const serverUrl = env.XANGI_TOOL_SERVER;
   const { command, flags } = parseToolCommandArgs(args);
+
+  if (command === 'system_restart') {
+    assertRuntimeStateCanStart({ env: env as NodeJS.ProcessEnv });
+  }
 
   if (!serverUrl) {
     throw new Error(

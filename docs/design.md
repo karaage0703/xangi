@@ -6,7 +6,7 @@ xangiのアーキテクチャと設計思想について説明します。
 
 ## 概要
 
-xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
+xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -40,7 +40,7 @@ flowchart LR
 | Chat               | ユーザーインターフェース        | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                  |
 | xangi              | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                    |
 | Backend Resolution | チャンネル別バックエンド解決    | backend-resolver.ts, settings.ts                                                         |
-| AI Backend         | 実際のAI処理                    | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, Local LLM (Ollama / vLLM) |
+| AI Backend         | 実際のAI処理                    | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, Local LLM (Ollama / vLLM) |
 | Workspace          | ファイル・スキル                | skills/, AGENTS.md, ローカル資料                                                         |
 
 ## コンポーネント
@@ -102,14 +102,15 @@ flowchart LR
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
 - session詳細の一時的な読込失敗は安全なGET retry後に表示するが、後続の正常読込でその読込エラーだけを消す。より新しい送信・upload等の操作エラーは消さない
-- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない
+- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない。不正なProject項目はその項目だけを読み飛ばし、利用できないbackend/model/effortはそのProjectで無効化して、他の機能を起動し続ける
+- `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
-- `GET /api/sessions` は最新100件と`activity`だけを返す。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
+- `GET /api/sessions` は既定で最新100件と`activity`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
-- `/monitor` は同じReactアプリの読み取り専用モード。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
-- `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけをworkspace相対pathで列挙・読込し、hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超を拒否する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部更新時は409を返し、UIが再読込を促す
+- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
+- `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
 - `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除をHTTP API経由で行う。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
-- Chat / Files / Schedules / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える
+- Chat / Files / Schedules / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
 - Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
 ### macOS・Linux・WSL2セットアップ・更新コア
@@ -118,7 +119,7 @@ flowchart LR
 - `installer/manifest.ts` と `updater.ts` はEd25519、SHA-256、update lock、staging、atomic current切替を担当する。初回installのservice起動時はhealth確認と失敗時rollbackを行う
 - `installer/platform/darwin.ts` はLaunchAgentだけを担当し、OS固有処理を共通updaterから分離する
 - `installer/platform/linux.ts` はXDG配置と`systemd --user` lifecycleを担当する。`WorkingDirectory=`は値全体を引用せず、空白などをsystemdのpath構文でescapeする。WSL2はsystemd有効環境に限定し、設定URLは`wslview`、なければ`cmd.exe`でWindows側ブラウザへ渡す
-- `setup/guided-onboarding.ts` は対応agent CLIをPATH、`NVM_BIN`、`~/.nvm/versions/node/*/bin`と`--version`で決定論的に検出する。検出した実行ファイルの絶対pathはservice PATHとrunnerで共通利用する。agent UIへは短い開始promptだけを渡し、詳細手順はmode 0600の一時ファイルに分離して終了時に削除する。agentはworkspaceに加えてWeb Chatのアクセス範囲（local / tailscale / lan）を一問で確認する。localとtailscaleはruntimeをloopbackに保ち、tailscaleだけは同一portのTailscale Serve TCP転送を明示選択後に設定する。lanは`0.0.0.0`へbindする前に認証なしの警告を出す。config保存・workspace mode検証・repository template適用・BOOTSTRAP完了判定はxangiの`setup --apply` / `setup --complete`が担当する
+- `setup/guided-onboarding.ts` は対応agent CLIをPATH、`NVM_BIN`、`~/.nvm/versions/node/*/bin`と`--version`で決定論的に検出する。検出した実行ファイルの絶対pathはservice PATHとrunnerで共通利用する。agent UIへは短い開始promptだけを渡し、詳細手順はmode 0600の一時ファイルに分離して終了時に削除する。初回フローはWeb Chatをlocalに固定し、service起動と`doctor`の成功までTailscaleに触れない。localの基本セットアップ完了後だけ、利用者にTailscale / LANの追加設定を案内する。`setup --access`は完了済みのオンボーディング状態を戻さず公開範囲だけを更新する。localとtailscaleはruntimeをloopbackに保ち、tailscaleだけは同一portのTailscale Serve TCP転送を明示選択後に設定する。lanは`0.0.0.0`へbindする前に認証なしの警告を出す。config保存・workspace mode検証・repository template適用・BOOTSTRAP完了判定はxangiの`setup --apply` / `setup --complete`が担当する
 - `onboarding.json` は`preflight` / `bootstrap_in_progress` / `minimum_ready`をconfig領域へatomic保存し、中断後の再開と診断の正本になる。AIオンボーディングを置き換えるsetup用browser UIは持たず、対応agentが無い場合はinstall手順を表示して終了する
 - `secrets.json` はOS別config領域へmode 0600でatomic保存する。`xangi settings`はDiscord許可ユーザーIDとtoken用の一時GUIをloopbackだけに開き、one-time URL、Host検証、no-store/CSPを適用する。保存済み値はbrowserへ返さず、保存後にserverを閉じ、AI・workspace・setup JSON・shell historyから接続設定を分離する
 - `packaging/bootstrap.sh` は全対応OS共通の`install.sh`としてGitHub Releaseへ配置する。Darwin / Linuxとarm64 / x64を自動判定し、同じReleaseのtarget installerへ振り分ける。WSL2はLinuxとして扱う。pipe経由の実行では常にsetupとservice起動を延期し、署名検証済みCLIの配置後に通常のTerminalから`xangi setup`を実行するよう案内する。shell/readlineとAI TUIの端末所有権をpipe内で引き継がない
@@ -207,7 +208,7 @@ interface AgentRunner {
 }
 ```
 
-すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Antigravity / Local LLM / Dynamic) は EventEmitter
+すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Antigravity / GitHub Copilot / Local LLM / Dynamic) は EventEmitter
 でもあり、`timeout-started` / `timeout-extended` / `timeout-cleared` を emit して
 上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。
 
@@ -306,13 +307,14 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | cursor-cli.ts        | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                    |
 | grok-cli.ts          | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                     |
 | antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.8以降のJSON/stream-json、slash展開の能力判定、旧版フォールバック |
+| github-copilot-cli.ts | GitHub Copilot CLI | JSONL streaming、session再開、SKIP_PERMISSIONS連動の権限制御                       |
 | local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
-claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli の 5 アダプターは、抽象基底クラス
+claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli の 6 アダプターは、抽象基底クラス
 `CliRunnerBase` の上に実装されている。基底クラスが以下を一手に引き受け、各アダプターは
 「コマンド引数の構築」と「JSONL イベントの解釈（`CliStreamParser`）」だけを実装する：
 
@@ -823,7 +825,7 @@ AI CLIの実装詳細を隠蔽し、交換可能に：
 
 ```bash
 # 設定でバックエンドを切り替え
-AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / local-llm
+AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / github-copilot / local-llm
 ```
 
 将来的に新しいAI CLIが登場しても、アダプターを追加するだけで対応可能。
@@ -858,7 +860,8 @@ AI の応答テキストからファイルパスを拾って添付する処理�
 2. 寛容パーサ = `extractFilePaths`。LLM が send_file を呼ばず応答テキストに添付意図を書いた場合の救済。対象は **明示マーカーのみ**:
    - `MEDIA:path`
    - `[IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:path]`（角括弧マーカー）
-   - `![alt](path)` / `[label](path)`（markdown）
+   - `![alt](path)`（markdown画像）
+   - 通常の `[label](path)` は参照リンクとして本文に残し、ローカルの実在ファイルを指していても添付しない。ファイル本体を送る場合は上記の明示マーカーか `send_file` を使う。
    - マーカー無しの「裸パス」を散文から拾う tier は **設けない**。誤添付（本文中のパス文字列が意図せず添付される）リスクの割に得るものが少なく、攻撃面を広げるため。
 3. サンドボックス = 上記いずれの候補も `fs.realpathSync` で正規化してから allowlist ルート（WORKSPACE subtree 全体・添付保存先・`/tmp`・`ATTACHMENT_ALLOWED_DIRS`）との `startsWith` 判定。`..`・symlink によるサンドボックス脱出を防ぎ、存在確認・ファイル/ディレクトリ判定も兼ねる。
    - 実在するが allowlist 外の候補は添付せず、ローカル絶対パスをチャットへ露出しない一般化した警告を表示する。失敗を黙殺しない一方で、allowlist の自動拡張や迂回送信は行わない。
@@ -1004,6 +1007,7 @@ src/
 ├── cursor-cli.ts       # Cursor CLIアダプター
 ├── grok-cli.ts         # Grok CLIアダプター
 ├── antigravity-cli.ts  # Antigravity CLIアダプター
+├── github-copilot-cli.ts # GitHub Copilot CLIアダプター
 ├── cli-process.ts      # 単発CLI runnerのprocess/env/timeout共通部品
 ├── jsonl-buffer.ts     # JSONL streamの行分割共通部品
 ├── runner-manager.ts   # 複数チャンネル同時処理（RunnerManager）

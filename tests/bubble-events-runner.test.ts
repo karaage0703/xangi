@@ -9,7 +9,7 @@
  * subscribeEvents() でイベントを集める。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { AgentRunner, RunOptions, StreamCallbacks, RunResult } from '../src/agent-runner.js';
@@ -220,7 +220,74 @@ describe('runWithBubbleEvents', () => {
       expect.objectContaining({ kind: 'tool', turnId: 'u-activity', toolName: 'Bash' }),
       expect.objectContaining({ kind: 'text', turnId: 'u-activity', text: 'o' }),
     ]);
-    expect(readTurnHistory('web:s1')).toEqual(getTurnHistory('web:s1'));
+    expect(readTurnHistory('web:s1')).toEqual([
+      expect.objectContaining({ kind: 'tool', turnId: 'u-activity', toolName: 'Bash' }),
+    ]);
+  });
+
+  it('restores the sanitized completed history after in-memory activity is cleared', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getTurnHistory, readTurnHistory, clearActivities } = await import(
+      '../src/activity-store.js'
+    );
+    const { withoutFinalResponse } = await import('../src/tool-history.js');
+    clearActivities();
+    const finalResult = '最終回答です。\n<xangi_reply_suggestions>["続けて"]</xangi_reply_suggestions>';
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onText?.('調べます。', '調べます。');
+      cb.onToolUse?.('Read', { file_path: '/tmp/a.txt' });
+      cb.onText?.('最終回答です。', '最終回答です。');
+      cb.onText?.(
+        '<xangi_reply_suggestions>["続けて"]</xangi_reply_suggestions>',
+        '<xangi_reply_suggestions>["続けて"]</xangi_reply_suggestions>'
+      );
+      const result = { result: finalResult, sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      'hi',
+      { threadId: 'discord:restart', turnId: 'discord-msg-restart', platform: 'discord' },
+      {}
+    );
+
+    const expected = [
+      expect.objectContaining({ kind: 'text', text: '調べます。' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Read' }),
+    ];
+    expect(withoutFinalResponse(getTurnHistory('discord:restart'), finalResult)).toEqual(expected);
+
+    clearActivities();
+    expect(readTurnHistory('discord:restart')).toEqual(expected);
+  });
+
+  it('keeps tools but hides ambiguous streamed text from legacy completed logs', async () => {
+    const { readTurnHistory, clearActivities } = await import('../src/activity-store.js');
+    clearActivities();
+    const logDir = join(testDir, 'logs', 'monitor-activity');
+    mkdirSync(logDir, { recursive: true });
+    const events = [
+      { ts: '2026-08-13T00:00:00.000Z', state: 'streaming', turnId: 'legacy', text: '途中表示' },
+      {
+        ts: '2026-08-13T00:00:01.000Z',
+        state: 'tool',
+        turnId: 'legacy',
+        toolName: 'Bash',
+        summary: '実行中: Bash: pwd',
+      },
+      { ts: '2026-08-13T00:00:02.000Z', state: 'streaming', turnId: 'legacy', text: '最終回答' },
+      { ts: '2026-08-13T00:00:03.000Z', state: 'complete', turnId: 'legacy', summary: '完了' },
+    ];
+    writeFileSync(
+      join(logDir, 'discord_legacy.jsonl'),
+      `${events.map((event) => JSON.stringify(event)).join('\n')}\n`
+    );
+
+    expect(readTurnHistory('discord:legacy')).toEqual([
+      expect.objectContaining({ kind: 'tool', turnId: 'legacy', toolName: 'Bash' }),
+    ]);
   });
 
   it('keeps commentary and tools in order while separating replaced Codex messages', async () => {

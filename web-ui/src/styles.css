@@ -789,7 +789,7 @@ button:disabled {
 
 .session-row:hover .session-actions,
 .session-row:focus-within .session-actions {
-  width: 96px;
+  width: 140px;
   opacity: 1;
 }
 
@@ -1210,6 +1210,15 @@ button:disabled {
   background: var(--surface);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.workspace-editor-actions a.button {
+  color: var(--ink-secondary);
+  text-decoration: none;
+}
+
+.workspace-editor-actions a.button:hover {
+  background: var(--hover);
 }
 
 .workspace-editor-actions .button.primary {
@@ -2292,6 +2301,10 @@ video.media-preview {
   white-space: nowrap;
 }
 
+/* Hallmark · build: monitor kanban · genre: modern-minimal · theme: existing xangi
+ * audience: xangi operators · primary action: scan session state and open conversations · contrast: pass
+ * pre-emit critique: Philosophy 4 · Hierarchy 5 · Execution 4 · Specificity 5 · Restraint 5 · Variety 4
+ */
 /* Monitor */
 .monitor-page {
   height: 100vh;
@@ -2307,7 +2320,7 @@ video.media-preview {
 }
 
 .monitor-page > :not(.app-topbar) {
-  width: min(1112px, calc(100% - 48px));
+  width: min(1400px, calc(100% - 48px));
   margin-right: auto;
   margin-left: auto;
 }
@@ -2372,8 +2385,21 @@ video.media-preview {
   padding-block: 6px;
 }
 
+.monitor-toolbar-label {
+  align-self: center;
+  margin-right: 4px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .monitor-filter,
-.monitor-detail-close {
+.monitor-detail-close,
+.monitor-detail-session-close,
+.monitor-detail-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -2381,7 +2407,42 @@ video.media-preview {
   padding: 6px 10px;
   cursor: pointer;
   font-size: 13px;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.monitor-detail-session-close {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--surface);
+}
+
+.monitor-detail-session-close:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.monitor-action-error {
+  margin: 0 0 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.monitor-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.monitor-detail-open {
+  color: var(--surface);
+  border-color: var(--accent);
+  background: var(--accent);
+  text-decoration: none;
 }
 
 .monitor-filter.active {
@@ -2399,7 +2460,8 @@ video.media-preview {
 
 .monitor-metric,
 .monitor-detail,
-.monitor-session-row {
+.monitor-session-row,
+.monitor-column {
   border: 1px solid var(--hairline);
   border-radius: 8px;
   background: var(--surface);
@@ -2430,6 +2492,7 @@ video.media-preview {
 
 .monitor-detail-region {
   margin-bottom: 10px;
+  scroll-margin-top: calc(68px + var(--safe-top));
 }
 
 .monitor-detail {
@@ -2451,7 +2514,7 @@ video.media-preview {
 
 .monitor-detail-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 0.65fr 0.65fr minmax(240px, 2fr) 0.75fr 0.75fr;
   gap: 7px;
   margin-top: 12px;
 }
@@ -2473,6 +2536,70 @@ video.media-preview {
   margin: 3px 0 0;
 }
 
+.monitor-runtime {
+  margin-top: 8px;
+  border-radius: 5px;
+  background: var(--surface-muted);
+  padding: 9px;
+}
+
+.monitor-runtime h3 {
+  margin: 0 0 7px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.monitor-runtime dl,
+.monitor-technical-details dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.monitor-runtime dl > div + div,
+.monitor-technical-details dl > div + div {
+  border-left: 1px solid var(--hairline);
+  padding-left: 8px;
+}
+
+.monitor-runtime dt,
+.monitor-technical-details dt {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.monitor-runtime dd,
+.monitor-technical-details dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.monitor-technical-details {
+  margin-top: 8px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 7px;
+  color: var(--ink-secondary);
+  font-size: 10px;
+}
+
+.monitor-technical-details summary {
+  width: fit-content;
+  color: var(--ink-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.monitor-technical-details dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+  border-radius: 5px;
+  background: var(--surface-muted);
+  padding: 8px;
+}
+
 .monitor-events {
   display: grid;
   gap: 4px;
@@ -2489,28 +2616,173 @@ video.media-preview {
   padding-top: 5px;
 }
 
-.monitor-sessions {
+.monitor-board {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas: 'running waiting completed';
+  align-items: start;
+  gap: 10px;
+  padding-bottom: 28px;
+}
+
+.monitor-column-running {
+  grid-area: running;
+}
+
+.monitor-column-waiting {
+  grid-area: waiting;
+}
+
+.monitor-column-completed {
+  grid-area: completed;
+}
+
+.monitor-column {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface-subtle);
+}
+
+.monitor-column-header {
+  border-bottom: 1px solid var(--hairline);
+  padding: 12px;
+  background: var(--surface);
+}
+
+.monitor-column-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-column-title-row h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.monitor-column-header p {
+  margin: 4px 0 0 16px;
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.monitor-column-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink-subtle);
+}
+
+.monitor-column-dot.running {
+  background: var(--accent);
+}
+
+.monitor-column-dot.waiting {
+  background: var(--ink-muted);
+}
+
+.monitor-column-dot.completed {
+  background: var(--ink-muted);
+}
+
+.monitor-column-count {
+  min-width: 22px;
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.monitor-column-list {
+  display: grid;
+  max-height: calc(100dvh - 320px);
+  min-height: 148px;
   gap: 7px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.monitor-column-empty {
+  padding: 22px 10px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.55;
+  text-align: center;
 }
 
 .monitor-session-row {
-  display: grid;
   width: 100%;
-  grid-template-columns: 10px minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 12px;
+  overflow: hidden;
   text-align: left;
-  cursor: pointer;
 }
 
 .monitor-session-row:hover,
-.monitor-session-row.selected {
+.monitor-session-row.selected,
+.monitor-session-row:focus-within {
   border-color: var(--accent);
 }
 
 .monitor-session-row.error {
   border-color: #e9b9bc;
+}
+
+.monitor-session-row.aborted {
+  border-color: #e4c28b;
+}
+
+.monitor-session-open {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  padding: 12px 12px 7px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+}
+
+.monitor-session-open:hover,
+.monitor-session-open:active {
+  background: var(--surface-muted);
+}
+
+.monitor-session-open:focus-visible,
+.monitor-session-detail:focus-visible,
+.monitor-detail-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.monitor-session-detail {
+  min-height: 34px;
+  margin: 0 9px 8px 28px;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  background: transparent;
+  padding: 6px 3px 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 10px;
+  text-align: left;
+}
+
+.monitor-session-detail:hover {
+  color: var(--accent-ink);
 }
 
 .monitor-state-dot {
@@ -2528,6 +2800,10 @@ video.media-preview {
 
 .monitor-state-dot.error {
   background: #c9373e;
+}
+
+.monitor-state-dot.aborted {
+  background: #c77b18;
 }
 
 .monitor-session-body,
@@ -2557,8 +2833,10 @@ video.media-preview {
 }
 
 .monitor-session-right {
-  align-items: flex-end;
-  gap: 3px;
+  grid-column: 2;
+  align-items: flex-start;
+  flex-flow: row wrap;
+  gap: 4px 8px;
   color: var(--ink-muted);
   font-size: 10px;
   white-space: nowrap;
@@ -3012,6 +3290,13 @@ video.media-preview {
   .schedules-layout {
     gap: 28px;
   }
+
+  .monitor-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      'running waiting'
+      'completed completed';
+  }
 }
 
 @media (max-width: 768px), (max-height: 500px) and (hover: none) {
@@ -3055,7 +3340,7 @@ video.media-preview {
   }
 
   .session-actions {
-    width: 176px;
+    width: 220px;
     opacity: 1;
   }
 
@@ -3070,6 +3355,9 @@ video.media-preview {
   .action-btn,
   .monitor-filter,
   .monitor-detail-close,
+  .monitor-detail-session-close,
+  .monitor-detail-open,
+  .monitor-session-detail,
   .workspace-file-row,
   .workspace-breadcrumbs button,
   .workspace-editor-actions .button,
@@ -3336,11 +3624,28 @@ video.media-preview {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .monitor-board {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'running'
+      'waiting'
+      'completed';
+  }
+
+  .monitor-column-list {
+    max-height: none;
+    min-height: 0;
+  }
+
+  .monitor-column-empty {
+    padding-block: 14px;
+  }
+
   .monitor-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .monitor-session-row {
+  .monitor-session-open {
     grid-template-columns: 10px minmax(0, 1fr);
   }
 
@@ -3548,6 +3853,35 @@ video.media-preview {
 
   .monitor-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .monitor-detail-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .monitor-detail-actions {
+    flex-wrap: wrap;
+  }
+
+  .monitor-detail-actions > * {
+    flex: 1 1 auto;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .monitor-runtime dl,
+  .monitor-technical-details dl {
+    grid-template-columns: 1fr;
+  }
+
+  .monitor-runtime dl > div + div,
+  .monitor-technical-details dl > div + div {
+    border-top: 1px solid var(--hairline);
+    border-left: 0;
+    padding-top: 8px;
+    padding-left: 0;
   }
 
   .app-topbar {

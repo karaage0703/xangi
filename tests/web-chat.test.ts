@@ -18,6 +18,7 @@ import {
   clearSessions,
   listAllSessions,
   getSessionEntry,
+  getActiveSessionId,
   createSession,
   createWebSession,
   setProviderSessionId,
@@ -40,6 +41,37 @@ import { EventTrigger } from '../src/event-trigger.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
 import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
+import { canComposeInSession, shouldShowContinuationActions } from '../web-ui/src/Chat.js';
+
+describe('Web Chat continuation actions', () => {
+  it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
+    const detail = { lifecycle: 'closed' as const, platform: 'discord' };
+    expect(shouldShowContinuationActions(detail)).toBe(true);
+    expect(canComposeInSession(detail, false)).toBe(false);
+    expect(canComposeInSession(detail, true)).toBe(true);
+  });
+
+  it('offers a Web fork for Closed sessions without reopening them for direct Web input', () => {
+    const detail = { lifecycle: 'closed' as const, platform: 'web' };
+    expect(shouldShowContinuationActions(detail)).toBe(true);
+    expect(canComposeInSession(detail, false)).toBe(false);
+  });
+
+  it('does not add continuation actions to an open Web session', () => {
+    const detail = { lifecycle: 'open' as const, platform: 'web' };
+    expect(shouldShowContinuationActions(detail)).toBe(false);
+    expect(canComposeInSession(detail, false)).toBe(true);
+  });
+});
+
+describe('Web Chat session list actions', () => {
+  it('does not expose a Close button next to the destructive delete action', () => {
+    const source = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Chat.tsx'), 'utf8');
+    expect(source).not.toContain('closeSessionFromList');
+    expect(source).not.toContain('className="session-close"');
+    expect(source).not.toContain('aria-label="SessionをClose"');
+  });
+});
 
 /**
  * 任意のタイミングで完了させられる Fake AgentRunner。
@@ -1123,9 +1155,7 @@ describe('web-chat HTTP API', () => {
       /\.pane-tabs\s*\{[^}]*display:\s*flex[^}]*overflow-x:\s*auto[^}]*padding-top:\s*1px[^}]*padding-bottom:\s*1px[^}]*scrollbar-width:\s*none/s
     );
     expect(sourceStylesheet).toMatch(/\.pane-tabs::\-webkit-scrollbar\s*\{[^}]*display:\s*none/s);
-    expect(sourceStylesheet).toMatch(
-      /\.pane-tabs button\s*\{[^}]*min-height:\s*36px/s
-    );
+    expect(sourceStylesheet).toMatch(/\.pane-tabs button\s*\{[^}]*min-height:\s*36px/s);
     expect(sourceStylesheet).toMatch(
       /\.add-pane\s*\{[^}]*min-height:\s*36px[^}]*padding:\s*4px 8px/s
     );
@@ -1665,10 +1695,12 @@ describe('web-chat HTTP API', () => {
     const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
       sessions: Array<{
         id: string;
+        isCurrent: boolean;
         activity?: { state: string; summary: string; active: boolean; userTextPreview?: string };
       }>;
     };
     const found = list.sessions.find((s) => s.id === id);
+    expect(found?.isCurrent).toBe(true);
     expect(found?.activity?.state).toBe('thinking');
     expect(found?.activity?.active).toBe(true);
     expect(found?.activity?.userTextPreview).toBe('monitor me');
@@ -1888,13 +1920,16 @@ describe('web-chat HTTP API', () => {
     const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
       sessions: Array<{
         id: string;
+        isCurrent: boolean;
         activity?: { state: string; summary: string; active: boolean; userTextPreview?: string };
       }>;
     };
 
     const oldSession = list.sessions.find((s) => s.id === oldId);
     const currentSession = list.sessions.find((s) => s.id === currentId);
+    expect(oldSession?.isCurrent).toBe(false);
     expect(oldSession?.activity).toBeUndefined();
+    expect(currentSession?.isCurrent).toBe(true);
     expect(currentSession?.activity?.state).toBe('thinking');
     expect(currentSession?.activity?.userTextPreview).toBe('モニターテストです');
   });
@@ -2020,5 +2055,37 @@ describe('web-chat HTTP API', () => {
     expect(res.ok).toBe(true);
     expect(runner.destroyed.has(ctx)).toBe(true);
     expect(getSessionEntry(id)).toBeUndefined();
+  });
+
+  it('POST /api/sessions/:id/close keeps history and detaches the session', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const entry = getSessionEntry(id)!;
+
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(await res.json()).toEqual({ ok: true, lifecycle: 'closed' });
+    expect(getSessionEntry(id)).toMatchObject({ lifecycle: 'closed', closeReason: 'web' });
+    expect(getActiveSessionId(entry.contextKey)).toBeUndefined();
+    expect(runner.destroyed.has(entry.contextKey)).toBe(true);
+
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`)).json();
+    expect(detail.lifecycle).toBe('closed');
+
+    const send = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'should not continue' }),
+    });
+    expect(send.status).toBe(409);
+    expect(await send.json()).toEqual({ error: 'Session is closed' });
+
+    const closed = (await (
+      await fetch(`${baseUrl}/api/sessions?lifecycle=closed&limit=200`)
+    ).json()) as { sessions: Array<{ id: string; lifecycle: string }> };
+    expect(closed.sessions).toContainEqual(expect.objectContaining({ id, lifecycle: 'closed' }));
   });
 });

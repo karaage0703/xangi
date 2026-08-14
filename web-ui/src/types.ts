@@ -35,6 +35,7 @@ export interface Session {
   updatedAt: string;
   messageCount: number;
   isActive: boolean;
+  lifecycle?: 'open' | 'closed';
   autoTalk: boolean;
   autoTalkActive: boolean;
   timeoutAt?: number;
@@ -119,6 +120,7 @@ export interface SessionDetail {
   id: string;
   title: string;
   platform?: Platform;
+  lifecycle?: 'open' | 'closed';
   messages: Message[];
   limit?: number;
   before?: number;

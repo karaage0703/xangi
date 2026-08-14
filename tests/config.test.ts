@@ -242,6 +242,36 @@ describe('config', () => {
     expect(config.agent.backend).toBe('grok');
   });
 
+  it('should accept GitHub Copilot backend with permission skipping enabled by default', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'github-copilot';
+    delete process.env.SKIP_PERMISSIONS;
+    delete process.env.COPILOT_PERMISSION_MODE;
+    delete process.env.COPILOT_MAX_AI_CREDITS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.backend).toBe('github-copilot');
+    expect(config.agent.config.skipPermissions).toBe(true);
+    expect(config.agent.config.copilotPermissionMode).toBe('read-only');
+    expect(config.agent.config.copilotMaxAiCredits).toBeUndefined();
+  });
+
+  it('parses GitHub Copilot write mode and AI credit limit', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.SKIP_PERMISSIONS = 'false';
+    process.env.COPILOT_PERMISSION_MODE = 'workspace-write';
+    process.env.COPILOT_MAX_AI_CREDITS = '30';
+
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.config.skipPermissions).toBe(false);
+    expect(config.agent.config.copilotPermissionMode).toBe('workspace-write');
+    expect(config.agent.config.copilotMaxAiCredits).toBe(30);
+  });
+
   it('should throw error for invalid backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     process.env.AGENT_BACKEND = 'invalid';

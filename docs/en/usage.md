@@ -85,7 +85,7 @@ Buttons are displayed on response messages.
   - `延長` (Extend) — **doubles the remaining time** (adds residual to the deadline, capped at `TIMEOUT_MAX_MS`)
   - `⏱ MM:SS` — remaining time badge (click does nothing, turns red under 30s)
 - **After completion**: `New` resets the session. `History` shows chronological commentary and tool calls only to the user who clicked it; on Slack, `Close` removes only that ephemeral display
-- **After completion in a Discord thread**: `Leave` button — removes the user who clicked it from the thread, removing the thread from that user's sidebar. The bot requires the Discord Manage Threads permission
+- **After completion in a Discord thread**: a leftmost `Leave` button replaces `New`. It closes the current session into history, then removes only the user who clicked it from the thread and from that user's sidebar. The conversation log and Discord thread itself are not deleted. The bot requires the Discord Manage Threads permission
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
@@ -119,6 +119,9 @@ Programmatic API:
 
 - `GET /api/sessions/:id/timeout` — current state `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`; when omitted, adds the current remaining time (doubling it)
+- `POST /api/sessions/:id/close` — Mark the Session Closed, detach its next-input routing pointer, and destroy its runner while preserving conversation history. To reduce accidental actions, the Web UI exposes it from Monitor details
+
+Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Leave` combines completing the Session with removing the requesting user from the thread.
 
 ## Scheduler
 
@@ -283,7 +286,7 @@ bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/
 
 Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, or `antigravity`. Use `check` for a read-only status check. If Codex's Node.js and npm prerequisites are missing, the script guides you to install nvm, close and reopen the terminal, and then run `command -v nvm` followed by `nvm install --lts`.
 
-The selected agent starts interactively in Japanese and asks one question at a time. It also asks for the Web Chat access scope: `local` (default, loopback only), `tailscale` (loopback exposed inside the tailnet through a same-port Tailscale Serve TCP forward), or `lan` (`0.0.0.0`, after warning that Web Chat has no application-level authentication). Only the Tailscale choice configures `tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>`, and `doctor` verifies the forwarding target. Only a short start message appears in the agent UI; the agent reads detailed instructions from a temporary mode-0600 file that is removed when it exits. When no known workspace exists, xangi recommends `ai-assistant-workspace` first. If selected, xangi resolves the GitHub repository's latest `main` commit and downloads that commit's archive without Git. Other blank workspaces and existing workspaces at absolute paths remain available. The agent invokes `xangi setup --apply` after the user decides, but xangi itself validates the absolute path, backend, workspace mode, and Web Chat access; atomically writes the mode-0600 configuration; applies the repository template; and creates a starter BOOTSTRAP.md for a blank workspace. `xangi setup --complete` refuses completion while BOOTSTRAP.md remains. After the minimum setup, the agent asks whether to start using xangi or continue with Discord, other platforms, schedules, and skills. For these xangi settings it does not search the workspace; it uses xangi's bundled README, `docs/usage.md`, and platform documentation as the source of truth. Before exiting, a checkout runs `service start` and then `doctor`, and reports completion only after service, health, and runtime-workspace pass. A managed distribution relies on the installer to activate the OS service and uses `doctor` for verification. Template state records repository, commit SHA, archive SHA-256, and application time; later updates never overwrite the workspace.
+The selected agent starts interactively in Japanese and asks one question at a time. Initial setup fixes Web Chat to `local` (loopback only) and does not inspect or modify Tailscale until the minimum workspace setup, service start, and `doctor` checks for config, workspace, backend, service, health, and runtime workspace all succeed. Only after the local setup works does the agent offer `tailscale` (a same-port Tailscale Serve TCP forward inside the tailnet) or `lan` (`0.0.0.0`, after warning that Web Chat has no application-level authentication) as optional settings. `setup --access <local|tailscale|lan>` changes only the Web Chat scope without returning completed onboarding to the bootstrap phase. The Tailscale path configures `tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>` and applies `setup --access tailscale` only after the forward is verified. A failure in this optional step leaves the working local setup intact. Only a short start message appears in the agent UI; the agent reads detailed instructions from a temporary mode-0600 file that is removed when it exits. When no known workspace exists, xangi recommends `ai-assistant-workspace` first. If selected, xangi resolves the GitHub repository's latest `main` commit and downloads that commit's archive without Git. Other blank workspaces and existing workspaces at absolute paths remain available. The agent invokes `xangi setup --apply` with local access after the user decides, but xangi itself validates the absolute path, backend, workspace mode, and Web Chat access; atomically writes the mode-0600 configuration; applies the repository template; and creates a starter BOOTSTRAP.md for a blank workspace. `xangi setup --complete` refuses completion while BOOTSTRAP.md remains. After basic setup, the agent asks whether to start using xangi or continue with optional Web Chat access, Discord, other platforms, schedules, and skills. For these xangi settings it does not search the workspace; it uses xangi's bundled README, `docs/usage.md`, and platform documentation as the source of truth. A checkout runs `service start` and then `doctor`; a managed distribution relies on the installer to activate the OS service and uses `doctor` for verification. Template state records repository, commit SHA, archive SHA-256, and application time; later updates never overwrite the workspace.
 
 There is no browser UI that replaces AI onboarding. Token entry alone uses the local `xangi settings` GUI. When no supported agent is available setup prints the standalone setup command and exits, so rerun `xangi setup` after installing an agent. Linux follows the XDG Base Directory layout and uses a `systemd --user` service. WSL2 requires systemd.
 
@@ -510,13 +513,14 @@ You can switch the backend, model, and effort level per channel.
 | `/backend set codex --effort max`                | Run Codex with max effort                 |
 | `/backend set grok --effort max`                 | Run Grok with max effort                  |
 | `/backend set antigravity --effort high`         | Run Antigravity with high effort          |
+| `/backend set github-copilot --effort high`      | Run GitHub Copilot CLI with high effort   |
 | `/backend reset`                                 | Reset to the default (.env settings)      |
 
 Switching always starts a new session (conversation history is not carried over).
 
 `/models [backend]` is shared by Discord, Slack, Web, Telegram, and LINE. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
 
-`/models` dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without a machine-readable discovery interface, such as Claude Code, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
+`/models` dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without an independent machine-readable discovery command, such as Claude Code or GitHub Copilot CLI, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
 
 In the Web slash-command palette, selecting a backend for `/backend set` loads model choices from the same dynamic discovery result. Selecting a model then shows the effort choices supported by that backend/model combination. Web Project settings use the same model and effort discovery.
 
@@ -535,7 +539,7 @@ When `ALLOWED_MODELS` is configured, the dynamically discovered output is filter
 
 ```bash
 # Allowed backends for switching (if unset, all backends are allowed)
-ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,local-llm
+ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,github-copilot,local-llm
 
 # Allowed models for switching (if unset, no restriction)
 ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
@@ -553,7 +557,7 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 #### effort Option
 
-Claude Code, Codex, and Grok support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM does not support graded effort. xangi rejects effort for Local LLM and rejects `max` for Antigravity without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
+Claude Code, Codex, Grok, and GitHub Copilot CLI support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM does not support graded effort. xangi rejects effort for Local LLM and rejects `max` for Antigravity without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
 
 ## Autonomous AI Operations
 
@@ -626,6 +630,8 @@ The above response is sent as two separate messages to Discord or Slack. When ac
 ### Restart Mechanism
 
 `xangi service start|stop|restart|status` and `xangi service autostart enable|disable` have the same actions in managed and checkout installations. Managed installations control the OS service, while checkouts control PM2. `stop` temporarily stops the service without removing an existing automatic-start registration, and `start` runs it again. `autostart enable` registers startup after login or reboot, while `autostart disable` removes that registration without stopping the currently running xangi process. `xangi install` and `service start` never enable it implicitly. In a checkout, the target is the process named by `XANGI_PROCESS_NAME` in that clone's `.env`.
+
+`xangi service restart` and `xangi tool system_restart` use the new CLI to validate the production Web Project state read-only before requesting a restart. If an unavailable backend or another incompatible state would cause a problem after restart, the command blocks the restart without modifying the state file. At startup, one invalid Project is isolated instead: unavailable backend/model/effort settings are disabled and the remaining Projects and xangi continue starting.
 
 `/restart` and `xangi tool system_restart` are low-level operations that ask the running xangi process to gracefully shut down. The external supervisor, such as Docker, pm2, or systemd, is responsible for starting xangi again.
 
@@ -1228,7 +1234,7 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 
 | Variable                     | Description                                                                                                                    | Default                   |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
-| `AGENT_BACKEND`              | Backend (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `local-llm`)                                            | `claude-code`             |
+| `AGENT_BACKEND`              | Backend (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`)                         | `claude-code`             |
 | `AGENT_MODEL`                | Model to use                                                                                                                   | -                         |
 | `WORKSPACE_PATH`             | Working directory (local execution)                                                                                            | process startup directory |
 | `XANGI_WORKSPACE`            | Host-side workspace path (Docker execution)                                                                                    | `./workspace`             |
@@ -1243,6 +1249,8 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 | `CHANNEL_OVERRIDES`          | Per-channel backend settings (JSON). Discord threads inherit the parent channel's entry                                        | -                         |
 | `ANTHROPIC_API_KEY`          | Anthropic API key passed only to the Claude Code backend                                                                       | -                         |
 | `CLAUDE_CODE_BARE`           | Pass `--bare` to Claude Code and force API-key auth instead of OAuth/keychain auth                                             | `false`                   |
+| `COPILOT_PERMISSION_MODE`    | Copilot tool scope (`read-only` / `workspace-write`) when `SKIP_PERMISSIONS=false`                                             | `read-only`               |
+| `COPILOT_MAX_AI_CREDITS`     | Optional per-session AI credit limit passed to Copilot CLI (minimum 30)                                                         | -                         |
 | `CLAUDE_CODE_MAX_BUDGET_USD` | Pass `--max-budget-usd` to Claude Code to cap API spend                                                                        | -                         |
 | `CURSOR_API_KEY`             | API key passed only to the Cursor CLI backend                                                                                  | -                         |
 | `CURSOR_FORCE`               | Pass `--force` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
@@ -1278,7 +1286,7 @@ Web Chat uses React + Vite and supports new conversations, paged session search,
 
 Web Projects are logical conversation groups equivalent to Discord channels. Each Project can define an extra prompt and default backend, model, and effort. Model and effort choices are discovered dynamically from the selected backend. The `Projects` link in the sidebar opens a dedicated list for creating, configuring, and filtering by Project. Use `Move to Project` on an existing Web conversation to change its Project or return it to `No Project`. Project defaults apply from the next turn; a conversation-level `/backend set` takes precedence, and `/backend reset` returns to the Project default. Project names are not expanded in the sidebar itself. All Projects use the same `WORKSPACE_PATH`; creating one does not create a directory, Git repository, or `AGENTS.md`. Project definitions are stored in `DATA_DIR/web-projects.json`, while the Project association is stored with each session.
 
-The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits Markdown, text, JSON/YAML/TOML, and common code formats up to 1 MiB. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views.
+The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits Markdown, text, JSON/YAML/TOML, and common code formats up to 1 MiB. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
 Chat, Files, Schedules, and Monitor share one header so navigation and the display menu stay in the same position. The system, light, or dark choice is stored in the browser.
 
@@ -1293,7 +1301,7 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`; returns 409 on conflict
 
-The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It initially fetches the latest 150 sessions, then receives turn start, progress, and completion updates from `GET /api/sessions/stream` over SSE instead of polling the session list.
+The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It automatically groups Sessions into Running, Waiting for input (can continue), and Completed columns, with All / Chat / Web filters. Errors and aborted turns remain in Waiting and use the card's status label and colored dot. Selecting a card first opens its details. Backend, model, and effort share one Runtime settings panel; state, Discord or Slack destination, completed turn count, update time, and event history remain visible. Channel, thread, session, and other internal IDs stay collapsed until requested. The Open conversation action then navigates to `/chat/<appSessionId>`. Completed Sessions remain visible for 24 hours and can be resumed or branched from history. After the initial fetch, it receives turn start, progress, and completion updates from `GET /api/sessions/stream` over SSE instead of polling the session list.
 
 The same server exposes schedule management at `http://localhost:<WEB_CHAT_PORT>/schedules`. `GET /api/schedules` returns every platform's schedules and scheduler state, while `POST /api/schedules` creates Web, Discord, Slack, or Telegram jobs. Web jobs may include an optional `projectId` and create a fresh Web conversation when they run. `PATCH /api/schedules/:id` changes the job contents or enabled state, and `DELETE /api/schedules/:id` removes a schedule.
 
@@ -1319,7 +1327,7 @@ The Even UI only offers `claude` and `codex` provider labels. xangi accepts thos
 | Variable                             | Description                                                                                                                                | Default                         |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
 | `XANGI_EVEN_TERMINAL_TOKEN`          | Dedicated token for the Even Terminal compatibility API. Falls back to `XANGI_DEVICE_INBOX_TOKEN`, then `XANGI_PET_INBOX_TOKEN` when unset | (unset)                         |
-| `XANGI_EVEN_TERMINAL_BACKEND`        | Backend default used only for Even Terminal traffic (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `local-llm`)            | `AGENT_BACKEND`                 |
+| `XANGI_EVEN_TERMINAL_BACKEND`        | Backend default used only for Even Terminal traffic (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`) | `AGENT_BACKEND`                 |
 | `XANGI_EVEN_TERMINAL_MODEL`          | Model default used only for Even Terminal traffic                                                                                          | `AGENT_MODEL` / backend default |
 | `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Local LLM mode default used only for Even Terminal traffic (`agent` / `lite` / `chat`)                                                     | `LOCAL_LLM_MODE` / `agent`      |
 | `XANGI_EVEN_TERMINAL_MAX_CHARS`      | Maximum plain-text response length prepared for the G2 display                                                                             | `400`                           |
@@ -1409,6 +1417,12 @@ Headless Agy waits for MCP initialization before emitting the `init` event. If e
 If agy exits successfully with empty stdout, xangi surfaces timeout, quota, authentication, or other details written to stderr as the error message.
 
 When `SKIP_PERMISSIONS=true` (the default), xangi passes `--dangerously-skip-permissions` to avoid blocking on permission prompts in non-interactive chat operation. Use this only for trusted personal workspaces.
+
+### GitHub Copilot CLI (`AGENT_BACKEND=github-copilot`)
+
+Install GitHub's official `copilot` command separately, then authenticate with `/login` in the interactive CLI or `COPILOT_GITHUB_TOKEN`. xangi does not bundle the CLI. It consumes `--output-format json --stream on` JSONL and resumes conversations with `result.sessionId`.
+
+When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same non-interactive agent behavior as the other CLI backends, allowing all tools, paths, and URLs. Use this only for trusted personal workspaces. With `SKIP_PERMISSIONS=false`, `COPILOT_PERMISSION_MODE` applies: `read-only` exposes only `view`, `glob`, and `grep`, while `workspace-write` additionally exposes `edit` and `create`. Neither restricted mode exposes shell, URL, or MCP tools, and both disallow the system temp directory. When set, `COPILOT_MAX_AI_CREDITS` is passed as a per-session soft limit (minimum 30); it is omitted when unset.
 
 ### Local LLM (when `AGENT_BACKEND=local-llm`)
 
