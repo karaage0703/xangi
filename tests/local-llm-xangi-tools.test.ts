@@ -41,6 +41,16 @@ describe('Local LLM xangi tools by platform', () => {
     expect(toolNames).not.toContain('web_history');
   });
 
+  it('Telegram sessions expose only common schedule and system tools', () => {
+    const toolNames = names('telegram');
+
+    expect(toolNames).toContain('schedule_add');
+    expect(toolNames).toContain('system_restart');
+    expect(toolNames).not.toContain('discord_history');
+    expect(toolNames).not.toContain('slack_history');
+    expect(toolNames).not.toContain('web_history');
+  });
+
   it('keeps the legacy all-platform set when platform is unknown', () => {
     const toolNames = names();
 
