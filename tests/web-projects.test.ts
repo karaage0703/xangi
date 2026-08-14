@@ -1,8 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { prependWebProjectPrompt, WebProjectStore } from '../src/web-projects.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  prependWebProjectPrompt,
+  validateWebProjectsState,
+  WebProjectStore,
+} from '../src/web-projects.js';
 
 describe('WebProjectStore', () => {
   const directories: string[] = [];
@@ -86,6 +90,106 @@ describe('WebProjectStore', () => {
     expect(() => store.create({ name: '不正', model: 'gpt-test' })).toThrow(
       'モデルまたはeffortを設定するにはバックエンドが必要です'
     );
+  });
+
+  it('keeps starting when one persisted Project uses an unavailable backend', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-projects-'));
+    directories.push(root);
+    const filePath = join(root, 'web-projects.json');
+    const persisted = {
+      version: 1,
+      projects: [
+        {
+          id: 'legacy-search',
+          name: 'Legacy Search',
+          prompt: '',
+          backend: 'removed-backend',
+          model: 'old-model',
+          effort: 'high',
+          createdAt: '2026-08-12T00:00:00.000Z',
+          updatedAt: '2026-08-12T00:00:00.000Z',
+        },
+        {
+          id: 'valid',
+          name: 'Valid',
+          prompt: '',
+          backend: 'codex',
+          createdAt: '2026-08-12T00:00:00.000Z',
+          updatedAt: '2026-08-12T00:00:00.000Z',
+        },
+      ],
+    };
+    writeFileSync(filePath, `${JSON.stringify(persisted, null, 2)}\n`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const store = WebProjectStore.fromDataDir(root);
+
+    expect(store.get('legacy-search')).toMatchObject({ name: 'Legacy Search', prompt: '' });
+    expect(store.get('legacy-search')?.backend).toBeUndefined();
+    expect(store.get('valid')?.backend).toBe('codex');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('backend/model/effortを無効化'));
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual(persisted);
+  });
+
+  it('skips one malformed persisted Project and keeps the remaining Projects', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-projects-'));
+    directories.push(root);
+    writeFileSync(
+      join(root, 'web-projects.json'),
+      JSON.stringify({
+        version: 1,
+        projects: [
+          {
+            id: 'broken',
+            name: 'Broken',
+            createdAt: '2026-08-12T00:00:00.000Z',
+            updatedAt: '2026-08-12T00:00:00.000Z',
+          },
+          {
+            id: 'valid',
+            name: 'Valid',
+            prompt: '',
+            createdAt: '2026-08-12T00:00:00.000Z',
+            updatedAt: '2026-08-12T00:00:00.000Z',
+          },
+        ],
+      })
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const store = WebProjectStore.fromDataDir(root);
+
+    expect(store.get('broken')).toBeUndefined();
+    expect(store.get('valid')?.name).toBe('Valid');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('このProjectをスキップ'));
+  });
+
+  it('reports persisted Project issues without changing the state file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-projects-'));
+    directories.push(root);
+    const filePath = join(root, 'web-projects.json');
+    const raw = `${JSON.stringify({
+      version: 1,
+      projects: [
+        {
+          id: 'legacy-search',
+          name: 'Legacy Search',
+          prompt: '',
+          backend: 'removed-backend',
+          createdAt: '2026-08-12T00:00:00.000Z',
+          updatedAt: '2026-08-12T00:00:00.000Z',
+        },
+      ],
+    })}\n`;
+    writeFileSync(filePath, raw);
+
+    expect(validateWebProjectsState(root)).toEqual([
+      expect.objectContaining({
+        projectId: 'legacy-search',
+        recovery: 'disable-backend-settings',
+      }),
+    ]);
+    expect(readFileSync(filePath, 'utf8')).toBe(raw);
   });
 });
 

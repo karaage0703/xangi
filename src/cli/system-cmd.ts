@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
+import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
 
 interface Settings {
   [key: string]: unknown;
@@ -52,6 +53,8 @@ async function systemRestart(): Promise<string> {
   if (!canSelfRestart(selfLifecycle)) {
     return '⚠️ 自己再起動が無効です。管理者が .env の XANGI_SELF_LIFECYCLE=restart-only を設定し、xangi を再起動してください。';
   }
+
+  assertRuntimeStateCanStart();
 
   setTimeout(() => {
     process.kill(process.pid, 'SIGTERM');

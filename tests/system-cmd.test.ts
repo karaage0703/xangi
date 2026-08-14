@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { systemCmd } from '../src/cli/system-cmd.js';
@@ -110,6 +110,35 @@ describe('system-cmd', () => {
         killSpy.mockRestore();
         vi.useRealTimers();
       }
+    });
+
+    it('does not send SIGTERM when persisted runtime state is incompatible', async () => {
+      process.env.XANGI_SELF_LIFECYCLE = 'restart-only';
+      process.env.WEB_CHAT_ENABLED = 'true';
+      const dataDir = join(tmpDir, '.xangi');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(
+        join(dataDir, 'web-projects.json'),
+        JSON.stringify({
+          version: 1,
+          projects: [
+            {
+              id: 'legacy',
+              name: 'Legacy',
+              prompt: '',
+              backend: 'removed-backend',
+              createdAt: '2026-08-12T00:00:00.000Z',
+              updatedAt: '2026-08-12T00:00:00.000Z',
+            },
+          ],
+        })
+      );
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+      await expect(systemCmd('system_restart', {})).rejects.toThrow(
+        '再起動前のstate検証に失敗しました'
+      );
+      expect(killSpy).not.toHaveBeenCalled();
     });
   });
 });

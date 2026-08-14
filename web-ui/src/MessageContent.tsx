@@ -45,16 +45,75 @@ function Media({ path }: { path: string }) {
   );
 }
 
-function splitMedia(content: string): Array<{ kind: 'text' | 'media'; value: string }> {
+interface MediaMatch {
+  start: number;
+  end: number;
+  path: string;
+}
+
+const MEDIA_PATTERN = /MEDIA:([^\s\n`"'<>()[\]{}（）［］【】「」『』、。！？,;]+)/g;
+
+function inlineCodeRanges(line: string, offset: number): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const openerPattern = /`+/g;
+  let opener: RegExpExecArray | null;
+  while ((opener = openerPattern.exec(line))) {
+    const delimiter = opener[0];
+    const closeAt = line.indexOf(delimiter, openerPattern.lastIndex);
+    if (closeAt < 0) continue;
+    ranges.push({ start: offset + opener.index, end: offset + closeAt + delimiter.length });
+    openerPattern.lastIndex = closeAt + delimiter.length;
+  }
+  return ranges;
+}
+
+function mediaMatches(content: string): MediaMatch[] {
+  const matches: MediaMatch[] = [];
+  const lines = content.match(/.*(?:\r\n|\n|\r|$)/g)?.filter(Boolean) ?? [];
+  let offset = 0;
+  let fence: { marker: '`' | '~'; length: number } | undefined;
+
+  for (const lineWithEnding of lines) {
+    const line = lineWithEnding.replace(/(?:\r\n|\n|\r)$/, '');
+    const fenceMatch = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const { marker, length } = fence;
+      const trimmed = line.trim();
+      if (trimmed.length >= length && [...trimmed].every((character) => character === marker)) {
+        fence = undefined;
+      }
+      offset += lineWithEnding.length;
+      continue;
+    }
+    if (fenceMatch) {
+      fence = { marker: fenceMatch[1][0] as '`' | '~', length: fenceMatch[1].length };
+      offset += lineWithEnding.length;
+      continue;
+    }
+    if (/^(?: {4}|\t)/.test(line)) {
+      offset += lineWithEnding.length;
+      continue;
+    }
+
+    const codeRanges = inlineCodeRanges(line, offset);
+    for (const match of line.matchAll(MEDIA_PATTERN)) {
+      const start = offset + (match.index ?? 0);
+      if (codeRanges.some((range) => start >= range.start && start < range.end)) continue;
+      matches.push({ start, end: start + match[0].length, path: match[1] });
+    }
+    offset += lineWithEnding.length;
+  }
+  return matches;
+}
+
+export function splitMedia(content: string): Array<{ kind: 'text' | 'media'; value: string }> {
   const parts: Array<{ kind: 'text' | 'media'; value: string }> = [];
-  const pattern = /MEDIA:([^\s\n]+)/g;
   let index = 0;
-  for (const match of content.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    const text = content.slice(index, start);
+  for (const match of mediaMatches(content)) {
+    const text = content.slice(index, match.start);
     if (text.trim()) parts.push({ kind: 'text', value: text });
-    parts.push({ kind: 'media', value: match[1] });
-    index = start + match[0].length;
+    parts.push({ kind: 'media', value: match.path });
+    index = match.end;
   }
   const rest = content.slice(index);
   if (rest.trim()) parts.push({ kind: 'text', value: rest });

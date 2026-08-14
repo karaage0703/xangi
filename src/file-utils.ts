@@ -63,7 +63,7 @@ function extraAllowedDirs(): string[] {
 }
 
 /**
- * 明示マーカー（MEDIA: / [IMAGE:] / markdown リンク等）で指定されたパスに
+ * 明示マーカー（MEDIA: / [IMAGE:] / markdown 画像等）で指定されたパスに
  * 添付を許可するルート群（広め）。ワークスペース subtree 全体・添付保存先・一時領域。
  * ここに入っていないパス（例: /etc/passwd、~/.ssh）は弾く＝既存の
  * 「任意絶対パスが素通りで添付されてしまう穴」をここで塞ぐ。
@@ -175,7 +175,8 @@ function nonCodeSegments(text: string): string[] {
 /**
  * 応答テキストから添付マーカーのファイルパスを抽出する。
  *
- * 対象は明示マーカーのみ: MEDIA: / [IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:] / markdown リンク。
+ * 対象は明示マーカーのみ: MEDIA: / [IMAGE:|FILE:|VIDEO:|AUDIO:|MEDIA:] / markdown 画像。
+ * 通常の markdown リンクは参照表示であり、添付意図とはみなさない。
  * 相対パスは WORKSPACE_PATH 基準で解決し、候補は allowlist サンドボックス
  * （realpath + broad roots）内の実在ファイルだけを返す。
  */
@@ -212,8 +213,8 @@ export function extractFilePaths(text: string, workspaceRootOverride?: string): 
     }
   }
 
-  // 3) markdown リンク / 画像  ![alt](path) または [label](path)
-  const mdLinkPattern = /!?\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g;
+  // 3) markdown 画像 ![alt](path)。通常リンク [label](path) は添付しない。
+  const mdLinkPattern = /!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g;
   for (const segment of nonCodeSegments(text)) {
     mdLinkPattern.lastIndex = 0;
     while ((match = mdLinkPattern.exec(segment)) !== null) {

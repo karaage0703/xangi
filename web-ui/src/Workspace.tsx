@@ -5,12 +5,19 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import { ApiError, getJson, requestJson } from './api';
+import { ApiError, getJson, requestJson, workspaceFileUrl } from './api';
 import { AppTopbar } from './AppTopbar';
+import {
+  lineSelection,
+  workspaceParentPath,
+  workspaceTargetFromSearch,
+  workspaceViewerUrl,
+} from './workspace-navigation';
 
 const MarkdownBody = lazy(() => import('./MarkdownBody'));
 
@@ -101,6 +108,9 @@ export function Workspace() {
   const [mobilePane, setMobilePane] = useState<MobilePane>('files');
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const resizeStart = useRef({ x: 0, width: sidebarWidth });
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const pendingLocation = useRef<{ line: number; column?: number } | undefined>(undefined);
+  const initialLocationHandled = useRef(false);
 
   const dirty = selected !== undefined && draft !== selected.content;
   const dirtyRef = useRef(dirty);
@@ -126,7 +136,7 @@ export function Workspace() {
     }
   }, []);
 
-  const openFile = useCallback(async (path: string) => {
+  const openFile = useCallback(async (path: string, line?: number, column?: number) => {
     if (dirtyRef.current) {
       setMessage('別のファイルを開く前に、変更を保存するか再読込してください。');
       return;
@@ -137,12 +147,26 @@ export function Workspace() {
       const file = await getJson<WorkspaceFile>(`/api/workspace/file?path=${encodePath(path)}`);
       setSelected(file);
       setDraft(file.content);
-      setMode(file.path.toLowerCase().endsWith('.md') ? 'preview' : 'edit');
+      setMode(line ? 'edit' : file.path.toLowerCase().endsWith('.md') ? 'preview' : 'edit');
+      pendingLocation.current = line ? { line, column } : undefined;
       setMobilePane('editor');
+      window.history.replaceState({}, '', workspaceViewerUrl({ path: file.path, line, column }));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
   }, []);
+
+  useLayoutEffect(() => {
+    const location = pendingLocation.current;
+    const editor = editorRef.current;
+    if (!location || !editor || mode !== 'edit') return;
+    const selection = lineSelection(draft, location.line, location.column);
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(selection.start, selection.end);
+    const lineHeight = Number.parseFloat(window.getComputedStyle(editor).lineHeight) || 21;
+    editor.scrollTop = Math.max(0, (selection.line - 2) * lineHeight);
+    pendingLocation.current = undefined;
+  }, [draft, mode, selected]);
 
   const reloadFile = useCallback(async () => {
     if (!selected) return;
@@ -192,8 +216,16 @@ export function Workspace() {
   }, [draft, dirty, saveState, selected]);
 
   useEffect(() => {
-    void loadDirectory('');
-  }, [loadDirectory]);
+    if (initialLocationHandled.current) return;
+    initialLocationHandled.current = true;
+    const target = workspaceTargetFromSearch(window.location.search);
+    if (!target) {
+      void loadDirectory('');
+      return;
+    }
+    void loadDirectory(workspaceParentPath(target.path));
+    void openFile(target.path, target.line, target.column);
+  }, [loadDirectory, openFile]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -374,6 +406,16 @@ export function Workspace() {
         />
 
         <section className="workspace-editor-panel" aria-label="File editor">
+          {message && (
+            <div className="workspace-editor-message" role="alert">
+              <span>{message}</span>
+              {saveState === 'conflict' && selected && (
+                <button type="button" onClick={() => void reloadFile()}>
+                  最新版を再読込
+                </button>
+              )}
+            </div>
+          )}
           {selected ? (
             <>
               <header className="workspace-editor-header">
@@ -423,6 +465,14 @@ export function Workspace() {
                   <button type="button" className="button" onClick={() => void reloadFile()}>
                     再読込
                   </button>
+                  <a
+                    className="button"
+                    href={workspaceFileUrl(selected.path)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    rawで開く
+                  </a>
                   <button
                     type="button"
                     className="button primary"
@@ -434,17 +484,6 @@ export function Workspace() {
                 </div>
               </header>
 
-              {message && (
-                <div className="workspace-editor-message" role="alert">
-                  <span>{message}</span>
-                  {saveState === 'conflict' && (
-                    <button type="button" onClick={() => void reloadFile()}>
-                      最新版を再読込
-                    </button>
-                  )}
-                </div>
-              )}
-
               {mode === 'preview' && markdown ? (
                 <article className="workspace-markdown-preview markdown-message">
                   <div className="workspace-markdown-document">
@@ -455,6 +494,7 @@ export function Workspace() {
                 </article>
               ) : (
                 <textarea
+                  ref={editorRef}
                   className="workspace-editor"
                   aria-label={`${selected.path}を編集`}
                   spellCheck={markdown}

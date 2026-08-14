@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { stripPromptMetadata, deriveTitleFromFirstMessage } from '../src/session-title.js';
+import {
+  stripPromptMetadata,
+  deriveTitleFromFirstMessage,
+  sanitizeSessionTitle,
+  truncateSessionTitle,
+} from '../src/session-title.js';
 
 describe('stripPromptMetadata', () => {
   it('Discord 形式のメタデータ4行をすべて剥がす', () => {
@@ -138,6 +143,15 @@ describe('deriveTitleFromFirstMessage', () => {
     expect(deriveTitleFromFirstMessage(workdir, 'sess2')).toHaveLength(50);
   });
 
+  it('50 UTF-16コードユニット境界の絵文字を分断しない', () => {
+    const body = `${'あ'.repeat(49)}📎後続`;
+    writeLog('sess-emoji-boundary', [{ id: 'm1', role: 'user', content: body, createdAt: '' }]);
+
+    const title = deriveTitleFromFirstMessage(workdir, 'sess-emoji-boundary');
+    expect(title).toBe('あ'.repeat(49));
+    expect(title).not.toMatch(/[\uD800-\uDFFF]/);
+  });
+
   it('先頭JSONL行が64KiBを超えてもタイトルを導出する', () => {
     writeLog('sess-large', [
       {
@@ -163,5 +177,15 @@ describe('deriveTitleFromFirstMessage', () => {
     const path = join(workdir, 'logs', 'sessions', 'sess4.jsonl');
     writeFileSync(path, 'not-json-at-all\n');
     expect(deriveTitleFromFirstMessage(workdir, 'sess4')).toBe('');
+  });
+});
+
+describe('session title Unicode helpers', () => {
+  it('正常な絵文字を保持する', () => {
+    expect(truncateSessionTitle(`${'あ'.repeat(48)}📎後続`)).toBe(`${'あ'.repeat(48)}📎`);
+  });
+
+  it('孤立したsurrogateだけを除去する', () => {
+    expect(sanitizeSessionTitle('before\uD83Dmiddle\uDCCEafter📎')).toBe('beforemiddleafter📎');
   });
 });

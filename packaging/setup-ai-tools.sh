@@ -14,6 +14,7 @@ AIコーディングツールをxangiとは独立してセットアップしま�
   setup-ai-tools.sh cursor
   setup-ai-tools.sh grok
   setup-ai-tools.sh antigravity
+  setup-ai-tools.sh github-copilot
 
 checkはインストール・認証状態を変更しません。
 ツール名を指定すると、未導入なら公式installerで導入し、対話型の認証を開始します。
@@ -25,9 +26,11 @@ fail() {
   exit 1
 }
 
-show_codex_node_guide() {
+show_node_guide() {
+  local display_name="$1"
+  local tool_name="$2"
   printf '%s\n' \
-    'Codexの導入にはNode.jsとnpmが必要です。' \
+    "${display_name}の導入にはNode.jsとnpmが必要です。" \
     '' \
     'nvmを使う場合は、次の順番で準備してください。' \
     '' \
@@ -43,8 +46,8 @@ show_codex_node_guide() {
     '   node --version' \
     '   npm --version' \
     '' \
-    '4. 新しいTerminalでCodexのセットアップを再実行します。' \
-    '   bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex' \
+    "4. 新しいTerminalで${display_name}のセットアップを再実行します。" \
+    "   bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) ${tool_name}" \
     '' \
     '参考:' \
     '  https://github.com/nvm-sh/nvm' >&2
@@ -67,7 +70,7 @@ auth_status() {
     codex) codex login status >/dev/null 2>&1 ;;
     claude-code) claude auth status >/dev/null 2>&1 ;;
     cursor) cursor-agent status >/dev/null 2>&1 ;;
-    grok|antigravity) return 2 ;;
+    grok|antigravity|github-copilot) return 2 ;;
   esac
 }
 
@@ -78,6 +81,7 @@ command_for() {
     cursor) echo cursor-agent ;;
     grok) echo grok ;;
     antigravity) echo agy ;;
+    github-copilot) echo copilot ;;
   esac
 }
 
@@ -126,13 +130,17 @@ download_and_run() {
 install_tool() {
   case "$1" in
     codex)
-      command -v npm >/dev/null 2>&1 || show_codex_node_guide
+      command -v npm >/dev/null 2>&1 || show_node_guide 'Codex' 'codex'
       npm install -g @openai/codex
       ;;
     claude-code) download_and_run 'https://claude.ai/install.sh' ;;
     cursor) download_and_run 'https://cursor.com/install' ;;
     grok) download_and_run 'https://x.ai/cli/install.sh' ;;
     antigravity) download_and_run 'https://antigravity.google/cli/install.sh' ;;
+    github-copilot)
+      command -v npm >/dev/null 2>&1 || show_node_guide 'GitHub Copilot CLI' 'github-copilot'
+      npm install -g @github/copilot
+      ;;
   esac
 }
 
@@ -145,6 +153,10 @@ login_tool() {
     antigravity)
       echo 'Antigravityを起動します。画面の案内に従ってGoogleアカウントで認証してください。'
       agy
+      ;;
+    github-copilot)
+      echo 'GitHub Copilot CLIを起動します。/loginを入力し、画面の案内に従って認証してください。'
+      copilot
       ;;
   esac
 }
@@ -170,11 +182,11 @@ setup_tool() {
 refresh_path
 case "${1:-}" in
   check)
-    for tool in codex claude-code cursor grok antigravity; do
+    for tool in codex claude-code cursor grok antigravity github-copilot; do
       check_tool "$tool"
     done
     ;;
-  codex|claude-code|cursor|grok|antigravity) setup_tool "$1" ;;
+  codex|claude-code|cursor|grok|antigravity|github-copilot) setup_tool "$1" ;;
   -h|--help|'') usage ;;
   *) usage >&2; fail "未対応のツールです: $1" ;;
 esac

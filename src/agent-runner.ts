@@ -6,6 +6,7 @@ import { CodexRunner } from './codex-cli.js';
 import { CursorRunner } from './cursor-cli.js';
 import { GrokRunner } from './grok-cli.js';
 import { AntigravityRunner } from './antigravity-cli.js';
+import { GitHubCopilotRunner } from './github-copilot-cli.js';
 import { LocalLlmRunner } from './local-llm/runner.js';
 import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
@@ -130,6 +131,8 @@ export function createAgentRunner(
       return new GrokRunner({ ...config, platform: options?.platform });
     case 'antigravity':
       return new AntigravityRunner({ ...config, platform: options?.platform });
+    case 'github-copilot':
+      return new GitHubCopilotRunner({ ...config, platform: options?.platform });
     case 'local-llm':
       return new LocalLlmRunner({ ...config, platform: options?.platform });
     default:
@@ -181,6 +184,8 @@ export function getBackendDisplayName(backend: AgentBackend): string {
       return 'Grok';
     case 'antigravity':
       return 'Antigravity';
+    case 'github-copilot':
+      return 'GitHub Copilot';
     case 'local-llm':
       return 'Local LLM';
     default:

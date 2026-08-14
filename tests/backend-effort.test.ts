@@ -3,7 +3,7 @@ import { getSupportedEffortLevels, supportsEffort } from '../src/backend-effort.
 
 describe('backend effort capabilities', () => {
   it('supports all configured levels for CLI backends with full effort support', () => {
-    for (const backend of ['claude-code', 'codex', 'cursor', 'grok'] as const) {
+    for (const backend of ['claude-code', 'codex', 'cursor', 'grok', 'github-copilot'] as const) {
       expect(getSupportedEffortLevels(backend)).toEqual(['low', 'medium', 'high', 'max']);
     }
   });

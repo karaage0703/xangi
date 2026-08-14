@@ -102,7 +102,7 @@ export class WorkspaceBrowser {
   }
 
   async list(directory = ''): Promise<WorkspaceDirectory> {
-    const normalized = normalizeRelativePath(directory, true);
+    const normalized = this.normalizePath(directory, true);
     const target = await this.resolveExisting(normalized, 'directory');
     const entries = await readdir(target, { withFileTypes: true });
     const visible: WorkspaceEntry[] = [];
@@ -152,7 +152,7 @@ export class WorkspaceBrowser {
   }
 
   async read(filePath: string): Promise<WorkspaceFile> {
-    const normalized = normalizeRelativePath(filePath);
+    const normalized = this.normalizePath(filePath);
     const target = await this.resolveExisting(normalized, 'file');
     const fileStat = await stat(target);
     if (fileStat.size > this.maxFileBytes) {
@@ -180,7 +180,7 @@ export class WorkspaceBrowser {
       throw new WorkspaceBrowserError('File is too large to save in the workspace editor', 413);
     }
 
-    const normalized = normalizeRelativePath(filePath);
+    const normalized = this.normalizePath(filePath);
     const target = await this.resolveExisting(normalized, 'file');
     const before = await readFile(target, 'utf8');
     if (contentVersion(before) !== expectedVersion) {
@@ -271,6 +271,16 @@ export class WorkspaceBrowser {
   private async getRootRealPath(): Promise<string> {
     if (!this.rootRealPath) this.rootRealPath = await realpath(this.root);
     return this.rootRealPath;
+  }
+
+  private normalizePath(value: string, allowEmpty = false): string {
+    if (typeof value !== 'string') return normalizeRelativePath(value, allowEmpty);
+    if (!isAbsolute(value)) return normalizeRelativePath(value, allowEmpty);
+    const workspaceRelative = relative(this.root, resolve(value));
+    if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
+      throw new WorkspaceBrowserError('Workspace path is outside the configured workspace', 400);
+    }
+    return normalizeRelativePath(workspaceRelative, allowEmpty);
   }
 }
 

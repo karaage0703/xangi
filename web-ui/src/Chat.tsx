@@ -56,6 +56,7 @@ interface Session {
   updatedAt: string;
   messageCount?: number;
   isActive: boolean;
+  lifecycle?: 'open' | 'closed';
   autoTalk?: boolean;
   autoTalkActive?: boolean;
   timeoutAt?: number;
@@ -109,14 +110,30 @@ interface Message {
   platformMessageId?: string;
 }
 
-interface SessionDetail {
+export interface SessionDetail {
   id: string;
   title: string;
   platform?: string;
+  lifecycle?: 'open' | 'closed';
   messages: Message[];
   hasMore?: boolean;
   nextBefore?: number;
   nextCursor?: number | null;
+}
+
+export function canComposeInSession(
+  detail: Pick<SessionDetail, 'lifecycle' | 'platform'> | null,
+  discordComposeEnabled: boolean
+): boolean {
+  if (!detail) return false;
+  if (detail.platform === 'discord') return discordComposeEnabled;
+  return detail.platform === 'web' && detail.lifecycle !== 'closed';
+}
+
+export function shouldShowContinuationActions(
+  detail: Pick<SessionDetail, 'lifecycle' | 'platform'> | null
+): boolean {
+  return Boolean(detail && (detail.lifecycle === 'closed' || detail.platform !== 'web'));
 }
 
 interface SessionsResponse {
@@ -801,8 +818,7 @@ function ChatPane({
   const linkedMessageId = messageIdFromHash(window.location.hash);
   const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
   const sessionId = pane.sessionId;
-  const editable =
-    detail?.platform === 'web' || (detail?.platform === 'discord' && discordComposeEnabled);
+  const editable = canComposeInSession(detail, discordComposeEnabled);
   const discordRemoteMode = detail?.platform === 'discord' && discordComposeEnabled;
 
   useEffect(() => {
@@ -1522,12 +1538,14 @@ function ChatPane({
           />
         </div>
       )}
-      {detail && detail.platform !== 'web' && (
+      {shouldShowContinuationActions(detail) && detail && (
         <div className="resume-bar">
           <span>
-            {discordRemoteMode
-              ? 'この入力は元のDiscordへ送信されます'
-              : `${platformLabel(detail.platform)} の会話は読み取り専用です`}
+            {detail.lifecycle === 'closed'
+              ? 'このSessionはClosedです。履歴を引き継いで再開できます'
+              : discordRemoteMode
+                ? 'この入力は元のDiscordへ送信されます'
+                : `${platformLabel(detail.platform)} の会話は読み取り専用です`}
           </span>
           <div className="resume-actions">
             {detail.platform === 'discord' && (
@@ -1615,9 +1633,11 @@ function ChatPane({
               placeholder={
                 discordRemoteMode
                   ? 'Discordへ送るメッセージを入力'
-                  : editable
-                    ? 'メッセージを入力'
-                    : 'セッションを選択するか、新しい会話を開始'
+                  : detail?.lifecycle === 'closed'
+                    ? '再開方法を選択してください'
+                    : editable
+                      ? 'メッセージを入力'
+                      : 'セッションを選択するか、新しい会話を開始'
               }
               disabled={!editable || processing}
               value={draft}
@@ -2413,6 +2433,7 @@ export function Chat() {
                           <span>
                             {platformLabel(session.platform)} · {relativeTime(session.updatedAt)}
                             {session.autoTalk ? ' · 自走' : ''}
+                            {session.lifecycle === 'closed' ? ' · Closed' : ''}
                           </span>
                           {projectName && (
                             <span className="session-project-tag" title={projectName}>

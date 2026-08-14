@@ -8,7 +8,7 @@
 
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI, Antigravity CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
+xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
 
 ## Key features
 
@@ -51,7 +51,7 @@ The same flow works on macOS, Linux, and WSL2.
    bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
    ```
 
-   Replace `codex` with `claude-code`, `cursor`, `grok`, or `antigravity` if needed.
+   Replace `codex` with `claude-code`, `cursor`, `grok`, `antigravity`, or `github-copilot` if needed.
 
 2. Install xangi.
 
@@ -65,7 +65,7 @@ The same flow works on macOS, Linux, and WSL2.
    xangi setup
    ```
 
-The guided setup currently communicates in Japanese. It lets you choose the workspace, AI backend, Web Chat access scope, and whether to start the service. If setup stops or you are unsure about the current state, run:
+The guided setup currently communicates in Japanese. It lets you choose the workspace and AI backend, then starts and verifies Web Chat locally first. Tailscale and LAN exposure are optional settings offered only after the local setup works. If setup stops or you are unsure about the current state, run:
 
 ```bash
 xangi doctor
@@ -75,7 +75,7 @@ See the [usage guide](docs/en/usage.md#first-install-without-git) for installati
 
 ## Start using xangi
 
-- Web Chat: open `http://127.0.0.1:18888` when local access was selected
+- Web Chat: initially open `http://127.0.0.1:18888`
 - Discord, Slack, Telegram, or LINE: message the configured bot
 - Health check: `xangi doctor`
 - Version check: `xangi --version`

@@ -84,7 +84,7 @@ INJECT_TIMESTAMP=false
   - `延長` — タイムアウトを「**残り時間 2 倍**」に延長（`TIMEOUT_MAX_MS` 上限内）
   - `⏱ MM:SS` — 残り時間表示（クリック無効、残り 30 秒以下で赤色に）
 - **完了後**: `New` はセッションをリセット。`History` は途中コメントとツール実行を時系列で本人だけに表示し、Slackでは表示内の`閉じる`で一時表示だけを削除
-- **Discordスレッド内の完了後**: `Leave` ボタン — 押したユーザー自身をスレッドから退出させ、そのユーザーのサイドバーから消す。BotにDiscordの「スレッドの管理」権限が必要
+- **Discordスレッド内の完了後**: `New`の代わりに左端へ`Leave`ボタンを表示する。現在のセッションを終了して履歴へ移し、押したユーザー自身をスレッドから退出させ、そのユーザーのサイドバーから消す。会話ログとDiscordスレッド自体は削除しない。BotにDiscordの「スレッドの管理」権限が必要
 
 `DISCORD_SHOW_BUTTONS=false` でボタンを非表示にできます。
 
@@ -121,6 +121,9 @@ API（プログラマブル操作）:
 
 - `GET /api/sessions/:id/timeout` — 現在のタイムアウト状態 `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`で延長。省略時は現在の残り時間を加算（残り時間を2倍）
+- `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。誤操作を避けるため、Web UIではMonitor詳細から実行する
+
+MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Leave`がSessionの完了と本人のスレッド退出をまとめて行います。
 
 ## スケジューラー
 
@@ -285,7 +288,7 @@ bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/
 
 最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`から選びます。状態確認だけなら`check`を指定します。Codexに必要なNode.jsとnpmが無い場合は、nvmを導入したあとTerminalをいったん閉じ、新しいTerminalで`command -v nvm`、`nvm install --lts`の順に実行するガイドを表示します。
 
-選択したAIは日本語の対話モードで起動し、workspaceを一問ずつ確認します。Web Chatはアクセス範囲も確認し、`local`（既定・loopbackのみ）、`tailscale`（loopbackを同一portのTailscale Serve TCP転送でTailnet内へ公開）、`lan`（`0.0.0.0`、認証なしの警告付き）から明示選択します。Tailscaleを選んだ時だけ`tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>`を設定し、`doctor`が転送先を検証します。agent UIへ表示する初回メッセージは短い開始案内だけで、詳細手順はmode 0600の一時ファイルからAIが読み、終了時に削除します。既知workspaceが無い場合は`ai-assistant-workspace`を最初に推奨します。利用者が選ぶと、GitHub repositoryの`main`最新commitを解決し、そのcommitのarchiveをGitなしで取得します。別の空workspaceや別の絶対pathにある既存workspaceも選べます。AIは回答後に`xangi setup --apply`を呼びますが、絶対path・backend・workspace mode・Web Chat accessの検証、mode 0600のatomic config保存、repository template適用、空workspace用BOOTSTRAP.md生成はxangi側が行います。最低限のBOOTSTRAPが終わるまでは`xangi setup --complete`を拒否します。完了後は、そのまま使い始めるか、Discord、他platform、schedule、skillの追加設定へ進むかをAIが確認します。これらxangi自体の設定はworkspace内の手順を探さず、xangi本体に同梱したREADME、`docs/usage.md`、各platformの公式documentを正本として案内します。終了前には、checkout版なら`service start`の後に`doctor`を実行し、service、health、runtime-workspaceが正常になってからだけ完了を案内します。Gitなし配布版はinstallerがOS serviceを起動し、`doctor`で確認します。template適用時はrepository・commit SHA・archive SHA-256・適用時刻をstateへ保存し、その後の更新でworkspaceを上書きしません。
+選択したAIは日本語の対話モードで起動し、workspaceを一問ずつ確認します。初回はWeb Chatを`local`（loopbackのみ）に固定し、workspaceの最低限の準備、service起動、`doctor`によるconfig・workspace・backend・service・health・runtime-workspaceの確認までTailscaleを調べたり変更したりしません。localの基本セットアップが動作した後だけ、希望者へ`tailscale`（同一portのTailscale Serve TCP転送でTailnet内へ公開）または`lan`（`0.0.0.0`、認証なしの警告付き）を追加設定として案内します。`setup --access <local|tailscale|lan>`は完了済みのオンボーディング状態を戻さず、Web Chatの公開範囲だけを変更します。Tailscaleを選んだ時だけ`tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>`を設定し、転送確認に成功してから`setup --access tailscale`を適用します。Tailscaleの追加設定に失敗してもlocalの基本セットアップは成功したままです。agent UIへ表示する初回メッセージは短い開始案内だけで、詳細手順はmode 0600の一時ファイルからAIが読み、終了時に削除します。既知workspaceが無い場合は`ai-assistant-workspace`を最初に推奨します。利用者が選ぶと、GitHub repositoryの`main`最新commitを解決し、そのcommitのarchiveをGitなしで取得します。別の空workspaceや別の絶対pathにある既存workspaceも選べます。AIは回答後に`xangi setup --apply`をlocal指定で呼びますが、絶対path・backend・workspace mode・Web Chat accessの検証、mode 0600のatomic config保存、repository template適用、空workspace用BOOTSTRAP.md生成はxangi側が行います。最低限のBOOTSTRAPが終わるまでは`xangi setup --complete`を拒否します。基本セットアップ後は、そのまま使い始めるか、Web Chatの追加アクセス、Discord、他platform、schedule、skillの追加設定へ進むかをAIが確認します。これらxangi自体の設定はworkspace内の手順を探さず、xangi本体に同梱したREADME、`docs/usage.md`、各platformの公式documentを正本として案内します。checkout版は`service start`の後に`doctor`を実行し、Gitなし配布版はinstallerがOS serviceを起動して`doctor`で確認します。template適用時はrepository・commit SHA・archive SHA-256・適用時刻をstateへ保存し、その後の更新でworkspaceを上書きしません。
 
 AIオンボーディングを置き換えるsetup用browser UIはありません。ただしtoken入力だけは`xangi settings`のローカル専用GUIを使います。対応AIが無い場合は上記の単体セットアップを表示して終了するため、導入後に`xangi setup`をやり直してください。LinuxはXDG Base Directory準拠、常駐化は`systemd --user`を使います。WSL2はsystemdを有効化した環境が対象です。
 
@@ -522,6 +525,7 @@ docker build -t myapp . && \
 | `/backend set cursor`                                       | Cursor CLIに切り替え                   |
 | `/backend set grok`                                         | Grok CLIに切り替え                     |
 | `/backend set antigravity`                                  | Antigravity CLIに切り替え              |
+| `/backend set github-copilot`                               | GitHub Copilot CLIに切り替え           |
 | `/backend set local-llm --model nemotron-3-nano`            | Local LLM + モデル指定                 |
 | `/backend set claude-code --effort high`                    | effort指定付きで切り替え               |
 | `/backend set codex --effort max`                           | Codexをmax effortで実行                |
@@ -534,7 +538,7 @@ docker build -t myapp . && \
 
 `/models [backend]` は Discord、Slack、Web、Telegram、LINE で共通です。引数を省略すると `ALLOWED_BACKENDS` に含まれる全バックエンド、指定するとそのバックエンドだけを表示します。閲覧専用で、現在のバックエンドやモデル設定は変更しません。
 
-`/models` は、各CLIが提供する公式の一覧取得機能から現在のアカウントで利用可能なモデルを動的取得します。Codexは`app-server model/list`、Cursorは`cursor-agent models`、Grokは`grok models`、AntigravityはAgy 1.1.12以降の`agy --output-format json models`を使用します。旧Agyが`--output-format`を明示的に拒否する場合は`agy models`へフォールバックし、タブ区切り形式と従来の1列形式を受理します。Local LLMはOllamaの`/api/tags`またはOpenAI互換の`/v1/models`を使用します。Claude Codeのように機械可読な一覧取得機能がないバックエンドは「取得非対応」と表示し、モデル名をハードコードで補いません。
+`/models` は、各CLIが提供する公式の一覧取得機能から現在のアカウントで利用可能なモデルを動的取得します。Codexは`app-server model/list`、Cursorは`cursor-agent models`、Grokは`grok models`、AntigravityはAgy 1.1.12以降の`agy --output-format json models`を使用します。旧Agyが`--output-format`を明示的に拒否する場合は`agy models`へフォールバックし、タブ区切り形式と従来の1列形式を受理します。Local LLMはOllamaの`/api/tags`またはOpenAI互換の`/v1/models`を使用します。Claude CodeやGitHub Copilot CLIのように独立した機械可読の一覧取得コマンドがないバックエンドは「取得非対応」と表示し、モデル名をハードコードで補いません。
 
 Webのスラッシュコマンドパレットでは、`/backend set`でbackendを選ぶと同じ動的取得結果からmodel候補を表示し、modelを選ぶとその組み合わせで利用可能なeffort候補を表示します。Web Project設定のmodel / effort候補も同じ取得結果を使用します。
 
@@ -553,7 +557,7 @@ xangi tool models --backend codex --use gpt-5.4 --effort high
 
 ```bash
 # 切り替え許可バックエンド（未設定=全バックエンド許可）
-ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,local-llm
+ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,github-copilot,local-llm
 
 # 切り替え許可モデル（未設定=制限なし）
 ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
@@ -571,7 +575,7 @@ Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code�
 
 #### effort オプション
 
-Claude Code、Codex、Grokでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMは段階的なeffortに対応していません。Local LLMでeffortを指定した場合と、Antigravityで`max`を指定した場合は、設定を保存せずエラーを返します。Claude Codeのpersistentモードではプロセス再起動が必要なため、切り替え時にセッションがリセットされます。`--effort デフォルト`で未指定状態に戻せます。
+Claude Code、Codex、Grok、GitHub Copilot CLIでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMは段階的なeffortに対応していません。Local LLMでeffortを指定した場合と、Antigravityで`max`を指定した場合は、設定を保存せずエラーを返します。Claude Codeのpersistentモードではプロセス再起動が必要なため、切り替え時にセッションがリセットされます。`--effort デフォルト`で未指定状態に戻せます。
 
 ## AIによる自律操作
 
@@ -644,6 +648,8 @@ AIの応答テキストに `\n===\n`（前後に改行を含む `===`）が含�
 ### 再起動の仕組み
 
 `xangi service start|stop|restart|status`と`xangi service autostart enable|disable`はmanaged版とcheckout版で共通です。managed版ではOS service、checkout版ではPM2を操作します。`stop`は自動起動登録を残したまま一時停止し、`start`で再開します。`autostart enable`だけがOSログイン・再起動後の自動起動を登録し、`autostart disable`で解除します。解除しても現在動いているxangiは停止しません。`xangi install`と`service start`は現在のセッションで起動するだけで、自動起動を勝手に有効化しません。checkout版ではcloneの`.env`にある`XANGI_PROCESS_NAME`のプロセスを対象にします。
+
+`xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIで本番のWeb Project stateをread-only検証します。利用できないbackendなど、再起動後に問題になる状態を見つけると再起動を中止し、stateファイルは書き換えません。一方、起動時は不正なProject 1件を分離し、利用できないbackend/model/effortだけを無効化して他のProjectとxangi本体を起動します。
 
 `/restart` や `xangi tool system_restart` は、起動中の xangi 自身に graceful shutdown を要求する低レベル操作です。実際に再起動して復帰させるのは、xangiの外側にある Docker / pm2 / systemd などの supervisor です。
 
@@ -1252,7 +1258,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 | 変数                         | 説明                                                                                                                    | デフォルト                   |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `AGENT_BACKEND`              | バックエンド（`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `local-llm`）                               | `claude-code`                |
+| `AGENT_BACKEND`              | バックエンド（`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`）            | `claude-code`                |
 | `AGENT_MODEL`                | 使用するモデル                                                                                                          | -                            |
 | `WORKSPACE_PATH`             | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
 | `XANGI_WORKSPACE`            | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
@@ -1270,6 +1276,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `CHANNEL_OVERRIDES`          | チャンネル別バックエンド設定（JSON）。Discord スレッドでは親チャンネルIDの設定を継承                                    | -                            |
 | `ANTHROPIC_API_KEY`          | Claude Code backend に渡す Anthropic API key（Claude Code利用時のみ）                                                   | -                            |
 | `CLAUDE_CODE_BARE`           | Claude Code に `--bare` を渡し、OAuth/keychain ではなく API key 認証に固定                                              | `false`                      |
+| `COPILOT_PERMISSION_MODE`    | `SKIP_PERMISSIONS=false`時のCopilot tool範囲（`read-only` / `workspace-write`）                                         | `read-only`                  |
+| `COPILOT_MAX_AI_CREDITS`     | Copilot CLIへ渡す1 sessionのAI credit上限（任意、最小30）                                                               | -                            |
 | `CLAUDE_CODE_MAX_BUDGET_USD` | Claude Code に `--max-budget-usd` を渡し、API呼び出しの上限額を設定                                                     | -                            |
 | `CURSOR_API_KEY`             | Cursor CLI backend に渡す API key（Cursor CLI利用時のみ）                                                               | -                            |
 | `CURSOR_FORCE`               | Cursor CLI に `--force` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
@@ -1302,7 +1310,7 @@ Web ChatはReact + Viteで、新規会話、セッション検索と段階読込
 
 Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトと既定のbackend / model / effortを設定できる。modelとeffortの候補は、選択したbackendから動的取得される。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。既存のWeb会話はセッション行の`Projectへ移動`から所属先を変更でき、`Projectなし`へ戻すこともできる。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。`/backend reset`で会話固有設定を消すとProject設定へ戻る。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
 Chat / Files / Schedules / Monitorは共通ヘッダーを使い、ナビゲーションと`表示`メニューの位置を揃える。端末設定・ライト・ダークの選択はブラウザに保存される。
 
@@ -1317,7 +1325,7 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`。競合時は409
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。最初に最新150件を取得し、その後は`GET /api/sessions/stream`のSSEでターン開始・進捗・完了を受け取るため、セッション一覧を定期ポーリングしない。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。Sessionを「実行中」「入力待ち（継続可能）」「完了」の3列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は入力待ちカードの状態ラベルと色付きドットで区別する。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortを一つの「実行設定」枠で確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでターン開始・進捗・完了を受け取るため、セッション一覧を定期ポーリングしない。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
 
@@ -1357,7 +1365,7 @@ Even 側の provider 選択は `claude` / `codex` ラベルとして受け取る
 | 変数                                 | 説明                                                                                                                 | デフォルト                      |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `XANGI_EVEN_TERMINAL_TOKEN`          | Even Terminal 互換 API 専用 token。未設定時は `XANGI_DEVICE_INBOX_TOKEN` → `XANGI_PET_INBOX_TOKEN` に fallback       | (未設定)                        |
-| `XANGI_EVEN_TERMINAL_BACKEND`        | Even Terminal 経由だけの backend default (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `local-llm`) | `AGENT_BACKEND`                 |
+| `XANGI_EVEN_TERMINAL_BACKEND`        | Even Terminal 経由だけの backend default (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`) | `AGENT_BACKEND`                 |
 | `XANGI_EVEN_TERMINAL_MODEL`          | Even Terminal 経由だけの model default                                                                               | `AGENT_MODEL` / backend側の既定 |
 | `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `lite` / `chat`)                                          | `LOCAL_LLM_MODE` / `agent`      |
 
@@ -1439,6 +1447,12 @@ headless実行はMCP初期化完了後に`init`イベントを返します。`St
 Agy が成功終了しても stdout が空の場合、stderr に出力された timeout・quota・認証などの詳細をエラーとして表示します。
 
 `SKIP_PERMISSIONS=true` 既定時は、非対話運用で permission 待ちにならないよう `--dangerously-skip-permissions` を渡します。個人用・信頼済み workspace 前提の設定です。
+
+### GitHub Copilot CLI（`AGENT_BACKEND=github-copilot` 時）
+
+GitHub公式の`copilot`コマンドを別途インストールし、対話画面の`/login`または`COPILOT_GITHUB_TOKEN`で認証します。xangiはCLI本体を同梱せず、`--output-format json --stream on`のJSONLを処理し、`result.sessionId`で会話を再開します。
+
+`SKIP_PERMISSIONS=true`（既定）では、他のCLI backendと同じ非対話agent運用にするため`--yolo`を渡し、全tool・path・URLを許可します。個人用・信頼済みworkspaceだけで使用してください。`SKIP_PERMISSIONS=false`では`COPILOT_PERMISSION_MODE`が有効になり、既定の`read-only`は`view` / `glob` / `grep`だけ、`workspace-write`はさらに`edit` / `create`だけをモデルへ公開します。どちらの制限モードもshell、URL、MCP toolは公開せず、system temp directoryも禁止します。`COPILOT_MAX_AI_CREDITS`を設定するとsession単位のsoft limitをCLIへ渡します（最小30、未設定時は渡しません）。
 
 ### Local LLM（`AGENT_BACKEND=local-llm` 時）
 

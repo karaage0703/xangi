@@ -8,6 +8,8 @@ import { closeSync, existsSync, openSync, readSync } from 'fs';
 import { join } from 'path';
 import { stripReplySuggestionMarkup } from './reply-suggestions.js';
 
+const SESSION_TITLE_MAX_UTF16_LENGTH = 50;
+
 const PROMPT_METADATA_PATTERNS: RegExp[] = [
   /^\[システム注記:[^\n]*\]\n?\n?/,
   /^\[runtime\][^\n]*\n?\n?/,
@@ -57,6 +59,34 @@ function readFirstUserContent(workdir: string, sessionId: string): string {
   }
 }
 
+export interface SessionOrigin {
+  channelId?: string;
+  channelName?: string;
+  threadId?: string;
+  threadName?: string;
+}
+
+/** 最初のプロンプトに埋め込まれたDiscord/Slackの会話先を表示用に復元する。 */
+export function deriveSessionOrigin(workdir: string, sessionId: string): SessionOrigin | undefined {
+  const content = readFirstUserContent(workdir, sessionId);
+  const discord = content.match(
+    /^\[チャンネル:\s*#?(.+?)\s*\(ID:\s*([^)]+)\)(?:\s*\/\s*thread:\s*(.+?)\s*\(ID:\s*([^)]+)\))?\]/m
+  );
+  if (discord) {
+    return {
+      channelName: discord[1].trim(),
+      channelId: discord[2].trim(),
+      threadName: discord[3]?.trim(),
+      threadId: discord[4]?.trim(),
+    };
+  }
+
+  const slackChannelId = content.match(/^\[チャンネル:\s*([^\]]+)\]/m)?.[1]?.trim();
+  const slackThreadId = content.match(/^\[スレッド:\s*([^\]]+)\]/m)?.[1]?.trim();
+  if (!slackChannelId) return undefined;
+  return { channelId: slackChannelId, threadId: slackThreadId };
+}
+
 /**
  * プロンプト先頭のメタデータ行を順に剥がして本文だけ返す。
  * 4種類のメタデータ行（プラットフォーム / チャンネル / 発言者 / 現在時刻）が
@@ -80,12 +110,30 @@ export function stripPromptMetadata(text: string): string {
   return stripReplySuggestionMarkup(s).replace(CHANNEL_RULE_CONTEXT, '').trim();
 }
 
+/** セッションタイトルから孤立したUTF-16 surrogateを除去する。 */
+export function sanitizeSessionTitle(title: string): string {
+  return title.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    ''
+  );
+}
+
+/** UTF-16 surrogate pairを分断せず、表示用タイトルの上限へ切り詰める。 */
+export function truncateSessionTitle(title: string): string {
+  const sanitized = sanitizeSessionTitle(title);
+  if (sanitized.length <= SESSION_TITLE_MAX_UTF16_LENGTH) return sanitized;
+
+  let end = SESSION_TITLE_MAX_UTF16_LENGTH;
+  if ((sanitized.charCodeAt(end - 1) & 0xfc00) === 0xd800) end--;
+  return sanitized.slice(0, end);
+}
+
 /**
  * セッションログ（logs/sessions/<id>.jsonl）の最初のユーザーメッセージから
  * 表示用タイトルを生成する。50 文字に切り詰める。導出できなければ空文字。
  */
 export function deriveTitleFromFirstMessage(workdir: string, sessionId: string): string {
-  return stripPromptMetadata(readFirstUserContent(workdir, sessionId)).slice(0, 50);
+  return truncateSessionTitle(stripPromptMetadata(readFirstUserContent(workdir, sessionId)));
 }
 
 /** セッション台帳から消えた古いログの activity thread ID を先頭プロンプトから復元する。 */

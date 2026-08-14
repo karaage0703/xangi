@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'http';
 import { spawn } from 'child_process';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -216,6 +216,44 @@ describe('xangi tool canonical CLI and compatibility shim', () => {
     expect(code).not.toBe(0);
     expect(stderr).toContain('XANGI_TOOL_SERVER is not set');
     expect(stderr).toContain('target instance is never guessed');
+  });
+
+  it('blocks system_restart locally when the new build cannot validate persisted state', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'xangi-tool-restart-state-'));
+    const dataDir = join(workspace, '.xangi');
+    writeFileSync(join(workspace, '.env'), 'WEB_CHAT_ENABLED=true\n');
+    mkdirSync(dataDir);
+    writeFileSync(
+      join(dataDir, 'web-projects.json'),
+      JSON.stringify({
+        version: 1,
+        projects: [
+          {
+            id: 'legacy',
+            name: 'Legacy',
+            prompt: '',
+            backend: 'removed-backend',
+            createdAt: '2026-08-12T00:00:00.000Z',
+            updatedAt: '2026-08-12T00:00:00.000Z',
+          },
+        ],
+      })
+    );
+    try {
+      const { stderr, code } = await runCli(
+        ['tool', 'system_restart'],
+        {
+          WEB_CHAT_ENABLED: 'true',
+          WORKSPACE_PATH: workspace,
+          DATA_DIR: dataDir,
+        },
+        XANGI
+      );
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('再起動前のstate検証に失敗しました');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,36 +1,13 @@
 import { Children, isValidElement, memo, ReactNode, useState } from 'react';
-import Markdown from 'react-markdown';
+import Markdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { workspaceFileUrl } from './api';
 import { copyText } from './MessageContent';
+import { workspaceTargetFromHref, workspaceViewerUrl } from './workspace-navigation';
 
 const REMARK_PLUGINS = [remarkGfm];
-const URI_SCHEME = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
-const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/;
 
-function decodePath(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function workspacePathFromHref(href: string): string | undefined {
-  if (
-    href.startsWith('#') ||
-    href.startsWith('?') ||
-    href.startsWith('//') ||
-    href === '/' ||
-    /^\/(?:workspace|monitor)(?:$|[?#])/.test(href) ||
-    /^\/(?:api|assets)\//.test(href) ||
-    (URI_SCHEME.test(href) && !WINDOWS_ABSOLUTE_PATH.test(href))
-  ) {
-    return undefined;
-  }
-
-  const decoded = decodePath(href);
-  return decoded.replace(/#L\d+(?::\d+)?$/, '').replace(/:\d+(?::\d+)?$/, '');
+function markdownUrlTransform(value: string): string {
+  return workspaceTargetFromHref(value) ? value : defaultUrlTransform(value);
 }
 
 function nodeText(node: ReactNode): string {
@@ -69,15 +46,16 @@ const MarkdownBody = memo(function MarkdownBody({ content }: { content: string }
     <Markdown
       skipHtml
       remarkPlugins={REMARK_PLUGINS}
+      urlTransform={markdownUrlTransform}
       components={{
         a({ href, children, title, className }) {
           // Message links must not replace the chat document. This also keeps local
           // file-style links from stranding the user on the server's 404 response.
           const separateContext = Boolean(href && !href.startsWith('#'));
-          const workspacePath = href ? workspacePathFromHref(href) : undefined;
+          const workspaceTarget = href ? workspaceTargetFromHref(href) : undefined;
           return (
             <a
-              href={workspacePath ? workspaceFileUrl(workspacePath) : href}
+              href={workspaceTarget ? workspaceViewerUrl(workspaceTarget) : href}
               title={title}
               className={className}
               target={separateContext ? '_blank' : undefined}

@@ -9,6 +9,7 @@ export const BACKEND_COMMAND: Record<SetupBackend, string> = {
   cursor: 'cursor-agent',
   grok: 'grok',
   antigravity: 'agy',
+  'github-copilot': 'copilot',
   'local-llm': 'ollama',
 };
 

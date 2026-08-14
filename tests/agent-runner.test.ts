@@ -43,6 +43,13 @@ describe('agent-runner', () => {
       expect(runner.runStream).toBeDefined();
     });
 
+    it('should create GitHubCopilotRunner for github-copilot backend', () => {
+      const runner = createAgentRunner('github-copilot', {});
+      expect(runner).toBeDefined();
+      expect(runner.run).toBeDefined();
+      expect(runner.runStream).toBeDefined();
+    });
+
     it('should throw error for unknown backend', () => {
       expect(() => createAgentRunner('unknown' as any, {})).toThrow('Unknown agent backend');
     });
@@ -159,6 +166,10 @@ describe('agent-runner', () => {
 
     it('should return "Antigravity" for antigravity', () => {
       expect(getBackendDisplayName('antigravity')).toBe('Antigravity');
+    });
+
+    it('should return "GitHub Copilot" for github-copilot', () => {
+      expect(getBackendDisplayName('github-copilot')).toBe('GitHub Copilot');
     });
   });
 });

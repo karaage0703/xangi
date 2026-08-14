@@ -15,6 +15,7 @@ import {
   prepareOnboardingLaunch,
   readOnboardingStatus,
   SetupPrerequisiteError,
+  updateGuidedSetupAccess,
 } from '../src/setup/guided-onboarding.js';
 
 const roots: string[] = [];
@@ -202,10 +203,11 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('ai-assistant-workspace');
     expect(prompt).toContain('BOOTSTRAP.md');
     expect(prompt).toContain('setup --apply --backend claude-code');
-    expect(prompt).toContain('--web-chat-access');
+    expect(prompt).toContain('--web-chat-access local');
     expect(prompt).toContain('Tailscale経由');
     expect(prompt).toContain('tailscale serve --bg --tcp=18888');
-    expect(prompt).toContain('tailscale serve --tcp=18888 off');
+    expect(prompt).toContain('setup --access tailscale');
+    expect(prompt).toContain('setup --access lan');
     expect(prompt).toContain('他のServe/Funnel設定は変更しない');
     expect(prompt).toContain('Web Chat自体には認証がなく');
     expect(prompt).toContain('Discord');
@@ -219,6 +221,11 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart enable`");
     expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart disable`");
     expect(prompt).toContain('利用者が明確に希望した場合だけ');
+    const tailscaleChoiceIndex = prompt.indexOf('Tailscale経由');
+    expect(prompt.indexOf('--web-chat-access local')).toBeLessThan(tailscaleChoiceIndex);
+    expect(prompt.indexOf("`'/Applications/Xangi/xangi' install`")).toBeLessThan(
+      tailscaleChoiceIndex
+    );
     expect(log).toHaveBeenCalledWith(expect.stringContaining('今回の選択肢から除外'));
     log.mockRestore();
   });
@@ -279,7 +286,8 @@ describe('guided setup backend preflight', () => {
       webChatPort: 19991,
     });
     expect(prompt).toContain('tailscale serve --bg --tcp=19991');
-    expect(prompt).toContain('tailscale serve --tcp=19991 off');
+    expect(prompt).not.toContain('tailscale serve --tcp=19991 off');
+    expect(prompt).toContain('TCP 19991から127.0.0.1:19991への転送を確認');
   });
 });
 
@@ -392,6 +400,38 @@ describe('guided setup deterministic apply and completion', () => {
       workspacePath,
       webChatAccess: 'local',
     });
+  });
+
+  it('changes Web Chat access without returning completed onboarding to bootstrap', async () => {
+    const { homeDir, layout } = await fixture();
+    const workspacePath = join(homeDir, 'workspace');
+    await applyGuidedSetup(
+      { backend: 'codex', workspacePath, workspaceMode: 'blank' },
+      { layout, backendAvailable: async () => true }
+    );
+    await unlink(join(workspacePath, 'BOOTSTRAP.md'));
+    await completeGuidedSetup(layout);
+
+    await expect(updateGuidedSetupAccess(layout, 'tailscale')).resolves.toContain('tailscale');
+    expect(JSON.parse(await readFile(layout.configFile, 'utf8'))).toMatchObject({
+      workspacePath,
+      webChatAccess: 'tailscale',
+    });
+    await expect(readOnboardingStatus(layout)).resolves.toMatchObject({
+      phase: 'minimum_ready',
+      workspacePath,
+      webChatAccess: 'tailscale',
+    });
+  });
+
+  it('rejects access changes until the minimum setup is complete', async () => {
+    const { homeDir, layout } = await fixture();
+    await applyGuidedSetup(
+      { backend: 'codex', workspacePath: join(homeDir, 'workspace'), workspaceMode: 'blank' },
+      { layout, backendAvailable: async () => true }
+    );
+    await expect(updateGuidedSetupAccess(layout, 'lan')).rejects.toThrow(/完了後/);
+    await expect(updateGuidedSetupAccess(layout, 'public')).rejects.toThrow(/local/);
   });
 
   it('reports preflight before onboarding state exists and rejects invalid phases', async () => {

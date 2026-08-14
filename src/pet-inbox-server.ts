@@ -48,6 +48,7 @@ import {
   stripReplySuggestionMarkup,
 } from './reply-suggestions.js';
 import { loadReplySuggestionsEnabled } from './settings.js';
+import { truncateSessionTitle } from './session-title.js';
 
 const MAX_TEXT_LENGTH = 8000;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -313,7 +314,7 @@ export async function handlePetInboxRequest(
             setSession(ctxKey, completedResult.sessionId);
             incrementMessageCount(appSessionId);
             if (!entry.title) {
-              updateSessionTitle(appSessionId, text.slice(0, 50));
+              updateSessionTitle(appSessionId, truncateSessionTitle(text));
             }
             flowFromHostPlatform(stripReplySuggestionMarkup(completedResult.result), 'agent');
           },

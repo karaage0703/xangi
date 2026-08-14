@@ -8,7 +8,7 @@
 
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code、Codex、Cursor CLI、Grok CLI、Antigravity CLI、Local LLMを、Discord、Slack、Telegram、Web Chat、LINEから使えるAIアシスタントです。Discordを推奨しますが、ブラウザだけでも利用できます。
+Claude Code、Codex、Cursor CLI、Grok CLI、Antigravity CLI、GitHub Copilot CLI、Local LLMを、Discord、Slack、Telegram、Web Chat、LINEから使えるAIアシスタントです。Discordを推奨しますが、ブラウザだけでも利用できます。
 
 ## 主な機能
 
@@ -51,7 +51,7 @@ macOS、Linux、WSL2で共通です。
    bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
    ```
 
-   `codex`の代わりに`claude-code`、`cursor`、`grok`、`antigravity`も選べます。
+   `codex`の代わりに`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`も選べます。
 
 2. xangiをインストールします。
 
@@ -65,7 +65,7 @@ macOS、Linux、WSL2で共通です。
    xangi setup
    ```
 
-セットアップでは、ワークスペース、AIバックエンド、Web Chatの公開範囲、サービスを起動するかどうかを選びます。途中で止まった場合や状態が分からない場合は、次を実行してください。
+セットアップでは、ワークスペースとAIバックエンドを選び、まずWeb Chatをlocalで起動・確認します。TailscaleやLANでの公開は、localの基本セットアップが完了した後の任意設定です。途中で止まった場合や状態が分からない場合は、次を実行してください。
 
 ```bash
 xangi doctor
@@ -75,7 +75,7 @@ xangi doctor
 
 ## 使い始める
 
-- Web Chat: ローカル公開を選んだ場合は`http://127.0.0.1:18888`
+- Web Chat: 初回は`http://127.0.0.1:18888`
 - Discord、Slack、Telegram、LINE: セットアップしたbotへメッセージを送信
 - 状態確認: `xangi doctor`
 - バージョン確認: `xangi --version`

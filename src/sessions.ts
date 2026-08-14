@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
+import { sanitizeSessionTitle } from './session-title.js';
 
 /**
  * セッション管理（appSessionId方式）
@@ -18,9 +19,13 @@ import { randomUUID } from 'crypto';
  */
 
 export type SessionScope = 'interactive' | 'scheduler';
+export type SessionLifecycle = 'open' | 'closed';
+export type SessionCloseReason = 'new' | 'leave' | 'monitor' | 'web' | 'archive' | 'other';
 
 export interface AgentInfo {
-  backend: string; // 'claude-code' | 'codex' | 'cursor' | 'grok' | 'local-llm'
+  backend: string; // AgentBackend (kept as string for persisted backward compatibility)
+  model?: string;
+  effort?: string;
   providerSessionId?: string;
 }
 
@@ -36,6 +41,10 @@ export interface SessionEntry {
   messageCount: number;
   agent?: AgentInfo;
   archived: boolean;
+  /** 会話を通常継続するか。未設定の既存データはactiveByContextから安全に導出する。 */
+  lifecycle?: SessionLifecycle;
+  closedAt?: string;
+  closeReason?: SessionCloseReason;
   /** Webへ引き継いだ元セッション。最初の発話で履歴を注入した後に消費する。 */
   resumedFromSessionId?: string;
   /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
@@ -146,6 +155,18 @@ function loadSessionsFromFile(): void {
           data.activeByContext[key] = appId;
         }
         console.log(`[xangi] Migrated ${Object.keys(data.sessions).length} sessions to new format`);
+      }
+      let repairedTitles = 0;
+      for (const entry of Object.values(data.sessions)) {
+        const sanitized = sanitizeSessionTitle(entry.title || '');
+        if (sanitized !== entry.title) {
+          entry.title = sanitized;
+          repairedTitles++;
+        }
+      }
+      if (repairedTitles > 0) {
+        saveSessionsToFile();
+        console.log(`[xangi] Repaired ${repairedTitles} session title(s) with invalid Unicode`);
       }
       console.log(`[xangi] Loaded ${Object.keys(data.sessions).length} sessions from ${path}`);
     }
@@ -290,7 +311,7 @@ export function createWebSession(
 
   data.sessions[appId] = {
     id: appId,
-    title: opts.title || '',
+    title: sanitizeSessionTitle(opts.title || ''),
     platform: 'web',
     contextKey: ctxKey,
     scope: 'interactive',
@@ -300,6 +321,7 @@ export function createWebSession(
     messageCount: 0,
     agent: opts.backend ? { backend: opts.backend } : undefined,
     archived: false,
+    lifecycle: 'open',
     resumedFromSessionId: opts.resumedFromSessionId,
     projectId: opts.projectId,
   };
@@ -335,7 +357,7 @@ export function createSession(
 
   data.sessions[appId] = {
     id: appId,
-    title: opts.title || '',
+    title: sanitizeSessionTitle(opts.title || ''),
     platform: opts.platform || 'discord',
     contextKey,
     scope: opts.scope || 'interactive',
@@ -345,6 +367,7 @@ export function createSession(
     messageCount: 0,
     agent: opts.backend ? { backend: opts.backend } : undefined,
     archived: false,
+    lifecycle: 'open',
   };
   data.activeByContext[contextKey] = appId;
   saveSessionsToFile();
@@ -357,12 +380,16 @@ export function createSession(
 export function setProviderSessionId(
   appSessionId: string,
   providerSessionId: string,
-  backend?: string
+  backend?: string,
+  model?: string,
+  effort?: string
 ): void {
   const entry = data.sessions[appSessionId];
   if (!entry) return;
   entry.agent = {
     backend: backend || entry.agent?.backend || 'claude-code',
+    model: model ?? entry.agent?.model,
+    effort: effort ?? entry.agent?.effort,
     providerSessionId,
   };
   entry.updatedAt = new Date().toISOString();
@@ -391,7 +418,7 @@ export function setSession(
 export function updateSessionTitle(appSessionId: string, title: string): void {
   const entry = data.sessions[appSessionId];
   if (!entry) return;
-  entry.title = title;
+  entry.title = sanitizeSessionTitle(title);
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
 }
@@ -424,6 +451,9 @@ export function archiveSession(appSessionId: string): void {
   const entry = data.sessions[appSessionId];
   if (!entry) return;
   entry.archived = true;
+  entry.lifecycle = 'closed';
+  entry.closedAt = new Date().toISOString();
+  entry.closeReason = 'archive';
   // activeByContextから外す
   for (const [ctx, id] of Object.entries(data.activeByContext)) {
     if (id === appSessionId) {
@@ -441,9 +471,50 @@ export function activateSession(contextKey: string, appSessionId: string): void 
   const entry = data.sessions[appSessionId];
   if (entry) {
     entry.archived = false;
+    entry.lifecycle = 'open';
+    delete entry.closedAt;
+    delete entry.closeReason;
     entry.updatedAt = new Date().toISOString();
   }
   saveSessionsToFile();
+}
+
+/**
+ * Sessionの会話ライフサイクルを返す。
+ * 既存データにはlifecycleがないため、安全側でclosedとして扱う。
+ * 実際に次の入力を受けた時点でensureSessionが明示的にopenへ移行する。
+ */
+export function getSessionLifecycle(appSessionId: string): SessionLifecycle {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return 'closed';
+  if (entry.lifecycle) return entry.lifecycle;
+  return 'closed';
+}
+
+/** Sessionを終了済みにし、次回投稿のrouting pointerから外す。履歴は削除しない。 */
+export function closeSession(appSessionId: string, reason: SessionCloseReason = 'other'): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return false;
+  const now = new Date().toISOString();
+  entry.lifecycle = 'closed';
+  entry.closedAt = now;
+  entry.closeReason = reason;
+  entry.autoTalk = false;
+  entry.updatedAt = now;
+  for (const [ctx, id] of Object.entries(data.activeByContext)) {
+    if (id === appSessionId) delete data.activeByContext[ctx];
+  }
+  saveSessionsToFile();
+  return true;
+}
+
+/** contextの現在Sessionを終了する。 */
+export function closeActiveSession(
+  contextKey: string,
+  reason: SessionCloseReason = 'other'
+): boolean {
+  const appSessionId = data.activeByContext[contextKey];
+  return appSessionId ? closeSession(appSessionId, reason) : false;
 }
 
 /**
@@ -500,6 +571,14 @@ export function ensureSession(
 ): string {
   const existing = data.activeByContext[contextKey];
   if (existing && data.sessions[existing]) {
+    const entry = data.sessions[existing];
+    if (entry.lifecycle !== 'open') {
+      entry.lifecycle = 'open';
+      delete entry.closedAt;
+      delete entry.closeReason;
+      entry.updatedAt = new Date().toISOString();
+      saveSessionsToFile();
+    }
     return existing;
   }
   return createSession(contextKey, opts);

@@ -13,7 +13,7 @@ import {
   type EffortLevel,
   type DiscordCompletionNotifyMode,
 } from '../config.js';
-import { getBackendDisplayName, type AgentRunner } from '../agent-runner.js';
+import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
 import {
   getSupportedEffortLevels,
   requiresExplicitModelForEffort,
@@ -30,13 +30,14 @@ import {
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
   getReplySuggestionsEnabled,
+  loadReplySuggestionsEnabled,
   loadSettings,
   formatSettings,
   saveSettings,
 } from '../settings.js';
 import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
 import { updateEnvKeyValue } from '../env-persist.js';
-import { getSession, setSession, deleteSession, ensureSession } from '../sessions.js';
+import { getSession, setSession, closeActiveSession, ensureSession } from '../sessions.js';
 import { splitMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
@@ -49,18 +50,36 @@ import {
   type ScheduleType,
 } from '../scheduler.js';
 import {
+  createCompletedButtons,
+  createProcessingButtons,
   createReplySuggestionButtons,
+  discordProcessingMessages,
   discordReplySuggestionsByMessageId,
   discordToolHistoryByMessageId,
+  getDiscordTimeoutInfoFor,
   parseDiscordHistoryCustomId,
 } from './ui.js';
-import { formatTurnHistoryDisclosure } from '../tool-history.js';
-import { readTurnHistory, type TurnHistoryEntry } from '../activity-store.js';
+import {
+  addToolHistory,
+  appendToolHistory,
+  formatTurnHistoryDisclosure,
+  withoutFinalResponse,
+} from '../tool-history.js';
+import { getTurnHistory, readTurnHistory, type TurnHistoryEntry } from '../activity-store.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
-import { formatNumberedSuggestions } from '../reply-suggestions.js';
+import {
+  appendReplySuggestionInstruction,
+  fallbackReplySuggestions,
+  formatNumberedSuggestions,
+  sanitizeReplySuggestionOutput,
+  stripReplySuggestionMarkup,
+} from '../reply-suggestions.js';
 import { executeModelsCommand } from '../models-command.js';
 import { discoverBackendModels, type BackendModelDiscovery } from '../backend-models.js';
+import { StreamSession } from '../stream-session.js';
+import { runWithBubbleEvents } from '../bubble-events-runner.js';
+import { threadIdFor, turnIdFor } from '../events-emitter.js';
 
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
@@ -92,6 +111,7 @@ const BACKEND_CHOICE_LABELS: Record<AgentBackend, string> = {
   cursor: 'Cursor',
   grok: 'Grok',
   antigravity: 'Antigravity',
+  'github-copilot': 'GitHub Copilot',
   'local-llm': 'Local LLM',
 };
 
@@ -548,7 +568,7 @@ async function handleAutocomplete(
 }
 
 /** スキル実行プロンプトをエージェントに投げて結果を返信する（/skill と個別スキルコマンド共通） */
-async function handleSkillCommand(
+export async function handleSkillCommand(
   interaction: ChatInputCommandInteraction,
   agentRunner: AgentRunner,
   config: Config,
@@ -558,31 +578,158 @@ async function handleSkillCommand(
 ) {
   const args = interaction.options.getString('args') || '';
   const skipPermissions = config.agent.config.skipPermissions ?? false;
+  const showButtons = config.discord.showButtons ?? true;
+  const useStreaming = config.discord.streaming ?? true;
+  const showThinking = config.discord.showThinking ?? true;
+  const toolHistoryMode =
+    config.discord.toolHistoryMode ?? ((config.discord.showToolUse ?? true) ? 'inline' : 'off');
+  const captureToolUse = toolHistoryMode !== 'off';
+  const showLiveToolUse = captureToolUse && (config.discord.showLiveToolUse ?? true);
+  const replySuggestionCount = config.discord.replySuggestionCount ?? 3;
+  const replySuggestionsEnabled =
+    showButtons && loadReplySuggestionsEnabled(config.discord.replySuggestions !== false);
 
   await interaction.deferReply();
 
   try {
-    const prompt = `スキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
+    let prompt = `[プラットフォーム: Discord]\n[チャンネルID: ${channelId}]\nスキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
+    if (replySuggestionsEnabled) {
+      prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
+    }
+
     const sessionId = getSession(channelId);
     const appSessionId = ensureSession(channelId, { platform: 'discord' });
-    const { result, sessionId: newSessionId } = await agentRunner.run(prompt, {
-      skipPermissions,
-      sessionId,
-      channelId,
-      settingsChannelId,
-      appSessionId,
+    const eventCtx = {
+      threadId: threadIdFor('discord', channelId),
+      turnId: turnIdFor('discord', interaction.id),
+      threadLabel: `Discord /skill ${skillName}`,
+      platform: 'discord' as const,
+      userText: `/skill ${skillName}${args ? ` ${args}` : ''}`,
+      eventTextSanitizer: stripReplySuggestionMarkup,
+    };
+    const toolHistory: string[] = [];
+
+    const initialMessage = await interaction.editReply({
+      content: '考え中... ⠋',
+      ...(showButtons && { components: [createProcessingButtons()] }),
+    });
+    if (showButtons) {
+      discordProcessingMessages.set(channelId, { message: initialMessage });
+    }
+
+    const streamSession = new StreamSession({
+      formatToolLine: showLiveToolUse
+        ? (toolName, toolInput) => {
+            const lines: string[] = [];
+            addToolHistory(lines, toolName, toolInput);
+            return lines[0] ?? null;
+          }
+        : undefined,
+      render: async (view) => {
+        const content =
+          view.phase === 'thinking'
+            ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
+            : appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌').slice(
+                0,
+                DISCORD_MAX_LENGTH
+              );
+        await interaction
+          .editReply({
+            content,
+            ...(showButtons && {
+              components: [
+                createProcessingButtons(getDiscordTimeoutInfoFor(agentRunner, channelId)),
+              ],
+            }),
+          })
+          .catch((error) => {
+            console.error('[xangi] Failed to edit /skill response:', error?.message || error);
+          });
+      },
     });
 
-    setSession(channelId, newSessionId);
-    const chunks = splitMessage(result, DISCORD_SAFE_LENGTH);
-    await interaction.editReply(chunks[0] || '✅');
+    const captureCallbacks = {
+      onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
+        if (captureToolUse) addToolHistory(toolHistory, toolName, toolInput);
+      },
+    };
+    streamSession.start();
+    let runResult: RunResult;
+    try {
+      const sessionCallbacks = streamSession.callbacks(captureCallbacks);
+      runResult = await runWithBubbleEvents(
+        agentRunner,
+        prompt,
+        eventCtx,
+        useStreaming && showThinking ? sessionCallbacks : { onToolUse: sessionCallbacks.onToolUse },
+        {
+          skipPermissions,
+          sessionId,
+          channelId,
+          settingsChannelId,
+          appSessionId,
+        }
+      );
+    } finally {
+      streamSession.finish();
+      discordProcessingMessages.delete(channelId);
+    }
+
+    setSession(channelId, runResult.sessionId);
+    const extracted = sanitizeReplySuggestionOutput(
+      runResult.result,
+      replySuggestionsEnabled,
+      replySuggestionCount
+    );
+    if (replySuggestionsEnabled && extracted.suggestions.length === 0) {
+      extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
+    }
+    const { filePaths, displayText } = buildAttachmentResult(extracted.text, runResult.attachments);
+    const displayTextWithTools =
+      toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
+    const chunks = splitMessage(displayTextWithTools, DISCORD_SAFE_LENGTH);
+    const turnHistory = withoutFinalResponse(
+      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
+      runResult.result
+    );
+    const showHistory =
+      toolHistoryMode === 'button' &&
+      (config.discord.showToolButton ?? true) &&
+      turnHistory.length > 0;
+    const completedButtons = showButtons
+      ? createCompletedButtons({
+          showTools: showHistory,
+          historyContext: { threadId: eventCtx.threadId, turnId: eventCtx.turnId },
+          showLeave: interaction.channel?.isThread() ?? false,
+          showReplySuggestions: extracted.suggestions.length > 0,
+        })
+      : undefined;
+
+    let finalMessage = await interaction.editReply({
+      content: chunks[0] || '✅',
+      components: chunks.length === 1 && completedButtons ? [completedButtons] : [],
+    });
     for (let i = 1; i < chunks.length; i++) {
       await waitBeforeFollowupDiscordSend();
-      await interaction.followUp(chunks[i]);
+      finalMessage = await interaction.followUp({
+        content: chunks[i],
+        components: i === chunks.length - 1 && completedButtons ? [completedButtons] : [],
+      });
+    }
+
+    if (showHistory) {
+      discordToolHistoryByMessageId.set(finalMessage.id, turnHistory);
+    }
+    if (showButtons && extracted.suggestions.length > 0) {
+      discordReplySuggestionsByMessageId.set(finalMessage.id, extracted.suggestions);
+    }
+    if (filePaths.length > 0) {
+      await interaction.followUp({ files: filePaths.map((attachment) => ({ attachment })) });
     }
   } catch (error) {
     console.error('[xangi] Error:', error);
-    await interaction.editReply('エラーが発生しました');
+    discordProcessingMessages.delete(channelId);
+    await interaction.editReply({ content: formatAgentErrorForUser(error), components: [] });
   }
 }
 
@@ -796,7 +943,7 @@ export function createInteractionHandler(
       }
 
       if (interaction.customId === 'xangi_new') {
-        deleteSession(channelId);
+        closeActiveSession(channelId, 'new');
         agentRunner.destroy?.(channelId);
         discordToolHistoryByMessageId.delete(interaction.message.id);
         discordReplySuggestionsByMessageId.delete(interaction.message.id);
@@ -879,7 +1026,13 @@ export function createInteractionHandler(
         }
         try {
           await removeUserFromDiscordThread(interaction.channel, interaction.user.id);
-          await interaction.editReply('🚪 このスレッドから退出しました').catch(() => {});
+          closeActiveSession(channelId, 'leave');
+          agentRunner.destroy?.(channelId);
+          discordToolHistoryByMessageId.delete(interaction.message.id);
+          discordReplySuggestionsByMessageId.delete(interaction.message.id);
+          await interaction
+            .editReply('🚪 セッションを終了して、このスレッドから退出しました')
+            .catch(() => {});
         } catch (error) {
           console.error('[xangi] Failed to leave Discord thread:', error);
           await interaction.editReply(formatThreadLeaveError(error)).catch(() => {});
@@ -913,7 +1066,7 @@ export function createInteractionHandler(
     );
 
     if (interaction.commandName === 'new') {
-      deleteSession(channelId);
+      closeActiveSession(channelId, 'new');
       agentRunner.destroy?.(channelId);
       await interaction.reply('🆕 新しいセッションを開始しました');
       return;
@@ -1125,7 +1278,9 @@ export function createInteractionHandler(
                   ? process.env.AGENT_MODEL || 'Grok (デフォルト)'
                   : backendValue === 'antigravity'
                     ? process.env.AGENT_MODEL || 'Antigravity (デフォルト)'
-                    : '(デフォルト)');
+                    : backendValue === 'github-copilot'
+                      ? process.env.AGENT_MODEL || 'GitHub Copilot (デフォルト)'
+                      : '(デフォルト)');
         const lines = [
           `🔄 モデルを切り替えました。新しいセッションを開始します。`,
           `- バックエンド: **${display}**`,

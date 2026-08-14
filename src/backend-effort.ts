@@ -6,6 +6,7 @@ const BACKEND_EFFORT_LEVELS = {
   cursor: ['low', 'medium', 'high', 'max'],
   grok: ['low', 'medium', 'high', 'max'],
   antigravity: ['low', 'medium', 'high'],
+  'github-copilot': ['low', 'medium', 'high', 'max'],
   'local-llm': [],
 } as const satisfies Record<AgentBackend, readonly EffortLevel[]>;
 

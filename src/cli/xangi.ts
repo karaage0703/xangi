@@ -21,6 +21,7 @@ import {
   guidedSetupCmd,
   launcherCommand,
   readOnboardingStatus,
+  updateGuidedSetupAccess,
   writeOnboardingState,
 } from '../setup/guided-onboarding.js';
 import { installCmd } from './install-cmd.js';
@@ -115,6 +116,7 @@ Usage:
   xangi setup
   xangi setup --apply --backend BACKEND --workspace PATH --workspace-mode MODE --web-chat-access ACCESS
   xangi setup --complete
+  xangi setup --access <local|tailscale|lan>
   xangi install [--manifest URL] [--public-key PATH]
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
@@ -142,6 +144,7 @@ Options:
   --managed       From a source checkout, update the signed managed installation instead
   --apply         Persist choices made during AI-guided setup
   --complete      Mark the minimum BOOTSTRAP onboarding complete
+  --access A      Change Web Chat access after minimum setup is complete
   --workspace P   Absolute workspace path for setup --apply
   --workspace-mode M  existing, template, or blank
   --web-chat-access A  local, tailscale, or lan (default: local)
@@ -559,6 +562,13 @@ export async function run(argv = process.argv): Promise<void> {
     }
     if (parsed.flags.complete) {
       console.log(await completeGuidedSetup(layout));
+      return;
+    }
+    if (parsed.flags.access !== undefined) {
+      if (typeof parsed.flags.access !== 'string') {
+        throw new Error('--accessにはlocal、tailscale、lanのいずれかを指定してください');
+      }
+      console.log(await updateGuidedSetupAccess(layout, parsed.flags.access));
       return;
     }
     const moduleDir = dirname(fileURLToPath(import.meta.url));

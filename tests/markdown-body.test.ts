@@ -28,7 +28,7 @@ describe('MarkdownBody code blocks', () => {
 });
 
 describe('MarkdownBody links', () => {
-  it('opens external and file-style links without replacing the chat document', () => {
+  it('opens external links separately and file-style links in the workspace viewer', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownBody, {
         content: '[external](https://example.test/docs) [file](/workspace/notes/example.md:12)',
@@ -39,11 +39,11 @@ describe('MarkdownBody links', () => {
       '<a href="https://example.test/docs" target="_blank" rel="noopener noreferrer">external</a>'
     );
     expect(html).toContain(
-      '<a href="/api/workspace-file?path=%2Fworkspace%2Fnotes%2Fexample.md" target="_blank" rel="noopener noreferrer">file</a>'
+      '<a href="/workspace?path=notes%2Fexample.md&amp;line=12" target="_blank" rel="noopener noreferrer">file</a>'
     );
   });
 
-  it('maps encoded and relative source paths to the workspace file endpoint', () => {
+  it('preserves encoded paths and source locations in workspace deep links', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownBody, {
         content: '[encoded](/workspace/My%20Project/scheduler.ts:42:7) [relative](src/index.ts#L8)',
@@ -51,11 +51,46 @@ describe('MarkdownBody links', () => {
     );
 
     expect(html).toContain(
-      '<a href="/api/workspace-file?path=%2Fworkspace%2FMy%20Project%2Fscheduler.ts" target="_blank" rel="noopener noreferrer">encoded</a>'
+      '<a href="/workspace?path=My+Project%2Fscheduler.ts&amp;line=42&amp;column=7" target="_blank" rel="noopener noreferrer">encoded</a>'
     );
     expect(html).toContain(
-      '<a href="/api/workspace-file?path=src%2Findex.ts" target="_blank" rel="noopener noreferrer">relative</a>'
+      '<a href="/workspace?path=src%2Findex.ts&amp;line=8" target="_blank" rel="noopener noreferrer">relative</a>'
     );
+  });
+
+  it('keeps absolute workspace paths available to the viewer', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[file](/home/user/workspace/AGENTS.md:12)',
+      })
+    );
+
+    expect(html).toContain(
+      '<a href="/workspace?path=%2Fhome%2Fuser%2Fworkspace%2FAGENTS.md&amp;line=12" target="_blank" rel="noopener noreferrer">file</a>'
+    );
+  });
+
+  it('preserves a root-level file location before react-markdown sanitization', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[file](AGENTS.md:12)',
+      })
+    );
+
+    expect(html).toContain(
+      '<a href="/workspace?path=AGENTS.md&amp;line=12" target="_blank" rel="noopener noreferrer">file</a>'
+    );
+  });
+
+  it('does not turn unsafe URI schemes into workspace links', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: '[unsafe](javascript:1)',
+      })
+    );
+
+    expect(html).toContain('<a href="">unsafe</a>');
+    expect(html).not.toContain('/workspace?');
   });
 
   it('keeps Web Chat application routes and explicit URI schemes intact', () => {

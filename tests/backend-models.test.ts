@@ -111,6 +111,15 @@ describe('discoverBackendModels', () => {
     expect(runner).not.toHaveBeenCalled();
   });
 
+  it('does not hard-code GitHub Copilot models when listing is unsupported', async () => {
+    const runner = vi.fn<ModelDiscoveryCommandRunner>();
+    const result = await discoverBackendModels('github-copilot', { runner });
+
+    expect(result.status).toBe('unsupported');
+    expect(result.models).toEqual([]);
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it('uses each backend official CLI command', async () => {
     const runner = vi.fn<ModelDiscoveryCommandRunner>(async (command) => {
       if (command === 'codex') {

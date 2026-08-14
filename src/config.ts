@@ -9,6 +9,7 @@ export const ALL_AGENT_BACKENDS = [
   'cursor',
   'grok',
   'antigravity',
+  'github-copilot',
   'local-llm',
 ] as const;
 export type AgentBackend = (typeof ALL_AGENT_BACKENDS)[number];
@@ -21,6 +22,10 @@ export interface AgentConfig {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  /** SKIP_PERMISSIONS=false時に使うGitHub Copilot CLI専用の制限モード。 */
+  copilotPermissionMode?: 'read-only' | 'workspace-write';
+  /** Copilot CLIのsession単位soft limit。CLI仕様により30以上。 */
+  copilotMaxAiCredits?: number;
   /** 常駐プロセスモード（高速化） */
   persistent?: boolean;
   /** 同時実行プロセス数の上限（RunnerManager用） */
@@ -259,10 +264,11 @@ export function loadConfig(): Config {
     backend !== 'cursor' &&
     backend !== 'grok' &&
     backend !== 'antigravity' &&
+    backend !== 'github-copilot' &&
     backend !== 'local-llm'
   ) {
     throw new Error(
-      `Invalid AGENT_BACKEND: ${backend}. Must be 'claude-code', 'codex', 'cursor', 'grok', 'antigravity', or 'local-llm'`
+      `Invalid AGENT_BACKEND: ${backend}. Must be 'claude-code', 'codex', 'cursor', 'grok', 'antigravity', 'github-copilot', or 'local-llm'`
     );
   }
 
@@ -289,6 +295,14 @@ export function loadConfig(): Config {
     timeoutMs: v.int('TIMEOUT_MS', DEFAULT_TIMEOUT_MS, { min: 1000 }),
     workdir: process.env.WORKSPACE_PATH || undefined,
     skipPermissions: process.env.SKIP_PERMISSIONS !== 'false', // デフォルトで有効（Discord/Slack/Web 連携の非対話実行で permission プロンプト待ちを避けるため）
+    copilotPermissionMode: v.enumOf(
+      'COPILOT_PERMISSION_MODE',
+      ['read-only', 'workspace-write'] as const,
+      'read-only'
+    ),
+    copilotMaxAiCredits: process.env.COPILOT_MAX_AI_CREDITS
+      ? v.int('COPILOT_MAX_AI_CREDITS', 30, { min: 30 })
+      : undefined,
     persistent: process.env.PERSISTENT_MODE !== 'false', // デフォルトで有効
     maxProcesses: v.int('MAX_PROCESSES', 10, { min: 1, max: 100 }),
     idleTimeoutMs: v.int('IDLE_TIMEOUT_MS', 30 * 60 * 1000, { min: 1000 }), // 30分

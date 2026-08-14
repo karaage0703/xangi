@@ -8,6 +8,7 @@ import type { ServiceAdapter } from '../installer/platform/service.js';
 import { SETUP_CONFIG_PATH_ENV, SETUP_STATE_DIR_ENV } from '../installer/runtime-config.js';
 import { parseSetupConfig } from '../setup/schema.js';
 import { resolveManagedLifecycle } from './update-cmd.js';
+import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
 
 export interface ServiceCommandDependencies {
   installationKind?: 'checkout' | 'managed';
@@ -123,6 +124,20 @@ function checkoutRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.Pro
   return env;
 }
 
+function targetRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.ProcessEnv {
+  const dir = projectDir(flags);
+  const env = { ...checkoutRuntimeEnv(flags) };
+  for (const key of ['DATA_DIR', 'WORKSPACE_PATH', 'WEB_CHAT_ENABLED'] as const) {
+    const value = readDotEnvValue(dir, key);
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+function validateBeforeRestart(flags: Record<string, string | boolean>): void {
+  assertRuntimeStateCanStart({ env: targetRuntimeEnv(flags), cwd: projectDir(flags) });
+}
+
 function ensurePm2(): void {
   const proc = spawnSync('pm2', ['--version'], { encoding: 'utf8' });
   if (proc.error && 'code' in proc.error && proc.error.code === 'ENOENT') {
@@ -191,6 +206,7 @@ export async function serviceCmd(
       return `${enabled ? 'Enabled' : 'Disabled'} xangi service autostart`;
     }
     if (action === 'restart') {
+      validateBeforeRestart(flags);
       await service.restart();
       return 'Restarted xangi service';
     }
@@ -212,6 +228,7 @@ export async function serviceCmd(
       result = runPm2(['stop', name], flags);
       break;
     case 'restart':
+      validateBeforeRestart(flags);
       return replacePm2ProcessFromConfig(flags, name);
     case 'status':
       result = runPm2(['describe', name], flags);

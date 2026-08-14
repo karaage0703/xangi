@@ -30,6 +30,7 @@ import { getActivity } from './activity-store.js';
 import { flowFromHostPlatform } from './inter-instance-chat/index.js';
 import { isLocalOrPrivate } from './pet-inbox-server.js';
 import { readSessionMessages } from './transcript-logger.js';
+import { truncateSessionTitle } from './session-title.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGES_PER_SESSION = 500;
@@ -41,6 +42,7 @@ const SUPPORTED_BACKENDS = new Set<AgentBackend>([
   'cursor',
   'grok',
   'antigravity',
+  'github-copilot',
   'local-llm',
 ]);
 const SUPPORTED_LOCAL_LLM_MODES = new Set<LocalLlmMode>(['agent', 'lite', 'chat']);
@@ -468,7 +470,7 @@ async function handlePrompt(
             setSession(ctxKey, completedResult.sessionId);
             incrementMessageCount(appSessionId);
             if (isEvenTerminalPlaceholderTitle(entry.title)) {
-              updateSessionTitle(appSessionId, text.slice(0, 50));
+              updateSessionTitle(appSessionId, truncateSessionTitle(text));
             }
             flowFromHostPlatform(completedResult.result, 'agent');
           },

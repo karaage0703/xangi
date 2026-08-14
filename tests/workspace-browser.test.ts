@@ -63,6 +63,18 @@ describe('WorkspaceBrowser', () => {
     expect(readFileSync(join(workspace, 'notes', 'today.md'), 'utf8')).toBe('after\n');
   });
 
+  it('maps absolute paths inside the workspace to viewer-relative paths', async () => {
+    const opened = await browser.read(join(workspace, 'notes', 'today.md'));
+    const notes = await browser.list(join(workspace, 'notes'));
+
+    expect(opened.path).toBe('notes/today.md');
+    expect(notes.path).toBe('notes');
+  });
+
+  it('rejects absolute paths outside the workspace', async () => {
+    await expect(browser.read('/etc/hosts')).rejects.toMatchObject({ status: 400 });
+  });
+
   it('rejects a save when the file changed after opening', async () => {
     const opened = await browser.read('notes/today.md');
     writeFileSync(join(workspace, 'notes', 'today.md'), 'changed elsewhere\n');

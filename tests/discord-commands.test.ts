@@ -1,14 +1,37 @@
-import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   buildSlashCommands,
+  createInteractionHandler,
   createDiscordModelDiscoveryCache,
   formatThreadLeaveError,
   getDiscordAutocompleteChoices,
+  handleSkillCommand,
   removeUserFromDiscordThread,
 } from '../src/discord/slash-commands.js';
 import type { Config } from '../src/config.js';
 import type { Skill } from '../src/skills.js';
 import type { BackendResolver } from '../src/backend-resolver.js';
+import type { AgentRunner } from '../src/agent-runner.js';
+import {
+  discordReplySuggestionsByMessageId,
+  discordToolHistoryByMessageId,
+} from '../src/discord/ui.js';
+import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
+
+let discordCommandsTempDir: string;
+
+beforeEach(() => {
+  discordCommandsTempDir = mkdtempSync(join(tmpdir(), 'xangi-discord-commands-'));
+  initSessions(discordCommandsTempDir);
+});
+
+afterEach(() => {
+  clearSessions();
+  rmSync(discordCommandsTempDir, { recursive: true, force: true });
+});
 
 /**
  * annotateChannelMentions のテスト用に関数を再実装
@@ -39,6 +62,89 @@ describe('Discord Commands', () => {
 
       await expect(removeUserFromDiscordThread(channel as never, 'user-123')).resolves.toBe(true);
       expect(remove).toHaveBeenCalledWith('user-123');
+    });
+
+    it('closes the thread session after the clicking user leaves', async () => {
+      const testDir = mkdtempSync(join(tmpdir(), 'xangi-thread-leave-'));
+      try {
+        initSessions(testDir);
+        createSession('thread-123', { platform: 'discord' });
+        const remove = vi.fn().mockResolvedValue(undefined);
+        const destroy = vi.fn();
+        const editReply = vi.fn().mockResolvedValue(undefined);
+        const handler = createInteractionHandler({
+          config: { discord: { allowedUsers: ['user-123'] } } as Config,
+          resolver: { getAllowedBackends: () => [] } as unknown as BackendResolver,
+          agentRunner: { destroy } as never,
+          scheduler: {} as never,
+          workdir: testDir,
+          skillsRef: { current: [] },
+        });
+        const interaction = {
+          isAutocomplete: () => false,
+          isButton: () => true,
+          customId: 'xangi_thread_leave',
+          channelId: 'thread-123',
+          user: { id: 'user-123' },
+          channel: { isThread: () => true, members: { remove } },
+          message: { id: 'message-456' },
+          deferReply: vi.fn().mockResolvedValue(undefined),
+          editReply,
+        };
+
+        await handler(interaction as never);
+
+        expect(remove).toHaveBeenCalledWith('user-123');
+        expect(getActiveSessionId('thread-123')).toBeUndefined();
+        expect(destroy).toHaveBeenCalledWith('thread-123');
+        expect(editReply).toHaveBeenCalledWith(
+          '🚪 セッションを終了して、このスレッドから退出しました'
+        );
+      } finally {
+        clearSessions();
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the session active when leaving the thread fails', async () => {
+      const testDir = mkdtempSync(join(tmpdir(), 'xangi-thread-leave-failure-'));
+      try {
+        initSessions(testDir);
+        const sessionId = createSession('thread-123', { platform: 'discord' });
+        const destroy = vi.fn();
+        const editReply = vi.fn().mockResolvedValue(undefined);
+        const handler = createInteractionHandler({
+          config: { discord: { allowedUsers: ['user-123'] } } as Config,
+          resolver: { getAllowedBackends: () => [] } as unknown as BackendResolver,
+          agentRunner: { destroy } as never,
+          scheduler: {} as never,
+          workdir: testDir,
+          skillsRef: { current: [] },
+        });
+        const interaction = {
+          isAutocomplete: () => false,
+          isButton: () => true,
+          customId: 'xangi_thread_leave',
+          channelId: 'thread-123',
+          user: { id: 'user-123' },
+          channel: {
+            isThread: () => true,
+            members: { remove: vi.fn().mockRejectedValue({ code: 50013 }) },
+          },
+          message: { id: 'message-456' },
+          deferReply: vi.fn().mockResolvedValue(undefined),
+          editReply,
+        };
+
+        await handler(interaction as never);
+
+        expect(getActiveSessionId('thread-123')).toBe(sessionId);
+        expect(destroy).not.toHaveBeenCalled();
+        expect(editReply).toHaveBeenCalledWith('❌ Botに「スレッドの管理」権限が必要です');
+      } finally {
+        clearSessions();
+        rmSync(testDir, { recursive: true, force: true });
+      }
     });
 
     it('does not remove users from a normal channel', async () => {
@@ -245,6 +351,89 @@ describe('Discord Commands', () => {
 
       expect(names).not.toContain('skills');
       expect(nameOption.required).toBe(false);
+    });
+
+    it('streams progress and exposes History and reply suggestions without leaking markup', async () => {
+      const editReply = vi.fn().mockResolvedValue({ id: 'skill-reply-1' });
+      const followUp = vi.fn().mockResolvedValue({ id: 'skill-followup-1' });
+      const interaction = {
+        id: 'skill-interaction-1',
+        options: { getString: vi.fn().mockReturnValue('対象') },
+        deferReply: vi.fn().mockResolvedValue(undefined),
+        editReply,
+        followUp,
+        channel: { isThread: () => false },
+      };
+      const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+        callbacks.onText?.('途中表示', '途中表示');
+        callbacks.onToolUse?.('Bash', { command: 'pwd' });
+        callbacks.onText?.('最終回答\n<xangi', '最終回答\n<xangi');
+        callbacks.onText?.('_reply', '_reply');
+        const result = {
+          result:
+            '最終回答\n<xangi_reply_suggestions>["続けて","詳しく","別案"]</xangi_reply_suggestions>',
+          sessionId: 'provider-skill-1',
+        };
+        callbacks.onComplete?.(result);
+        return result;
+      });
+      const agentRunner = {
+        runStream,
+        getTimeoutState: vi.fn().mockReturnValue(undefined),
+      } as unknown as AgentRunner;
+      const config = {
+        agent: { config: { skipPermissions: false } },
+        discord: {
+          streaming: true,
+          showThinking: true,
+          showButtons: true,
+          toolHistoryMode: 'button',
+          showLiveToolUse: true,
+          showToolButton: true,
+          replySuggestions: true,
+          replySuggestionCount: 3,
+        },
+      } as Config;
+
+      await handleSkillCommand(
+        interaction as never,
+        agentRunner,
+        config,
+        'channel-skill-1',
+        'channel-skill-1',
+        'xs-test'
+      );
+      await Promise.resolve();
+
+      expect(runStream.mock.calls[0]?.[0]).toContain('スキル「xs-test」を実行してください');
+      expect(runStream.mock.calls[0]?.[0]).toContain('<xangi_reply_suggestions>');
+      expect(
+        editReply.mock.calls.some(([payload]) => String(payload.content).includes('途中表示'))
+      ).toBe(true);
+      const finalPayload = editReply.mock.calls.at(-1)?.[0] as {
+        content: string;
+        components: Array<{ components: Array<{ data: { custom_id?: string } }> }>;
+      };
+      expect(finalPayload.content).toBe('最終回答');
+      expect(finalPayload.content).not.toContain('xangi_reply_suggestions');
+      const customIds = finalPayload.components[0].components.map(
+        (component) => component.data.custom_id
+      );
+      expect(customIds.some((id) => id?.startsWith('xangi_tools|'))).toBe(true);
+      expect(customIds).toContain('xangi_reply_suggestions');
+      expect(discordToolHistoryByMessageId.get('skill-reply-1')).toEqual([
+        expect.objectContaining({ kind: 'text', text: '途中表示' }),
+        expect.objectContaining({ kind: 'tool', toolName: 'Bash' }),
+      ]);
+      expect(discordReplySuggestionsByMessageId.get('skill-reply-1')).toEqual([
+        '続けて',
+        '詳しく',
+        '別案',
+      ]);
+      expect(followUp).not.toHaveBeenCalled();
+
+      discordToolHistoryByMessageId.delete('skill-reply-1');
+      discordReplySuggestionsByMessageId.delete('skill-reply-1');
     });
   });
 

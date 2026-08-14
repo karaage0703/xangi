@@ -153,6 +153,7 @@ const VALID_BACKENDS = [
   'cursor',
   'grok',
   'antigravity',
+  'github-copilot',
   'local-llm',
 ] as const;
 const VALID_EFFORTS = ['low', 'medium', 'high', 'max'] as const;

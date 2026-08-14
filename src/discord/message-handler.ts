@@ -7,7 +7,7 @@ import {
   ButtonInteraction,
 } from 'discord.js';
 import type { Config } from '../config.js';
-import type { AgentRunner } from '../agent-runner.js';
+import type { AgentRunner, RunResult } from '../agent-runner.js';
 import { formatAgentErrorForUser, shouldSendErrorFollowUp } from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
@@ -39,7 +39,7 @@ import {
   activateSession,
   updateSessionTitle,
 } from '../sessions.js';
-import { stripPromptMetadata } from '../session-title.js';
+import { stripPromptMetadata, truncateSessionTitle } from '../session-title.js';
 import { prependReferencedMessages } from '../session-reference.js';
 import { deriveThreadTitle } from './thread-title.js';
 import {
@@ -424,7 +424,7 @@ export async function processPrompt(
       // ストリーミング + 思考表示モード（persistent-runner のみ）
       session.start();
       latency.markAgentStart();
-      let streamResult: { result: string; sessionId: string };
+      let streamResult: RunResult;
       try {
         streamResult = await runWithBubbleEvents(
           agentRunner,
@@ -444,6 +444,7 @@ export async function processPrompt(
       }
       result = streamResult.result;
       newSessionId = streamResult.sessionId;
+      structuredAttachments = streamResult.attachments;
       latency.markAgentComplete();
     } else {
       // 非ストリーミング or ワンショットskipランナー
@@ -492,7 +493,7 @@ export async function processPrompt(
     // 最初のメッセージでタイトル自動設定（既にタイトル付き or 抽出できなければ何もしない）
     const existingEntry = getSessionEntry(appSessionId);
     if (existingEntry && !existingEntry.title) {
-      const titleCandidate = stripPromptMetadata(prompt).slice(0, 50);
+      const titleCandidate = truncateSessionTitle(stripPromptMetadata(prompt));
       if (titleCandidate) {
         updateSessionTitle(appSessionId, titleCandidate);
       }

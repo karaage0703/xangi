@@ -108,22 +108,24 @@ export function createCompletedButtons(options?: {
   showLeave?: boolean;
   showReplySuggestions?: boolean;
 }): ActionRowBuilder<ButtonBuilder> {
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId('xangi_new').setLabel('New').setStyle(ButtonStyle.Secondary)
-  );
-  if (options?.showTools) {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(createDiscordHistoryCustomId(options.historyContext))
-        .setLabel('History')
-        .setStyle(ButtonStyle.Secondary)
-    );
-  }
+  const row = new ActionRowBuilder<ButtonBuilder>();
   if (options?.showLeave) {
     row.addComponents(
       new ButtonBuilder()
         .setCustomId('xangi_thread_leave')
         .setLabel('Leave')
+        .setStyle(ButtonStyle.Secondary)
+    );
+  } else {
+    row.addComponents(
+      new ButtonBuilder().setCustomId('xangi_new').setLabel('New').setStyle(ButtonStyle.Secondary)
+    );
+  }
+  if (options?.showTools) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(createDiscordHistoryCustomId(options.historyContext))
+        .setLabel('History')
         .setStyle(ButtonStyle.Secondary)
     );
   }

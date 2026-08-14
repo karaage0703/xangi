@@ -255,7 +255,13 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     result: RunResult
   ): void {
     if (!options?.appSessionId || !result.sessionId) return;
-    setProviderSessionId(options.appSessionId, result.sessionId, resolved.backend);
+    setProviderSessionId(
+      options.appSessionId,
+      result.sessionId,
+      resolved.backend,
+      resolved.model,
+      resolved.effort
+    );
   }
 
   /**

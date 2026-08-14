@@ -15,6 +15,7 @@ import {
   buildSlackCompletionNotification,
   dismissSlackHistory,
   processMessage,
+  processSlackSkillCommand,
   resolveSlackDeleteReactionTarget,
   resolveSlackHistoryActionContext,
   shouldProcessSlackMessage,
@@ -458,6 +459,52 @@ describe('resolveSlackDeleteReactionTarget', () => {
 });
 
 describe('processMessage', () => {
+  it('routes /skill execution through the normal Slack turn pipeline', async () => {
+    const update = vi.fn().mockResolvedValue({});
+    const client = {
+      chat: {
+        postMessage: vi.fn().mockResolvedValue({ ts: '1783402634.549099' }),
+        update,
+      },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
+      const result = {
+        result:
+          '完了\n<xangi_reply_suggestions>["続けて","詳しく","別案"]</xangi_reply_suggestions>',
+        sessionId: 'provider-skill-1',
+      };
+      callbacks.onComplete?.(result);
+      return result;
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      slack: { streaming: false, showThinking: false, replySuggestions: true },
+    } as Config;
+
+    await processSlackSkillCommand(
+      AUTO_REPLY_CHANNEL,
+      'xs-test',
+      '対象',
+      'trigger-1',
+      client,
+      agentRunner,
+      config
+    );
+
+    expect(runStream.mock.calls[0]?.[0]).toContain('スキル「xs-test」を実行してください');
+    expect(runStream.mock.calls[0]?.[0]).toContain('引数: 対象');
+    expect(runStream.mock.calls[0]?.[0]).toContain('<xangi_reply_suggestions>');
+    expect(update.mock.calls.at(-1)?.[0].text).toBe('完了');
+    expect(update.mock.calls.at(-1)?.[0].text).not.toContain('xangi_reply_suggestions');
+  });
+
   it('injects linked Web session history into the Slack turn', async () => {
     const sessionId = createWebSession({ title: 'Slackから参照' });
     logPrompt(tempDir!, sessionId, 'Web UIで決めた内容');

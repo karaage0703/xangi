@@ -45,6 +45,21 @@ describe('standalone AI coding tool setup', () => {
     expect(result.stdout).toContain('codex          ready (codex 1.2.3)');
     expect(result.stdout).toContain('claude-code    installed; login required (claude 4.5.6)');
     expect(result.stdout).toContain('cursor         not installed');
+    expect(result.stdout).toContain('github-copilot not installed');
+  });
+
+  it('launches GitHub Copilot for interactive /login without reinstalling it', async () => {
+    const data = await fixture();
+    const log = join(data.root, 'copilot.log');
+    await fakeCommand(
+      join(data.bin, 'copilot'),
+      `printf '%s\\n' "$*" >> '${log}'\n[ "$1" = "--version" ] && echo "copilot 1.0.79"\nexit 0`
+    );
+    const result = await exec('bash', ['packaging/setup-ai-tools.sh', 'github-copilot'], {
+      env: { ...process.env, HOME: data.home, PATH: `${data.bin}:/usr/bin:/bin` },
+    });
+    expect(result.stdout).toContain('/login');
+    await expect((await import('node:fs/promises')).readFile(log, 'utf8')).resolves.toContain('\n');
   });
 
   it('guides Codex users through nvm setup before installing Node.js', async () => {

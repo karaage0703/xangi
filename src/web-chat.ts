@@ -33,6 +33,8 @@ import {
   clearResumedFromSessionId,
   setProviderSessionId,
   removeSession,
+  closeSession,
+  getSessionLifecycle,
   setAutoTalk,
   WEB_CHAT_CONTEXT_PREFIX,
 } from './sessions.js';
@@ -55,8 +57,10 @@ import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import {
   deriveActivityThreadIdFromFirstMessage,
+  deriveSessionOrigin,
   deriveTitleFromFirstMessage,
   stripPromptMetadata,
+  truncateSessionTitle,
 } from './session-title.js';
 import { isSchedulerRunId } from './scheduler-run.js';
 import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
@@ -474,6 +478,8 @@ export function startWebChat(options: WebChatOptions): void {
       cursor?: string;
       q?: string;
       projectId?: string;
+      lifecycle?: 'open' | 'closed';
+      updatedSince?: string;
     } = {}
   ) => {
     const limit = Math.min(
@@ -486,7 +492,8 @@ export function startWebChat(options: WebChatOptions): void {
     const allManaged = listAllSessions();
     const managedIds = new Set(allManaged.map((session) => session.id));
     const managed = allManaged.map((s) => {
-      const isCurrentSession = s.platform === 'web' || getActiveSessionId(s.contextKey) === s.id;
+      const isCurrentSession = getActiveSessionId(s.contextKey) === s.id;
+      const lifecycle = getSessionLifecycle(s.id);
       const threadId = isCurrentSession ? sessionThreadId(s) : null;
       const activity = threadId ? getActivity(threadId) : undefined;
       const isActive = activity?.active === true;
@@ -497,6 +504,21 @@ export function startWebChat(options: WebChatOptions): void {
       const transcriptUpdatedAt = existsSync(transcriptPath)
         ? statSync(transcriptPath).mtime.toISOString()
         : undefined;
+      const origin =
+        s.platform === 'discord' || s.platform === 'slack'
+          ? deriveSessionOrigin(workdir, s.id)
+          : undefined;
+      const backend =
+        s.platform === 'web'
+          ? resolveWebSessionBackend(s.id)
+          : s.agent
+            ? {
+                backend: s.agent.backend,
+                model: s.agent.model,
+                effort: s.agent.effort,
+                source: 'session' as const,
+              }
+            : undefined;
       return {
         id: s.id,
         title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
@@ -508,6 +530,10 @@ export function startWebChat(options: WebChatOptions): void {
           : transcriptUpdatedAt || s.updatedAt,
         messageCount: s.messageCount,
         isActive,
+        isCurrent: isCurrentSession,
+        lifecycle,
+        closedAt: s.closedAt,
+        closeReason: s.closeReason,
         autoTalk: s.autoTalk === true,
         autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
         timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
@@ -515,7 +541,8 @@ export function startWebChat(options: WebChatOptions): void {
         timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
         activity,
         projectId: s.projectId,
-        ...(s.platform === 'web' ? { backend: resolveWebSessionBackend(s.id) } : {}),
+        backend,
+        origin,
       };
     });
 
@@ -550,6 +577,8 @@ export function startWebChat(options: WebChatOptions): void {
           contextKey: '',
           messageCount: 0,
           isActive: false,
+          isCurrent: false,
+          lifecycle: 'closed' as const,
           autoTalk: false,
           autoTalkActive: false,
           timeoutAt: undefined,
@@ -576,6 +605,17 @@ export function startWebChat(options: WebChatOptions): void {
 
     const matching = [...managed, ...unmanaged]
       .filter((candidate) => {
+        if (query.lifecycle && candidate.lifecycle !== query.lifecycle) return false;
+        if (query.updatedSince) {
+          const updatedAt = Date.parse(candidate.updatedAt);
+          const updatedSince = Date.parse(query.updatedSince);
+          if (
+            Number.isFinite(updatedSince) &&
+            (!Number.isFinite(updatedAt) || updatedAt < updatedSince)
+          ) {
+            return false;
+          }
+        }
         if (query.projectId === '__none__' && candidate.projectId) return false;
         if (
           query.projectId &&
@@ -1139,6 +1179,11 @@ export function startWebChat(options: WebChatOptions): void {
             cursor: searchParams.get('cursor') || undefined,
             q: searchParams.get('q') || '',
             projectId: searchParams.get('projectId') || undefined,
+            lifecycle:
+              searchParams.get('lifecycle') === 'open' || searchParams.get('lifecycle') === 'closed'
+                ? (searchParams.get('lifecycle') as 'open' | 'closed')
+                : undefined,
+            updatedSince: searchParams.get('updatedSince') || undefined,
           })
         )
       );
@@ -1387,12 +1432,12 @@ export function startWebChat(options: WebChatOptions): void {
           title:
             (entry?.title && !hasInternalPromptMetadata(entry.title) ? entry.title : '') ||
             deriveTitleFromFirstMessage(workdir, appSessionId) ||
-            messages
-              .find((m) => m.role === 'user')
-              ?.content?.toString()
-              .slice(0, 50) ||
+            truncateSessionTitle(
+              messages.find((m) => m.role === 'user')?.content?.toString() || ''
+            ) ||
             appSessionId,
           platform: entry?.platform,
+          lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
           messages,
           limit,
           before,
@@ -1721,7 +1766,26 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // DELETE /api/sessions/:id — セッション削除
+    // POST /api/sessions/:id/close — 履歴を残してSessionを終了
+    const closeSessionMatch = url.match(/^\/api\/sessions\/([^/]+)\/close$/);
+    if (closeSessionMatch && req.method === 'POST') {
+      const targetId = decodeURIComponent(closeSessionMatch[1]);
+      const entry = getSessionEntry(targetId);
+      if (!entry) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      agentRunner.destroy?.(entry.contextKey);
+      closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
+      busySessions.delete(targetId);
+      invalidateSessionSnapshots();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, lifecycle: 'closed' }));
+      return;
+    }
+
+    // DELETE /api/sessions/:id — セッションと履歴を完全削除
     if (
       url.startsWith('/api/sessions/') &&
       !url.includes('/resume') &&
@@ -2010,6 +2074,11 @@ export function startWebChat(options: WebChatOptions): void {
           );
           return;
         }
+        if (getSessionLifecycle(appSessionId) === 'closed') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Session is closed' }));
+          return;
+        }
 
         // 並行送信ロック
         if (busySessions.has(appSessionId)) {
@@ -2229,7 +2298,7 @@ export function startWebChat(options: WebChatOptions): void {
 
                   const e = getSessionEntry(appSessionId);
                   if (!e?.title) {
-                    updateSessionTitle(appSessionId, message.slice(0, 50));
+                    updateSessionTitle(appSessionId, truncateSessionTitle(message));
                   }
                   invalidateSessionSnapshots();
 

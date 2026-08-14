@@ -16,6 +16,7 @@ describe('managed backend executable', () => {
     ['cursor', 'cursor-agent'],
     ['grok', 'grok'],
     ['antigravity', 'agy'],
+    ['github-copilot', 'copilot'],
   ] as const)(
     'maps %s to its expected CLI without accepting another filename',
     (backend, command) => {

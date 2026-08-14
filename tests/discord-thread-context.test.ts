@@ -134,6 +134,68 @@ describe('buildDiscordChannelContextLine', () => {
   });
 });
 
+describe('Discord streaming attachments', () => {
+  it('ストリーミング応答の構造化添付をDiscordへ送信する', async () => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': true },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const attachmentPath = join(tempDir!, 'generated-audio.mp3');
+    const runStream = vi.fn().mockResolvedValue({
+      result: '生成した音声を送ります',
+      sessionId: 'provider-1',
+      attachments: [attachmentPath],
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+    });
+
+    const message = createExistingThreadMessage({
+      messageId: 'attachment-1',
+      content: '音声を作って',
+      threadId: 'thread-attachment',
+      parentChannelId: '123',
+      starterContent: '音声生成スレッド',
+      client,
+    });
+
+    await handlers.get(Events.MessageCreate)!(message);
+
+    expect(
+      (message.channel as unknown as { send: ReturnType<typeof vi.fn> }).send
+    ).toHaveBeenCalledWith({
+      files: [{ attachment: attachmentPath }],
+    });
+  });
+});
+
 describe('Discord thread run lock', () => {
   it('親チャンネルのスレッドモードでは新規スレッドごとに同時実行できる', async () => {
     saveSettings({

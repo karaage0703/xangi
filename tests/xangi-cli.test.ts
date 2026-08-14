@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -309,16 +310,37 @@ exit 0
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('AIとの対話を続けてください');
-    expect(JSON.parse(readFileSync(join(configHome, 'xangi', 'xangi.json'), 'utf8'))).toMatchObject(
-      {
-        backend: 'codex',
-        workspacePath: workspace,
-        webChatAccess: 'tailscale',
-      }
-    );
+    const configPath = join(configHome, 'xangi', 'xangi.json');
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toMatchObject({
+      backend: 'codex',
+      workspacePath: workspace,
+      webChatAccess: 'tailscale',
+    });
     expect(readFileSync(join(workspace, 'BOOTSTRAP.md'), 'utf8')).toContain(
       'すべて日本語で一度に一つずつ質問'
     );
+
+    unlinkSync(join(workspace, 'BOOTSTRAP.md'));
+    const complete = await runCli(['setup', '--complete'], {
+      HOME: homeDir,
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: join(homeDir, 'data'),
+      XDG_STATE_HOME: join(homeDir, 'state'),
+    });
+    expect(complete.code).toBe(0);
+
+    const access = await runCli(['setup', '--access', 'lan'], {
+      HOME: homeDir,
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: join(homeDir, 'data'),
+      XDG_STATE_HOME: join(homeDir, 'state'),
+    });
+    expect(access.code).toBe(0);
+    expect(access.stdout).toContain('Web Chat accessをlanに変更');
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toMatchObject({
+      workspacePath: workspace,
+      webChatAccess: 'lan',
+    });
   });
 
   it('lists sessions via the Even Terminal compatible API', async () => {
