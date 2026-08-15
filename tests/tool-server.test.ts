@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
 import type { BackendResolver } from '../src/backend-resolver.js';
-import type { AgentBackend } from '../src/config.js';
+import type { AgentBackend, Config } from '../src/config.js';
 
 /**
  * tool-server のステータスコード退行検出テスト。
@@ -12,21 +12,32 @@ import type { AgentBackend } from '../src/config.js';
  */
 describe('tool-server HTTP status codes', () => {
   let serverUrl: string;
-  const overrides = new Map<string, unknown>();
+  const overrides = new Map<string, { backend: AgentBackend; model?: string }>();
   const resolver = {
-    getAllowedBackends: () => ['codex', 'claude-code'] as AgentBackend[],
+    getAllowedBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
     getAllowedModels: () => undefined,
-    isBackendAllowed: (backend: AgentBackend) => backend === 'codex' || backend === 'claude-code',
+    isBackendAllowed: (backend: AgentBackend) =>
+      backend === 'codex' || backend === 'claude-code' || backend === 'workspace-search',
     isModelAllowed: () => true,
-    setChannelOverride: (channelId: string, override: unknown) =>
+    setChannelOverride: (channelId: string, override: { backend: AgentBackend; model?: string }) =>
       overrides.set(channelId, override),
+    deleteChannelOverride: (channelId: string) => overrides.delete(channelId),
+    getChannelOverride: (channelId: string) => overrides.get(channelId),
+    getDefault: () => ({ backend: 'codex' as AgentBackend }),
+    resolve: (channelId?: string) => overrides.get(channelId ?? '') ?? { backend: 'codex' as AgentBackend },
   } as BackendResolver;
+  const config = {
+    discord: { completionNotifyMode: 'message', replyInThread: false },
+    slack: { autoReplyChannels: [] },
+    web: { replySuggestions: false, replySuggestionCount: 3 },
+  } as Config;
 
   beforeAll(() => {
     // 親シェルから引き継いだ XANGI_TOOL_SERVER を捨てる（実機xangiのURLを誤って叩かないため）
     delete process.env.XANGI_TOOL_SERVER;
     startToolServer({
       backendResolver: resolver,
+      config,
       modelDiscovery: async (backend) =>
         backend === 'codex'
           ? {
@@ -42,6 +53,8 @@ describe('tool-server HTTP status codes', () => {
               models: [],
               message: '取得非対応',
             },
+      webStatusCommand: async () =>
+        JSON.stringify({ enabled: true, chatUrls: ['http://localhost:18888'] }),
     });
     // listen() コールバック内で XANGI_TOOL_SERVER が再設定される。それを待つ
     return new Promise<void>((resolve) => {
@@ -149,6 +162,22 @@ describe('tool-server HTTP status codes', () => {
     expect(body.result).toContain('Usage: xangi tool schedule_add');
   });
 
+  it('returns the running instance Web UI status', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'web_status', flags: {}, context: {} }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; result: string };
+    expect(body.ok).toBe(true);
+    expect(JSON.parse(body.result)).toEqual({
+      enabled: true,
+      chatUrls: ['http://localhost:18888'],
+    });
+  });
+
   it('returns 400 for unknown help topic', async () => {
     const res = await fetch(`${serverUrl}/api/execute`, {
       method: 'POST',
@@ -170,6 +199,25 @@ describe('tool-server HTTP status codes', () => {
     const body = (await res.json()) as { result: string };
     expect(body.result).toContain('gpt-test');
     expect(body.result).toContain('取得非対応');
+  });
+
+  it('changes a model-less backend through the shared runtime settings endpoint', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'runtime_settings',
+        flags: { name: 'backend', action: 'set', backend: 'workspace-search' },
+        context: { channelId: 'C123', platform: 'slack' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(overrides.get('C123')).toEqual({
+      backend: 'workspace-search',
+      model: undefined,
+      effort: undefined,
+    });
   });
 
   it('reports unsupported backend model discovery without hard-coded models', async () => {

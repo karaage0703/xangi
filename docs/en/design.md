@@ -84,6 +84,7 @@ Based on `@slack/bolt`.
 - Handles normal `message` events, user `/me` posts (`me_message`), and attachment-bearing `file_share` events, while ignoring other Slack system subtypes such as channel renames
 - Handles follow-up messages without mentions inside active threads that xangi started from a mention, while ignoring unrelated thread replies in non-auto-reply channels
 - Keeps Slack API posting on `channelId`, but uses `runKey = contextKey` for runner / timeout / Stop / processing state so separate threads in the same Slack channel do not share an execution slot
+- Resolves backend settings with the parent `channelId` while keeping runner execution on `runKey`. `/backend set/show/reset` updates both `CHANNEL_OVERRIDES` and the live resolver, then discards existing thread sessions and runners in that channel so the next message switches without a restart
 - Prevents duplicate runs with a per-`runKey` busy lock, message timestamp de-dupe, and message-handler bot-mention skip so `app_mention` owns mention events
 - Shows formatted tool-history lines while a Slack turn is running, then exposes chronological commentary and tool history through a user-only `History` button in the source thread. The button retains a turn reference so persisted history can be restored after a process restart
 - Slash commands and reactions supported
@@ -313,6 +314,8 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | local-llm/runner.ts  | Local LLM                | Direct calls to local LLMs like Ollama, tool execution & streaming support             |
 
 `backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi tool models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
+
+`runtime-settings-command.ts` provides structured dispatch for chat-controlled runtime settings. Discord native commands, Slack `/backend`, and the AI-facing `xangi tool runtime_settings` share the same validation and persistence logic. It does not execute arbitrary slash-command strings; only `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots` are explicitly allowed.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 

@@ -1,8 +1,42 @@
 import { ApiError } from './api';
 
+const KIBIBYTE = 1024;
+const MEBIBYTE = KIBIBYTE * 1024;
+
 export interface UploadProgress {
   loaded: number;
   total?: number;
+}
+
+export function formatUploadBytes(bytes: number): string {
+  if (bytes < KIBIBYTE) return `${bytes} B`;
+  if (bytes < MEBIBYTE) return `${(bytes / KIBIBYTE).toFixed(1)} KiB`;
+  const mebibytes = bytes / MEBIBYTE;
+  return `${Number.isInteger(mebibytes) ? mebibytes.toFixed(0) : mebibytes.toFixed(1)} MiB`;
+}
+
+export function uploadTooLargeMessage(selectedBytes: number, maxBytes: number): string {
+  return `Upload too large (limit: ${formatUploadBytes(maxBytes)}, selected: ${formatUploadBytes(selectedBytes)}). Choose a smaller file or increase WEB_CHAT_UPLOAD_MAX_MB.`;
+}
+
+export function uploadErrorMessage(
+  cause: unknown,
+  selectedBytes: number | undefined,
+  configuredMaxBytes: number
+): string {
+  if (cause instanceof ApiError && cause.status === 413 && selectedBytes !== undefined) {
+    let maxBytes = configuredMaxBytes;
+    try {
+      const parsed = JSON.parse(cause.body) as { maxBytes?: unknown };
+      if (typeof parsed.maxBytes === 'number' && parsed.maxBytes > 0) {
+        maxBytes = parsed.maxBytes;
+      }
+    } catch {
+      // Fall back to the runtime configuration when the error body is not JSON.
+    }
+    return uploadTooLargeMessage(selectedBytes, maxBytes);
+  }
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 export function uploadForm<T>(

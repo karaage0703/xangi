@@ -83,8 +83,8 @@ INJECT_TIMESTAMP=false
   - `Stop` — `/stop` と同等。タスクを中断
   - `延長` — タイムアウトを「**残り時間 2 倍**」に延長（`TIMEOUT_MAX_MS` 上限内）
   - `⏱ MM:SS` — 残り時間表示（クリック無効、残り 30 秒以下で赤色に）
-- **完了後**: `New` はセッションをリセット。`History` は途中コメントとツール実行を時系列で本人だけに表示し、Slackでは表示内の`閉じる`で一時表示だけを削除
-- **Discordスレッド内の完了後**: `New`の代わりに左端へ`Leave`ボタンを表示する。現在のセッションを終了して履歴へ移し、押したユーザー自身をスレッドから退出させ、そのユーザーのサイドバーから消す。会話ログとDiscordスレッド自体は削除しない。BotにDiscordの「スレッドの管理」権限が必要
+- **完了後**: チャンネル直下の`New`はセッションをリセット。スレッド内はDiscord / Slackとも左端に`Close`を表示して現在のセッションを終了する。`History`は途中コメントとツール実行を時系列で本人だけに表示し、Slackでは表示内の`閉じる`で一時表示だけを削除
+- **Discordスレッド内の`Close`**: セッションを終了して履歴へ移したうえで、押したユーザー自身をスレッドから退出させ、そのユーザーのサイドバーから消す。会話ログとDiscordスレッド自体は削除しない。BotにDiscordの「スレッドの管理」権限が必要
 
 `DISCORD_SHOW_BUTTONS=false` でボタンを非表示にできます。
 
@@ -123,7 +123,7 @@ API（プログラマブル操作）:
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`で延長。省略時は現在の残り時間を加算（残り時間を2倍）
 - `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。誤操作を避けるため、Web UIではMonitor詳細から実行する
 
-MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Leave`がSessionの完了と本人のスレッド退出をまとめて行います。
+MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
 
 ## スケジューラー
 
@@ -261,6 +261,9 @@ xangi setup
 # config / service healthの診断（秘密値は表示しない）
 xangi doctor
 
+# 実行中instanceのWeb UIアクセス先・bind・Chat/Workspace疎通をJSONで表示
+xangi tool web_status
+
 # 現在のreleaseまたはcheckoutのバージョンを表示
 xangi --version
 
@@ -352,6 +355,7 @@ AIが `xangi tool` CLIツール経由でDiscord / Slack操作を実行します�
 | `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | スレッドから指定ユーザーを退出させる＝そのユーザーのサイドバーから消す（`--channel` 省略で現在のスレッド） |
 | `xangi tool media_send --channel <ID> --file /path/to/file`                      | ファイル送信                                                                                               |
 | `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat 現ペイン履歴取得（`XANGI_CHANNEL_ID=web-chat:<id>` 自動解決）                                     |
+| `xangi tool web_status`                                                          | 実行中instanceのWeb UIアクセス先・bind・port・Chat/Workspace HTTP状態をJSONで取得                          |
 | `xangi tool slack_history [--channel <id>] [--count N]`                          | Slack 現チャンネル履歴取得（`XANGI_CHANNEL_ID=<channel>` 自動解決）                                        |
 | `xangi tool slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Slackメッセージ送信                                                                                        |
 | `xangi tool slack_channels [--types public_channel,private_channel] [--limit N]` | Slackチャンネル一覧                                                                                        |
@@ -486,6 +490,9 @@ docker build -t myapp . && \
   "discordAutoReplyChannels": {
     "123456789012345678": true
   },
+  "slackAutoReplyChannels": {
+    "C01234567": true
+  },
   "discordCompletionNotifyChannels": {
     "123456789012345678": "mention"
   },
@@ -498,6 +505,7 @@ docker build -t myapp . && \
 | 設定                              | 説明                                                               | デフォルト |
 | --------------------------------- | ------------------------------------------------------------------ | ---------- |
 | `discordAutoReplyChannels`        | チャンネルごとのメンションなし応答設定（`true` / `false`）         | なし       |
+| `slackAutoReplyChannels`          | Slackチャンネルごとのメンションなし応答設定（`true` / `false`）    | なし       |
 | `discordCompletionNotifyChannels` | チャンネルごとの完了通知 override（`off` / `message` / `mention`） | なし       |
 | `discordThreadModeChannels`       | チャンネルごとの Discord スレッド返信 override（`true` / `false`） | なし       |
 
@@ -535,6 +543,9 @@ docker build -t myapp . && \
 | `/backend reset`                                            | デフォルト（.env設定）に戻す           |
 
 切り替え時は自動的に新しいセッションが開始されます（会話履歴は引き継がれません）。
+Discord と Slack の両方で利用できます。Slack では App 設定に `/backend` を登録し、
+Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>]|reset` にしてください。
+設定はチャンネルID単位で `CHANNEL_OVERRIDES` へ永続化され、同じチャンネル内のスレッドにも再起動なしで次のメッセージから反映されます。
 
 `/models [backend]` は Discord、Slack、Web、Telegram、LINE で共通です。引数を省略すると `ALLOWED_BACKENDS` に含まれる全バックエンド、指定するとそのバックエンドだけを表示します。閲覧専用で、現在のバックエンドやモデル設定は変更しません。
 
@@ -550,6 +561,16 @@ AIへ自然言語でモデルの利用可否を尋ねた場合も、システム
 xangi tool models --backend codex
 xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
+
+AIへの自然言語指示から設定を変える場合は、任意のスラッシュコマンド文字列を実行せず、許可された設定だけを扱う `runtime_settings` を使用します。`backend`、`llmmode`、`autoreply`、`notify`、`threadmode`、`replysuggestions`、`respondtobots` の `show` / `set` / `reset` を構造化引数で検証し、ネイティブコマンドと同じ保存経路へ反映します。Discordスレッドでは親チャンネルIDを `--channel` に指定します。
+
+```bash
+xangi tool runtime_settings --name autoreply --action set --value on
+xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.4 --effort high
+xangi tool runtime_settings --name llmmode --action set --value chat
+```
+
+`/restart`、`/stop`、`/new`、`/schedule`、`/skill` などライフサイクルや任意処理を伴うコマンドは対象外です。バックエンド・モデル・effortを変更した場合は、次のturnで古いprovider sessionを再利用しません。
 
 `ALLOWED_MODELS`が設定されている場合、動的取得結果も許可モデルだけに絞り込みます。
 
@@ -1269,7 +1290,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `TIMEOUT_MAX_MS`             | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`                   |
 | `TIMEOUT_EXTEND_ENABLED`     | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                       |
 | `WEB_CHAT_UPLOAD_ACCEPT`     | Web Chat 受信ファイル許可リスト（カンマ区切り、HTML `<input accept>` 互換）                                             | 全許可                       |
-| `WEB_CHAT_UPLOAD_MAX_BYTES`  | Web Chatの1アップロード要求の上限byte数（multipartヘッダを含む）                                                        | `26214400` (25 MiB)          |
+| `WEB_CHAT_UPLOAD_MAX_MB`     | Web Chatの1アップロード要求の上限（MiB単位、multipartヘッダを含む）                                                    | `64`                         |
 | `WEB_CHAT_DOWNLOAD_ACCEPT`   | Web Chat ダウンロード許可拡張子リスト（`.html,.txt` 等）                                                                | 全許可                       |
 | `ALLOWED_BACKENDS`           | `/backend` で切り替え許可するバックエンド（カンマ区切り）。未設定なら全バックエンド許可                                 | 全バックエンド               |
 | `ALLOWED_MODELS`             | `/backend` で切り替え許可するモデル（カンマ区切り）                                                                     | -                            |

@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { BackendResolver } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
+import { createSession, initSessions, setProviderSessionId } from '../src/sessions.js';
 
 function makeConfig(platform: Config['agent']['platform']): Config {
   return {
@@ -173,5 +177,47 @@ describe('DynamicRunnerManager platform routing', () => {
 
     hasRunner.mockReturnValue(true);
     expect(manager.hasRunner('web-chat:session-1')).toBe(true);
+  });
+
+  it('drops a provider session when the resolved model or effort changed', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'dynamic-runner-session-'));
+    try {
+      initSessions(tempDir);
+      const appSessionId = createSession('discord-channel', { platform: 'discord' });
+      setProviderSessionId(appSessionId, 'provider-old', 'codex', 'gpt-old', 'low');
+
+      const config = {
+        ...makeConfig('discord'),
+        agent: {
+          backend: 'codex',
+          config: { model: 'gpt-new' },
+          platform: 'discord',
+        },
+      } as Config;
+      const manager = new DynamicRunnerManager(config, new BackendResolver(config));
+      const result = (
+        manager as unknown as {
+          dropMismatchedProviderSession(
+            options: {
+              channelId: string;
+              appSessionId: string;
+              sessionId: string;
+            },
+            resolved: { backend: 'codex'; model: string; effort: 'high' }
+          ): { sessionId?: string };
+        }
+      ).dropMismatchedProviderSession(
+        {
+          channelId: 'discord-channel',
+          appSessionId,
+          sessionId: 'provider-old',
+        },
+        { backend: 'codex', model: 'gpt-new', effort: 'high' }
+      );
+
+      expect(result.sessionId).toBeUndefined();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

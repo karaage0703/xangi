@@ -1095,12 +1095,14 @@ describe('web-chat HTTP API', () => {
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
       interChatEnabled?: boolean;
       allowedBackends?: string[];
+      uploadMaxBytes?: number;
     };
     const html = await (await fetch(baseUrl)).text();
     const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
 
     expect(config.interChatEnabled).toBe(false);
     expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
+    expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain('/app/assets/');
     expect(html).toContain('viewport-fit=cover');
@@ -1625,18 +1627,21 @@ describe('web-chat HTTP API', () => {
     expect(unsatisfiable.headers.get('content-range')).toBe('bytes */13');
   });
 
-  it('POST /api/upload rejects a request above the configured byte limit', async () => {
-    const previous = process.env.WEB_CHAT_UPLOAD_MAX_BYTES;
-    process.env.WEB_CHAT_UPLOAD_MAX_BYTES = '128';
+  it('POST /api/upload interprets the configured limit as MiB', async () => {
+    const previous = process.env.WEB_CHAT_UPLOAD_MAX_MB;
+    process.env.WEB_CHAT_UPLOAD_MAX_MB = '1';
     try {
       const form = new FormData();
-      form.append('file', new Blob(['x'.repeat(256)]), 'large.txt');
+      form.append('file', new Blob(['x'.repeat(1024 * 1024)]), 'large.txt');
       const response = await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form });
       expect(response.status).toBe(413);
-      expect(await response.json()).toMatchObject({ error: 'Upload too large', maxBytes: 128 });
+      expect(await response.json()).toMatchObject({
+        error: 'Upload too large',
+        maxBytes: 1024 * 1024,
+      });
     } finally {
-      if (previous === undefined) delete process.env.WEB_CHAT_UPLOAD_MAX_BYTES;
-      else process.env.WEB_CHAT_UPLOAD_MAX_BYTES = previous;
+      if (previous === undefined) delete process.env.WEB_CHAT_UPLOAD_MAX_MB;
+      else process.env.WEB_CHAT_UPLOAD_MAX_MB = previous;
     }
   });
 

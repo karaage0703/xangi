@@ -157,6 +157,7 @@ export interface TurnHistoryResponse {
 
 export interface RuntimeConfig {
   uploadAccept: string | null;
+  uploadMaxBytes: number;
   timeoutExtendEnabled: boolean;
   interChatEnabled: boolean;
   allowedBackends: string[];

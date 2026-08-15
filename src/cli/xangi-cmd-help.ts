@@ -2,7 +2,16 @@ import { ValidationError } from '../errors.js';
 
 export interface XangiCmdHelpEntry {
   name: string;
-  topic: 'discord' | 'slack' | 'web' | 'schedule' | 'models' | 'trigger' | 'system' | 'local';
+  topic:
+    | 'discord'
+    | 'slack'
+    | 'web'
+    | 'schedule'
+    | 'models'
+    | 'settings'
+    | 'trigger'
+    | 'system'
+    | 'local';
   summary: string;
   usage: string;
   notes?: string[];
@@ -108,6 +117,12 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     usage: 'xangi tool web_history [--session <id>] [--count <n>] [--offset <n>]',
   },
   {
+    name: 'web_status',
+    topic: 'web',
+    summary: '現在のWeb UIアクセス先とHTTP状態をJSONで取得',
+    usage: 'xangi tool web_status',
+  },
+  {
     name: 'schedule_list',
     topic: 'schedule',
     summary: 'スケジュール一覧を表示',
@@ -139,6 +154,18 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     usage:
       'xangi tool models [--backend <backend>] [--use <model-id>] [--effort <level>] [--channel <id>]',
     notes: ['--use はユーザーの明示依頼がある場合だけ使い、次のturnから適用される。'],
+  },
+  {
+    name: 'runtime_settings',
+    topic: 'settings',
+    summary: '起動中チャンネルの設定を確認・即時変更',
+    usage:
+      'xangi tool runtime_settings --name <backend|llmmode|autoreply|notify|threadmode|replysuggestions|respondtobots> --action <show|set|reset> [--value <value>] [--backend <backend>] [--model <model>] [--effort <level>] [--channel <id>] [--platform <platform>]',
+    notes: [
+      'ユーザーが設定変更を明示依頼した場合だけ使う。',
+      'Discordスレッドでは親チャンネルIDを--channelへ指定する。',
+      'restart/stop/new/schedule/skillは対象外。',
+    ],
   },
   {
     name: 'trigger',
@@ -210,6 +237,7 @@ const TOPICS = [
   'web',
   'schedule',
   'models',
+  'settings',
   'trigger',
   'system',
   'local',

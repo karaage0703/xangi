@@ -45,7 +45,7 @@ Discord アカウントでログイン。
 3. **BOT PERMISSIONS** で選択：
    - ✅ メッセージを送る（Send Messages）
    - ✅ Threadsでメッセージを送る（Send Messages in Threads）
-   - ✅ スレッドを管理（Manage Threads。`Leave` ボタンで押下者を退出させる場合は必須）
+   - ✅ スレッドを管理（Manage Threads。スレッド内の`Close`ボタンで押下者を退出させる場合は必須）
    - ✅ メッセージ履歴を読む（Read Message History）
    - ✅ ファイルを添付（Attach Files。生成ファイルを送信する場合）
    - ✅ リアクションを付ける（Add Reactions）
@@ -121,7 +121,7 @@ Discord サーバーで `/new` や `/skill` を試す、または Bot をメン�
 
 `xangi settings`を開き、Discordが「設定済み」になっているか確認する。
 
-### `Leave` ボタンで退出できない
+### スレッド内の`Close`ボタンで退出できない
 
 Botのロールまたは対象チャンネルで「スレッドの管理」権限を有効にする。権限がない場合、Discord APIは `Missing Access` または `Missing Permissions` を返す。
 

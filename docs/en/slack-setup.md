@@ -127,6 +127,7 @@ After adding or changing scopes/events, reinstall the app from **"Install App"**
 | `/skill`    | List or run a skill (Usage Hint: `[skill-name] [args]`)                           |
 | `/settings` | Show current settings                                                             |
 | `/models`   | List available models (Usage Hint: `[backend]`)                                   |
+| `/backend`  | Switch this channel's backend immediately (Usage Hint: `show\|set\|reset ...`)  |
 | `/restart`  | Request a graceful xangi restart                                                  |
 
 > **Note**: Request URL is not needed in Socket Mode.

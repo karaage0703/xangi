@@ -13,6 +13,7 @@ describe('xangi tool help', () => {
     expect(formatXangiCmdHelp('schedule_add')).toContain(
       'Usage: xangi tool schedule_add --input <自然言語またはcron>'
     );
+    expect(formatXangiCmdHelp('settings')).toContain('xangi tool runtime_settings');
   });
 
   it('未知のtopicやcommandを拒否する', () => {

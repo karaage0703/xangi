@@ -31,7 +31,7 @@ import {
 } from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
 import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } from './types';
-import { uploadForm } from './upload';
+import { formatUploadBytes, uploadErrorMessage, uploadForm, uploadTooLargeMessage } from './upload';
 
 const MAX_PANES = 8;
 const PANE_STATE_KEY = 'xangi_pane_state_v1';
@@ -273,12 +273,6 @@ function formatRemaining(timeoutAt?: number): string {
     2,
     '0'
   )}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function isMobile(): boolean {
@@ -1066,9 +1060,17 @@ function ChatPane({
   }
 
   async function uploadFiles(files: File[]) {
+    const tooLarge = files.find((file) => file.size > config.uploadMaxBytes);
+    if (tooLarge) {
+      setError(uploadTooLargeMessage(tooLarge.size, config.uploadMaxBytes));
+      return;
+    }
+
     setUploading(true);
+    let selectedFile: File | undefined;
     try {
       for (const [index, file] of files.entries()) {
+        selectedFile = file;
         setUploadState({
           fileName: file.name,
           fileIndex: index + 1,
@@ -1105,7 +1107,7 @@ function ChatPane({
         }
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(uploadErrorMessage(cause, selectedFile?.size, config.uploadMaxBytes));
     } finally {
       setUploading(false);
       setUploadState(undefined);
@@ -1528,7 +1530,9 @@ function ChatPane({
               {uploadState.fileName}
             </span>
             <span>
-              {uploadPercent === undefined ? formatBytes(uploadState.loaded) : `${uploadPercent}%`}
+              {uploadPercent === undefined
+                ? formatUploadBytes(uploadState.loaded)
+                : `${uploadPercent}%`}
             </span>
           </div>
           <progress
@@ -1902,6 +1906,7 @@ export function Chat() {
   const [busyPanes, setBusyPanes] = useState<Record<string, boolean>>({});
   const [config, setConfig] = useState<Config>({
     uploadAccept: null,
+    uploadMaxBytes: 64 * 1024 * 1024,
     timeoutExtendEnabled: true,
     interChatEnabled: false,
     allowedBackends: [],

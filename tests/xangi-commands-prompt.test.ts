@@ -35,6 +35,13 @@ describe('buildXangiCommands', () => {
     expect(XANGI_COMMANDS_COMMON).not.toContain('ユーザー向け操作方法');
   });
 
+  it('明示依頼されたruntime設定だけを共通toolへ委譲する', () => {
+    const prompt = buildXangiCommands('slack');
+    expect(prompt).toContain('xangi tool help runtime_settings');
+    expect(prompt).toContain('backend / llmmode / autoreply / notify / threadmode');
+    expect(prompt).toContain('restart / stop / new / schedule / skillをこの経路で実行しない');
+  });
+
   it('platform固有ルールを混在させない', () => {
     const discord = buildXangiCommands('discord');
     const slack = buildXangiCommands('slack');

@@ -49,6 +49,7 @@ function runCli(
     const baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
     delete baseEnv.XANGI_CHANNEL_ID;
     delete baseEnv.XANGI_DEFAULT_CHANNEL;
+    delete baseEnv.XANGI_PLATFORM;
     const finalEnv: Record<string, string> = {
       ...baseEnv,
       XANGI_TOOL_SERVER: mockUrl,
@@ -325,5 +326,14 @@ describe('xangi-cmd CLI channelId completion', () => {
     expect(lastRequest.command).toBe('models');
     expect(lastRequest.flags).toEqual({ backend: 'codex', use: 'gpt-test', effort: 'high' });
     expect(lastRequest.context).toEqual({ channelId: 'web-chat:test' });
+  });
+
+  it('passes runtime settings with channel and platform context', async () => {
+    await runCli(
+      ['runtime_settings', '--name', 'autoreply', '--action', 'set', '--value', 'on'],
+      { XANGI_CHANNEL_ID: 'C123', XANGI_PLATFORM: 'slack' }
+    );
+    expect(lastRequest.command).toBe('runtime_settings');
+    expect(lastRequest.context).toEqual({ channelId: 'C123', platform: 'slack' });
   });
 });

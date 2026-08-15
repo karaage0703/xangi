@@ -428,6 +428,11 @@ describe('isSafeForRescue', () => {
     );
   });
 
+  it('web_status は直接toolでもxangi tool経由でもsafe', () => {
+    expect(isSafeForRescue('web_status', {}).safe).toBe(true);
+    expect(isSafeForRescue('exec', { command: 'xangi tool web_status' }).safe).toBe(true);
+  });
+
   it('exec でモデルを変更する xangi-cmd models --use は unsafe', () => {
     const check = isSafeForRescue('exec', {
       command: 'xangi-cmd models --backend codex --use gpt-test',

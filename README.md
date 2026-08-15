@@ -14,6 +14,7 @@ Claude Code、Codex、Cursor CLI、Grok CLI、Antigravity CLI、GitHub Copilot C
 
 - 6種類のAIバックエンドと5種類のチャット画面に対応
 - チャンネルごとのbackend・model・effort切り替えと、利用可能なモデルの動的取得
+- 自然言語またはネイティブコマンドから、許可されたチャンネル設定を再起動なしで即時変更
 - ワークスペースのskillsをチャットから実行
 - セッション・会話履歴の永続化、タイムアウト延長、ワークスペースhooks
 - スケジューラーと外部イベントからのエージェント起動
@@ -78,6 +79,7 @@ xangi doctor
 - Web Chat: 初回は`http://127.0.0.1:18888`
 - Discord、Slack、Telegram、LINE: セットアップしたbotへメッセージを送信
 - 状態確認: `xangi doctor`
+- Web UIアクセス先・疎通確認: `xangi tool web_status`
 - バージョン確認: `xangi --version`
 - 接続情報の変更: `xangi settings`
 - サービスを起動していない場合: `xangi service start`

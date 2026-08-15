@@ -84,6 +84,7 @@ flowchart LR
 - `message` event は通常メッセージ、人間の `/me` 投稿 (`me_message`)、添付付きの `file_share` を処理し、チャンネル名変更などその他の `subtype` 付き Slack システム通知は無視する
 - メンションで開始した active thread 内では、後続メッセージをメンション無しで処理する。対象外チャンネルの無関係なスレッド返信は拾わない
 - Slack API 投稿先は `channelId`、runner / timeout / Stop / processing 管理は `runKey = contextKey` で分離し、同じSlackチャンネル内の別スレッドを別実行単位として扱う
+- backend設定解決は親`channelId`、runner実行は`runKey`を使う。`/backend set/show/reset`は`CHANNEL_OVERRIDES`と起動中resolverを同時更新し、同チャンネル配下の既存スレッドsession / runnerを破棄するため、再起動なしで次のメッセージから切り替わる
 - 同一 `runKey` の実行中は二重起動を抑止し、Slack の `app_mention` と `message` の重複配送は message ts de-dupe と bot mention skip で一本化する
 - 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は途中コメントとツールを時系列で `History` ボタンから押した本人だけへ元スレッド内で表示する。ボタンにターン参照を保持するため、プロセス再起動後も永続ログから復元できる
 - スラッシュコマンドとリアクション対応
@@ -311,6 +312,8 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
+
+`runtime-settings-command.ts` はチャットから変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
