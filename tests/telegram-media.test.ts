@@ -236,6 +236,23 @@ describe('Telegram media albums', () => {
       vi.useRealTimers();
     }
   });
+
+  it('cancels one pending album without flushing it later', async () => {
+    vi.useFakeTimers();
+    try {
+      const buffer = new TelegramMediaGroupBuffer<number>(750);
+      const admission = buffer.add('chat:album', 1);
+      buffer.add('chat:album', 2);
+
+      expect(buffer.cancel('chat:album')).toEqual([1, 2]);
+      expect(buffer.size).toBe(0);
+      await expect(admission.ready).resolves.toBeUndefined();
+      await vi.runAllTimersAsync();
+      await expect(admission.ready).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('Telegram outbound media', () => {

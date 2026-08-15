@@ -17,7 +17,7 @@ import {
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { splitMessage } from './message-split.js';
-import { formatAgentErrorForUser } from './errors.js';
+import { formatAgentErrorForUser, NonRetryableError } from './errors.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import {
@@ -619,15 +619,27 @@ export function cleanMention(
   const username = botMention.replace(/^@/, '');
   if (entities) {
     const ranges = entities
-      .filter((entity) => {
-        if (entity.type === 'text_mention') return entity.user?.id === botId;
-        if (entity.type !== 'mention') return false;
-        return (
-          text.slice(entity.offset, entity.offset + entity.length).toLowerCase() ===
-          `@${username.toLowerCase()}`
-        );
+      .flatMap((entity) => {
+        const value = text.slice(entity.offset, entity.offset + entity.length);
+        if (entity.type === 'text_mention' && entity.user?.id === botId) {
+          return [{ start: entity.offset, end: entity.offset + entity.length }];
+        }
+        if (entity.type === 'mention' && value.toLowerCase() === `@${username.toLowerCase()}`) {
+          return [{ start: entity.offset, end: entity.offset + entity.length }];
+        }
+        if (entity.type === 'bot_command') {
+          const suffix = `@${username}`;
+          if (value.toLowerCase().endsWith(suffix.toLowerCase())) {
+            return [
+              {
+                start: entity.offset + value.length - suffix.length,
+                end: entity.offset + entity.length,
+              },
+            ];
+          }
+        }
+        return [];
       })
-      .map((entity) => ({ start: entity.offset, end: entity.offset + entity.length }))
       .sort((a, b) => b.start - a.start);
     let cleaned = text;
     for (const range of ranges) {
@@ -643,16 +655,22 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function entityMentionUsernames(
+function entityAddressedUsernames(
   text: string,
   entities: readonly TelegramMentionEntity[] | undefined
 ): string[] {
   if (!entities) return [];
-  return entities
-    .filter((entity) => entity.type === 'mention')
-    .map((entity) => text.slice(entity.offset, entity.offset + entity.length))
-    .filter((value) => value.startsWith('@'))
-    .map((value) => value.slice(1).toLowerCase());
+  return entities.flatMap((entity) => {
+    const value = text.slice(entity.offset, entity.offset + entity.length);
+    if (entity.type === 'mention' && value.startsWith('@')) {
+      return [value.slice(1).toLowerCase()];
+    }
+    if (entity.type === 'bot_command') {
+      const target = value.match(/^\/[A-Za-z0-9_]+@([A-Za-z0-9_]{5,32})$/)?.[1];
+      return target ? [target.toLowerCase()] : [];
+    }
+    return [];
+  });
 }
 
 export function hasBotMention(
@@ -664,7 +682,7 @@ export function hasBotMention(
   if (entities) {
     const own = username.toLowerCase();
     return (
-      entityMentionUsernames(text, entities).includes(own) ||
+      entityAddressedUsernames(text, entities).includes(own) ||
       entities.some((entity) => entity.type === 'text_mention' && entity.user?.id === botId)
     );
   }
@@ -690,7 +708,7 @@ export function hasOtherBotMention(
     return true;
   }
   const mentionedUsernames = entities
-    ? entityMentionUsernames(text, entities)
+    ? entityAddressedUsernames(text, entities)
     : [...text.matchAll(/@([A-Za-z0-9_]{5,32})/g)].map((match) => match[1].toLowerCase());
   for (const mentionedUsername of mentionedUsernames) {
     if (mentionedUsername !== own && mentionedUsername.endsWith('bot')) return true;
@@ -766,6 +784,27 @@ export function buildTelegramWebhookUrl(baseUrl: string, path?: string): string 
 export function isResetCommand(text: string, patterns: readonly string[]): boolean {
   const rawCmd = text.trim().toLowerCase();
   return patterns.some((p) => p.toLowerCase() === rawCmd);
+}
+
+export type TelegramControlCommand = 'reset' | 'stop';
+
+export function parseTelegramControlCommand(
+  text: string,
+  resetPatterns: readonly string[]
+): TelegramControlCommand | undefined {
+  if (isResetCommand(text, resetPatterns)) return 'reset';
+  return text.trim().toLowerCase() === '/stop' ? 'stop' : undefined;
+}
+
+export function throwTelegramTextDeliveryFailure(
+  scope: string,
+  failure: { index: number; error: unknown } | undefined
+): void {
+  if (!failure) return;
+  throw new NonRetryableError(
+    `[xangi-telegram] ${scope} result chunk ${failure.index + 1} delivery failed: ${formatTelegramError(failure.error)}`,
+    { cause: failure.error }
+  );
 }
 
 /**
@@ -1080,6 +1119,7 @@ export async function startTelegramBot(opts: {
           }
         }
 
+        throwTelegramTextDeliveryFailure('Scheduled', delivery.textFailure);
         return runResult.result || '';
       } finally {
         unregisterFinalizer();
@@ -1093,6 +1133,36 @@ export async function startTelegramBot(opts: {
   console.log(
     `[xangi-telegram] Group auto-reply chats: ${tcfg.autoReplyChats?.join(', ') || '(none)'}`
   );
+
+  const resetPatterns = tcfg.resetTextPatterns ?? ['/reset', '/new', '/clear'];
+  const isTelegramSessionActive = (contextKey: string, chatType: string): boolean => {
+    if (chatType === 'private') return false;
+    const activeSessionId = getActiveSessionId(contextKey);
+    if (!activeSessionId) return false;
+    const entry = getSessionEntry(activeSessionId);
+    const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
+    return entry !== undefined && !hasSessionGoneIdle(entry.updatedAt, idleResetMs);
+  };
+  const executeTelegramControlCommand = async (
+    ctx: Context,
+    contextKey: string,
+    command: TelegramControlCommand
+  ): Promise<void> => {
+    if (command === 'reset') {
+      const activeId = getActiveSessionId(contextKey);
+      resetTelegramSession(contextKey, activeId, agentRunner);
+      ensureSession(contextKey, { platform: 'telegram' });
+      await ctx.reply('新しく会話を始めます。').catch((error) => {
+        console.warn(`[xangi-telegram] Failed to send reset reply: ${formatTelegramError(error)}`);
+      });
+      return;
+    }
+
+    stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
+    await ctx.reply('実行を停止しました。').catch((error) => {
+      console.warn(`[xangi-telegram] Failed to send stop reply: ${formatTelegramError(error)}`);
+    });
+  };
 
   // メッセージハンドラ
   // 処理対象の判定・コマンド処理を行い、Agent 実行はチャット単位キューに積んで返る。
@@ -1145,18 +1215,7 @@ export async function startTelegramBot(opts: {
     const isMentioned = hasBotMention(rawText, botInfo.username, entities, botInfo.id);
     const mentionsOtherBot = hasOtherBotMention(rawText, botInfo.username, entities, botInfo.id);
 
-    // セッションのアクティブ判定
-    let isSessionActive = false;
-    if (chatType !== 'private') {
-      const activeSessionId = getActiveSessionId(contextKey);
-      if (activeSessionId) {
-        const entry = getSessionEntry(activeSessionId);
-        const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
-        if (entry && !hasSessionGoneIdle(entry.updatedAt, idleResetMs)) {
-          isSessionActive = true;
-        }
-      }
-    }
+    const isSessionActive = isTelegramSessionActive(contextKey, chatType);
 
     const shouldRespond =
       options.skipAuthorization === true ||
@@ -1246,24 +1305,10 @@ export async function startTelegramBot(opts: {
       return;
     }
 
-    // リセットコマンド (/stop 同様キューを経由しない)
-    const resetPatterns = tcfg.resetTextPatterns ?? ['/reset', '/new', '/clear'];
-    if (isResetCommand(cleanText, resetPatterns)) {
-      const activeId = getActiveSessionId(contextKey);
-      resetTelegramSession(contextKey, activeId, agentRunner);
-      ensureSession(contextKey, { platform: 'telegram' });
-      await ctx.reply('新しく会話を始めます。').catch((err) => {
-        console.warn(`[xangi-telegram] Failed to send reset reply: ${formatTelegramError(err)}`);
-      });
-      return;
-    }
-
-    // 停止コマンド (キューを経由せず即時キャンセル)
-    if (rawCmd === '/stop') {
-      stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
-      await ctx.reply('実行を停止しました。').catch((err) => {
-        console.warn(`[xangi-telegram] Failed to send stop reply: ${formatTelegramError(err)}`);
-      });
+    // 制御コマンドは通常メッセージのキューを経由せず即時実行する。
+    const controlCommand = parseTelegramControlCommand(cleanText, resetPatterns);
+    if (controlCommand) {
+      await executeTelegramControlCommand(ctx, contextKey, controlCommand);
       return;
     }
 
@@ -1648,7 +1693,60 @@ export async function startTelegramBot(opts: {
   };
   const primaryMediaGroupContext = (items: PendingMediaGroupItem[]): Context =>
     items.find((item) => item.ctx.message?.caption?.trim())?.ctx ?? items[0].ctx;
+  const handledMediaGroupIds = new Set<string>();
   let unregisterMediaGroupFinalizer: (() => void) | undefined;
+
+  const rememberHandledMediaGroup = (key: string) => {
+    handledMediaGroupIds.add(key);
+    if (handledMediaGroupIds.size <= 10000) return;
+    const oldest = handledMediaGroupIds.values().next().value;
+    if (oldest !== undefined) handledMediaGroupIds.delete(oldest);
+  };
+
+  const tryHandleImmediateMediaGroupControl = async (ctx: Context): Promise<boolean> => {
+    const message = ctx.message;
+    const from = message?.from;
+    if (!message?.caption || !from) return false;
+
+    const rawText = message.caption;
+    const entities = message.caption_entities as readonly TelegramMentionEntity[] | undefined;
+    const isMentioned = hasBotMention(rawText, botInfo.username, entities, botInfo.id);
+    const cleanText = (
+      isMentioned ? cleanMention(rawText, `@${botInfo.username}`, entities, botInfo.id) : rawText
+    ).trim();
+    const command = parseTelegramControlCommand(cleanText, resetPatterns);
+    if (!command) return false;
+
+    const chatType = message.chat.type;
+    const chatIdStr = String(message.chat.id);
+    const isGroupChat = chatType === 'group' || chatType === 'supergroup';
+    if (isGroupChat && !from.is_bot) botLoopGuard.resetChat(chatIdStr);
+
+    const contextKey = getTelegramContextKey(message);
+    const shouldRespond = shouldProcessMessage({
+      from,
+      chat: { id: message.chat.id, type: chatType },
+      text: rawText,
+      botInfo,
+      allowedUsers: tcfg.allowedUsers,
+      allowedBots: tcfg.allowedBots,
+      allowedChats: tcfg.allowedChats,
+      autoReplyChats: tcfg.autoReplyChats,
+      isReplyToMe: message.reply_to_message?.from?.id === botInfo.id,
+      isSessionActive: isTelegramSessionActive(contextKey, chatType),
+      replyToMentionInGroup: tcfg.replyToMentionInGroup,
+      entities,
+    });
+    if (!shouldRespond) return true;
+
+    if (isGroupChat && from.is_bot) {
+      const maxConsecutive = tcfg.allowedBotsMaxConsecutive ?? 3;
+      if (!botLoopGuard.allow(chatIdStr, String(from.id), maxConsecutive)) return true;
+    }
+
+    await executeTelegramControlCommand(ctx, contextKey, command);
+    return true;
+  };
 
   const unregisterMediaGroupFinalizerIfIdle = () => {
     if (mediaGroupBuffer.size > 0 || !unregisterMediaGroupFinalizer) return;
@@ -1699,6 +1797,16 @@ export async function startTelegramBot(opts: {
 
     if (mediaEnabled && message.media_group_id && candidates.length > 0) {
       const groupKey = `${message.chat.id}:${message.media_group_id}`;
+      if (handledMediaGroupIds.has(groupKey)) return;
+
+      if (await tryHandleImmediateMediaGroupControl(ctx)) {
+        rememberHandledMediaGroup(groupKey);
+        mediaGroupBuffer.cancel(groupKey);
+        unregisterMediaGroupFinalizerIfIdle();
+        return;
+      }
+
+      if (handledMediaGroupIds.has(groupKey)) return;
       const mediaContextKey = getTelegramContextKey(message);
       const receivedGeneration = getGeneration(mediaContextKey);
       const admission = mediaGroupBuffer.add(groupKey, { ctx, candidates, receivedGeneration });

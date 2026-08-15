@@ -10,7 +10,7 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import cron, { type ScheduledTask } from 'node-cron';
-import { isTransientNetworkError } from './errors.js';
+import { isNonRetryableError, isTransientNetworkError } from './errors.js';
 /** 一時的なネットワークエラー時のリトライ待機時間 (ms)。テストから上書き可能 */
 export const TRANSIENT_RETRY_DELAY_MS = process.env.VITEST ? 50 : 15_000;
 
@@ -404,7 +404,7 @@ export class Scheduler {
       // 一時的なネットワークエラー (DNS 一時失敗・接続タイムアウト等) は
       // バックオフ後に 1 回だけリトライする。エージェント側のタイムアウトや
       // 利用上限はリトライしない (isTransientNetworkError で判別)
-      if (isTransientNetworkError(error)) {
+      if (!isNonRetryableError(error) && isTransientNetworkError(error)) {
         console.warn(
           `[scheduler] Transient network error for ${schedule.id}, retrying in ${TRANSIENT_RETRY_DELAY_MS / 1000}s:`,
           error instanceof Error ? error.message : error

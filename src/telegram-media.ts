@@ -439,6 +439,15 @@ export class TelegramMediaGroupBuffer<T> {
     return { isNew: current === undefined, ready };
   }
 
+  cancel(key: string): T[] | undefined {
+    const group = this.groups.get(key);
+    if (!group) return undefined;
+    clearTimeout(group.timer);
+    this.groups.delete(key);
+    group.resolve(undefined);
+    return group.items;
+  }
+
   drainAll(): T[][] {
     const pending = [...this.groups.values()].map((group) => group.items);
     for (const group of this.groups.values()) {
