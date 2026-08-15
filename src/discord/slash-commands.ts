@@ -13,30 +13,16 @@ import {
   type EffortLevel,
   type DiscordCompletionNotifyMode,
 } from '../config.js';
-import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
-import {
-  getSupportedEffortLevels,
-  requiresExplicitModelForEffort,
-  supportsEffort,
-} from '../backend-effort.js';
+import type { AgentRunner, RunResult } from '../agent-runner.js';
+import { getSupportedEffortLevels } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
-import {
-  getChannelAutoReply,
-  getChannelCompletionNotifyMode,
-  getChannelThreadMode,
-  getReplySuggestionsEnabled,
-  loadReplySuggestionsEnabled,
-  loadSettings,
-  formatSettings,
-  saveSettings,
-} from '../settings.js';
+import { loadReplySuggestionsEnabled, loadSettings, formatSettings } from '../settings.js';
 import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
-import { updateEnvKeyValue } from '../env-persist.js';
 import { getSession, setSession, closeActiveSession, ensureSession } from '../sessions.js';
 import { splitMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
@@ -80,6 +66,7 @@ import { discoverBackendModels, type BackendModelDiscovery } from '../backend-mo
 import { StreamSession } from '../stream-session.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
+import { executeRuntimeSettingsCommand } from '../runtime-settings-command.js';
 
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
@@ -1091,215 +1078,45 @@ export function createInteractionHandler(
     if (interaction.commandName === 'notify') {
       const mode = interaction.options.getString('mode', true) as
         DiscordCompletionNotifyMode | 'default' | 'show';
-      const settings = loadSettings();
-      const defaultMode = config.discord.completionNotifyMode ?? 'message';
-      const currentOverride = settings.discordCompletionNotifyChannels?.[settingsChannelId];
-
-      if (mode === 'show') {
-        const effectiveMode = getChannelCompletionNotifyMode(
-          settings,
-          settingsChannelId,
-          defaultMode
-        );
-        const thresholdMs = config.discord.completionNotifyAfterMs ?? 10_000;
-        const lines = [
-          `🔔 完了通知設定 (<#${settingsChannelId}>)`,
-          `- 適用中: \`${effectiveMode}\``,
-          `- チャンネル設定: ${currentOverride ? `\`${currentOverride}\`` : 'なし'}`,
-          `- 起動時デフォルト: \`${defaultMode}\``,
-          `- 通知閾値: \`${thresholdMs}ms\``,
-          `- 対象: 通常の Discord メッセージターンのみ（スケジュール起点は通知なし）`,
-        ];
-        await interaction.reply(lines.join('\n'));
-        return;
-      }
-
-      const nextChannels = { ...(settings.discordCompletionNotifyChannels ?? {}) };
-      if (mode === 'default') {
-        delete nextChannels[settingsChannelId];
-      } else {
-        nextChannels[settingsChannelId] = mode;
-      }
-
-      const saved = saveSettings({
-        discordCompletionNotifyChannels:
-          Object.keys(nextChannels).length > 0 ? nextChannels : undefined,
-      });
-      const effectiveMode = getChannelCompletionNotifyMode(saved, settingsChannelId, defaultMode);
-      const action =
-        mode === 'default'
-          ? `起動時デフォルト \`${defaultMode}\` に戻しました`
-          : `\`${mode}\` に設定しました`;
       await interaction.reply(
-        `🔔 <#${settingsChannelId}> の完了通知を${action}\n現在の適用値: \`${effectiveMode}\`\n対象: 通常の Discord メッセージターンのみ（スケジュール起点は通知なし）`
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'notify',
+            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
+            value: mode,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
       );
       return;
     }
 
     if (interaction.commandName === 'backend') {
       const sub = interaction.options.getSubcommand();
-
-      if (sub === 'show') {
-        const resolved = agentRunner.resolveForChannel(settingsChannelId);
-        const override = resolver.getChannelOverride(settingsChannelId);
-        const defaultRes = resolver.getDefault();
-        const lines = [
-          `**現在のバックエンド設定** (<#${settingsChannelId}>)`,
-          `- バックエンド: **${getBackendDisplayName(resolved.backend)}**`,
-        ];
-        if (resolved.model) lines.push(`- モデル: ${resolved.model}`);
-        if (resolved.effort) lines.push(`- effort: ${resolved.effort}`);
-        if (override) {
-          lines.push(`- ソース: チャンネル設定`);
-        } else {
-          lines.push(`- ソース: デフォルト (.env)`);
-        }
-
-        // Local LLM のとき詳細情報を併記
-        if (resolved.backend === 'local-llm') {
-          const llmBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
-          const llmModelEnv = process.env.LOCAL_LLM_MODEL;
-          const llmMode = process.env.LOCAL_LLM_MODE ?? 'agent (default)';
-          const numCtx = process.env.LOCAL_LLM_NUM_CTX ?? '(モデルデフォルト)';
-          const temperature = process.env.LOCAL_LLM_TEMPERATURE ?? '(モデルデフォルト = 1.0)';
-          const maxTokens = process.env.LOCAL_LLM_MAX_TOKENS ?? '8192 (default)';
-          const thinking = process.env.LOCAL_LLM_THINKING ?? 'false (default)';
-
-          lines.push('', '**Local LLM 詳細:**');
-          lines.push(`- base_url: \`${llmBase}\``);
-          if (!resolved.model && llmModelEnv) lines.push(`- model (env): \`${llmModelEnv}\``);
-          lines.push(`- mode: \`${llmMode}\``);
-          lines.push(`- num_ctx: \`${numCtx}\``);
-          lines.push(`- temperature: \`${temperature}\``);
-          lines.push(`- max_tokens: \`${maxTokens}\``);
-          lines.push(`- thinking: \`${thinking}\``);
-        }
-
-        lines.push(
-          ``,
-          `**デフォルト:** ${getBackendDisplayName(defaultRes.backend)}${defaultRes.model ? ` (${defaultRes.model})` : ''}`
-        );
-        await interaction.reply(lines.join('\n'));
-        return;
-      }
-
-      if (sub === 'set') {
-        const backendValue = interaction.options.getString('type', true) as AgentBackend;
-        const modelValue = interaction.options.getString('model') ?? undefined;
-        const rawEffort = interaction.options.getString('effort');
-        const effortValue =
-          rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
-
-        // 許可チェック: ALLOWED_BACKENDS 未設定時は全 backend 許可
-        if (!resolver.isBackendAllowed(backendValue)) {
-          const allowedBackends = resolver.getAllowedBackends();
-          await interaction.reply({
-            content: `❌ バックエンド \`${backendValue}\` は許可されていません\n許可: ${allowedBackends.map((b) => getBackendDisplayName(b)).join(', ')}`,
-            ephemeral: true,
-          });
-          return;
-        }
-        if (modelValue && !resolver.isModelAllowed(modelValue)) {
-          await interaction.reply({
-            content: `❌ モデル \`${modelValue}\` は許可されていません`,
-            ephemeral: true,
-          });
-          return;
-        }
-        if (effortValue && !supportsEffort(backendValue, effortValue)) {
-          const supported = getSupportedEffortLevels(backendValue);
-          await interaction.reply({
-            content:
-              supported.length > 0
-                ? `❌ バックエンド \`${backendValue}\` は effort \`${effortValue}\` に対応していません\n対応: ${supported.map((effort) => `\`${effort}\``).join(', ')}`
-                : `❌ バックエンド \`${backendValue}\` は effort に対応していません`,
-            ephemeral: true,
-          });
-          return;
-        }
-        if (effortValue && requiresExplicitModelForEffort(backendValue) && !modelValue) {
-          await interaction.reply({
-            content: `❌ バックエンド \`${backendValue}\` で effort を指定するにはモデルの明示指定が必要です`,
-            ephemeral: true,
-          });
-          return;
-        }
-
-        // Local LLMの場合、Ollamaにモデルが存在するか確認
-        if (backendValue === 'local-llm' && modelValue) {
-          try {
-            const ollamaBase = process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434';
-            const res = await fetch(`${ollamaBase}/api/tags`, {
-              signal: AbortSignal.timeout(3000),
-            });
-            if (res.ok) {
-              const data = (await res.json()) as {
-                models?: Array<{ name: string }>;
-              };
-              const modelNames = data.models?.map((m) => m.name) ?? [];
-              // "qwen3.5:9b" と "qwen3.5:9b" の完全一致、または "qwen3.5" のようなプレフィックス一致
-              const found = modelNames.some(
-                (n) => n === modelValue || n.startsWith(modelValue + ':')
-              );
-              if (!found) {
-                await interaction.reply({
-                  content: `❌ モデル \`${modelValue}\` はOllamaにインストールされていません\nインストール済み: ${modelNames.map((n) => `\`${n}\``).join(', ')}`,
-                  ephemeral: true,
-                });
-                return;
-              }
-            }
-          } catch {
-            // Ollama接続失敗は無視（モデル確認をスキップ）
-          }
-        }
-
-        // channelOverrides に保存
-        resolver.setChannelOverride(settingsChannelId, {
+      const backendValue =
+        sub === 'set' ? (interaction.options.getString('type', true) as AgentBackend) : undefined;
+      const modelValue =
+        sub === 'set' ? (interaction.options.getString('model') ?? undefined) : undefined;
+      const rawEffort = sub === 'set' ? interaction.options.getString('effort') : undefined;
+      const effortValue =
+        rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
+      const result = await executeRuntimeSettingsCommand(
+        {
+          name: 'backend',
+          action: sub,
           backend: backendValue,
           model: modelValue,
           effort: effortValue,
-        });
-
-        // セッション & ランナー破棄
-        agentRunner.switchBackend(settingsChannelId);
-
-        // 切り替え結果を明確に表示
-        const display = getBackendDisplayName(backendValue);
-        const resolvedModel =
-          modelValue ||
-          (backendValue === 'local-llm'
-            ? process.env.LOCAL_LLM_MODEL || '(デフォルト)'
-            : backendValue === 'claude-code'
-              ? process.env.AGENT_MODEL || 'Claude (デフォルト)'
-              : backendValue === 'cursor'
-                ? process.env.AGENT_MODEL || 'Cursor (デフォルト)'
-                : backendValue === 'grok'
-                  ? process.env.AGENT_MODEL || 'Grok (デフォルト)'
-                  : backendValue === 'antigravity'
-                    ? process.env.AGENT_MODEL || 'Antigravity (デフォルト)'
-                    : backendValue === 'github-copilot'
-                      ? process.env.AGENT_MODEL || 'GitHub Copilot (デフォルト)'
-                      : '(デフォルト)');
-        const lines = [
-          `🔄 モデルを切り替えました。新しいセッションを開始します。`,
-          `- バックエンド: **${display}**`,
-          `- モデル: **${resolvedModel}**`,
-        ];
-        if (effortValue) lines.push(`- effort: **${effortValue}**`);
-        await interaction.reply(lines.join('\n'));
-        return;
-      }
-
-      if (sub === 'reset') {
-        resolver.deleteChannelOverride(settingsChannelId);
-        agentRunner.switchBackend(settingsChannelId);
-        const defaultRes = resolver.getDefault();
-        await interaction.reply(
-          `🔄 デフォルト (**${getBackendDisplayName(defaultRes.backend)}**) に戻しました。新しいセッションを開始します。`
-        );
-        return;
-      }
+          channelId: settingsChannelId,
+          platform: 'discord',
+        },
+        { config, resolver, modelDiscovery: discoverBackendModels }
+      );
+      if (sub !== 'show') agentRunner.switchBackend(settingsChannelId);
+      await interaction.reply(result);
+      return;
     }
 
     if (interaction.commandName === 'models') {
@@ -1377,85 +1194,36 @@ export function createInteractionHandler(
         await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
         return;
       }
-      const chId = settingsChannelId;
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      const settings = loadSettings();
-      const channels = { ...(settings.discordAutoReplyChannels ?? {}) };
-      const defaultEnabled = false;
-      const currentOverride = settings.discordAutoReplyChannels?.[chId];
-
-      if (mode === 'show') {
-        const current = getChannelAutoReply(settings, chId, defaultEnabled);
-        await interaction.reply(
-          `💬 メンションなし応答 (<#${chId}>): ${current ? 'ON' : 'OFF'}\n` +
-            `- チャンネル設定: ${currentOverride === undefined ? 'なし' : currentOverride ? '`on`' : '`off`'}\n` +
-            `- 起動時デフォルト: \`off\`\n` +
-            `- ON: このチャンネルではメンションなしで応答\n` +
-            `- OFF: メンションまたはDMのみ応答\n` +
-            `- チャンネル設定の保存先: \`settings.json\``
-        );
-        return;
-      }
-
-      if (mode === 'default') {
-        delete channels[chId];
-      } else if (mode === 'on') {
-        channels[chId] = true;
-      } else {
-        channels[chId] = false;
-      }
-      const saved = saveSettings({
-        discordAutoReplyChannels: Object.keys(channels).length > 0 ? channels : undefined,
-      });
-      const effective = getChannelAutoReply(saved, chId, defaultEnabled);
-
-      const action =
-        mode === 'default' ? '起動時デフォルト `off` に戻しました' : `\`${mode}\` に設定しました`;
       await interaction.reply(
-        `💬 <#${chId}> のメンションなし応答を${action}\n現在の適用値: \`${effective ? 'on' : 'off'}\``
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'autoreply',
+            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
+            value: mode,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
       );
       return;
     }
 
     if (interaction.commandName === 'replysuggestions') {
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      const settings = loadSettings();
-      const platformDefaults = {
-        Discord: config.discord.replySuggestions !== false,
-        Slack: config.slack.replySuggestions !== false,
-        Web: config.web.replySuggestions,
-      };
-
-      if (mode === 'show') {
-        const override = settings.replySuggestionsEnabled;
-        const effective = Object.entries(platformDefaults)
-          .map(
-            ([platform, defaultEnabled]) =>
-              `${platform}: ${getReplySuggestionsEnabled(settings, defaultEnabled) ? 'ON' : 'OFF'}`
-          )
-          .join(' / ');
-        await interaction.reply(
-          `💬 回答候補の全体設定: ${override === undefined ? '起動時設定' : override ? 'ON' : 'OFF'}\n` +
-            `現在の適用値: ${effective}\n` +
-            `OFF時は候補生成指示をプロンプトへ追加しないため、追加トークン・待ち時間は発生しません。`
-        );
-        return;
-      }
-
-      const saved = saveSettings({
-        replySuggestionsEnabled: mode === 'default' ? undefined : mode === 'on',
-      });
-      const status =
-        mode === 'default'
-          ? '起動時設定に戻しました'
-          : `${mode === 'on' ? 'ON' : 'OFF'} に設定しました`;
-      const effective = Object.entries(platformDefaults)
-        .map(
-          ([platform, defaultEnabled]) =>
-            `${platform}: ${getReplySuggestionsEnabled(saved, defaultEnabled) ? 'ON' : 'OFF'}`
+      await interaction.reply(
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'replysuggestions',
+            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
+            value: mode,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
         )
-        .join(' / ');
-      await interaction.reply(`💬 回答候補を${status}\n現在の適用値: ${effective}`);
+      );
       return;
     }
 
@@ -1464,30 +1232,18 @@ export function createInteractionHandler(
         await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
         return;
       }
-      const wasEnabled = config.discord.respondToBotsEnabled ?? false;
-      const nextEnabled = !wasEnabled;
-      config.discord.respondToBotsEnabled = nextEnabled;
-
-      // .env に永続化 (Docker 環境で .env ファイルが無い場合は graceful skip)
-      const persistResult = updateEnvKeyValue(
-        'RESPOND_TO_BOTS_ENABLED',
-        nextEnabled ? 'true' : 'false'
+      await interaction.reply(
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'respondtobots',
+            action: 'set',
+            value: config.discord.respondToBotsEnabled ? 'off' : 'on',
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
       );
-      if (!persistResult.ok) {
-        console.warn(
-          `[xangi] RESPOND_TO_BOTS_ENABLED persistence skipped: ${persistResult.reason}`
-        );
-      }
-
-      const whitelist = config.discord.respondToBots ?? [];
-      const target =
-        whitelist.length === 0
-          ? '(RESPOND_TO_BOTS 未設定)'
-          : whitelist.includes('*')
-            ? '全 bot'
-            : whitelist.join(', ');
-      const status = nextEnabled ? '✅ ON' : '❌ OFF';
-      await interaction.reply(`bot メッセージへの応答: ${status} / 反応対象: ${target}`);
       return;
     }
 
@@ -1498,43 +1254,17 @@ export function createInteractionHandler(
       }
 
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      const settings = loadSettings();
-      const defaultEnabled = config.discord.replyInThread ?? false;
-      const currentOverride = settings.discordThreadModeChannels?.[settingsChannelId];
-
-      if (mode === 'show') {
-        const current = getChannelThreadMode(settings, settingsChannelId, defaultEnabled);
-        const status = current ? 'ON' : 'OFF';
-        await interaction.reply(
-          `🧵 Discord スレッドモード (<#${settingsChannelId}>): ${status}\n` +
-            `- チャンネル設定: ${currentOverride === undefined ? 'なし' : currentOverride ? '`on`' : '`off`'}\n` +
-            `- 起動時デフォルト: \`${defaultEnabled ? 'on' : 'off'}\`\n` +
-            `- ON: 通常メッセージへの応答を発言ごとのスレッドに投稿\n` +
-            `- OFF: チャンネル直下に返信\n` +
-            `- チャンネル設定の保存先: \`settings.json\`\n` +
-            `- 全体デフォルトの env: \`DISCORD_REPLY_IN_THREAD\``
-        );
-        return;
-      }
-
-      const nextChannels = { ...(settings.discordThreadModeChannels ?? {}) };
-      if (mode === 'default') {
-        delete nextChannels[settingsChannelId];
-      } else {
-        nextChannels[settingsChannelId] = mode === 'on';
-      }
-
-      const saved = saveSettings({
-        discordThreadModeChannels: Object.keys(nextChannels).length > 0 ? nextChannels : undefined,
-      });
-
-      const effective = getChannelThreadMode(saved, settingsChannelId, defaultEnabled);
-      const action =
-        mode === 'default'
-          ? `起動時デフォルト \`${defaultEnabled ? 'on' : 'off'}\` に戻しました`
-          : `\`${mode}\` に設定しました`;
       await interaction.reply(
-        `🧵 <#${settingsChannelId}> の Discord スレッドモードを${action}\n現在の適用値: \`${effective ? 'on' : 'off'}\``
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'threadmode',
+            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
+            value: mode,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
       );
       return;
     }
@@ -1544,59 +1274,20 @@ export function createInteractionHandler(
         await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
         return;
       }
-      const chId = settingsChannelId;
       const mode = interaction.options.getString('mode', true) as
         'agent' | 'lite' | 'chat' | 'default' | 'show';
-
-      // show: 現在の設定を表示するだけ
-      if (mode === 'show') {
-        const current = resolver.getChannelOverride(chId);
-        const resolved = resolver.resolve(chId);
-
-        // 起動時 env LOCAL_LLM_MODE（未指定なら 'agent' default）
-        const envMode = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
-        const startupMode =
-          envMode === 'agent' || envMode === 'lite' || envMode === 'chat' ? envMode : 'agent';
-
-        // 実際に適用される mode（チャンネル override 優先、無ければ起動時 env）
-        const appliedMode = resolved.localLlmMode ?? startupMode;
-        const source = resolved.localLlmMode
-          ? 'チャンネル個別 override (CHANNEL_OVERRIDES)'
-          : envMode
-            ? `起動時 env LOCAL_LLM_MODE=${envMode}`
-            : `起動時 default (LOCAL_LLM_MODE 未指定 → agent)`;
-
-        const lines: string[] = [
-          `📍 <#${chId}> の Local LLM 設定`,
-          ``,
-          `**適用中のモード:** \`${appliedMode}\``,
-          `**由来:** ${source}`,
-          ``,
-          `### 設定の内訳`,
-          `- backend: \`${resolved.backend}\``,
-          `- model: ${resolved.model ? `\`${resolved.model}\`` : '(env デフォルト)'}`,
-          `- 起動時 env \`LOCAL_LLM_MODE\`: \`${envMode || '(未指定 → agent)'}\``,
-          `- チャンネル override (\`localLlmMode\`): ${current?.localLlmMode ? `\`${current.localLlmMode}\`` : 'なし'}`,
-          ``,
-          `### モード別の機能`,
-          `- \`agent\`: tools / skills / xangi-commands ON、triggers OFF`,
-          `- \`lite\`: tools / xangi-commands / triggers ON、skills OFF`,
-          `- \`chat\`: 全機能 OFF（純粋会話）`,
-        ];
-        await interaction.reply(lines.join('\n'));
-        return;
-      }
-
-      // default: override 削除（その他のフィールドは保持）
-      if (mode === 'default') {
-        resolver.setChannelLocalLlmMode(chId, null);
-        await interaction.reply(`✅ <#${chId}> の Local LLM mode override を削除しました`);
-        return;
-      }
-
-      // agent / lite / chat: 設定
-      resolver.setChannelLocalLlmMode(chId, mode);
-      await interaction.reply(`✅ <#${chId}> の Local LLM mode を \`${mode}\` に設定しました`);
+      await interaction.reply(
+        await executeRuntimeSettingsCommand(
+          {
+            name: 'llmmode',
+            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
+            value: mode,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
+      );
       return;
     }
 

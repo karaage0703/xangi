@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../web-ui/src/api.js';
-import { uploadForm } from '../web-ui/src/upload.js';
+import {
+  formatUploadBytes,
+  uploadErrorMessage,
+  uploadForm,
+  uploadTooLargeMessage,
+} from '../web-ui/src/upload.js';
 
 class FakeUploadRequest extends EventTarget {
   static status = 200;
@@ -61,5 +66,23 @@ describe('Web upload progress', () => {
       FakeUploadRequest.status = 200;
       FakeUploadRequest.responseText = '{"files":[]}';
     }
+  });
+
+  it('formats binary sizes and explains the configured upload limit', () => {
+    expect(formatUploadBytes(64 * 1024 * 1024)).toBe('64 MiB');
+    expect(formatUploadBytes(32.25 * 1024 * 1024)).toBe('32.3 MiB');
+    expect(uploadTooLargeMessage(80 * 1024 * 1024, 64 * 1024 * 1024)).toBe(
+      'Upload too large (limit: 64 MiB, selected: 80 MiB). Choose a smaller file or increase WEB_CHAT_UPLOAD_MAX_MB.'
+    );
+  });
+
+  it('uses the server limit for a 413 upload response', () => {
+    const error = new ApiError(
+      413,
+      JSON.stringify({ error: 'Upload too large', maxBytes: 48 * 1024 * 1024 })
+    );
+    expect(uploadErrorMessage(error, 52 * 1024 * 1024, 64 * 1024 * 1024)).toBe(
+      'Upload too large (limit: 48 MiB, selected: 52 MiB). Choose a smaller file or increase WEB_CHAT_UPLOAD_MAX_MB.'
+    );
   });
 });

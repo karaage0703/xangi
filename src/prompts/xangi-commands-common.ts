@@ -18,6 +18,10 @@ xangiの操作方法や引数を推測しない。必要な時だけ xangi tool 
 
 ユーザーがモデル選択を明示依頼した場合だけ、説明・effort・タスク特性を比較し、xangi tool models --backend <backend> --use <exact-model-id> [--effort <level>] [--channel <settings-channel-id>] を実行する。選択は次のturnから適用される。Discordスレッドでは親設定チャンネルIDを指定し、明示依頼なしに自動変更しない。`;
 
+export const XANGI_COMMANDS_RUNTIME_SETTINGS = `## AI向けランタイム設定
+
+ユーザーが現在のチャンネル設定の確認・変更を明示依頼した場合は、引数を推測せず xangi tool help runtime_settings を確認してから xangi tool runtime_settings を実行する。対象は backend / llmmode / autoreply / notify / threadmode / replysuggestions / respondtobots。変更は起動中メモリと永続設定へ即時反映され、backend / llmmodeは次のturnから適用される。Discordスレッドでは --channel <親設定チャンネルID> を指定する。restart / stop / new / schedule / skillをこの経路で実行しない。`;
+
 /** TRIGGER_ENABLED=true かつ対応platformの時だけ注入する。 */
 export const XANGI_COMMANDS_TRIGGER = `## イベントトリガー
 

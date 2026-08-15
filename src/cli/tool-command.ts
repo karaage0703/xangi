@@ -3,6 +3,7 @@ import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
 export interface ToolCommandEnvironment {
   XANGI_TOOL_SERVER?: string;
   XANGI_CHANNEL_ID?: string;
+  XANGI_PLATFORM?: string;
   XANGI_DEFAULT_CHANNEL?: string;
   DATA_DIR?: string;
   WORKSPACE_PATH?: string;
@@ -71,6 +72,7 @@ export async function runToolCommand(
   }
 
   const channelId = env.XANGI_CHANNEL_ID || env.XANGI_DEFAULT_CHANNEL;
+  const platform = env.XANGI_PLATFORM;
   let response: Response;
   try {
     response = await (options.fetchImpl ?? fetch)(`${serverUrl}/api/execute`, {
@@ -79,7 +81,10 @@ export async function runToolCommand(
       body: JSON.stringify({
         command,
         flags,
-        context: channelId ? { channelId } : {},
+        context: {
+          ...(channelId ? { channelId } : {}),
+          ...(platform ? { platform } : {}),
+        },
       }),
     });
   } catch (error) {

@@ -153,7 +153,7 @@ export function parseCursorModels(output: string): BackendModel[] {
 export function parseGrokModels(output: string): BackendModel[] {
   const models: BackendModel[] = [];
   for (const line of output.split('\n')) {
-    const match = line.trim().match(/^\*\s+([^\s]+)(?:\s+\(default\))?$/i);
+    const match = line.trim().match(/^[*-]\s+([^\s]+)(?:\s+\(default\))?$/i);
     if (!match) continue;
     models.push({ id: match[1], isDefault: /\(default\)$/i.test(line.trim()) });
   }

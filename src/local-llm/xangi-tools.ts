@@ -348,6 +348,18 @@ const systemRestartHandler: ToolHandler = {
   },
 };
 
+const webStatusHandler: ToolHandler = {
+  name: 'web_status',
+  description: '現在のWeb UIアクセス先、bind、port、Chat・WorkspaceのHTTP状態を取得する。',
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  async execute(): Promise<ToolResult> {
+    return runXangiCmd(['web_status']);
+  },
+};
+
 const systemSettingsHandler: ToolHandler = {
   name: 'system_settings',
   description: 'xangiの設定を変更または表示する。',
@@ -367,6 +379,64 @@ const systemSettingsHandler: ToolHandler = {
     return runXangiCmd(cliArgs);
   },
 };
+
+function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandler {
+  return {
+    name: 'runtime_settings',
+    description:
+      'ユーザーが明示した場合に、許可されたランタイム設定を確認・変更する。任意のスラッシュコマンドは実行しない。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '設定名',
+          enum: [
+            'backend',
+            'llmmode',
+            'autoreply',
+            'notify',
+            'threadmode',
+            'replysuggestions',
+            'respondtobots',
+          ],
+        },
+        action: {
+          type: 'string',
+          description: '操作',
+          enum: ['show', 'set', 'reset'],
+        },
+        value: { type: 'string', description: '設定値' },
+        backend: { type: 'string', description: 'backend設定時のbackend' },
+        model: { type: 'string', description: 'backend設定時のmodel' },
+        effort: { type: 'string', description: 'backend設定時のeffort' },
+        channel: { type: 'string', description: '設定対象チャンネルID' },
+        platform: {
+          type: 'string',
+          description: '対象プラットフォーム',
+          enum: ['discord', 'slack', 'web', 'line', 'telegram'],
+        },
+      },
+      required: ['name', 'action'],
+    },
+    async execute(args, context): Promise<ToolResult> {
+      const flags: Record<string, string> = {
+        name: String(args.name),
+        action: String(args.action),
+      };
+      for (const key of ['value', 'backend', 'model', 'effort', 'channel', 'platform']) {
+        if (args[key] !== undefined) flags[key] = String(args[key]);
+      }
+      const env: Record<string, string> = {};
+      if (context.channelId) env.XANGI_CHANNEL_ID = context.channelId;
+      if (defaultPlatform) env.XANGI_PLATFORM = defaultPlatform;
+      return runXangiCmd(
+        ['runtime_settings', ...flagsToArgs(flags)],
+        Object.keys(env).length > 0 ? env : undefined
+      );
+    },
+  };
+}
 
 // ─── History Tools ──────────────────────────────────────────────────
 
@@ -573,8 +643,13 @@ export function getScheduleTools(platform?: ChatPlatform): ToolHandler[] {
 }
 
 /** システム関連ツール */
-export function getSystemTools(): ToolHandler[] {
-  return [systemRestartHandler, systemSettingsHandler];
+export function getSystemTools(platform?: ChatPlatform): ToolHandler[] {
+  return [
+    webStatusHandler,
+    systemRestartHandler,
+    systemSettingsHandler,
+    createRuntimeSettingsHandler(platform),
+  ];
 }
 
 /** 履歴取得ツール (web_history / slack_history)。プラットフォームに応じてランナーが呼ぶ */
@@ -595,7 +670,7 @@ export function getAllXangiTools(): ToolHandler[] {
 
 /** 実行プラットフォームに応じたxangiツール */
 export function getXangiTools(platform?: ChatPlatform): ToolHandler[] {
-  const commonTools = [...getScheduleTools(platform), ...getSystemTools()];
+  const commonTools = [...getScheduleTools(platform), ...getSystemTools(platform)];
 
   if (platform === 'web') {
     return [...getWebTools(), ...commonTools];

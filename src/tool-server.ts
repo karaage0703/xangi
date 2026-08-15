@@ -24,17 +24,24 @@ import { discoverBackendModels } from './backend-models.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { executeModelsCommand, selectModelForNextTurn } from './models-command.js';
 import { formatXangiCmdHelp } from './cli/xangi-cmd-help.js';
+import { webStatusCmd } from './web-status.js';
+import type { Config } from './config.js';
+import type { ChatPlatform } from './prompts/index.js';
+import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
 let backendResolver: BackendResolver | null = null;
+let runtimeConfig: Config | null = null;
 let modelDiscovery: typeof discoverBackendModels = discoverBackendModels;
+let webStatusCommand: typeof webStatusCmd = webStatusCmd;
 
 interface ToolRequest {
   command: string;
   flags: Record<string, string>;
   context?: {
     channelId?: string;
+    platform?: ChatPlatform;
   };
 }
 
@@ -90,6 +97,25 @@ async function executeCommand(
       );
     }
     return executeModelsCommand(flags.backend, backendResolver, modelDiscovery);
+  } else if (command === 'runtime_settings') {
+    if (!backendResolver || !runtimeConfig) {
+      throw new ValidationError('runtime_settings is not available on this instance');
+    }
+    return executeRuntimeSettingsCommand(
+      {
+        name: flags.name,
+        action: flags.action,
+        value: flags.value,
+        backend: flags.backend,
+        model: flags.model,
+        effort: flags.effort,
+        channelId: flags.channel ?? context?.channelId,
+        platform: flags.platform ?? context?.platform,
+      },
+      { config: runtimeConfig, resolver: backendResolver, modelDiscovery }
+    );
+  } else if (command === 'web_status') {
+    return webStatusCommand();
   } else if (command === 'trigger') {
     if (!eventTrigger) {
       throw new ValidationError('Trigger is not available on this instance');
@@ -195,11 +221,15 @@ function persistToolServerPort(port: number): void {
 export function startToolServer(options?: {
   eventTrigger?: EventTrigger | null;
   backendResolver?: BackendResolver | null;
+  config?: Config | null;
   modelDiscovery?: typeof discoverBackendModels;
+  webStatusCommand?: typeof webStatusCmd;
 }): void {
   eventTrigger = options?.eventTrigger ?? null;
   backendResolver = options?.backendResolver ?? null;
+  runtimeConfig = options?.config ?? null;
   modelDiscovery = options?.modelDiscovery ?? discoverBackendModels;
+  webStatusCommand = options?.webStatusCommand ?? webStatusCmd;
   server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 
@@ -327,4 +357,5 @@ export function stopToolServer(): void {
     server = null;
     delete process.env.XANGI_TOOL_SERVER;
   }
+  runtimeConfig = null;
 }

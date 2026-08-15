@@ -67,6 +67,7 @@ import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
 import { flowFromHostPlatform, getInterChatConfig } from './inter-instance-chat/index.js';
 import { setupAutoTalk } from './inter-instance-chat/auto-talk.js';
 import { resolveAccessUrls, formatAccessUrls, primaryAccessUrl } from './access-urls.js';
+import { resolveWebChatHost, resolveWebChatPort } from './web-status.js';
 import { handleEventsStreamRequest } from './events-stream-server.js';
 import { handlePetInboxRequest, isInboxPath } from './pet-inbox-server.js';
 import { handleEvenTerminalRequest } from './even-terminal-server.js';
@@ -98,12 +99,12 @@ import { registerStreamFinalizer } from './stream-finalizer.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const DEFAULT_PORT = 18888;
 const SESSION_LIST_LIMIT = 100;
 const SESSION_LIST_MAX_LIMIT = 200;
 const SESSION_MESSAGE_LIMIT = 50;
 const SESSION_MESSAGE_MAX_LIMIT = 200;
-const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const MEBIBYTE = 1024 * 1024;
+const DEFAULT_UPLOAD_MAX_BYTES = 64 * MEBIBYTE;
 const WEB_SCHEDULE_NEW_SESSION_ID = '__new__';
 const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
   '.html',
@@ -181,10 +182,12 @@ function parseDisplayedUserAttachments(
 }
 
 function uploadMaxBytes(): number {
-  const configured = Number(process.env.WEB_CHAT_UPLOAD_MAX_BYTES);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.floor(configured)
-    : DEFAULT_UPLOAD_MAX_BYTES;
+  const configuredMb = Number(process.env.WEB_CHAT_UPLOAD_MAX_MB);
+  if (!Number.isSafeInteger(configuredMb) || configuredMb <= 0) {
+    return DEFAULT_UPLOAD_MAX_BYTES;
+  }
+  const configuredBytes = configuredMb * MEBIBYTE;
+  return Number.isSafeInteger(configuredBytes) ? configuredBytes : DEFAULT_UPLOAD_MAX_BYTES;
 }
 
 function serveFile(
@@ -301,8 +304,8 @@ export function startWebChat(options: WebChatOptions): void {
     replySuggestions: false,
     replySuggestionCount: 3,
   };
-  const port = options.port || parseInt(process.env.WEB_CHAT_PORT || String(DEFAULT_PORT), 10);
-  const host = options.host || process.env.WEB_CHAT_HOST || '0.0.0.0';
+  const port = resolveWebChatPort(options.port).port;
+  const host = resolveWebChatHost(options.host);
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const workspaceBrowser = new WorkspaceBrowser(workdir);
@@ -829,6 +832,7 @@ export function startWebChat(options: WebChatOptions): void {
       res.end(
         JSON.stringify({
           uploadAccept: uploadAccept || null,
+          uploadMaxBytes: uploadMaxBytes(),
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
           interChatEnabled,
           allowedBackends: options.resolver?.getAllowedBackends() ?? [],

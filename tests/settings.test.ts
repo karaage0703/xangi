@@ -9,6 +9,7 @@ import {
   formatSettings,
   clearSettingsCache,
   getChannelAutoReply,
+  getSlackChannelAutoReply,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
   getReplySuggestionsEnabled,
@@ -97,6 +98,27 @@ describe('settings', () => {
       expect(settings.discordAutoReplyChannels).toEqual({
         '123': true,
         '456': false,
+      });
+    });
+
+    it('should load valid Slack auto-reply channel settings', () => {
+      const filePath = join(tempDir, 'settings.json');
+      const { writeFileSync } = require('fs');
+      writeFileSync(
+        filePath,
+        JSON.stringify({
+          slackAutoReplyChannels: {
+            C123ABC: true,
+            C456DEF: false,
+            'bad-channel!': true,
+            C789: 'true',
+          },
+        })
+      );
+
+      expect(loadSettings().slackAutoReplyChannels).toEqual({
+        C123ABC: true,
+        C456DEF: false,
       });
     });
 
@@ -233,6 +255,12 @@ describe('settings', () => {
       expect(result).toContain('Discordメンションなし応答チャンネル設定: 2件');
     });
 
+    it('should include Slack auto-reply channel count', () => {
+      expect(formatSettings({ slackAutoReplyChannels: { C123: true } })).toContain(
+        'Slackメンションなし応答チャンネル設定: 1件'
+      );
+    });
+
     it('should include Discord thread mode channel count', () => {
       const result = formatSettings({
         discordThreadModeChannels: { '123': true, '456': false },
@@ -270,6 +298,14 @@ describe('settings', () => {
     it('should fall back to default mode', () => {
       const mode = getChannelCompletionNotifyMode({}, '123', 'message');
       expect(mode).toBe('message');
+    });
+  });
+
+  describe('getSlackChannelAutoReply', () => {
+    it('should prefer the Slack channel override', () => {
+      expect(getSlackChannelAutoReply({ slackAutoReplyChannels: { C123: false } }, 'C123', true)).toBe(
+        false
+      );
     });
   });
 

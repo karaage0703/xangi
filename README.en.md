@@ -14,6 +14,7 @@ xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI,
 
 - Six AI backends and five chat surfaces
 - Per-channel backend, model, and effort settings with dynamic model discovery
+- Immediate, restart-free updates to allowed channel settings through natural language or native commands
 - Run workspace skills directly from chat
 - Persistent sessions and transcripts, timeout extension, and workspace hooks
 - Scheduler and event-triggered agent turns
@@ -78,6 +79,7 @@ See the [usage guide](docs/en/usage.md#first-install-without-git) for installati
 - Web Chat: initially open `http://127.0.0.1:18888`
 - Discord, Slack, Telegram, or LINE: message the configured bot
 - Health check: `xangi doctor`
+- Web UI URLs and reachability: `xangi tool web_status`
 - Version check: `xangi --version`
 - Connection settings: `xangi settings`
 - If the service was not started during setup: `xangi service start`

@@ -55,8 +55,14 @@ describe('backend model parsers', () => {
   });
 
   it('parses Grok and legacy Antigravity output', () => {
-    expect(parseGrokModels('Available models:\n  * grok-4.5 (default)\n')).toEqual([
-      { id: 'grok-4.5', isDefault: true },
+    expect(
+      parseGrokModels(
+        'Available models:\n  * grok-4.3 (default)\n  - grok-4.5\n  - grok-build-0.1\n'
+      )
+    ).toEqual([
+      { id: 'grok-4.3', isDefault: true },
+      { id: 'grok-4.5', isDefault: false },
+      { id: 'grok-build-0.1', isDefault: false },
     ]);
     expect(
       parseAntigravityModels(
@@ -135,7 +141,7 @@ describe('discoverBackendModels', () => {
         return { stdout: 'auto - Auto (current, default)\n', stderr: '' };
       }
       if (command === 'grok') {
-        return { stdout: '  * grok-4.5 (default)\n', stderr: '' };
+        return { stdout: '  * grok-4.3 (default)\n  - grok-4.5\n', stderr: '' };
       }
       return {
         stdout: JSON.stringify({
@@ -164,6 +170,10 @@ describe('discoverBackendModels', () => {
     await expect(discoverBackendModels('grok', { runner })).resolves.toMatchObject({
       status: 'available',
       source: 'grok models',
+      models: [
+        { id: 'grok-4.3', isDefault: true },
+        { id: 'grok-4.5', isDefault: false },
+      ],
     });
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',

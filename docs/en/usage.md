@@ -84,8 +84,8 @@ Buttons are displayed on response messages.
   - `Stop` — equivalent to `/stop`. Interrupts the task
   - `延長` (Extend) — **doubles the remaining time** (adds residual to the deadline, capped at `TIMEOUT_MAX_MS`)
   - `⏱ MM:SS` — remaining time badge (click does nothing, turns red under 30s)
-- **After completion**: `New` resets the session. `History` shows chronological commentary and tool calls only to the user who clicked it; on Slack, `Close` removes only that ephemeral display
-- **After completion in a Discord thread**: a leftmost `Leave` button replaces `New`. It closes the current session into history, then removes only the user who clicked it from the thread and from that user's sidebar. The conversation log and Discord thread itself are not deleted. The bot requires the Discord Manage Threads permission
+- **After completion**: `New` resets sessions outside threads. Inside a thread, both Discord and Slack show a leftmost `Close` button that closes the current session. `History` shows chronological commentary and tool calls only to the user who clicked it; on Slack, `Close` inside the History view removes only that ephemeral display
+- **`Close` in a Discord thread**: closes the current session into history, then removes only the user who clicked it from the thread and from that user's sidebar. The conversation log and Discord thread itself are not deleted. The bot requires the Discord Manage Threads permission
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
@@ -121,7 +121,7 @@ Programmatic API:
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`; when omitted, adds the current remaining time (doubling it)
 - `POST /api/sessions/:id/close` — Mark the Session Closed, detach its next-input routing pointer, and destroy its runner while preserving conversation history. To reduce accidental actions, the Web UI exposes it from Monitor details
 
-Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Leave` combines completing the Session with removing the requesting user from the thread.
+Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
 
 ## Scheduler
 
@@ -259,6 +259,9 @@ xangi setup
 # Diagnose config and service health without printing secrets
 xangi doctor
 
+# Print Web UI URLs, bind settings, and Chat/Workspace reachability for the running instance as JSON
+xangi tool web_status
+
 # Print the active release or checkout version
 xangi --version
 
@@ -343,6 +346,7 @@ The persistent system prompt does not embed every command example. When the AI n
 | `xangi tool discord_history --channel <ID> [--count N] [--offset M]`             | Get channel history                                                                                                         |
 | `xangi tool discord_message --channel <ID> --message-id <ID>`                    | Get one message without truncating its content                                                                              |
 | `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat current pane history (auto-resolves from `XANGI_CHANNEL_ID=web-chat:<id>`)                                         |
+| `xangi tool web_status`                                                          | Get Web UI URLs, bind/port settings, and Chat/Workspace HTTP status for the running instance as JSON                        |
 | `xangi tool slack_history [--channel <id>] [--count N]`                          | Slack current channel history (auto-resolves from `XANGI_CHANNEL_ID=<channel>`)                                             |
 | `xangi tool discord_send --channel <ID> --message "text"`                        | Send a message                                                                                                              |
 | `xangi tool discord_channels --guild <ID>`                                       | List channels                                                                                                               |
@@ -470,6 +474,9 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
   "discordAutoReplyChannels": {
     "123456789012345678": true
   },
+  "slackAutoReplyChannels": {
+    "C01234567": true
+  },
   "discordCompletionNotifyChannels": {
     "123456789012345678": "mention"
   },
@@ -482,6 +489,7 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | Setting                           | Description                                                                   | Default |
 | --------------------------------- | ----------------------------------------------------------------------------- | ------- |
 | `discordAutoReplyChannels`        | Per-channel mention-free auto-reply settings (`true` / `false`)               | none    |
+| `slackAutoReplyChannels`          | Per-Slack-channel mention-free auto-reply settings (`true` / `false`)          | none    |
 | `discordCompletionNotifyChannels` | Per-channel completion notification overrides (`off` / `message` / `mention`) | none    |
 | `discordThreadModeChannels`       | Per-channel Discord thread reply overrides (`true` / `false`)                 | none    |
 
@@ -517,6 +525,10 @@ You can switch the backend, model, and effort level per channel.
 | `/backend reset`                                 | Reset to the default (.env settings)      |
 
 Switching always starts a new session (conversation history is not carried over).
+It is available on both Discord and Slack. For Slack, register `/backend` in the app settings
+with the Usage Hint `show|set <backend> [--model <model>] [--effort <effort>]|reset`.
+The setting is persisted in `CHANNEL_OVERRIDES` by channel ID and applies to threads in that
+channel from the next message without restarting xangi.
 
 `/models [backend]` is shared by Discord, Slack, Web, Telegram, and LINE. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
 
@@ -532,6 +544,16 @@ When a user asks about model availability in natural language, the system prompt
 xangi tool models --backend codex
 xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
+
+For natural-language setting changes, the agent uses `runtime_settings` rather than executing an arbitrary slash-command string. It accepts structured and validated `show` / `set` / `reset` actions for `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`, then writes through the same persistence path as the native commands. In a Discord thread, pass the parent channel ID via `--channel`.
+
+```bash
+xangi tool runtime_settings --name autoreply --action set --value on
+xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.4 --effort high
+xangi tool runtime_settings --name llmmode --action set --value chat
+```
+
+Lifecycle and arbitrary-execution commands such as `/restart`, `/stop`, `/new`, `/schedule`, and `/skill` are intentionally excluded. After changing the backend, model, or effort, the next turn does not reuse a provider session created under the previous configuration.
 
 When `ALLOWED_MODELS` is configured, the dynamically discovered output is filtered to those allowed models.
 
@@ -1279,7 +1301,7 @@ While an attachment is transferring, desktop and mobile show its name, position 
 | `WEB_CHAT_PORT`             | Web Chat UI port                                                                                                                                                                                        | `18888`             |
 | `WEB_CHAT_HOST`             | Bind host. `127.0.0.1` is reachable only from the same device; remote access requires SSH port forwarding or Tailscale Serve. `0.0.0.0` exposes all interfaces. The Web UI itself has no authentication | `0.0.0.0`           |
 | `WEB_CHAT_UPLOAD_ACCEPT`    | HTML `accept` list for uploads; `.ext` entries are also enforced by the server                                                                                                                          | all types           |
-| `WEB_CHAT_UPLOAD_MAX_BYTES` | Maximum bytes per Web Chat upload request, including multipart headers                                                                                                                                  | `26214400` (25 MiB) |
+| `WEB_CHAT_UPLOAD_MAX_MB`    | Maximum MiB per Web Chat upload request, including multipart headers                                                                                                                                    | `64`                |
 | `WEB_CHAT_DOWNLOAD_ACCEPT`  | Allowed download extensions as a comma-separated `.ext` list                                                                                                                                            | all extensions      |
 
 Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, auto-talk, and the slash-command/skill GUI. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. The auto-talk control is shown only for Web sessions when `INTER_INSTANCE_CHAT_ENABLED=true`. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions remain read-only and can only branch into a Web session.

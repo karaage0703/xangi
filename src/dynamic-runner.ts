@@ -224,10 +224,20 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const appSessionId = options.appSessionId || getActiveSessionId(options.channelId);
     const entry = appSessionId ? getSessionEntry(appSessionId) : undefined;
     const storedBackend = entry?.agent?.backend;
-    if (!storedBackend || storedBackend === resolved.backend) return options;
+    if (!storedBackend) return options;
+
+    const storedModel = entry?.agent?.model;
+    const storedEffort = entry?.agent?.effort;
+    const matchesResolvedConfiguration =
+      storedBackend === resolved.backend &&
+      storedModel === resolved.model &&
+      storedEffort === resolved.effort;
+    if (matchesResolvedConfiguration) return options;
 
     console.warn(
-      `[dynamic-runner] Ignoring ${storedBackend} provider session for ${options.channelId}; resolved backend is ${resolved.backend}`
+      `[dynamic-runner] Ignoring provider session for ${options.channelId}; ` +
+        `stored=${storedBackend}:${storedModel ?? 'default'}:${storedEffort ?? 'default'}, ` +
+        `resolved=${resolved.backend}:${resolved.model ?? 'default'}:${resolved.effort ?? 'default'}`
     );
     return { ...options, sessionId: undefined };
   }

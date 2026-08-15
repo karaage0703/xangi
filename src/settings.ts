@@ -5,6 +5,7 @@ import type { DiscordCompletionNotifyMode } from './config.js';
 export interface Settings {
   replySuggestionsEnabled?: boolean;
   discordAutoReplyChannels?: Record<string, boolean>;
+  slackAutoReplyChannels?: Record<string, boolean>;
   discordCompletionNotifyChannels?: Record<string, DiscordCompletionNotifyMode>;
   discordThreadModeChannels?: Record<string, boolean>;
 }
@@ -53,6 +54,17 @@ function normalizeDiscordBooleanChannels(value: unknown): Record<string, boolean
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeSlackBooleanChannels(value: unknown): Record<string, boolean> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const normalized: Record<string, boolean> = {};
+  for (const [channelId, enabled] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[A-Z0-9]+$/i.test(channelId)) continue;
+    if (typeof enabled === 'boolean') normalized[channelId] = enabled;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeDiscordThreadModeChannels(value: unknown): Record<string, boolean> | undefined {
   return normalizeDiscordBooleanChannels(value);
 }
@@ -89,6 +101,7 @@ export function loadSettings(): Settings {
     const discordAutoReplyChannels = normalizeDiscordBooleanChannels(
       parsed.discordAutoReplyChannels
     );
+    const slackAutoReplyChannels = normalizeSlackBooleanChannels(parsed.slackAutoReplyChannels);
     const discordCompletionNotifyChannels = normalizeDiscordCompletionNotifyChannels(
       parsed.discordCompletionNotifyChannels
     );
@@ -100,6 +113,7 @@ export function loadSettings(): Settings {
         replySuggestionsEnabled: parsed.replySuggestionsEnabled,
       }),
       ...(discordAutoReplyChannels && { discordAutoReplyChannels }),
+      ...(slackAutoReplyChannels && { slackAutoReplyChannels }),
       ...(discordCompletionNotifyChannels && { discordCompletionNotifyChannels }),
       ...(discordThreadModeChannels && { discordThreadModeChannels }),
     };
@@ -139,10 +153,12 @@ export function formatSettings(settings: Settings): string {
     settings.discordCompletionNotifyChannels ?? {}
   ).length;
   const threadModeChannels = Object.keys(settings.discordThreadModeChannels ?? {}).length;
+  const slackAutoReplyChannels = Object.keys(settings.slackAutoReplyChannels ?? {}).length;
   const lines = [
     '⚙️ **現在の設定**',
     `- 回答候補の全体設定: ${settings.replySuggestionsEnabled === undefined ? '起動時設定' : settings.replySuggestionsEnabled ? 'ON' : 'OFF'}`,
     `- Discordメンションなし応答チャンネル設定: ${autoReplyChannels}件`,
+    `- Slackメンションなし応答チャンネル設定: ${slackAutoReplyChannels}件`,
     `- Discord完了通知チャンネル設定: ${completionNotifyChannels}件`,
     `- Discordスレッドモードチャンネル設定: ${threadModeChannels}件`,
   ];
@@ -168,6 +184,14 @@ export function getChannelAutoReply(
   defaultEnabled: boolean
 ): boolean {
   return settings.discordAutoReplyChannels?.[channelId] ?? defaultEnabled;
+}
+
+export function getSlackChannelAutoReply(
+  settings: Settings,
+  channelId: string,
+  defaultEnabled: boolean
+): boolean {
+  return settings.slackAutoReplyChannels?.[channelId] ?? defaultEnabled;
 }
 
 export function getChannelCompletionNotifyMode(

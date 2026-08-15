@@ -206,6 +206,7 @@ async function main() {
   startToolServer({
     eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler),
     backendResolver: resolver,
+    config,
   });
 
   // Discord ボット: トークン未設定 (Web オンリーモード等) では Client を生成しない。

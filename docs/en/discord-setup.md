@@ -45,7 +45,7 @@ On the same Bot page, configure **Privileged Gateway Intents**:
 3. Under **BOT PERMISSIONS**, select:
    - Send Messages
    - Send Messages in Threads
-   - Manage Threads (required when using the `Leave` button to remove the user who clicked it)
+   - Manage Threads (required when using the thread `Close` button to remove the user who clicked it)
    - Read Message History
    - Attach Files (required to send generated files)
    - Add Reactions
@@ -119,7 +119,7 @@ Try `/new` or `/skill` in your Discord server, or mention the bot:
 
 Open `xangi settings` and confirm that Discord is marked as configured.
 
-### The `Leave` button does not remove the user
+### The thread `Close` button does not remove the user
 
 Enable Manage Threads for the bot role or the target channel. Without it, the Discord API returns `Missing Access` or `Missing Permissions`.
 

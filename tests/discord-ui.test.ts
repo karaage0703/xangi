@@ -16,13 +16,13 @@ function customIds(options?: {
 }
 
 describe('createCompletedButtons', () => {
-  it('shows Leave only for thread responses', () => {
+  it('shows Close only for thread responses', () => {
     expect(customIds()).toEqual(['xangi_new']);
     expect(customIds({ showTools: true })).toEqual(['xangi_new', 'xangi_tools']);
     expect(customIds({ showLeave: true })).toEqual(['xangi_thread_leave']);
   });
 
-  it('puts Leave first and omits New for thread responses', () => {
+  it('puts Close first and omits New for thread responses', () => {
     const row = createCompletedButtons({
       showTools: true,
       showLeave: true,
@@ -33,7 +33,7 @@ describe('createCompletedButtons', () => {
       'xangi_tools',
       'xangi_reply_suggestions',
     ]);
-    expect(row.components[0]?.data.label).toBe('Leave');
+    expect(row.components[0]?.data.label).toBe('Close');
     expect(row.components[1]?.data.label).toBe('History');
   });
 

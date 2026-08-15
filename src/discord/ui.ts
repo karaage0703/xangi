@@ -113,7 +113,7 @@ export function createCompletedButtons(options?: {
     row.addComponents(
       new ButtonBuilder()
         .setCustomId('xangi_thread_leave')
-        .setLabel('Leave')
+        .setLabel('Close')
         .setStyle(ButtonStyle.Secondary)
     );
   } else {
