@@ -239,7 +239,9 @@ const scheduleListHandler: ToolHandler = {
 };
 
 function schedulePlatformEnv(platform?: ChatPlatform): Record<string, string> | undefined {
-  return platform === 'discord' || platform === 'slack' ? { XANGI_PLATFORM: platform } : undefined;
+  return platform === 'discord' || platform === 'slack' || platform === 'telegram'
+    ? { XANGI_PLATFORM: platform }
+    : undefined;
 }
 
 function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
@@ -257,8 +259,8 @@ function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
         channel: { type: 'string', description: '送信先チャンネルID' },
         platform: {
           type: 'string',
-          description: 'プラットフォーム（discord/slack）',
-          enum: ['discord', 'slack'],
+          description: 'プラットフォーム（discord/slack/telegram）',
+          enum: ['discord', 'slack', 'telegram'],
         },
       },
       required: ['input', 'channel'],
@@ -607,7 +609,7 @@ export function getXangiTools(platform?: ChatPlatform): ToolHandler[] {
     return [...getSlackTools(), ...commonTools];
   }
 
-  if (platform === 'line') {
+  if (platform === 'line' || platform === 'telegram') {
     return commonTools;
   }
 

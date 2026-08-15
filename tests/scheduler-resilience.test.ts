@@ -3,6 +3,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Scheduler, type Schedule } from '../src/scheduler.js';
+import { NonRetryableError } from '../src/errors.js';
 
 function makeScheduler(): Scheduler {
   const dir = mkdtempSync(join(tmpdir(), 'xangi-sched-test-'));
@@ -115,6 +116,24 @@ describe('Scheduler transient リトライ', () => {
 
     const exec = scheduler as unknown as ExecutableScheduler;
     await exec.executeJob(makeSchedule('jobTimeout'));
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it('副作用後の Telegram 配信失敗は transient でも Agent を再実行しない', async () => {
+    const scheduler = makeScheduler();
+    const timeout = Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' });
+    const attachmentsAttempted = vi.fn();
+    const runner = vi.fn(async () => {
+      attachmentsAttempted();
+      throw new NonRetryableError('Telegram result delivery failed', { cause: timeout });
+    });
+    scheduler.registerAgentRunner('telegram', runner);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const exec = scheduler as unknown as ExecutableScheduler;
+    await exec.executeJob({ ...makeSchedule('telegramDeliveryFail'), platform: 'telegram' });
+
+    expect(attachmentsAttempted).toHaveBeenCalledTimes(1);
     expect(runner).toHaveBeenCalledTimes(1);
   });
 });

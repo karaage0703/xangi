@@ -32,9 +32,10 @@ describe('buildCliEnv', () => {
     expect(env.XANGI_CHANNEL_ID).toBeUndefined();
   });
 
-  it('injects the current chat platform for Discord, Slack, and Web', () => {
+  it('injects the current chat platform for Discord, Slack, Telegram, and Web', () => {
     expect(buildCliEnv('ch1', 'slack').XANGI_PLATFORM).toBe('slack');
     expect(buildCliEnv('ch1', 'discord').XANGI_PLATFORM).toBe('discord');
+    expect(buildCliEnv('telegram:chat:-100:topic:42', 'telegram').XANGI_PLATFORM).toBe('telegram');
     expect(buildCliEnv('web-chat:pane1', 'web').XANGI_PLATFORM).toBe('web');
   });
 

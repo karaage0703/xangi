@@ -17,7 +17,7 @@ import {
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { splitMessage } from './message-split.js';
-import { formatAgentErrorForUser } from './errors.js';
+import { formatAgentErrorForUser, NonRetryableError } from './errors.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import {
@@ -57,6 +57,25 @@ const RETRYABLE_TELEGRAM_CODES = new Set([
 
 type ErrorRecord = Record<string, unknown>;
 
+export interface TelegramMentionEntity {
+  type: string;
+  offset: number;
+  length: number;
+  user?: { id: number; is_bot?: boolean; username?: string };
+}
+
+export interface TelegramContextMessage {
+  chat: { id: number; type: string };
+  from?: { id: number };
+  message_thread_id?: number;
+}
+
+export interface TelegramScheduleTarget {
+  chatId: string;
+  contextKey: string;
+  messageThreadId?: number;
+}
+
 function asErrorRecord(value: unknown): ErrorRecord | undefined {
   return typeof value === 'object' && value !== null ? (value as ErrorRecord) : undefined;
 }
@@ -89,6 +108,17 @@ function telegramErrorStatus(error: unknown): number | undefined {
   for (const record of telegramErrorChain(error)) {
     const status = record.error_code ?? record.statusCode ?? record.status;
     if (typeof status === 'number') return status;
+  }
+  return undefined;
+}
+
+function telegramRetryAfterMs(error: unknown): number | undefined {
+  for (const record of telegramErrorChain(error)) {
+    const parameters = asErrorRecord(record.parameters);
+    const retryAfter = parameters?.retry_after;
+    if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0) {
+      return retryAfter * 1000;
+    }
   }
   return undefined;
 }
@@ -168,7 +198,8 @@ export async function retryTelegramOperation<T>(
       if (!isRetryableTelegramError(error)) throw error;
 
       failures++;
-      const delayMs = getTelegramRetryDelayMs(failures, options.random);
+      const delayMs =
+        telegramRetryAfterMs(error) ?? getTelegramRetryDelayMs(failures, options.random);
       if (failures === 1 || failures % 10 === 0) {
         console.warn(
           `[xangi-telegram] ${operationName} unavailable: ${formatTelegramError(error)}. ` +
@@ -210,7 +241,7 @@ export async function retryTelegramEdit(
       if (!isRetryableTelegramError(error) || attempt === maxAttempts) {
         return { ok: false, error };
       }
-      await sleep(getTelegramRetryDelayMs(attempt, options.random));
+      await sleep(telegramRetryAfterMs(error) ?? getTelegramRetryDelayMs(attempt, options.random));
     }
   }
 
@@ -256,7 +287,7 @@ async function superviseTelegramPolling(bot: Bot, onReady: () => void): Promise<
       }
 
       failures++;
-      const delayMs = getTelegramRetryDelayMs(failures);
+      const delayMs = telegramRetryAfterMs(error) ?? getTelegramRetryDelayMs(failures);
       if (failures === 1 || failures % 10 === 0) {
         console.warn(
           `[xangi-telegram] Polling connection lost: ${formatTelegramError(error)}. ` +
@@ -536,6 +567,27 @@ function logTelegramAttachmentFailures(scope: string, result: TelegramAttachment
   }
 }
 
+export async function deliverTelegramResult<T>(options: {
+  chunks: readonly string[];
+  attachmentPaths: readonly string[];
+  sendTextChunk: (chunk: string, index: number) => Promise<void>;
+  sendAttachments: () => Promise<T>;
+}): Promise<{ textFailure?: { index: number; error: unknown }; attachmentResult?: T }> {
+  let textFailure: { index: number; error: unknown } | undefined;
+  for (let index = 0; index < options.chunks.length; index++) {
+    try {
+      await options.sendTextChunk(options.chunks[index], index);
+    } catch (error) {
+      textFailure = { index, error };
+      break;
+    }
+  }
+
+  const attachmentResult =
+    options.attachmentPaths.length > 0 ? await options.sendAttachments() : undefined;
+  return { textFailure, attachmentResult };
+}
+
 /**
  * グループメッセージにのみ発言者・トリガー種別のコンテキストを付与する。
  */
@@ -558,22 +610,155 @@ export function buildPromptWithContext(
 /**
  * メンション文字列をメッセージ本文から除去する
  */
-export function cleanMention(text: string, botMention: string): string {
-  const regex = new RegExp(`\\s*${botMention}\\s*`, 'gi');
-  return text.replace(regex, ' ').trim();
+export function cleanMention(
+  text: string,
+  botMention: string,
+  entities?: readonly TelegramMentionEntity[],
+  botId?: number
+): string {
+  const username = botMention.replace(/^@/, '');
+  if (entities) {
+    const ranges = entities
+      .flatMap((entity) => {
+        const value = text.slice(entity.offset, entity.offset + entity.length);
+        if (entity.type === 'text_mention' && entity.user?.id === botId) {
+          return [{ start: entity.offset, end: entity.offset + entity.length }];
+        }
+        if (entity.type === 'mention' && value.toLowerCase() === `@${username.toLowerCase()}`) {
+          return [{ start: entity.offset, end: entity.offset + entity.length }];
+        }
+        if (entity.type === 'bot_command') {
+          const suffix = `@${username}`;
+          if (value.toLowerCase().endsWith(suffix.toLowerCase())) {
+            return [
+              {
+                start: entity.offset + value.length - suffix.length,
+                end: entity.offset + entity.length,
+              },
+            ];
+          }
+        }
+        return [];
+      })
+      .sort((a, b) => b.start - a.start);
+    let cleaned = text;
+    for (const range of ranges) {
+      cleaned = `${cleaned.slice(0, range.start)} ${cleaned.slice(range.end)}`;
+    }
+    return cleaned.replace(/\s+/g, ' ').trim();
+  }
+  const regex = new RegExp(`(^|[^A-Za-z0-9_])@${escapeRegExp(username)}(?![A-Za-z0-9_])`, 'gi');
+  return text.replace(regex, '$1').replace(/\s+/g, ' ').trim();
 }
 
-export function hasBotMention(text: string, username: string): boolean {
-  return text.toLowerCase().includes(`@${username.toLowerCase()}`);
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function hasOtherBotMention(text: string, ownUsername: string): boolean {
+function entityAddressedUsernames(
+  text: string,
+  entities: readonly TelegramMentionEntity[] | undefined
+): string[] {
+  if (!entities) return [];
+  return entities.flatMap((entity) => {
+    const value = text.slice(entity.offset, entity.offset + entity.length);
+    if (entity.type === 'mention' && value.startsWith('@')) {
+      return [value.slice(1).toLowerCase()];
+    }
+    if (entity.type === 'bot_command') {
+      const target = value.match(/^\/[A-Za-z0-9_]+@([A-Za-z0-9_]{5,32})$/)?.[1];
+      return target ? [target.toLowerCase()] : [];
+    }
+    return [];
+  });
+}
+
+export function hasBotMention(
+  text: string,
+  username: string,
+  entities?: readonly TelegramMentionEntity[],
+  botId?: number
+): boolean {
+  if (entities) {
+    const own = username.toLowerCase();
+    return (
+      entityAddressedUsernames(text, entities).includes(own) ||
+      entities.some((entity) => entity.type === 'text_mention' && entity.user?.id === botId)
+    );
+  }
+  const regex = new RegExp(`(^|[^A-Za-z0-9_])@${escapeRegExp(username)}(?![A-Za-z0-9_])`, 'i');
+  return regex.test(text);
+}
+
+export function hasOtherBotMention(
+  text: string,
+  ownUsername: string,
+  entities?: readonly TelegramMentionEntity[],
+  ownBotId?: number
+): boolean {
   const own = ownUsername.toLowerCase();
-  for (const match of text.matchAll(/@([A-Za-z0-9_]{5,32})/g)) {
-    const mentionedUsername = match[1].toLowerCase();
+  if (
+    entities?.some(
+      (entity) =>
+        entity.type === 'text_mention' &&
+        entity.user?.is_bot === true &&
+        entity.user.id !== ownBotId
+    )
+  ) {
+    return true;
+  }
+  const mentionedUsernames = entities
+    ? entityAddressedUsernames(text, entities)
+    : [...text.matchAll(/@([A-Za-z0-9_]{5,32})/g)].map((match) => match[1].toLowerCase());
+  for (const mentionedUsername of mentionedUsernames) {
     if (mentionedUsername !== own && mentionedUsername.endsWith('bot')) return true;
   }
   return false;
+}
+
+export function getTelegramContextKey(message: TelegramContextMessage): string {
+  const base =
+    message.chat.type === 'private'
+      ? `telegram:dm:${message.from?.id ?? message.chat.id}`
+      : `telegram:chat:${message.chat.id}`;
+  return message.message_thread_id === undefined
+    ? base
+    : `${base}:topic:${message.message_thread_id}`;
+}
+
+/**
+ * Resolve both legacy raw chat IDs and topic-aware Telegram context keys stored
+ * in schedules. Context keys are used by in-chat schedule creation because they
+ * preserve the originating topic in XANGI_CHANNEL_ID.
+ */
+export function parseTelegramScheduleTarget(channelId: string): TelegramScheduleTarget {
+  const contextMatch = channelId.match(/^(telegram:(?:chat|dm):(-?\d+))(?::topic:(\d+))?$/);
+  if (contextMatch) {
+    const messageThreadId = contextMatch[3] === undefined ? undefined : Number(contextMatch[3]);
+    return {
+      chatId: contextMatch[2],
+      contextKey:
+        messageThreadId === undefined
+          ? contextMatch[1]
+          : `${contextMatch[1]}:topic:${messageThreadId}`,
+      messageThreadId,
+    };
+  }
+
+  const topicMatch = channelId.match(/^(-?\d+):topic:(\d+)$/);
+  if (topicMatch) {
+    const messageThreadId = Number(topicMatch[2]);
+    return {
+      chatId: topicMatch[1],
+      contextKey: `telegram:chat:${topicMatch[1]}:topic:${messageThreadId}`,
+      messageThreadId,
+    };
+  }
+
+  return {
+    chatId: channelId,
+    contextKey: `telegram:chat:${channelId}`,
+  };
 }
 
 export function shouldStreamTelegramResponse(
@@ -601,6 +786,27 @@ export function isResetCommand(text: string, patterns: readonly string[]): boole
   return patterns.some((p) => p.toLowerCase() === rawCmd);
 }
 
+export type TelegramControlCommand = 'reset' | 'stop';
+
+export function parseTelegramControlCommand(
+  text: string,
+  resetPatterns: readonly string[]
+): TelegramControlCommand | undefined {
+  if (isResetCommand(text, resetPatterns)) return 'reset';
+  return text.trim().toLowerCase() === '/stop' ? 'stop' : undefined;
+}
+
+export function throwTelegramTextDeliveryFailure(
+  scope: string,
+  failure: { index: number; error: unknown } | undefined
+): void {
+  if (!failure) return;
+  throw new NonRetryableError(
+    `[xangi-telegram] ${scope} result chunk ${failure.index + 1} delivery failed: ${formatTelegramError(failure.error)}`,
+    { cause: failure.error }
+  );
+}
+
 /**
  * メッセージを処理すべきかどうかの判定を行う
  */
@@ -616,6 +822,7 @@ export function shouldProcessMessage(params: {
   isReplyToMe?: boolean;
   isSessionActive?: boolean;
   replyToMentionInGroup?: boolean;
+  entities?: readonly TelegramMentionEntity[];
 }): boolean {
   const {
     from,
@@ -629,6 +836,7 @@ export function shouldProcessMessage(params: {
     isReplyToMe = false,
     isSessionActive = false,
     replyToMentionInGroup = true,
+    entities,
   } = params;
 
   // 1. 自分自身の投稿を除外
@@ -669,10 +877,10 @@ export function shouldProcessMessage(params: {
   }
 
   // 他Bot宛ての投稿には、auto-reply対象やアクティブセッション中でも割り込まない。
-  if (isGroup && hasOtherBotMention(text, botInfo.username)) return false;
+  if (isGroup && hasOtherBotMention(text, botInfo.username, entities, botInfo.id)) return false;
 
   // 返信・メンション・トリガー判定
-  const isMentioned = hasBotMention(text, botInfo.username);
+  const isMentioned = hasBotMention(text, botInfo.username, entities, botInfo.id);
 
   if (isPrivate) {
     return true;
@@ -760,11 +968,16 @@ export async function startTelegramBot(opts: {
 
   // sendMessage は非冪等。応答待ちのタイムアウト時はTelegram側で成功済みの可能性があるため、
   // 自動再試行せずat-most-onceを優先して二重投函を防ぐ。
-  scheduler.registerSender('telegram', async (chatId, msg) => {
+  scheduler.registerSender('telegram', async (channelId, msg) => {
+    const target = parseTelegramScheduleTarget(channelId);
+    const sendOptions =
+      target.messageThreadId === undefined
+        ? undefined
+        : { message_thread_id: target.messageThreadId };
     const chunks = splitMessage(msg, 4096);
     for (let i = 0; i < chunks.length; i++) {
       try {
-        await bot.api.sendMessage(chatId, chunks[i]);
+        await bot.api.sendMessage(target.chatId, chunks[i], sendOptions);
       } catch (error) {
         throw new Error(
           `[xangi-telegram] Scheduled send chunk ${i + 1} failed: ${formatTelegramError(error)}`
@@ -775,12 +988,15 @@ export async function startTelegramBot(opts: {
 
   // スケジューラーの生成結果も、通常メッセージと同様に「考え中」を編集して投稿する。
   // チャット単位のキューを経由し、メッセージハンドラとの並行実行を防ぐ。
-  scheduler.registerAgentRunner('telegram', (prompt, chatId) => {
-    const contextKey = `telegram:chat:${chatId}`;
+  scheduler.registerAgentRunner('telegram', (prompt, channelId) => {
+    const target = parseTelegramScheduleTarget(channelId);
+    const { chatId, contextKey, messageThreadId } = target;
+    const sendOptions =
+      messageThreadId === undefined ? undefined : { message_thread_id: messageThreadId };
     return enqueueForChat(contextKey, async () => {
       let thinkingMessage: Awaited<ReturnType<typeof bot.api.sendMessage>>;
       try {
-        thinkingMessage = await bot.api.sendMessage(chatId, '考え中...');
+        thinkingMessage = await bot.api.sendMessage(chatId, '考え中...', sendOptions);
       } catch (error) {
         throw new Error(
           `[xangi-telegram] Failed to send scheduled processing message: ${formatTelegramError(error)}`
@@ -807,9 +1023,14 @@ export async function startTelegramBot(opts: {
             agentRunner,
             prompt,
             {
-              threadId: threadIdFor('telegram', String(chatId)),
+              threadId: threadIdFor(
+                'telegram',
+                messageThreadId === undefined
+                  ? String(chatId)
+                  : `${chatId}:topic:${messageThreadId}`
+              ),
               turnId: turnIdFor('telegram', messageId),
-              threadLabel: `Telegram Chat (${chatId})`,
+              threadLabel: `Telegram Chat (${chatId})${messageThreadId === undefined ? '' : ` / Topic ${messageThreadId}`}`,
               platform: 'telegram',
               userText: prompt,
             },
@@ -842,52 +1063,63 @@ export async function startTelegramBot(opts: {
           : { filePaths: [], displayText: runResult.result };
         const result = displayText || (filePaths.length > 0 ? 'ファイルを生成しました。' : '✅');
         const chunks = splitMessage(result, 4096);
-        const editResult = await retryTelegramEdit(() =>
-          bot.api.editMessageText(
-            thinkingMessage.chat.id,
-            thinkingMessage.message_id,
-            chunks[0] || '✅'
-          )
-        );
-        if (!editResult.ok) {
-          throw new Error(
-            '[xangi-telegram] Failed to edit scheduled result: ' +
-              formatTelegramError(editResult.error)
+        const delivery = await deliverTelegramResult({
+          chunks,
+          attachmentPaths: filePaths,
+          sendTextChunk: async (chunk, index) => {
+            if (index === 0) {
+              const editResult = await retryTelegramEdit(() =>
+                bot.api.editMessageText(
+                  thinkingMessage.chat.id,
+                  thinkingMessage.message_id,
+                  chunk || '✅'
+                )
+              );
+              if (!editResult.ok) throw editResult.error;
+              return;
+            }
+            await bot.api.sendMessage(chatId, chunk, sendOptions);
+          },
+          sendAttachments: () =>
+            sendTelegramAttachments(bot.api, chatId, filePaths, messageThreadId),
+        });
+        const textDeliveryFailed = delivery.textFailure !== undefined;
+        if (delivery.textFailure) {
+          console.error(
+            `[xangi-telegram] Scheduled result chunk ${delivery.textFailure.index + 1} failed; generated attachments were still attempted: ` +
+              formatTelegramError(delivery.textFailure.error)
           );
         }
 
-        for (let i = 1; i < chunks.length; i++) {
-          try {
-            await bot.api.sendMessage(chatId, chunks[i]);
-          } catch (error) {
-            throw new Error(
-              `[xangi-telegram] Scheduled result chunk ${i + 1} failed: ${formatTelegramError(error)}`
-            );
-          }
-        }
-
-        const attachmentSendResult = await sendTelegramAttachments(bot.api, chatId, filePaths);
+        const attachmentSendResult = delivery.attachmentResult ?? { sent: [], failures: [] };
         if (attachmentSendResult.failures.length > 0) {
           logTelegramAttachmentFailures('Scheduled', attachmentSendResult);
           const notice = telegramAttachmentFailureNotice(
             attachmentSendResult.failures.length,
             filePaths.length
           );
-          const noticeEdit = await retryTelegramEdit(() =>
-            bot.api.editMessageText(
-              thinkingMessage.chat.id,
-              thinkingMessage.message_id,
-              appendTelegramNotice(chunks[0] || '✅', notice)
-            )
-          );
-          if (!noticeEdit.ok) {
+          if (!textDeliveryFailed) {
+            const noticeEdit = await retryTelegramEdit(() =>
+              bot.api.editMessageText(
+                thinkingMessage.chat.id,
+                thinkingMessage.message_id,
+                appendTelegramNotice(chunks[0] || '✅', notice)
+              )
+            );
+            if (!noticeEdit.ok) {
+              console.error(
+                '[xangi-telegram] Failed to add scheduled attachment warning: ' +
+                  formatTelegramError(noticeEdit.error)
+              );
+            }
+          } else {
             console.error(
-              '[xangi-telegram] Failed to add scheduled attachment warning: ' +
-                formatTelegramError(noticeEdit.error)
+              '[xangi-telegram] Scheduled attachment warning could not be delivered because the result message was unavailable'
             );
           }
         }
 
+        throwTelegramTextDeliveryFailure('Scheduled', delivery.textFailure);
         return runResult.result || '';
       } finally {
         unregisterFinalizer();
@@ -902,6 +1134,36 @@ export async function startTelegramBot(opts: {
     `[xangi-telegram] Group auto-reply chats: ${tcfg.autoReplyChats?.join(', ') || '(none)'}`
   );
 
+  const resetPatterns = tcfg.resetTextPatterns ?? ['/reset', '/new', '/clear'];
+  const isTelegramSessionActive = (contextKey: string, chatType: string): boolean => {
+    if (chatType === 'private') return false;
+    const activeSessionId = getActiveSessionId(contextKey);
+    if (!activeSessionId) return false;
+    const entry = getSessionEntry(activeSessionId);
+    const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
+    return entry !== undefined && !hasSessionGoneIdle(entry.updatedAt, idleResetMs);
+  };
+  const executeTelegramControlCommand = async (
+    ctx: Context,
+    contextKey: string,
+    command: TelegramControlCommand
+  ): Promise<void> => {
+    if (command === 'reset') {
+      const activeId = getActiveSessionId(contextKey);
+      resetTelegramSession(contextKey, activeId, agentRunner);
+      ensureSession(contextKey, { platform: 'telegram' });
+      await ctx.reply('新しく会話を始めます。').catch((error) => {
+        console.warn(`[xangi-telegram] Failed to send reset reply: ${formatTelegramError(error)}`);
+      });
+      return;
+    }
+
+    stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
+    await ctx.reply('実行を停止しました。').catch((error) => {
+      console.warn(`[xangi-telegram] Failed to send stop reply: ${formatTelegramError(error)}`);
+    });
+  };
+
   // メッセージハンドラ
   // 処理対象の判定・コマンド処理を行い、Agent 実行はチャット単位キューに積んで返る。
   // これにより別 DM や /stop が Agent 完了を待たずに処理される。
@@ -912,12 +1174,16 @@ export async function startTelegramBot(opts: {
       interruptedBeforeStart?: boolean;
       receivedGeneration?: number;
       queuedGeneration?: number;
+      skipAuthorization?: boolean;
     } = {}
   ): Promise<void> => {
     const message = ctx.message;
     if (!message) return;
 
-    const text = (message.text ?? message.caption ?? '').trim();
+    // Telegram entity offsets refer to the original, untrimmed UTF-16 text.
+    // Keep that exact string through mention routing and remove whitespace only
+    // after all entity-based operations have completed.
+    const rawText = message.text ?? message.caption ?? '';
     const from = message.from;
     if (!from) return;
 
@@ -928,9 +1194,10 @@ export async function startTelegramBot(opts: {
     const chatTitle = (message.chat as { title?: string }).title;
     const isGroupChat = chatType === 'group' || chatType === 'supergroup';
     const isQueued = options.queuedGeneration !== undefined;
+    const isInitialEvaluation = options.skipAuthorization !== true;
 
     // 人間の発言は処理対象外でも、Bot同士の連続会話を明確に中断する。
-    if (!isQueued && isGroupChat && !isBot) botLoopGuard.resetChat(chatIdStr);
+    if (isInitialEvaluation && isGroupChat && !isBot) botLoopGuard.resetChat(chatIdStr);
 
     if ((chatType === 'group' || chatType === 'supergroup') && !loggedGroupChatIds.has(chatIdStr)) {
       loggedGroupChatIds.add(chatIdStr);
@@ -939,33 +1206,23 @@ export async function startTelegramBot(opts: {
       );
     }
 
-    const contextKey =
-      chatType === 'private' ? `telegram:dm:${userIdStr}` : `telegram:chat:${chatIdStr}`;
+    const contextKey = getTelegramContextKey(message);
 
     const isReplyToMe = message.reply_to_message?.from?.id === botInfo.id;
     const botMention = `@${botInfo.username}`;
-    const isMentioned = hasBotMention(text, botInfo.username);
-    const mentionsOtherBot = hasOtherBotMention(text, botInfo.username);
+    const entities = (message.entities ?? message.caption_entities) as
+      readonly TelegramMentionEntity[] | undefined;
+    const isMentioned = hasBotMention(rawText, botInfo.username, entities, botInfo.id);
+    const mentionsOtherBot = hasOtherBotMention(rawText, botInfo.username, entities, botInfo.id);
 
-    // セッションのアクティブ判定
-    let isSessionActive = false;
-    if (chatType !== 'private') {
-      const activeSessionId = getActiveSessionId(contextKey);
-      if (activeSessionId) {
-        const entry = getSessionEntry(activeSessionId);
-        const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
-        if (entry && !hasSessionGoneIdle(entry.updatedAt, idleResetMs)) {
-          isSessionActive = true;
-        }
-      }
-    }
+    const isSessionActive = isTelegramSessionActive(contextKey, chatType);
 
     const shouldRespond =
-      isQueued ||
+      options.skipAuthorization === true ||
       shouldProcessMessage({
         from,
         chat: { id: message.chat.id, type: chatType },
-        text,
+        text: rawText,
         botInfo,
         allowedUsers: tcfg.allowedUsers,
         allowedBots: tcfg.allowedBots,
@@ -974,6 +1231,7 @@ export async function startTelegramBot(opts: {
         isReplyToMe,
         isSessionActive,
         replyToMentionInGroup: tcfg.replyToMentionInGroup,
+        entities,
       });
 
     if (!shouldRespond) {
@@ -1016,7 +1274,7 @@ export async function startTelegramBot(opts: {
     }
 
     // 明示メンションされた許可Botだけを、チャット・Bot・時間窓単位で制限する。
-    if (!isQueued && isGroupChat && isBot) {
+    if (isInitialEvaluation && isGroupChat && isBot) {
       const maxConsecutive = tcfg.allowedBotsMaxConsecutive ?? 3;
       if (!botLoopGuard.allow(chatIdStr, userIdStr, maxConsecutive)) {
         console.warn(
@@ -1026,7 +1284,9 @@ export async function startTelegramBot(opts: {
       }
     }
 
-    const cleanText = isMentioned ? cleanMention(text, botMention) : text;
+    const cleanText = (
+      isMentioned ? cleanMention(rawText, botMention, entities, botInfo.id) : rawText
+    ).trim();
     const rawCmd = cleanText.toLowerCase();
 
     const modelsBackend = parseModelsCommand(cleanText);
@@ -1045,24 +1305,10 @@ export async function startTelegramBot(opts: {
       return;
     }
 
-    // リセットコマンド (/stop 同様キューを経由しない)
-    const resetPatterns = tcfg.resetTextPatterns ?? ['/reset', '/new', '/clear'];
-    if (isResetCommand(cleanText, resetPatterns)) {
-      const activeId = getActiveSessionId(contextKey);
-      resetTelegramSession(contextKey, activeId, agentRunner);
-      ensureSession(contextKey, { platform: 'telegram' });
-      await ctx.reply('新しく会話を始めます。').catch((err) => {
-        console.warn(`[xangi-telegram] Failed to send reset reply: ${formatTelegramError(err)}`);
-      });
-      return;
-    }
-
-    // 停止コマンド (キューを経由せず即時キャンセル)
-    if (rawCmd === '/stop') {
-      stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
-      await ctx.reply('実行を停止しました。').catch((err) => {
-        console.warn(`[xangi-telegram] Failed to send stop reply: ${formatTelegramError(err)}`);
-      });
+    // 制御コマンドは通常メッセージのキューを経由せず即時実行する。
+    const controlCommand = parseTelegramControlCommand(cleanText, resetPatterns);
+    if (controlCommand) {
+      await executeTelegramControlCommand(ctx, contextKey, controlCommand);
       return;
     }
 
@@ -1100,6 +1346,7 @@ export async function startTelegramBot(opts: {
         handleTelegramMessage(ctx, mediaCandidates, {
           ...options,
           queuedGeneration: receivedGeneration,
+          skipAuthorization: true,
         })
       ).catch((err) => {
         console.error(`[xangi-telegram] Unhandled queue error: ${formatTelegramError(err)}`);
@@ -1183,8 +1430,8 @@ export async function startTelegramBot(opts: {
     const showThinking = tcfg.showThinking !== false;
     const threadLabel =
       chatType === 'private'
-        ? `Telegram DM (${from.username || from.first_name})`
-        : `Telegram Group (${chatTitle || chatIdStr})`;
+        ? `Telegram DM (${from.username || from.first_name})${message.message_thread_id === undefined ? '' : ` / Topic ${message.message_thread_id}`}`
+        : `Telegram Group (${chatTitle || chatIdStr})${message.message_thread_id === undefined ? '' : ` / Topic ${message.message_thread_id}`}`;
 
     // showThinking=true: 「考え中...」を先に送ってから編集するモード
     // showThinking=false: typing アクションのみ。最終回答は新規メッセージとして送信
@@ -1317,7 +1564,12 @@ export async function startTelegramBot(opts: {
           agentRunner,
           promptText,
           {
-            threadId: threadIdFor('telegram', chatIdStr),
+            threadId: threadIdFor(
+              'telegram',
+              message.message_thread_id === undefined
+                ? chatIdStr
+                : `${chatIdStr}:topic:${message.message_thread_id}`
+            ),
             turnId: turnIdFor('telegram', String(message.message_id)),
             threadLabel,
             platform: 'telegram',
@@ -1354,65 +1606,50 @@ export async function startTelegramBot(opts: {
         (attachmentResult.filePaths.length > 0 ? 'ファイルを生成しました。' : '✅');
 
       const chunks = splitMessage(finalAnswer, 4096);
-
-      if (capturedReplyMsg) {
-        // Editing the same message is idempotent. Never fall back to a new message after
-        // a timeout because Telegram may already have applied the edit.
-        const editResult = await retryTelegramEdit(() =>
-          ctx.api.editMessageText(
-            capturedReplyMsg.chat.id,
-            capturedReplyMsg.message_id,
-            chunks[0] || '✅'
-          )
+      const delivery = await deliverTelegramResult({
+        chunks,
+        attachmentPaths: attachmentResult.filePaths,
+        sendTextChunk: async (chunk, index) => {
+          if (capturedReplyMsg && index === 0) {
+            // Editing the same message ID is idempotent. Never fall back to a new message
+            // after an ambiguous timeout because Telegram may already have applied it.
+            const editResult = await retryTelegramEdit(() =>
+              ctx.api.editMessageText(
+                capturedReplyMsg.chat.id,
+                capturedReplyMsg.message_id,
+                chunk || '✅'
+              )
+            );
+            if (!editResult.ok) throw editResult.error;
+            return;
+          }
+          // sendMessage is not idempotent, so each additional chunk is attempted once.
+          await ctx.reply(chunk);
+        },
+        sendAttachments: () =>
+          sendTelegramAttachments(
+            bot.api,
+            message.chat.id,
+            attachmentResult.filePaths,
+            message.message_thread_id
+          ),
+      });
+      const textDeliveryFailed = delivery.textFailure !== undefined;
+      if (delivery.textFailure) {
+        console.error(
+          `[xangi-telegram] Failed to deliver final answer chunk ${delivery.textFailure.index + 1}; duplicate retry suppressed, generated attachments were still attempted: ` +
+            formatTelegramError(delivery.textFailure.error)
         );
-        if (!editResult.ok) {
-          console.error(
-            '[xangi-telegram] Failed to edit final answer; duplicate fallback suppressed: ' +
-              formatTelegramError(editResult.error)
-          );
-          return;
-        }
-
-        for (let i = 1; i < chunks.length; i++) {
-          try {
-            await ctx.reply(chunks[i]);
-          } catch (sendError) {
-            console.error(
-              `[xangi-telegram] Failed to send final answer chunk ${i + 1}; retry suppressed to avoid duplicates: ` +
-                formatTelegramError(sendError)
-            );
-            return;
-          }
-        }
-      } else {
-        // sendMessage is not idempotent. Send each chunk at most once so an ambiguous
-        // timeout cannot create a duplicate response.
-        for (let i = 0; i < chunks.length; i++) {
-          try {
-            await ctx.reply(chunks[i]);
-          } catch (sendError) {
-            console.error(
-              `[xangi-telegram] Failed to send final answer chunk ${i + 1}; retry suppressed to avoid duplicates: ` +
-                formatTelegramError(sendError)
-            );
-            return;
-          }
-        }
       }
 
-      const attachmentSendResult = await sendTelegramAttachments(
-        bot.api,
-        message.chat.id,
-        attachmentResult.filePaths,
-        message.message_thread_id
-      );
+      const attachmentSendResult = delivery.attachmentResult ?? { sent: [], failures: [] };
       if (attachmentSendResult.failures.length > 0) {
         logTelegramAttachmentFailures('Final', attachmentSendResult);
         const notice = telegramAttachmentFailureNotice(
           attachmentSendResult.failures.length,
           attachmentResult.filePaths.length
         );
-        if (capturedReplyMsg) {
+        if (capturedReplyMsg && !textDeliveryFailed) {
           const noticeEdit = await retryTelegramEdit(() =>
             ctx.api.editMessageText(
               capturedReplyMsg.chat.id,
@@ -1426,12 +1663,16 @@ export async function startTelegramBot(opts: {
                 formatTelegramError(noticeEdit.error)
             );
           }
-        } else {
+        } else if (!textDeliveryFailed) {
           await ctx.reply(notice).catch((error) => {
             console.error(
               '[xangi-telegram] Failed to send attachment warning: ' + formatTelegramError(error)
             );
           });
+        } else {
+          console.error(
+            '[xangi-telegram] Attachment warning could not be delivered because the result message was unavailable'
+          );
         }
       }
     } finally {
@@ -1452,7 +1693,60 @@ export async function startTelegramBot(opts: {
   };
   const primaryMediaGroupContext = (items: PendingMediaGroupItem[]): Context =>
     items.find((item) => item.ctx.message?.caption?.trim())?.ctx ?? items[0].ctx;
+  const handledMediaGroupIds = new Set<string>();
   let unregisterMediaGroupFinalizer: (() => void) | undefined;
+
+  const rememberHandledMediaGroup = (key: string) => {
+    handledMediaGroupIds.add(key);
+    if (handledMediaGroupIds.size <= 10000) return;
+    const oldest = handledMediaGroupIds.values().next().value;
+    if (oldest !== undefined) handledMediaGroupIds.delete(oldest);
+  };
+
+  const tryHandleImmediateMediaGroupControl = async (ctx: Context): Promise<boolean> => {
+    const message = ctx.message;
+    const from = message?.from;
+    if (!message?.caption || !from) return false;
+
+    const rawText = message.caption;
+    const entities = message.caption_entities as readonly TelegramMentionEntity[] | undefined;
+    const isMentioned = hasBotMention(rawText, botInfo.username, entities, botInfo.id);
+    const cleanText = (
+      isMentioned ? cleanMention(rawText, `@${botInfo.username}`, entities, botInfo.id) : rawText
+    ).trim();
+    const command = parseTelegramControlCommand(cleanText, resetPatterns);
+    if (!command) return false;
+
+    const chatType = message.chat.type;
+    const chatIdStr = String(message.chat.id);
+    const isGroupChat = chatType === 'group' || chatType === 'supergroup';
+    if (isGroupChat && !from.is_bot) botLoopGuard.resetChat(chatIdStr);
+
+    const contextKey = getTelegramContextKey(message);
+    const shouldRespond = shouldProcessMessage({
+      from,
+      chat: { id: message.chat.id, type: chatType },
+      text: rawText,
+      botInfo,
+      allowedUsers: tcfg.allowedUsers,
+      allowedBots: tcfg.allowedBots,
+      allowedChats: tcfg.allowedChats,
+      autoReplyChats: tcfg.autoReplyChats,
+      isReplyToMe: message.reply_to_message?.from?.id === botInfo.id,
+      isSessionActive: isTelegramSessionActive(contextKey, chatType),
+      replyToMentionInGroup: tcfg.replyToMentionInGroup,
+      entities,
+    });
+    if (!shouldRespond) return true;
+
+    if (isGroupChat && from.is_bot) {
+      const maxConsecutive = tcfg.allowedBotsMaxConsecutive ?? 3;
+      if (!botLoopGuard.allow(chatIdStr, String(from.id), maxConsecutive)) return true;
+    }
+
+    await executeTelegramControlCommand(ctx, contextKey, command);
+    return true;
+  };
 
   const unregisterMediaGroupFinalizerIfIdle = () => {
     if (mediaGroupBuffer.size > 0 || !unregisterMediaGroupFinalizer) return;
@@ -1503,26 +1797,38 @@ export async function startTelegramBot(opts: {
 
     if (mediaEnabled && message.media_group_id && candidates.length > 0) {
       const groupKey = `${message.chat.id}:${message.media_group_id}`;
-      const mediaContextKey =
-        message.chat.type === 'private'
-          ? `telegram:dm:${message.from?.id ?? message.chat.id}`
-          : `telegram:chat:${message.chat.id}`;
+      if (handledMediaGroupIds.has(groupKey)) return;
+
+      if (await tryHandleImmediateMediaGroupControl(ctx)) {
+        rememberHandledMediaGroup(groupKey);
+        mediaGroupBuffer.cancel(groupKey);
+        unregisterMediaGroupFinalizerIfIdle();
+        return;
+      }
+
+      if (handledMediaGroupIds.has(groupKey)) return;
+      const mediaContextKey = getTelegramContextKey(message);
       const receivedGeneration = getGeneration(mediaContextKey);
+      const admission = mediaGroupBuffer.add(groupKey, { ctx, candidates, receivedGeneration });
+      if (!admission.isNew) return;
+
       ensureMediaGroupFinalizer();
-      mediaGroupBuffer.add(groupKey, { ctx, candidates, receivedGeneration }, async (items) => {
+      enqueueForChat(mediaContextKey, async () => {
+        const items = await admission.ready;
+        if (!items) return;
         try {
           const primary = primaryMediaGroupContext(items);
           const groupedCandidates = items.flatMap((item) => item.candidates);
           await handleTelegramMessage(primary, groupedCandidates, {
-            receivedGeneration: items[0].receivedGeneration,
+            queuedGeneration: items[0].receivedGeneration,
           });
-        } catch (error) {
-          console.error(
-            `[xangi-telegram] Unhandled media group error: ${formatTelegramError(error)}`
-          );
         } finally {
           unregisterMediaGroupFinalizerIfIdle();
         }
+      }).catch((error) => {
+        console.error(
+          `[xangi-telegram] Unhandled media group error: ${formatTelegramError(error)}`
+        );
       });
       return;
     }

@@ -10,6 +10,27 @@ export class ValidationError extends Error {
 }
 
 /**
+ * The operation failed after side effects may already have completed, so
+ * retrying the enclosing task could duplicate externally visible work.
+ */
+export class NonRetryableError extends Error {
+  readonly retryable = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NonRetryableError';
+  }
+}
+
+export function isNonRetryableError(error: unknown): error is NonRetryableError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { retryable?: unknown }).retryable === false
+  );
+}
+
+/**
  * エージェント実行エラーの分類。
  * ランナー (CLI / Local LLM) から上がってくるエラーメッセージを種類別に判別し、
  * ユーザー向け表示・リトライ判断（エラー後フォローアップの可否など）を

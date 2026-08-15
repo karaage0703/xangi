@@ -26,13 +26,13 @@ interface Schedule {
 type SchedulePlatform = Schedule['platform'];
 
 function isSchedulePlatform(value: string): value is SchedulePlatform {
-  return value === 'discord' || value === 'slack' || value === 'web';
+  return value === 'discord' || value === 'slack' || value === 'telegram' || value === 'web';
 }
 
 function resolveSchedulePlatform(flags: Record<string, string>): SchedulePlatform {
   const value = flags['platform'] || process.env.XANGI_PLATFORM || 'discord';
   if (!isSchedulePlatform(value)) {
-    throw new Error(`--platform must be discord, slack, or web: ${value}`);
+    throw new Error(`--platform must be discord, slack, telegram, or web: ${value}`);
   }
   return value;
 }

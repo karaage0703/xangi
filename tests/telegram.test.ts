@@ -6,14 +6,18 @@ import {
   buildPromptWithContext,
   buildTelegramWebhookUrl,
   cleanMention,
+  deliverTelegramResult,
   downloadTelegramMediaBatch,
   formatTelegramError,
+  getTelegramContextKey,
   getTelegramRetryDelayMs,
   hasBotMention,
   hasOtherBotMention,
   isResetCommand,
   isRetryableTelegramError,
   normalizeTelegramWebhookPath,
+  parseTelegramControlCommand,
+  parseTelegramScheduleTarget,
   redactTelegramSecrets,
   retryTelegramEdit,
   retryTelegramOperation,
@@ -24,7 +28,9 @@ import {
   TelegramChatQueue,
   telegramMediaDownloadContext,
   telegramMediaDownloadFailureNotice,
+  throwTelegramTextDeliveryFailure,
 } from '../src/telegram.js';
+import { TelegramMediaGroupBuffer } from '../src/telegram-media.js';
 
 describe('Telegram chat queue generation boundaries', () => {
   it('drops slow preprocessing after reset and preserves the next message order', async () => {
@@ -141,6 +147,76 @@ describe('Telegram chat queue generation boundaries', () => {
       expect(existsSync(downloadedPath)).toBe(false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Telegram album queue ordering', () => {
+  it('reserves the queue position when the first album item arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = new TelegramChatQueue();
+      const buffer = new TelegramMediaGroupBuffer<number>(750);
+      const contextKey = 'telegram:dm:album-order';
+      const events: string[] = [];
+      const admission = buffer.add('chat:album', 1);
+
+      const album = queue.enqueue(contextKey, async () => {
+        const items = await admission.ready;
+        if (items) events.push(`album:${items.join(',')}`);
+      });
+      buffer.add('chat:album', 2);
+      const followingText = queue.enqueue(contextKey, async () => {
+        events.push('text');
+      });
+
+      await Promise.resolve();
+      expect(events).toEqual([]);
+      await vi.advanceTimersByTimeAsync(750);
+      await Promise.all([album, followingText]);
+
+      expect(events).toEqual(['album:1,2', 'text']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an admitted album immediately when a later caption contains /stop', async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = new TelegramChatQueue();
+      const buffer = new TelegramMediaGroupBuffer<number>(750);
+      const contextKey = 'telegram:chat:-100:topic:7';
+      const events: string[] = [];
+      let releaseActive!: () => void;
+      const activeGate = new Promise<void>((resolve) => {
+        releaseActive = resolve;
+      });
+      const active = queue.enqueue(contextKey, async () => {
+        events.push('active-started');
+        await activeGate;
+      });
+      await Promise.resolve();
+
+      const admission = buffer.add('chat:album', 1);
+      const album = queue.enqueue(contextKey, async () => {
+        const items = await admission.ready;
+        if (items) events.push('album-agent-started');
+      });
+      buffer.add('chat:album', 2);
+
+      expect(parseTelegramControlCommand('/stop', ['/new'])).toBe('stop');
+      expect(buffer.cancel('chat:album')).toEqual([1, 2]);
+      stopTelegramWork(queue, contextKey, { cancel: vi.fn() });
+      events.push('stop-handled');
+      await expect(admission.ready).resolves.toBeUndefined();
+      expect(events).toEqual(['active-started', 'stop-handled']);
+
+      releaseActive();
+      await Promise.all([active, album]);
+      expect(events).not.toContain('album-agent-started');
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
@@ -341,6 +417,81 @@ describe('Telegram API resilience', () => {
     expect(operation).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
   });
+
+  it('honors Telegram retry_after for API operations and edits', async () => {
+    const rateLimited = {
+      message: 'Too Many Requests',
+      error_code: 429,
+      parameters: { retry_after: 7 },
+    };
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(rateLimited)
+      .mockResolvedValue('ok');
+    const edit = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(rateLimited)
+      .mockResolvedValue();
+    const operationSleep = vi.fn(async () => undefined);
+    const editSleep = vi.fn(async () => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        retryTelegramOperation('Bot API', operation, { sleep: operationSleep })
+      ).resolves.toBe('ok');
+      await expect(retryTelegramEdit(edit, { sleep: editSleep })).resolves.toEqual({ ok: true });
+      expect(operationSleep).toHaveBeenCalledWith(7_000);
+      expect(editSleep).toHaveBeenCalledWith(7_000);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+});
+
+describe('Telegram result delivery', () => {
+  it('still attempts generated attachments after text delivery fails', async () => {
+    const textError = new Error('edit failed');
+    const sendTextChunk = vi.fn(async () => {
+      throw textError;
+    });
+    const sendAttachments = vi.fn(async () => 'attachments-attempted');
+
+    const delivery = await deliverTelegramResult({
+      chunks: ['answer'],
+      attachmentPaths: ['/tmp/result.png'],
+      sendTextChunk,
+      sendAttachments,
+    });
+    expect(delivery).toEqual({
+      textFailure: { index: 0, error: textError },
+      attachmentResult: 'attachments-attempted',
+    });
+    expect(sendAttachments).toHaveBeenCalledTimes(1);
+    expect(() => throwTelegramTextDeliveryFailure('Scheduled', delivery.textFailure)).toThrow(
+      expect.objectContaining({ retryable: false, cause: textError })
+    );
+  });
+
+  it('stops later text chunks after a failure without inventing an attachment send', async () => {
+    const sendTextChunk = vi.fn(async (_chunk: string, index: number) => {
+      if (index === 1) throw new Error('send failed');
+    });
+    const sendAttachments = vi.fn(async () => undefined);
+
+    const result = await deliverTelegramResult({
+      chunks: ['first', 'second', 'third'],
+      attachmentPaths: [],
+      sendTextChunk,
+      sendAttachments,
+    });
+
+    expect(result.textFailure?.index).toBe(1);
+    expect(sendTextChunk).toHaveBeenCalledTimes(2);
+    expect(sendAttachments).not.toHaveBeenCalled();
+  });
 });
 
 describe('TelegramBotLoopGuard', () => {
@@ -385,12 +536,120 @@ describe('cleanMention', () => {
   it('handles multiple mentions (if any)', () => {
     expect(cleanMention('@xangi_bot hello @xangi_bot world', '@xangi_bot')).toBe('hello world');
   });
+
+  it('removes only the exact bot mention described by Telegram entities', () => {
+    const text = '@xangi_bot2 and @xangi_bot hello';
+    expect(cleanMention(text, '@xangi_bot', [{ type: 'mention', offset: 16, length: 10 }])).toBe(
+      '@xangi_bot2 and hello'
+    );
+  });
+
+  it('uses entity offsets from the original text when leading whitespace is present', () => {
+    const text = '\n@xangi_bot help me';
+    expect(cleanMention(text, '@xangi_bot', [{ type: 'mention', offset: 1, length: 10 }])).toBe(
+      'help me'
+    );
+  });
+
+  it('normalizes an own bot_command suffix while preserving the command', () => {
+    const text = '/stop@xangi_bot';
+    expect(
+      cleanMention(text, '@xangi_bot', [{ type: 'bot_command', offset: 0, length: text.length }])
+    ).toBe('/stop');
+    expect(
+      cleanMention('/stop@other_bot', '@xangi_bot', [
+        { type: 'bot_command', offset: 0, length: 15 },
+      ])
+    ).toBe('/stop@other_bot');
+  });
 });
 
 describe('hasBotMention', () => {
   it('matches Telegram usernames case-insensitively', () => {
     expect(hasBotMention('@XANGI_BOT hello', 'xangi_bot')).toBe(true);
     expect(hasBotMention('hello', 'xangi_bot')).toBe(false);
+  });
+
+  it('uses Telegram entities for exact username matching', () => {
+    expect(
+      hasBotMention('@xangi_bot2 hello', 'xangi_bot', [{ type: 'mention', offset: 0, length: 11 }])
+    ).toBe(false);
+    expect(
+      hasBotMention(
+        'xangi hello',
+        'xangi_bot',
+        [{ type: 'text_mention', offset: 0, length: 5, user: { id: 100 } }],
+        100
+      )
+    ).toBe(true);
+    expect(hasBotMention('code: @xangi_bot', 'xangi_bot', [])).toBe(false);
+  });
+
+  it('detects an entity after leading whitespace without shifting its offset', () => {
+    expect(
+      hasBotMention('\n@xangi_bot help me', 'xangi_bot', [
+        { type: 'mention', offset: 1, length: 10 },
+      ])
+    ).toBe(true);
+  });
+
+  it('recognizes commands explicitly addressed to this bot', () => {
+    const own = '/new@xangi_bot';
+    const other = '/new@other_bot';
+    expect(
+      hasBotMention(own, 'xangi_bot', [{ type: 'bot_command', offset: 0, length: own.length }])
+    ).toBe(true);
+    expect(
+      hasBotMention(other, 'xangi_bot', [{ type: 'bot_command', offset: 0, length: other.length }])
+    ).toBe(false);
+    expect(
+      hasOtherBotMention(other, 'xangi_bot', [
+        { type: 'bot_command', offset: 0, length: other.length },
+      ])
+    ).toBe(true);
+  });
+});
+
+describe('Telegram context keys', () => {
+  it('keeps existing keys for ordinary chats and isolates topics', () => {
+    expect(getTelegramContextKey({ chat: { id: 10, type: 'private' }, from: { id: 20 } })).toBe(
+      'telegram:dm:20'
+    );
+    expect(
+      getTelegramContextKey({
+        chat: { id: -100, type: 'supergroup' },
+        from: { id: 20 },
+        message_thread_id: 42,
+      })
+    ).toBe('telegram:chat:-100:topic:42');
+    expect(
+      getTelegramContextKey({
+        chat: { id: 10, type: 'private' },
+        from: { id: 20 },
+        message_thread_id: 7,
+      })
+    ).toBe('telegram:dm:20:topic:7');
+  });
+
+  it('resolves legacy and topic-aware scheduler destinations', () => {
+    expect(parseTelegramScheduleTarget('-100123')).toEqual({
+      chatId: '-100123',
+      contextKey: 'telegram:chat:-100123',
+    });
+    expect(parseTelegramScheduleTarget('telegram:chat:-100123:topic:42')).toEqual({
+      chatId: '-100123',
+      contextKey: 'telegram:chat:-100123:topic:42',
+      messageThreadId: 42,
+    });
+    expect(parseTelegramScheduleTarget('-100123:topic:42')).toEqual({
+      chatId: '-100123',
+      contextKey: 'telegram:chat:-100123:topic:42',
+      messageThreadId: 42,
+    });
+    expect(parseTelegramScheduleTarget('telegram:dm:20')).toEqual({
+      chatId: '20',
+      contextKey: 'telegram:dm:20',
+    });
   });
 });
 
@@ -400,6 +659,28 @@ describe('group mention routing', () => {
     expect(hasOtherBotMention('@XANGI_BOT hello', 'xangi_bot')).toBe(false);
     expect(hasOtherBotMention('@alice hello', 'xangi_bot')).toBe(false);
     expect(hasOtherBotMention('@xangi_bot @weather_bot hello', 'xangi_bot')).toBe(true);
+  });
+
+  it('ignores bot-like text that Telegram did not mark as a mention', () => {
+    expect(hasOtherBotMention('example @weather_bot', 'xangi_bot', [])).toBe(false);
+  });
+
+  it('detects another bot referenced by a text_mention entity', () => {
+    expect(
+      hasOtherBotMention(
+        'weather service',
+        'xangi_bot',
+        [
+          {
+            type: 'text_mention',
+            offset: 0,
+            length: 7,
+            user: { id: 200, is_bot: true },
+          },
+        ],
+        100
+      )
+    ).toBe(true);
   });
 
   it('enables streaming only for private chats', () => {
@@ -429,6 +710,27 @@ describe('isResetCommand', () => {
     expect(isResetCommand('/reset please', defaultPatterns)).toBe(false);
     expect(isResetCommand('please /reset', defaultPatterns)).toBe(false);
     expect(isResetCommand('reset', defaultPatterns)).toBe(false);
+  });
+});
+
+describe('Telegram control commands', () => {
+  const resetPatterns = ['/reset', '/new', '/clear'];
+
+  it('parses normalized reset and stop commands', () => {
+    expect(parseTelegramControlCommand('/new', resetPatterns)).toBe('reset');
+    expect(parseTelegramControlCommand('/stop', resetPatterns)).toBe('stop');
+    expect(parseTelegramControlCommand('/stop@other_bot', resetPatterns)).toBeUndefined();
+  });
+
+  it('marks final text delivery failures as non-retryable', () => {
+    const cause = Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' });
+    expect(() => throwTelegramTextDeliveryFailure('Scheduled', { index: 0, error: cause })).toThrow(
+      expect.objectContaining({
+        name: 'NonRetryableError',
+        retryable: false,
+        cause,
+      })
+    );
   });
 });
 
@@ -542,6 +844,33 @@ describe('shouldProcessMessage', () => {
       allowedChats,
     });
     expect(res).toBe(true);
+  });
+
+  it('routes bot_command entities only when addressed to this bot', () => {
+    const own = '/stop@xangi_bot';
+    const other = '/stop@weather_bot';
+    const base = {
+      from: { id: 111, is_bot: false },
+      chat: { id: 999, type: 'group' },
+      botInfo: defaultBotInfo,
+      allowedUsers,
+      allowedChats,
+    };
+
+    expect(
+      shouldProcessMessage({
+        ...base,
+        text: own,
+        entities: [{ type: 'bot_command', offset: 0, length: own.length }],
+      })
+    ).toBe(true);
+    expect(
+      shouldProcessMessage({
+        ...base,
+        text: other,
+        entities: [{ type: 'bot_command', offset: 0, length: other.length }],
+      })
+    ).toBe(false);
   });
 
   it('ignores another bot mention even in an auto-reply chat', () => {

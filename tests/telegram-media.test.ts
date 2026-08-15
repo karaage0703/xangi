@@ -12,6 +12,17 @@ import {
 } from '../src/telegram-media.js';
 
 describe('Telegram inbound media', () => {
+  it('preserves the underlying download error for diagnostics', () => {
+    const cause = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    const error = new TelegramMediaError(
+      'Telegram media download failed due to a network or filesystem error',
+      'Telegramからファイルをダウンロードできませんでした。',
+      { cause }
+    );
+
+    expect(error.cause).toBe(cause);
+  });
+
   it('selects the largest photo variant', () => {
     expect(
       extractTelegramMedia({
@@ -190,18 +201,18 @@ describe('Telegram media albums', () => {
   it('debounces album items into one flush', async () => {
     vi.useFakeTimers();
     try {
-      const flush = vi.fn(async (_items: number[]) => undefined);
       const buffer = new TelegramMediaGroupBuffer<number>(750);
 
-      buffer.add('chat:album', 1, flush);
+      const first = buffer.add('chat:album', 1);
       await vi.advanceTimersByTimeAsync(500);
-      buffer.add('chat:album', 2, flush);
+      const second = buffer.add('chat:album', 2);
       await vi.advanceTimersByTimeAsync(749);
-      expect(flush).not.toHaveBeenCalled();
+      expect(first.isNew).toBe(true);
+      expect(second.isNew).toBe(false);
+      expect(second.ready).toBe(first.ready);
       await vi.advanceTimersByTimeAsync(1);
 
-      expect(flush).toHaveBeenCalledTimes(1);
-      expect(flush).toHaveBeenCalledWith([1, 2]);
+      await expect(first.ready).resolves.toEqual([1, 2]);
     } finally {
       vi.useRealTimers();
     }
@@ -210,17 +221,34 @@ describe('Telegram media albums', () => {
   it('drains pending albums without starting their normal flush callbacks', async () => {
     vi.useFakeTimers();
     try {
-      const flush = vi.fn(async (_items: number[]) => undefined);
       const buffer = new TelegramMediaGroupBuffer<number>(750);
-      buffer.add('chat:album-1', 1, flush);
-      buffer.add('chat:album-1', 2, flush);
-      buffer.add('chat:album-2', 3, flush);
+      const first = buffer.add('chat:album-1', 1);
+      buffer.add('chat:album-1', 2);
+      const second = buffer.add('chat:album-2', 3);
 
       expect(buffer.size).toBe(2);
       expect(buffer.drainAll()).toEqual([[1, 2], [3]]);
       expect(buffer.size).toBe(0);
+      await expect(first.ready).resolves.toBeUndefined();
+      await expect(second.ready).resolves.toBeUndefined();
       await vi.runAllTimersAsync();
-      expect(flush).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels one pending album without flushing it later', async () => {
+    vi.useFakeTimers();
+    try {
+      const buffer = new TelegramMediaGroupBuffer<number>(750);
+      const admission = buffer.add('chat:album', 1);
+      buffer.add('chat:album', 2);
+
+      expect(buffer.cancel('chat:album')).toEqual([1, 2]);
+      expect(buffer.size).toBe(0);
+      await expect(admission.ready).resolves.toBeUndefined();
+      await vi.runAllTimersAsync();
+      await expect(admission.ready).resolves.toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

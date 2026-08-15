@@ -51,9 +51,10 @@ export interface TelegramRemoteFile {
 export class TelegramMediaError extends Error {
   constructor(
     message: string,
-    readonly userMessage: string
+    readonly userMessage: string,
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = 'TelegramMediaError';
   }
 }
@@ -307,7 +308,8 @@ export async function downloadTelegramMedia(
     if (error instanceof TelegramMediaError) throw error;
     throw new TelegramMediaError(
       'Telegram media download failed due to a network or filesystem error',
-      'Telegramからファイルをダウンロードできませんでした。'
+      'Telegramからファイルをダウンロードできませんでした。',
+      { cause: error }
     );
   }
 }
@@ -400,7 +402,12 @@ export async function sendTelegramAttachments(
 export class TelegramMediaGroupBuffer<T> {
   private readonly groups = new Map<
     string,
-    { items: T[]; timer: ReturnType<typeof setTimeout>; flush: (items: T[]) => Promise<void> }
+    {
+      items: T[];
+      timer: ReturnType<typeof setTimeout>;
+      ready: Promise<T[] | undefined>;
+      resolve: (items: T[] | undefined) => void;
+    }
   >();
 
   constructor(private readonly delayMs: number) {}
@@ -409,23 +416,44 @@ export class TelegramMediaGroupBuffer<T> {
     return this.groups.size;
   }
 
-  add(key: string, item: T, flush: (items: T[]) => Promise<void>): void {
+  add(key: string, item: T): { isNew: boolean; ready: Promise<T[] | undefined> } {
     const current = this.groups.get(key);
     if (current) clearTimeout(current.timer);
     const items = current ? [...current.items, item] : [item];
+    let resolve!: (items: T[] | undefined) => void;
+    let ready: Promise<T[] | undefined>;
+    if (current) {
+      resolve = current.resolve;
+      ready = current.ready;
+    } else {
+      ready = new Promise<T[] | undefined>((resolveReady) => {
+        resolve = resolveReady;
+      });
+    }
     const timer = setTimeout(() => {
       this.groups.delete(key);
-      void flush(items).catch(() => {
-        // The caller owns update-specific logging; avoid an unhandled timer rejection here.
-      });
+      resolve(items);
     }, this.delayMs);
     timer.unref?.();
-    this.groups.set(key, { items, timer, flush });
+    this.groups.set(key, { items, timer, ready, resolve });
+    return { isNew: current === undefined, ready };
+  }
+
+  cancel(key: string): T[] | undefined {
+    const group = this.groups.get(key);
+    if (!group) return undefined;
+    clearTimeout(group.timer);
+    this.groups.delete(key);
+    group.resolve(undefined);
+    return group.items;
   }
 
   drainAll(): T[][] {
     const pending = [...this.groups.values()].map((group) => group.items);
-    for (const group of this.groups.values()) clearTimeout(group.timer);
+    for (const group of this.groups.values()) {
+      clearTimeout(group.timer);
+      group.resolve(undefined);
+    }
     this.groups.clear();
     return pending;
   }

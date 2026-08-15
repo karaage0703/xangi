@@ -101,6 +101,23 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
     expect(schedules[0]).toMatchObject({ platform: 'web', channelId: 'pane123' });
   });
 
+  it('supports Telegram schedules and preserves topic-aware context keys', async () => {
+    process.env.XANGI_PLATFORM = 'telegram';
+
+    await scheduleCmd('schedule_add', {
+      input: '毎日 9:00 おはよう',
+      channel: 'telegram:chat:-100123:topic:42',
+    });
+
+    const schedules = JSON.parse(
+      readFileSync(join(tmpDir, '.xangi', 'schedules.json'), 'utf-8')
+    ) as Array<{ platform: string; channelId: string }>;
+    expect(schedules[0]).toMatchObject({
+      platform: 'telegram',
+      channelId: 'telegram:chat:-100123:topic:42',
+    });
+  });
+
   it('rejects invalid schedule platforms', async () => {
     await expect(
       scheduleCmd('schedule_add', {
@@ -108,6 +125,6 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
         channel: 'ch1',
         platform: 'mastodon',
       })
-    ).rejects.toThrow('--platform must be discord, slack, or web');
+    ).rejects.toThrow('--platform must be discord, slack, telegram, or web');
   });
 });

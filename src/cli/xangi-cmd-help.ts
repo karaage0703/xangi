@@ -118,7 +118,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'schedule',
     summary: 'スケジュールを追加',
     usage:
-      'xangi tool schedule_add --input <自然言語またはcron> --channel <id> --platform <discord|slack|web>',
+      'xangi tool schedule_add --input <自然言語またはcron> --channel <id> --platform <discord|slack|telegram|web>',
   },
   {
     name: 'schedule_remove',
