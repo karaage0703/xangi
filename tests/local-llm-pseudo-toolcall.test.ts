@@ -422,6 +422,14 @@ describe('isSafeForRescue', () => {
     expect(check.reason).toContain('allowlist');
   });
 
+  it('exec で xangi tool schedule_update は unsafe (副作用あり、allowlist 外)', () => {
+    const check = isSafeForRescue('exec', {
+      command: 'xangi tool schedule_update --id foo --message bar',
+    });
+    expect(check.safe).toBe(false);
+    expect(check.reason).toContain('allowlist');
+  });
+
   it('exec で読み取り専用の xangi-cmd models は safe', () => {
     expect(isSafeForRescue('exec', { command: 'xangi-cmd models --backend codex' }).safe).toBe(
       true

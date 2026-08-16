@@ -61,6 +61,7 @@ export async function runWithBubbleEvents(
     const runOptions = {
       ...options,
       platform: options?.platform ?? ctx.platform,
+      userText: options?.userText ?? userText,
     };
 
     return await runner.runStream(

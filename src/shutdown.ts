@@ -1,6 +1,7 @@
 export interface ShutdownCleanupOptions {
   stopScheduler: () => void;
   finalizeActiveStreams: () => Promise<void>;
+  stopExtensions?: (() => Promise<void>) | null;
   releaseDataDirLock?: (() => Promise<void>) | null;
   exit: (code: number) => void;
   log?: (message: string) => void;
@@ -17,6 +18,7 @@ export interface ShutdownCleanupOptions {
 export async function runShutdownCleanup({
   stopScheduler,
   finalizeActiveStreams,
+  stopExtensions,
   releaseDataDirLock,
   exit,
   log = console.log,
@@ -48,6 +50,14 @@ export async function runShutdownCleanup({
       await finalizeActiveStreams();
     } catch (err) {
       warn('[xangi] Failed to finalize active streams during shutdown:', err);
+    }
+
+    if (stopExtensions) {
+      try {
+        await stopExtensions();
+      } catch (err) {
+        warn('[xangi] Failed to stop extensions during shutdown:', err);
+      }
     }
 
     if (releaseDataDirLock) {

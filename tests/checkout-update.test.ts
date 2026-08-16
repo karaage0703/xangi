@@ -19,6 +19,20 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 }
 
 describe('checkout updater', () => {
+  it.each(['--help', '-h'])('prints update help without inspecting checkout state for %s', async (flag) => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-update-help-'));
+    roots.push(root);
+    await git(root, 'init');
+    await writeFile(join(root, 'package.json'), '{"dirty":true}\n');
+
+    const { stdout, stderr } = await exec(updaterSource, [root, flag]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('Usage:');
+    expect(stdout).toContain('xangi update --managed');
+    expect(stdout).toContain('service is not restarted automatically');
+  });
+
   it('refuses a checkout with uncommitted changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-update-dirty-'));
     roots.push(root);

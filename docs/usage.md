@@ -17,6 +17,7 @@ xangiの詳細な使い方ガイドです。
 - [ランタイム設定](#ランタイム設定)
 - [AIによる自律操作](#aiによる自律操作)
 - [Docker実行](#docker実行)
+- [Extension連携](#extension連携)
 - [Local LLM](#local-llm)
 - [ワークスペース hooks（Stop hook）](#ワークスペース-hooksstop-hook)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
@@ -128,6 +129,7 @@ MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、�
 ## スケジューラー
 
 定期実行やリマインダーを設定できます。AI に自然言語で頼むと、AI が `xangi tool schedule_add` などを呼び出してスケジュールを登録します。
+スケジュール実行結果には、成功・失敗とも所要時間が表示されます。Discord・Slack・Telegramでは結果末尾、Webではメッセージヘッダーに表示されます。
 
 ### 操作方法
 
@@ -135,7 +137,7 @@ MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、�
 | -------------------------------- | ----------------------------------------------- |
 | `/schedule` (Discord スラッシュ) | GUI でスケジュールを追加・一覧・削除・切替      |
 | Web UI の「予定」                | 全対応platformの予定を追加・編集・停止・削除    |
-| `xangi tool schedule_*`           | AI または CLI から操作（下記）                  |
+| `xangi tool schedule_*`          | AI または CLI から操作（下記）                  |
 | 自然言語                         | 「毎日 9 時におはようって言って」等で AI が登録 |
 
 ### 時間指定の書き方
@@ -194,12 +196,23 @@ xangi tool schedule_add --input "毎日 9:00 状況確認" --platform web --chan
 # 一覧表示
 xangi tool schedule_list
 
+# 本文だけ更新（ID・日時・送信先・有効状態は維持）
+xangi tool schedule_update --id <スケジュールID> --message "更新後の依頼"
+
+# 日時・種別・本文をまとめて更新
+xangi tool schedule_update --id <スケジュールID> --input "起動時に 更新後の依頼"
+
+# 送信先platformを変更（platform変更時はchannelも必須）
+xangi tool schedule_update --id <スケジュールID> --platform slack --channel <channelId>
+
 # 削除（ID 指定）
 xangi tool schedule_remove --id <スケジュールID>
 
 # 有効/無効切り替え
 xangi tool schedule_toggle --id <スケジュールID>
 ```
+
+`schedule_update`は未指定項目を保持します。`--input`と`--message`は同時に指定できません。有効状態の変更には`schedule_toggle`を使います。
 
 ### データ保存
 
@@ -299,6 +312,8 @@ AIオンボーディングを置き換えるsetup用browser UIはありません
 
 checkout版の`./bin/xangi update`は、未commit変更、detached HEAD、upstreamなしを先に拒否し、`git pull --ff-only`、`npm ci`、`npm run build`を順に実行します。署名済みmanaged appのupdaterをcheckoutから明示的に呼ぶ場合は`./bin/xangi update --managed`を使います。
 
+`xangi update --help`（短縮形は`-h`）は、checkout版とmanaged版それぞれの更新内容・利用可能なoption・serviceを自動再起動しないことを表示します。更新内容を反映するタイミングで`xangi service restart`を明示的に実行してください。
+
 `xangi --version`（`xangi -V`、`xangi version`も可）は、managed版では現在有効な署名済みrelease番号を、checkout版ではGitのtagまたはcommitを表示します。
 
 managed版の`xangi uninstall`は定期update、OS service、xangi本体の順に削除します。workspace、設定、token、履歴は保持するため、表示されたinstall commandを再実行すれば以前の設定を使って再インストールできます。設定、token、履歴も削除する場合だけ`xangi uninstall --purge --yes`を使います。`--purge`は`--yes`が無ければ何も削除せず終了し、どちらの方法でもworkspaceは削除しません。
@@ -343,8 +358,8 @@ AIが `xangi tool` CLIツール経由でDiscord / Slack操作を実行します�
 
 常駐システムプロンプトには全コマンド例を埋め込みません。AIは操作方法や引数が必要な時に `xangi tool help`、`xangi tool help <topic>`、`xangi tool help <command>` で現在のusageを確認します。topicは `discord` / `slack` / `web` / `schedule` / `models` / `trigger` / `system` / `local` です。ユーザー向けslash commandの正本は各platformの `/help` です。
 
-| コマンド                                                                        | 説明                                                                                                       |
-| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| コマンド                                                                         | 説明                                                                                                       |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `xangi tool discord_history --channel <ID> [--count N] [--offset M]`             | チャンネル履歴取得                                                                                         |
 | `xangi tool discord_message --channel <ID> --message-id <ID>`                    | 特定メッセージの全文取得                                                                                   |
 | `xangi tool discord_send --channel <ID> --message "text"`                        | メッセージ送信                                                                                             |
@@ -620,6 +635,8 @@ Discord スレッド内では、`/autoreply` / `/notify` / `/threadmode` とチ�
 
 `/notify` コマンドで、長い Discord ターン完了時の別メッセージ通知をチャンネルごとに切り替えられます。起動時の `DISCORD_COMPLETION_NOTIFY` はデフォルト値として使われ、チャンネル override は `settings.json` に保存されます。対象は通常の Discord メッセージターンのみで、スケジュール起点ターンは通知しません。
 
+完了表示は全プラットフォームで `✅ 完了（⏱ 1分01秒）` に統一されます。時間は設定で隠せます。通常のLINE / Telegramは既定10秒以上、Discord / Slackは既存のplatform別閾値、Webとscheduleは各結果に表示します。
+
 ### 他 bot のメッセージへの応答（A/B 比較等）
 
 デフォルトでは他の bot メッセージには反応しません。応答対象は `RESPOND_TO_BOTS` 環境変数で事前にホワイトリスト指定し、有効/無効は `RESPOND_TO_BOTS_ENABLED` か `/respondtobots` で切り替えます。
@@ -840,6 +857,33 @@ XANGI_WORKSPACE=/home/user/my-workspace
 - コンテナはホストネットワークに**直接アクセスできません**
 - Ollamaコンテナは同じdocker network内で隔離
 - AIエージェントへの環境変数はホワイトリスト方式で制限（`DISCORD_TOKEN` 等はアクセス不可）
+
+## Extension連携
+
+外部extensionはWeb UIの「拡張」から追加・管理します。個別extensionの導入方法、設定、保存データ、UI、更新手順はxangi側へ複製せず、各repositoryの文書を正本とします。
+
+初回起動時も公式catalogのxangi-searchが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
+
+CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。
+
+公開GitHub repositoryから追加し、manifestに`update.prepare`を宣言したextensionには「更新を確認」が表示されます。選ぶとdefault branchの最新commitを確認し、`Update: <displayName>`という専用会話を開きます。会話は現在版と対象commitを説明してから、xangi親processの固定更新toolを実行します。更新toolは対象commitを再確認し、停止、source差し替え、更新準備、再link、起動、`doctor`を順番に行います。途中で失敗した場合は旧sourceへ戻し、更新前に動作中だったextensionを再起動して`doctor`します。permission、capability、entrypoint、agent backend、UI mapping、更新準備commandが増加・変更された場合は更新前に追加承認が必要です。local manifestは更新元repositoryを持たないため対象外で、background自動更新も行いません。
+
+更新準備はshell文字列ではなく、実行programと引数を分離して宣言します。xangiは新sourceの最終配置directoryをworking directoryとして、shellを介さず実行します。
+
+```json
+{
+  "update": {
+    "prepare": {
+      "command": "uv",
+      "args": ["sync", "--frozen", "--extra", "vector"]
+    }
+  }
+}
+```
+
+- xangi-search: [README](https://github.com/karaage0703/xangi-search/blob/main/README.md) / [セットアップ](https://github.com/karaage0703/xangi-search/blob/main/XANGI_SETUP.md)
+
+xangiが受け持つ設定項目だけは[.env.example](../.env.example)を参照してください。
 
 ## Local LLM
 
@@ -1254,11 +1298,11 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `DISCORD_REPLY_IN_THREAD`            | 返信をチャンネルではなく発言ごとに作成したスレッドへ投稿                                       | `false`    |
 | `DISCORD_STREAMING`                  | ストリーミング出力                                                                             | `true`     |
 | `DISCORD_SHOW_THINKING`              | 思考過程を表示                                                                                 | `true`     |
-| `DISCORD_SHOW_BUTTONS`               | Stop/New/Historyボタン表示                                                                      | `true`     |
+| `DISCORD_SHOW_BUTTONS`               | Stop/New/Historyボタン表示                                                                     | `true`     |
 | `DISCORD_REPLY_SUGGESTIONS`          | 本人だけに候補を展開する `返信候補` ボタンを表示                                               | `false`    |
 | `DISCORD_REPLY_SUGGESTIONS_COUNT`    | 返信候補数（1〜5）                                                                             | `3`        |
 | `DISCORD_TOOL_HISTORY_MODE`          | Turn History表示（`button` / `inline` / `off`、env名は互換維持）                               | `button`   |
-| `DISCORD_SHOW_TOOL_BUTTON`           | `button` モード時に History ボタン（途中コメント＋ツール履歴）を表示                            | `true`     |
+| `DISCORD_SHOW_TOOL_BUTTON`           | `button` モード時に History ボタン（途中コメント＋ツール履歴）を表示                           | `true`     |
 | `DISCORD_SHOW_LIVE_TOOL_USE`         | 実行中だけ raw ツール履歴を表示                                                                | `true`     |
 | `TOOL_HISTORY_MAX_LINES`             | 実行中・`inline`互換モードのツール最大行数（`0` 以下で無制限）                                 | `10`       |
 | `DISCORD_SHOW_TOOL_USE`              | 互換設定。`false` は `off`、`true` は `inline` として扱う                                      | -          |
@@ -1275,40 +1319,51 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `INJECT_CHANNEL_TOPIC`               | チャンネルトピックをプロンプトに注入                                                           | `true`     |
 | `INJECT_TIMESTAMP`                   | 現在時刻をプロンプトに注入                                                                     | `true`     |
 
+全プラットフォーム共通の完了表示設定:
+
+| 変数                         | 説明                                                   | デフォルト |
+| ---------------------------- | ------------------------------------------------------ | ---------- |
+| `COMPLETION_SHOW_ELAPSED`    | 完了表示に経過時間を含める                             | `true`     |
+| `COMPLETION_NOTIFY_AFTER_MS` | 通常のLINE / Telegramで完了表示を追加する最短時間（ms） | `10000`    |
+
 ### AIエージェント
 
-| 変数                         | 説明                                                                                                                    | デフォルト                   |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `AGENT_BACKEND`              | バックエンド（`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`）            | `claude-code`                |
-| `AGENT_MODEL`                | 使用するモデル                                                                                                          | -                            |
-| `WORKSPACE_PATH`             | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
-| `XANGI_WORKSPACE`            | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
-| `SKIP_PERMISSIONS`           | デフォルトで許可スキップ（非対話実行で待ち状態を防ぐため既定有効。明示的に `false` で無効化）                           | `true`                       |
-| `TIMEOUT_MS`                 | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `1800000`                    |
-| `XANGI_TOOL_SERVER_PORT`     | 内部ツールサーバーの固定ポート。未設定時は前回ポートを再利用（使用中なら自動割り当て）                                  | 前回ポート再利用             |
-| `XANGI_CONFIG_STRICT`        | 環境変数の不正値（数値でない・範囲外・enum typo 等）を起動エラーに格上げ。デフォルトは警告 + デフォルト値フォールバック | `false`                      |
-| `TIMEOUT_MAX_MS`             | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`                   |
-| `TIMEOUT_EXTEND_ENABLED`     | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                       |
-| `WEB_CHAT_UPLOAD_ACCEPT`     | Web Chat 受信ファイル許可リスト（カンマ区切り、HTML `<input accept>` 互換）                                             | 全許可                       |
-| `WEB_CHAT_UPLOAD_MAX_MB`     | Web Chatの1アップロード要求の上限（MiB単位、multipartヘッダを含む）                                                    | `64`                         |
-| `WEB_CHAT_DOWNLOAD_ACCEPT`   | Web Chat ダウンロード許可拡張子リスト（`.html,.txt` 等）                                                                | 全許可                       |
-| `ALLOWED_BACKENDS`           | `/backend` で切り替え許可するバックエンド（カンマ区切り）。未設定なら全バックエンド許可                                 | 全バックエンド               |
-| `ALLOWED_MODELS`             | `/backend` で切り替え許可するモデル（カンマ区切り）                                                                     | -                            |
-| `CHANNEL_OVERRIDES`          | チャンネル別バックエンド設定（JSON）。Discord スレッドでは親チャンネルIDの設定を継承                                    | -                            |
-| `ANTHROPIC_API_KEY`          | Claude Code backend に渡す Anthropic API key（Claude Code利用時のみ）                                                   | -                            |
-| `CLAUDE_CODE_BARE`           | Claude Code に `--bare` を渡し、OAuth/keychain ではなく API key 認証に固定                                              | `false`                      |
-| `COPILOT_PERMISSION_MODE`    | `SKIP_PERMISSIONS=false`時のCopilot tool範囲（`read-only` / `workspace-write`）                                         | `read-only`                  |
-| `COPILOT_MAX_AI_CREDITS`     | Copilot CLIへ渡す1 sessionのAI credit上限（任意、最小30）                                                               | -                            |
-| `CLAUDE_CODE_MAX_BUDGET_USD` | Claude Code に `--max-budget-usd` を渡し、API呼び出しの上限額を設定                                                     | -                            |
-| `CURSOR_API_KEY`             | Cursor CLI backend に渡す API key（Cursor CLI利用時のみ）                                                               | -                            |
-| `CURSOR_FORCE`               | Cursor CLI に `--force` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
-| `CURSOR_TRUST_WORKSPACE`     | Cursor CLI に `--trust` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
-| `XAI_API_KEY`                | Grok CLI backend に渡す API key（Grok CLI利用時のみ。`grok login` 済みなら不要）                                        | -                            |
-| `PERSISTENT_MODE`            | 常駐プロセスモード                                                                                                      | `true`                       |
-| `MAX_PROCESSES`              | 同時実行プロセス数の上限                                                                                                | `10`                         |
-| `IDLE_TIMEOUT_MS`            | アイドルプロセスの自動終了時間                                                                                          | `1800000`                    |
-| `DATA_DIR`                   | データ保存ディレクトリ（スケジュール・セッション等）                                                                    | `WORKSPACE_PATH/.xangi`      |
-| `GH_TOKEN`                   | GitHub CLIトークン                                                                                                      | -                            |
+| 変数                            | 説明                                                                                                                    | デフォルト                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `AGENT_BACKEND`                 | 組み込み、またはリンク済み拡張が宣言したバックエンドID                                                                  | `claude-code`                |
+| `AGENT_MODEL`                   | 使用するモデル                                                                                                          | -                            |
+| `WORKSPACE_PATH`                | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
+| `XANGI_WORKSPACE`               | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
+| `SKIP_PERMISSIONS`              | デフォルトで許可スキップ（非対話実行で待ち状態を防ぐため既定有効。明示的に `false` で無効化）                           | `true`                       |
+| `TIMEOUT_MS`                    | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `1800000`                    |
+| `XANGI_TOOL_SERVER_PORT`        | 内部ツールサーバーの固定ポート。未設定時は前回ポートを再利用（使用中なら自動割り当て）                                  | 前回ポート再利用             |
+| `XANGI_CONFIG_STRICT`           | 環境変数の不正値（数値でない・範囲外・enum typo 等）を起動エラーに格上げ。デフォルトは警告 + デフォルト値フォールバック | `false`                      |
+| `TIMEOUT_MAX_MS`                | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`                   |
+| `TIMEOUT_EXTEND_ENABLED`        | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                       |
+| `WEB_CHAT_UPLOAD_ACCEPT`        | Web Chat 受信ファイル許可リスト（カンマ区切り、HTML `<input accept>` 互換）                                             | 全許可                       |
+| `WEB_CHAT_UPLOAD_MAX_MB`        | Web Chatの1アップロード要求の上限（MiB単位、multipartヘッダを含む）                                                     | `64`                         |
+| `WEB_CHAT_DOWNLOAD_ACCEPT`      | Web Chat ダウンロード許可拡張子リスト（`.html,.txt` 等）                                                                | 全許可                       |
+| `ALLOWED_BACKENDS`              | `/backend` で切り替え許可するバックエンド（カンマ区切り）。未設定なら全バックエンド許可                                 | 全バックエンド               |
+| `ALLOWED_MODELS`                | `/backend` で切り替え許可するモデル（カンマ区切り）                                                                     | -                            |
+| `CHANNEL_OVERRIDES`             | チャンネル別バックエンド設定（JSON）。Discord スレッドでは親チャンネルIDの設定を継承                                    | -                            |
+| `EXTENSION_BACKEND_TIMEOUT_MS`  | 拡張バックエンドへのHTTP要求タイムアウト（ms）                                                                          | `5000`                       |
+| `XANGI_PUBLIC_WEB_URL`          | 拡張へ渡す、外部から到達可能なWeb Chatのbase URL                                                                        | 未設定                       |
+| `XANGI_EXTENSIONS_FILE`         | extension registryの絶対path（通常は自動決定）                                                                          | OS別config directory         |
+| `XANGI_EXTENSION_DEV_MANIFESTS` | `/extensions`に表示する信頼済みlocal manifestのJSON配列またはOS path区切りリスト                                        | 未設定                       |
+| `ANTHROPIC_API_KEY`             | Claude Code backend に渡す Anthropic API key（Claude Code利用時のみ）                                                   | -                            |
+| `CLAUDE_CODE_BARE`              | Claude Code に `--bare` を渡し、OAuth/keychain ではなく API key 認証に固定                                              | `false`                      |
+| `COPILOT_PERMISSION_MODE`       | `SKIP_PERMISSIONS=false`時のCopilot tool範囲（`read-only` / `workspace-write`）                                         | `read-only`                  |
+| `COPILOT_MAX_AI_CREDITS`        | Copilot CLIへ渡す1 sessionのAI credit上限（任意、最小30）                                                               | -                            |
+| `CLAUDE_CODE_MAX_BUDGET_USD`    | Claude Code に `--max-budget-usd` を渡し、API呼び出しの上限額を設定                                                     | -                            |
+| `CURSOR_API_KEY`                | Cursor CLI backend に渡す API key（Cursor CLI利用時のみ）                                                               | -                            |
+| `CURSOR_FORCE`                  | Cursor CLI に `--force` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
+| `CURSOR_TRUST_WORKSPACE`        | Cursor CLI に `--trust` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
+| `XAI_API_KEY`                   | Grok CLI backend に渡す API key（Grok CLI利用時のみ。`grok login` 済みなら不要）                                        | -                            |
+| `PERSISTENT_MODE`               | 常駐プロセスモード                                                                                                      | `true`                       |
+| `MAX_PROCESSES`                 | 同時実行プロセス数の上限                                                                                                | `10`                         |
+| `IDLE_TIMEOUT_MS`               | アイドルプロセスの自動終了時間                                                                                          | `1800000`                    |
+| `DATA_DIR`                      | データ保存ディレクトリ（スケジュール・セッション等）                                                                    | `WORKSPACE_PATH/.xangi`      |
+| `GH_TOKEN`                      | GitHub CLIトークン                                                                                                      | -                            |
 
 ### ワークスペース hooks
 
@@ -1333,7 +1388,7 @@ Web ProjectはDiscordのチャンネルに相当する論理的な会話グル�
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
-Chat / Files / Schedules / Monitorは共通ヘッダーを使い、ナビゲーションと`表示`メニューの位置を揃える。端末設定・ライト・ダークの選択はブラウザに保存される。
+Chat / Files / Schedules / Monitor / Extensionsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
 
 - hidden path、`.git`、`.xangi`、`.workspace_rag`、依存物、build/coverage成果物、symlinkは一覧・読込・保存のすべてで拒否する
 - ファイル作成・削除・rename・Git操作は行わず、既存の表示可能ファイルだけを保存する
@@ -1383,12 +1438,12 @@ Even G2 の公式ターミナルモード（`@evenrealities/even-terminal` 互�
 
 Even 側の provider 選択は `claude` / `codex` ラベルとして受け取るだけで、実際の backend は xangi の `AGENT_BACKEND` が決める。Even Terminal 経由だけ別 backend / model / Local LLM mode にしたい場合は `XANGI_EVEN_TERMINAL_BACKEND` / `XANGI_EVEN_TERMINAL_MODEL` / `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` を使う。`CHANNEL_OVERRIDES` の `web-chat:<appSessionId>` 個別設定がある場合は、個別設定が専用 default より優先される。
 
-| 変数                                 | 説明                                                                                                                 | デフォルト                      |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `XANGI_EVEN_TERMINAL_TOKEN`          | Even Terminal 互換 API 専用 token。未設定時は `XANGI_DEVICE_INBOX_TOKEN` → `XANGI_PET_INBOX_TOKEN` に fallback       | (未設定)                        |
-| `XANGI_EVEN_TERMINAL_BACKEND`        | Even Terminal 経由だけの backend default (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`) | `AGENT_BACKEND`                 |
-| `XANGI_EVEN_TERMINAL_MODEL`          | Even Terminal 経由だけの model default                                                                               | `AGENT_MODEL` / backend側の既定 |
-| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `lite` / `chat`)                                          | `LOCAL_LLM_MODE` / `agent`      |
+| 変数                                 | 説明                                                                                                           | デフォルト                      |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `XANGI_EVEN_TERMINAL_TOKEN`          | Even Terminal 互換 API 専用 token。未設定時は `XANGI_DEVICE_INBOX_TOKEN` → `XANGI_PET_INBOX_TOKEN` に fallback | (未設定)                        |
+| `XANGI_EVEN_TERMINAL_BACKEND`        | Even Terminal 経由だけのbackend default（組み込み、またはリンク済み拡張のbackend ID）                          | `AGENT_BACKEND`                 |
+| `XANGI_EVEN_TERMINAL_MODEL`          | Even Terminal 経由だけの model default                                                                         | `AGENT_MODEL` / backend側の既定 |
+| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `lite` / `chat`)                                    | `LOCAL_LLM_MODE` / `agent`      |
 
 ### Terminal / Device セッション (`xangi tool terminal_session`)
 

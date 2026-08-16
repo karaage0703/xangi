@@ -8,10 +8,12 @@ describe('backend effort capabilities', () => {
     }
   });
 
-  it('limits Antigravity and rejects graded Local LLM effort', () => {
+  it('limits Antigravity and rejects graded deterministic/local effort', () => {
     expect(getSupportedEffortLevels('antigravity')).toEqual(['low', 'medium', 'high']);
     expect(supportsEffort('antigravity', 'max')).toBe(false);
     expect(getSupportedEffortLevels('local-llm')).toEqual([]);
     expect(supportsEffort('local-llm', 'high')).toBe(false);
+    expect(getSupportedEffortLevels('workspace-search')).toEqual([]);
+    expect(supportsEffort('workspace-search', 'high')).toBe(false);
   });
 });

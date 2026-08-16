@@ -8,6 +8,8 @@ import { GrokRunner } from './grok-cli.js';
 import { AntigravityRunner } from './antigravity-cli.js';
 import { GitHubCopilotRunner } from './github-copilot-cli.js';
 import { LocalLlmRunner } from './local-llm/runner.js';
+import { ExtensionAgentRunner } from './extension-agent-runner.js';
+import { resolveExtensionAgentBackend } from './extensions.js';
 import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
 
@@ -25,6 +27,8 @@ export interface RunOptions {
   effort?: EffortLevel; // Claude Code / Codex のreasoning effort
   /** Local LLM の動作モード override（per-channel override 由来）。Local LLM 以外では無視される */
   localLlmMode?: LocalLlmMode;
+  /** Platform adapter's unexpanded user text, used by deterministic backends. */
+  userText?: string;
 }
 
 export interface RunResult {
@@ -136,6 +140,12 @@ export function createAgentRunner(
     case 'local-llm':
       return new LocalLlmRunner({ ...config, platform: options?.platform });
     default:
+      {
+        const extensionBackend = resolveExtensionAgentBackend(backend);
+        if (extensionBackend) {
+          return new ExtensionAgentRunner({ ...config, backend: extensionBackend });
+        }
+      }
       throw new Error(`Unknown agent backend: ${backend}`);
   }
 }
@@ -189,6 +199,6 @@ export function getBackendDisplayName(backend: AgentBackend): string {
     case 'local-llm':
       return 'Local LLM';
     default:
-      return backend;
+      return resolveExtensionAgentBackend(backend)?.displayName ?? backend;
   }
 }

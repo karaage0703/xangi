@@ -10,6 +10,7 @@
  */
 
 import type { AgentBackend, EffortLevel } from './config.js';
+import { listExtensionAgentBackends } from './extensions.js';
 import {
   getSupportedEffortLevels,
   requiresExplicitModelForEffort,
@@ -147,7 +148,7 @@ export class EnvValidator {
   }
 }
 
-const VALID_BACKENDS = [
+const BUILTIN_BACKENDS = [
   'claude-code',
   'codex',
   'cursor',
@@ -156,8 +157,25 @@ const VALID_BACKENDS = [
   'github-copilot',
   'local-llm',
 ] as const;
+
+function validBackends(): string[] {
+  return [
+    ...BUILTIN_BACKENDS,
+    ...listExtensionAgentBackends()
+      .map((item) => item.id)
+      .filter((id) => !(BUILTIN_BACKENDS as readonly string[]).includes(id)),
+  ];
+}
 const VALID_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
 const VALID_LLM_MODES = ['agent', 'lite', 'chat'] as const;
+
+function isRecognizedChannelId(channelId: string): boolean {
+  return (
+    /^-?\d+$/.test(channelId) ||
+    /^[CDG][A-Z0-9]+$/.test(channelId) ||
+    /^web-chat:[A-Za-z0-9_-]+$/.test(channelId)
+  );
+}
 
 export interface ChannelOverrideIssue {
   channelId: string;
@@ -176,6 +194,7 @@ export function validateChannelOverrides(raw: string): {
   > | null;
   issues: ChannelOverrideIssue[];
 } {
+  const validBackendIds = validBackends();
   const issues: ChannelOverrideIssue[] = [];
   let parsed: unknown;
   try {
@@ -201,10 +220,10 @@ export function validateChannelOverrides(raw: string): {
   > = {};
 
   for (const [channelId, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!/^\d+$/.test(channelId)) {
+    if (!isRecognizedChannelId(channelId)) {
       issues.push({
         channelId,
-        message: `チャンネル ID が数値ではありません（typo の可能性）。このエントリは読み込みますが確認してください`,
+        message: `認識できないチャンネル ID 形式です（typo の可能性）。このエントリは読み込みますが確認してください`,
       });
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -216,15 +235,12 @@ export function validateChannelOverrides(raw: string): {
     let valid = true;
 
     if (o.backend !== undefined) {
-      if (
-        typeof o.backend === 'string' &&
-        (VALID_BACKENDS as readonly string[]).includes(o.backend)
-      ) {
+      if (typeof o.backend === 'string' && validBackendIds.includes(o.backend)) {
         entry.backend = o.backend;
       } else {
         issues.push({
           channelId,
-          message: `backend '${String(o.backend)}' は不正です (${VALID_BACKENDS.join(' / ')})。このエントリは無視します`,
+          message: `backend '${String(o.backend)}' は不正です (${validBackendIds.join(' / ')})。このエントリは無視します`,
         });
         valid = false;
       }

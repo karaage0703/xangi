@@ -9,6 +9,8 @@ import { parseSetupConfig, type SetupConfig } from '../setup/schema.js';
 import { BACKEND_COMMAND, verifyBackendExecutable } from '../setup/backend-executable.js';
 import { managedServicePath } from '../installer/service-environment.js';
 import { serviceCmd } from './service-cmd.js';
+import { listExtensions, runExtensionAction } from '../extensions.js';
+import { runToolCommand } from './tool-command.js';
 
 export type DoctorLevel = 'ok' | 'warn' | 'error';
 
@@ -33,6 +35,41 @@ export interface DoctorOptions {
   checkoutDir?: string | false;
   runtimeInfoUrl?: string;
   tailscaleServeCheck?: (port: number) => Promise<DoctorCheck>;
+  extensionChecks?: () => Promise<DoctorCheck[]>;
+}
+
+async function checkExtensions(workspace?: string): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  for (const extension of await listExtensions()) {
+    if (!extension.enabled) continue;
+    try {
+      const result = process.env.XANGI_TOOL_SERVER
+        ? (JSON.parse(
+            (
+              await runToolCommand([
+                'extension_runtime',
+                '--action',
+                'doctor',
+                '--id',
+                extension.id,
+              ])
+            ).split('\t', 2)[1]
+          ) as Awaited<ReturnType<typeof runExtensionAction>>)
+        : await runExtensionAction(extension, 'doctor', { workspace });
+      checks.push({
+        name: `extension:${extension.id}`,
+        level: result.ok === false || result.healthy === false ? 'error' : 'ok',
+        detail: result.detail || (result.healthy === false ? 'unhealthy' : 'healthy'),
+      });
+    } catch (error) {
+      checks.push({
+        name: `extension:${extension.id}`,
+        level: 'error',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return checks;
 }
 
 async function checkConfig(
@@ -359,6 +396,11 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
       )
     );
   }
+  checks.push(
+    ...(await (
+      options.extensionChecks ?? (() => checkExtensions(configResult.config?.workspacePath))
+    )())
+  );
   return checks;
 }
 

@@ -32,12 +32,20 @@ class FakeResolver {
     return ['claude-code', 'codex'];
   }
 
+  getSelectableBackends(): AgentBackend[] {
+    return this.getAllowedBackends();
+  }
+
   getAllowedModels(): string[] | undefined {
     return ['gpt-test'];
   }
 
   isBackendAllowed(backend: AgentBackend): boolean {
     return this.getAllowedBackends().includes(backend);
+  }
+
+  isBackendSelectable(backend: AgentBackend): boolean {
+    return this.getSelectableBackends().includes(backend);
   }
 
   isModelAllowed(model: string): boolean {

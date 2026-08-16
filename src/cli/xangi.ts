@@ -31,6 +31,7 @@ import { settingsCmd } from './settings-cmd.js';
 import { resolveAppLayout } from '../installer/layout.js';
 import { installConfiguredWorkspaceTemplate } from '../installer/workspace-template.js';
 import { runToolCommand } from './tool-command.js';
+import { extensionCmd } from './extension-cmd.js';
 
 type ProviderLabel = 'claude' | 'codex';
 
@@ -121,6 +122,7 @@ Usage:
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi settings
+  xangi extension <link|unlink|list|start|stop|restart|status|doctor|update> [ID|MANIFEST]
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -157,6 +159,23 @@ Note:
   or using named symlinks such as xangi-dev / xangi-prod.
   xangi tool is the canonical agent/tool-server CLI.
   xangi-cmd remains available as a compatibility shim.`);
+}
+
+function printUpdateHelp(): void {
+  console.log(`Usage:
+  xangi update
+  xangi update --managed [--manifest URL] [--public-key PATH] [--allow-downgrade]
+
+Managed update:
+  Downloads and verifies the signed release, then activates it for the next service start.
+
+Options:
+  --managed          From a source checkout, update the signed managed installation instead
+  --manifest URL     Signed release manifest URL
+  --public-key PATH  Ed25519 release public key path
+  --allow-downgrade  Explicitly permit installing an older release
+
+The service is not restarted automatically. Run \`xangi service restart\` when ready.`);
 }
 
 function printVersion(): void {
@@ -475,6 +494,10 @@ export async function run(argv = process.argv): Promise<void> {
     printVersion();
     return;
   }
+  if (argv[2] === 'update' && argv.slice(3).some((arg) => arg === '--help' || arg === '-h')) {
+    printUpdateHelp();
+    return;
+  }
   if (argv[2] === 'tool') {
     console.log(await runToolCommand(argv.slice(3)));
     return;
@@ -488,6 +511,13 @@ export async function run(argv = process.argv): Promise<void> {
   if (parsed.command === 'service') {
     console.log(
       await serviceCmd(parsed.positionals[0] || 'help', parsed.flags, {}, parsed.positionals[1])
+    );
+    return;
+  }
+
+  if (parsed.command === 'extension') {
+    console.log(
+      await extensionCmd(parsed.positionals[0] || 'list', parsed.positionals.slice(1), parsed.flags)
     );
     return;
   }

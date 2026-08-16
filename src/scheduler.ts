@@ -49,6 +49,30 @@ export interface SendMessageFn {
 export interface AgentRunFn {
   (prompt: string, channelId: string, schedule?: Schedule): Promise<string>;
 }
+
+export function validateScheduleInput(schedule: ScheduleInput): void {
+  if (schedule.type === 'cron') {
+    if (!schedule.expression || !cron.validate(schedule.expression)) {
+      throw new Error(
+        `Invalid cron expression: ${schedule.expression}\n` +
+          '例: "0 9 * * *"（毎日9時）, "*/30 * * * *"（30分毎）'
+      );
+    }
+  } else if (schedule.type === 'once') {
+    if (!schedule.runAt) {
+      throw new Error('runAt is required for one-time schedule');
+    }
+    const runTime = new Date(schedule.runAt).getTime();
+    if (isNaN(runTime)) {
+      throw new Error(`Invalid date: ${schedule.runAt}`);
+    }
+    if (runTime <= Date.now()) {
+      throw new Error('runAt must be in the future');
+    }
+  } else if (schedule.type !== 'startup') {
+    throw new Error(`Unknown schedule type: ${schedule.type}`);
+  }
+}
 // ─── Scheduler ───────────────────────────────────────────────────────
 export class Scheduler {
   private schedules: Schedule[] = [];
@@ -115,8 +139,8 @@ export class Scheduler {
       createdAt: new Date().toISOString(),
       enabled: true,
     };
+    this.save([...this.schedules, newSchedule]);
     this.schedules.push(newSchedule);
-    this.save();
     if (!this.disabled) {
       this.startJob(newSchedule);
     }
@@ -136,38 +160,18 @@ export class Scheduler {
       createdAt: current.createdAt,
       enabled: current.enabled,
     };
+    const nextSchedules = [...this.schedules];
+    nextSchedules[index] = updated;
+    this.save(nextSchedules);
     this.stopJob(id);
     this.schedules[index] = updated;
-    this.save();
     if (!this.disabled && updated.enabled) {
       this.startJob(updated);
     }
     return updated;
   }
   private validate(schedule: ScheduleInput): void {
-    if (schedule.type === 'cron') {
-      if (!schedule.expression || !cron.validate(schedule.expression)) {
-        throw new Error(
-          `Invalid cron expression: ${schedule.expression}\n` +
-            '例: "0 9 * * *"（毎日9時）, "*/30 * * * *"（30分毎）'
-        );
-      }
-    } else if (schedule.type === 'once') {
-      if (!schedule.runAt) {
-        throw new Error('runAt is required for one-time schedule');
-      }
-      const runTime = new Date(schedule.runAt).getTime();
-      if (isNaN(runTime)) {
-        throw new Error(`Invalid date: ${schedule.runAt}`);
-      }
-      if (runTime <= Date.now()) {
-        throw new Error('runAt must be in the future');
-      }
-    } else if (schedule.type === 'startup') {
-      // startup type needs no additional validation
-    } else {
-      throw new Error(`Unknown schedule type: ${schedule.type}`);
-    }
+    validateScheduleInput(schedule);
   }
   /**
    * スケジュールを削除
@@ -175,9 +179,9 @@ export class Scheduler {
   remove(id: string): boolean {
     const index = this.schedules.findIndex((s) => s.id === id);
     if (index === -1) return false;
+    this.save(this.schedules.filter((schedule) => schedule.id !== id));
     this.stopJob(id);
     this.schedules.splice(index, 1);
-    this.save();
     return true;
   }
   /**
@@ -205,8 +209,9 @@ export class Scheduler {
   toggle(id: string): Schedule | undefined {
     const schedule = this.schedules.find((s) => s.id === id);
     if (!schedule) return undefined;
-    schedule.enabled = !schedule.enabled;
-    this.save();
+    const enabled = !schedule.enabled;
+    this.save(this.schedules.map((item) => (item.id === id ? { ...item, enabled } : item)));
+    schedule.enabled = enabled;
     if (!this.disabled) {
       if (schedule.enabled) {
         this.startJob(schedule);
@@ -435,21 +440,20 @@ export class Scheduler {
       this.schedules = [];
     }
   }
-  private save(): void {
+  private save(schedules: Schedule[] = this.schedules): void {
+    const tmpPath = `${this.filePath}.tmp`;
     try {
       const dir = dirname(this.filePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
-      this.lastSaveTime = Date.now();
       // アトミック書き込み: 一時ファイル → リネーム
-      const tmpPath = `${this.filePath}.tmp`;
-      writeFileSync(tmpPath, JSON.stringify(this.schedules, null, 2), 'utf-8');
+      writeFileSync(tmpPath, JSON.stringify(schedules, null, 2), 'utf-8');
       renameSync(tmpPath, this.filePath);
+      this.lastSaveTime = Date.now();
     } catch (error) {
       console.error('[scheduler] Failed to save schedules:', error);
       // 一時ファイルが残っていたら削除
-      const tmpPath = `${this.filePath}.tmp`;
       try {
         if (existsSync(tmpPath)) {
           unlinkSync(tmpPath);
@@ -457,6 +461,7 @@ export class Scheduler {
       } catch {
         // クリーンアップ失敗は無視
       }
+      throw error;
     }
   }
   private generateId(): string {
@@ -774,8 +779,8 @@ export function parseScheduleInput(input: string): {
       targetChannelId,
     };
   }
-  // "起動時 メッセージ" or "startup メッセージ"
-  const startupMatch = trimmed.match(/^(?:起動時|startup)\s+(.+)$/i);
+  // "起動時 メッセージ", "起動時に メッセージ", or "startup メッセージ"
+  const startupMatch = trimmed.match(/^(?:起動時(?:に)?|startup)\s+(.+)$/i);
   if (startupMatch) {
     return {
       type: 'startup',

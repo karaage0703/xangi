@@ -17,6 +17,7 @@ Detailed usage guide for xangi.
 - [Runtime Settings](#runtime-settings)
 - [Autonomous AI Operations](#autonomous-ai-operations)
 - [Docker Deployment](#docker-deployment)
+- [Extension Integration](#extension-integration)
 - [Local LLM](#local-llm)
 - [Workspace Hooks (Stop Hook)](#workspace-hooks-stop-hook)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
@@ -126,6 +127,7 @@ Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` wit
 ## Scheduler
 
 Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi tool schedule_add` etc. on your behalf.
+Scheduled results show elapsed time on both success and failure. Discord, Slack, and Telegram use a result footer, while Web shows it in the message header.
 
 ### How to Operate
 
@@ -133,7 +135,7 @@ Set up periodic tasks and reminders. Ask the AI in natural language, and it call
 | --------------------------- | -------------------------------------------------------------- |
 | `/schedule` (Discord slash) | Add / list / remove / toggle schedules via GUI                 |
 | Web UI Schedules            | Add, edit, pause, and delete jobs for every supported platform |
-| `xangi tool schedule_*`      | Operate from AI or CLI (see below)                             |
+| `xangi tool schedule_*`     | Operate from AI or CLI (see below)                             |
 | Natural language            | Say e.g. "remind me at 9am every day" and the AI registers it  |
 
 ### Time Specification Formats
@@ -192,12 +194,23 @@ xangi tool schedule_add --input "Every day 9:00 status check" --platform web --c
 # List schedules
 xangi tool schedule_list
 
+# Update only the prompt while preserving the ID, timing, destination, and enabled state
+xangi tool schedule_update --id <scheduleId> --message "updated task"
+
+# Update timing, type, and prompt together
+xangi tool schedule_update --id <scheduleId> --input "startup updated task"
+
+# Change platform and destination together
+xangi tool schedule_update --id <scheduleId> --platform slack --channel <channelId>
+
 # Remove by ID
 xangi tool schedule_remove --id <scheduleId>
 
 # Enable/disable toggle
 xangi tool schedule_toggle --id <scheduleId>
 ```
+
+`schedule_update` preserves omitted fields. `--input` and `--message` cannot be used together. Use `schedule_toggle` to change the enabled state.
 
 ### Data Storage
 
@@ -297,6 +310,8 @@ There is no browser UI that replaces AI onboarding. Token entry alone uses the l
 
 In a checkout, `./bin/xangi update` first refuses uncommitted changes, detached HEAD, and a branch without an upstream, then runs `git pull --ff-only`, `npm ci`, and `npm run build`. Use `./bin/xangi update --managed` to explicitly invoke the signed managed updater from a checkout.
 
+`xangi update --help` (or `-h`) describes the update behavior and available options for both checkout and managed installations, including that the service is not restarted automatically. Run `xangi service restart` explicitly when you are ready to activate the update.
+
 `xangi --version` (`xangi -V` and `xangi version` are aliases) prints the active signed release for a managed installation, or the Git tag or commit for a checkout.
 
 For a managed installation, `xangi uninstall` removes scheduled updates, the OS service, and the xangi application in that order. It retains the workspace, settings, tokens, and history, so rerunning the printed install command restores the application with the previous configuration. Use `xangi uninstall --purge --yes` only when settings, tokens, and history should also be removed. Without `--yes`, `--purge` exits before deleting anything. Neither mode removes the workspace.
@@ -341,8 +356,8 @@ The AI performs Discord / Slack operations via the `xangi tool` CLI tool. Becaus
 
 The persistent system prompt does not embed every command example. When the AI needs current syntax, it uses `xangi tool help`, `xangi tool help <topic>`, or `xangi tool help <command>`. Topics are `discord`, `slack`, `web`, `schedule`, `models`, `trigger`, `system`, and `local`. Each platform's `/help` remains the source of truth for user-facing slash commands.
 
-| Command                                                                         | Description                                                                                                                 |
-| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Command                                                                          | Description                                                                                                                 |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `xangi tool discord_history --channel <ID> [--count N] [--offset M]`             | Get channel history                                                                                                         |
 | `xangi tool discord_message --channel <ID> --message-id <ID>`                    | Get one message without truncating its content                                                                              |
 | `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat current pane history (auto-resolves from `XANGI_CHANNEL_ID=web-chat:<id>`)                                         |
@@ -489,7 +504,7 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | Setting                           | Description                                                                   | Default |
 | --------------------------------- | ----------------------------------------------------------------------------- | ------- |
 | `discordAutoReplyChannels`        | Per-channel mention-free auto-reply settings (`true` / `false`)               | none    |
-| `slackAutoReplyChannels`          | Per-Slack-channel mention-free auto-reply settings (`true` / `false`)          | none    |
+| `slackAutoReplyChannels`          | Per-Slack-channel mention-free auto-reply settings (`true` / `false`)         | none    |
 | `discordCompletionNotifyChannels` | Per-channel completion notification overrides (`off` / `message` / `mention`) | none    |
 | `discordThreadModeChannels`       | Per-channel Discord thread reply overrides (`true` / `false`)                 | none    |
 
@@ -602,6 +617,8 @@ Inside Discord threads, `/autoreply`, `/notify`, `/threadmode`, and channel topi
 To disable this command, set `ALLOW_THREAD_MODE_COMMAND=false` in `.env` (default: enabled).
 
 Use `/notify` to configure separate completion notifications for long Discord turns per channel. `DISCORD_COMPLETION_NOTIFY` is the startup default, while channel overrides are stored in `settings.json`. This applies only to normal Discord message turns; scheduler-triggered turns do not send completion notifications.
+
+Every platform uses the same `✅ 完了（⏱ 1分01秒）` completion display. Elapsed time can be hidden in settings. Normal LINE and Telegram turns use a 10-second default threshold, Discord and Slack keep their platform thresholds, and Web and scheduled runs show the value with each result.
 
 ### Responding to Other Bots (A/B Comparison)
 
@@ -823,6 +840,33 @@ XANGI_WORKSPACE=/home/user/my-workspace
 - Containers do **not have direct access** to the host network
 - The Ollama container is isolated within the same docker network
 - Environment variables passed to the AI agent are restricted via a whitelist (e.g. `DISCORD_TOKEN` is not accessible)
+
+## Extension Integration
+
+Add and manage external extensions from Extensions in the Web UI. Installation, configuration, stored data, standalone UI, and update instructions remain canonical in each extension repository instead of being duplicated in xangi documentation.
+
+xangi-search is visible in the official catalog on a first run. Listing the entry does not fetch or execute its repository; after Add is selected, xangi pins and validates the public repository and starts a dedicated setup conversation. Users may still enter any public GitHub repository URL or configure trusted local development manifests.
+
+An extension linked earlier through the CLI or deployment tooling still shows Setup while it is available. Selecting it opens the dedicated conversation from the repository setup document without stopping or reinstalling the extension. After setup, status, and doctor checks succeed, the LLM reads the extension README and relevant signals from the current workspace README, AGENTS.md, and top-level directory structure. It then proposes two or three uses matched to the user's goals and existing workflow. Each proposal includes why it fits, the first request or action to try, and the expected result. Recommendations alone do not modify the workspace or settings, and automation, external sending, or scheduled execution still requires separate confirmation.
+
+Extensions added from a public GitHub repository show Check for updates when their manifest declares `update.prepare`. Selecting it resolves the latest default-branch commit and opens a dedicated `Update: <displayName>` conversation. The conversation explains the installed and target commits, then invokes a fixed update tool owned by the xangi parent process. The tool revalidates the target commit, stops the extension, swaps the source, runs its update preparation, relinks, starts, and runs `doctor`. On failure it restores the previous source and, if the extension was running before the update, restarts and doctors that version. Added permissions or capabilities and changed entrypoints, agent backends, UI mappings, or update preparation commands require an additional explicit approval. Local manifests have no managed repository target and are therefore excluded; background automatic updates are also out of scope.
+
+Update preparation declares a program and arguments separately instead of a shell command string. xangi runs it without a shell, using the new source's final directory as the working directory.
+
+```json
+{
+  "update": {
+    "prepare": {
+      "command": "uv",
+      "args": ["sync", "--frozen", "--extra", "vector"]
+    }
+  }
+}
+```
+
+- xangi-search: [README](https://github.com/karaage0703/xangi-search/blob/main/README.md) / [Setup](https://github.com/karaage0703/xangi-search/blob/main/XANGI_SETUP.en.md)
+
+See [.env.example](../../.env.example) only for settings owned by xangi itself.
 
 ## Local LLM
 
@@ -1224,65 +1268,76 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 
 ### Discord
 
-| Variable                             | Description                                                                                                        | Default      |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------ |
-| `DISCORD_TOKEN`                      | Discord Bot Token                                                                                                  | **Required** |
-| `DISCORD_ALLOWED_USER`               | Allowed user ID (comma-separated for multiple, `*` to allow all)                                                   | **Required** |
-| `DISCORD_REPLY_IN_THREAD`            | Post replies into a per-message thread instead of the channel                                                      | `false`      |
-| `DISCORD_STREAMING`                  | Streaming output                                                                                                   | `true`       |
-| `DISCORD_SHOW_THINKING`              | Show thinking process                                                                                              | `true`       |
-| `DISCORD_SHOW_BUTTONS`               | Show Stop/New/History buttons                                                                                      | `true`       |
-| `DISCORD_REPLY_SUGGESTIONS`          | Show a user-only `返信候補` button for reply suggestions                                                           | `false`      |
-| `DISCORD_REPLY_SUGGESTIONS_COUNT`    | Number of reply suggestions (1-5)                                                                                  | `3`          |
-| `DISCORD_TOOL_HISTORY_MODE`          | Turn History display (`button` / `inline` / `off`; env name kept for compatibility)                               | `button`     |
-| `DISCORD_SHOW_TOOL_BUTTON`           | Show the History button (commentary + tools) in `button` mode                                                      | `true`       |
-| `DISCORD_SHOW_LIVE_TOOL_USE`         | Show raw tool history while running                                                                                | `true`       |
-| `TOOL_HISTORY_MAX_LINES`             | Max tool lines in live and legacy `inline` displays (`0` or less for unlimited)                                   | `10`         |
-| `DISCORD_SHOW_TOOL_USE`              | Compatibility setting. `false` maps to `off`, `true` maps to `inline`                                              | -            |
-| `DISCORD_COMPLETION_NOTIFY`          | Send a separate completion notification after long Discord turns (`off` / `message` / `mention`)                   | `message`    |
-| `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notification (ms)                                                 | `10000`      |
-| `ALLOW_AUTOREPLY_COMMAND`            | Enable `/autoreply` command                                                                                        | `true`       |
-| `XANGI_SELF_LIFECYCLE`               | Allow xangi to request its own restart (`off` / `restart-only`)                                                    | `off`        |
-| `RESPOND_TO_BOTS`                    | Whitelist of bot IDs to respond to (`*` for all bots)                                                              | -            |
-| `RESPOND_TO_BOTS_ENABLED`            | Toggle bot-to-bot reply ON/OFF (`/respondtobots` switches at runtime)                                              | `false`      |
-| `RESPOND_TO_BOTS_MAX_CONSECUTIVE`    | Max consecutive replies to the same bot (0 = unlimited)                                                            | `3`          |
-| `ALLOW_RESPOND_TO_BOTS_COMMAND`      | Enable `/respondtobots` command                                                                                    | `true`       |
-| `ALLOW_THREAD_MODE_COMMAND`          | Enable `/threadmode` command                                                                                       | `true`       |
-| `ALLOW_LLM_MODE_COMMAND`             | Enable `/llmmode` command (Local LLM mode switcher)                                                                | `true`       |
-| `INJECT_CHANNEL_TOPIC`               | Inject channel topic into prompt                                                                                   | `true`       |
-| `INJECT_TIMESTAMP`                   | Inject current time into prompt                                                                                    | `true`       |
+| Variable                             | Description                                                                                      | Default      |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------ |
+| `DISCORD_TOKEN`                      | Discord Bot Token                                                                                | **Required** |
+| `DISCORD_ALLOWED_USER`               | Allowed user ID (comma-separated for multiple, `*` to allow all)                                 | **Required** |
+| `DISCORD_REPLY_IN_THREAD`            | Post replies into a per-message thread instead of the channel                                    | `false`      |
+| `DISCORD_STREAMING`                  | Streaming output                                                                                 | `true`       |
+| `DISCORD_SHOW_THINKING`              | Show thinking process                                                                            | `true`       |
+| `DISCORD_SHOW_BUTTONS`               | Show Stop/New/History buttons                                                                    | `true`       |
+| `DISCORD_REPLY_SUGGESTIONS`          | Show a user-only `返信候補` button for reply suggestions                                         | `false`      |
+| `DISCORD_REPLY_SUGGESTIONS_COUNT`    | Number of reply suggestions (1-5)                                                                | `3`          |
+| `DISCORD_TOOL_HISTORY_MODE`          | Turn History display (`button` / `inline` / `off`; env name kept for compatibility)              | `button`     |
+| `DISCORD_SHOW_TOOL_BUTTON`           | Show the History button (commentary + tools) in `button` mode                                    | `true`       |
+| `DISCORD_SHOW_LIVE_TOOL_USE`         | Show raw tool history while running                                                              | `true`       |
+| `TOOL_HISTORY_MAX_LINES`             | Max tool lines in live and legacy `inline` displays (`0` or less for unlimited)                  | `10`         |
+| `DISCORD_SHOW_TOOL_USE`              | Compatibility setting. `false` maps to `off`, `true` maps to `inline`                            | -            |
+| `DISCORD_COMPLETION_NOTIFY`          | Send a separate completion notification after long Discord turns (`off` / `message` / `mention`) | `message`    |
+| `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notification (ms)                               | `10000`      |
+| `ALLOW_AUTOREPLY_COMMAND`            | Enable `/autoreply` command                                                                      | `true`       |
+| `XANGI_SELF_LIFECYCLE`               | Allow xangi to request its own restart (`off` / `restart-only`)                                  | `off`        |
+| `RESPOND_TO_BOTS`                    | Whitelist of bot IDs to respond to (`*` for all bots)                                            | -            |
+| `RESPOND_TO_BOTS_ENABLED`            | Toggle bot-to-bot reply ON/OFF (`/respondtobots` switches at runtime)                            | `false`      |
+| `RESPOND_TO_BOTS_MAX_CONSECUTIVE`    | Max consecutive replies to the same bot (0 = unlimited)                                          | `3`          |
+| `ALLOW_RESPOND_TO_BOTS_COMMAND`      | Enable `/respondtobots` command                                                                  | `true`       |
+| `ALLOW_THREAD_MODE_COMMAND`          | Enable `/threadmode` command                                                                     | `true`       |
+| `ALLOW_LLM_MODE_COMMAND`             | Enable `/llmmode` command (Local LLM mode switcher)                                              | `true`       |
+| `INJECT_CHANNEL_TOPIC`               | Inject channel topic into prompt                                                                 | `true`       |
+| `INJECT_TIMESTAMP`                   | Inject current time into prompt                                                                  | `true`       |
+
+Shared completion-display settings:
+
+| Variable                     | Description                                                        | Default |
+| ---------------------------- | ------------------------------------------------------------------ | ------- |
+| `COMPLETION_SHOW_ELAPSED`    | Include elapsed time in completion metadata                        | `true`  |
+| `COMPLETION_NOTIFY_AFTER_MS` | Minimum duration for normal LINE / Telegram completion summaries   | `10000` |
 
 ### AI Agent
 
-| Variable                     | Description                                                                                                                    | Default                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
-| `AGENT_BACKEND`              | Backend (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`)                         | `claude-code`             |
-| `AGENT_MODEL`                | Model to use                                                                                                                   | -                         |
-| `WORKSPACE_PATH`             | Working directory (local execution)                                                                                            | process startup directory |
-| `XANGI_WORKSPACE`            | Host-side workspace path (Docker execution)                                                                                    | `./workspace`             |
-| `SKIP_PERMISSIONS`           | Skip permissions by default (avoids deadlocks for non-interactive chat platforms)                                              | `true`                    |
-| `TIMEOUT_MS`                 | Initial request timeout (milliseconds)                                                                                         | `1800000`                 |
-| `XANGI_TOOL_SERVER_PORT`     | Fixed port for the internal tool server. When unset, the previous port is reused (auto-assign if busy)                         | reuse last port           |
-| `XANGI_CONFIG_STRICT`        | Escalate invalid env values (non-numeric, out of range, enum typos) to startup errors. Default is warn + fall back to defaults | `false`                   |
-| `TIMEOUT_MAX_MS`             | Absolute upper limit for timeout extension (milliseconds)                                                                      | `36000000`                |
-| `TIMEOUT_EXTEND_ENABLED`     | Enable / disable the `延長` button                                                                                             | `true`                    |
-| `ALLOWED_BACKENDS`           | Allowed backends for `/backend` switching (comma-separated). If unset, all backends are allowed                                | all backends              |
-| `ALLOWED_MODELS`             | Allowed models for `/backend` switching (comma-separated)                                                                      | -                         |
-| `CHANNEL_OVERRIDES`          | Per-channel backend settings (JSON). Discord threads inherit the parent channel's entry                                        | -                         |
-| `ANTHROPIC_API_KEY`          | Anthropic API key passed only to the Claude Code backend                                                                       | -                         |
-| `CLAUDE_CODE_BARE`           | Pass `--bare` to Claude Code and force API-key auth instead of OAuth/keychain auth                                             | `false`                   |
-| `COPILOT_PERMISSION_MODE`    | Copilot tool scope (`read-only` / `workspace-write`) when `SKIP_PERMISSIONS=false`                                             | `read-only`               |
-| `COPILOT_MAX_AI_CREDITS`     | Optional per-session AI credit limit passed to Copilot CLI (minimum 30)                                                         | -                         |
-| `CLAUDE_CODE_MAX_BUDGET_USD` | Pass `--max-budget-usd` to Claude Code to cap API spend                                                                        | -                         |
-| `CURSOR_API_KEY`             | API key passed only to the Cursor CLI backend                                                                                  | -                         |
-| `CURSOR_FORCE`               | Pass `--force` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
-| `CURSOR_TRUST_WORKSPACE`     | Pass `--trust` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
-| `XAI_API_KEY`                | API key passed only to the Grok CLI backend (not required when `grok login` is already configured)                             | -                         |
-| `PERSISTENT_MODE`            | Persistent process mode                                                                                                        | `true`                    |
-| `MAX_PROCESSES`              | Maximum concurrent processes                                                                                                   | `10`                      |
-| `IDLE_TIMEOUT_MS`            | Auto-terminate idle processes after                                                                                            | `1800000`                 |
-| `DATA_DIR`                   | Data storage directory (schedules, sessions, etc.)                                                                             | `WORKSPACE_PATH/.xangi`   |
-| `GH_TOKEN`                   | GitHub CLI token                                                                                                               | -                         |
+| Variable                        | Description                                                                                                                    | Default                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| `AGENT_BACKEND`                 | Built-in backend ID or an ID declared by a linked extension                                                                    | `claude-code`             |
+| `AGENT_MODEL`                   | Model to use                                                                                                                   | -                         |
+| `WORKSPACE_PATH`                | Working directory (local execution)                                                                                            | process startup directory |
+| `XANGI_WORKSPACE`               | Host-side workspace path (Docker execution)                                                                                    | `./workspace`             |
+| `SKIP_PERMISSIONS`              | Skip permissions by default (avoids deadlocks for non-interactive chat platforms)                                              | `true`                    |
+| `TIMEOUT_MS`                    | Initial request timeout (milliseconds)                                                                                         | `1800000`                 |
+| `XANGI_TOOL_SERVER_PORT`        | Fixed port for the internal tool server. When unset, the previous port is reused (auto-assign if busy)                         | reuse last port           |
+| `XANGI_CONFIG_STRICT`           | Escalate invalid env values (non-numeric, out of range, enum typos) to startup errors. Default is warn + fall back to defaults | `false`                   |
+| `TIMEOUT_MAX_MS`                | Absolute upper limit for timeout extension (milliseconds)                                                                      | `36000000`                |
+| `TIMEOUT_EXTEND_ENABLED`        | Enable / disable the `延長` button                                                                                             | `true`                    |
+| `ALLOWED_BACKENDS`              | Allowed backends for `/backend` switching (comma-separated). If unset, all backends are allowed                                | all backends              |
+| `ALLOWED_MODELS`                | Allowed models for `/backend` switching (comma-separated)                                                                      | -                         |
+| `CHANNEL_OVERRIDES`             | Per-channel backend settings (JSON). Discord threads inherit the parent channel's entry                                        | -                         |
+| `EXTENSION_BACKEND_TIMEOUT_MS`  | HTTP timeout for extension-backed agent requests                                                                               | `5000`                    |
+| `XANGI_PUBLIC_WEB_URL`          | Externally reachable Web Chat base URL passed to extensions                                                                    | unset                     |
+| `XANGI_EXTENSIONS_FILE`         | Absolute extension registry path (normally resolved automatically)                                                             | OS config directory       |
+| `XANGI_EXTENSION_DEV_MANIFESTS` | Trusted local manifests shown at `/extensions`, as a JSON array or OS path-delimited list                                      | unset                     |
+| `ANTHROPIC_API_KEY`             | Anthropic API key passed only to the Claude Code backend                                                                       | -                         |
+| `CLAUDE_CODE_BARE`              | Pass `--bare` to Claude Code and force API-key auth instead of OAuth/keychain auth                                             | `false`                   |
+| `COPILOT_PERMISSION_MODE`       | Copilot tool scope (`read-only` / `workspace-write`) when `SKIP_PERMISSIONS=false`                                             | `read-only`               |
+| `COPILOT_MAX_AI_CREDITS`        | Optional per-session AI credit limit passed to Copilot CLI (minimum 30)                                                        | -                         |
+| `CLAUDE_CODE_MAX_BUDGET_USD`    | Pass `--max-budget-usd` to Claude Code to cap API spend                                                                        | -                         |
+| `CURSOR_API_KEY`                | API key passed only to the Cursor CLI backend                                                                                  | -                         |
+| `CURSOR_FORCE`                  | Pass `--force` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
+| `CURSOR_TRUST_WORKSPACE`        | Pass `--trust` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
+| `XAI_API_KEY`                   | API key passed only to the Grok CLI backend (not required when `grok login` is already configured)                             | -                         |
+| `PERSISTENT_MODE`               | Persistent process mode                                                                                                        | `true`                    |
+| `MAX_PROCESSES`                 | Maximum concurrent processes                                                                                                   | `10`                      |
+| `IDLE_TIMEOUT_MS`               | Auto-terminate idle processes after                                                                                            | `1800000`                 |
+| `DATA_DIR`                      | Data storage directory (schedules, sessions, etc.)                                                                             | `WORKSPACE_PATH/.xangi`   |
+| `GH_TOKEN`                      | GitHub CLI token                                                                                                               | -                         |
 
 ### Workspace Hooks
 
@@ -1295,14 +1350,14 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 
 While an attachment is transferring, desktop and mobile show its name, position in a multi-file selection, and upload percentage above the composer. Audio and video use byte-range delivery so mobile browsers can load metadata, seek, and play.
 
-| Variable                    | Description                                                                                                                                                                                             | Default             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `WEB_CHAT_ENABLED`          | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>`                                                                                                                                   | `false`             |
-| `WEB_CHAT_PORT`             | Web Chat UI port                                                                                                                                                                                        | `18888`             |
-| `WEB_CHAT_HOST`             | Bind host. `127.0.0.1` is reachable only from the same device; remote access requires SSH port forwarding or Tailscale Serve. `0.0.0.0` exposes all interfaces. The Web UI itself has no authentication | `0.0.0.0`           |
-| `WEB_CHAT_UPLOAD_ACCEPT`    | HTML `accept` list for uploads; `.ext` entries are also enforced by the server                                                                                                                          | all types           |
-| `WEB_CHAT_UPLOAD_MAX_MB`    | Maximum MiB per Web Chat upload request, including multipart headers                                                                                                                                    | `64`                |
-| `WEB_CHAT_DOWNLOAD_ACCEPT`  | Allowed download extensions as a comma-separated `.ext` list                                                                                                                                            | all extensions      |
+| Variable                   | Description                                                                                                                                                                                             | Default        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `WEB_CHAT_ENABLED`         | Enable Web Chat UI. `true` exposes `http://localhost:<WEB_CHAT_PORT>`                                                                                                                                   | `false`        |
+| `WEB_CHAT_PORT`            | Web Chat UI port                                                                                                                                                                                        | `18888`        |
+| `WEB_CHAT_HOST`            | Bind host. `127.0.0.1` is reachable only from the same device; remote access requires SSH port forwarding or Tailscale Serve. `0.0.0.0` exposes all interfaces. The Web UI itself has no authentication | `0.0.0.0`      |
+| `WEB_CHAT_UPLOAD_ACCEPT`   | HTML `accept` list for uploads; `.ext` entries are also enforced by the server                                                                                                                          | all types      |
+| `WEB_CHAT_UPLOAD_MAX_MB`   | Maximum MiB per Web Chat upload request, including multipart headers                                                                                                                                    | `64`           |
+| `WEB_CHAT_DOWNLOAD_ACCEPT` | Allowed download extensions as a comma-separated `.ext` list                                                                                                                                            | all extensions |
 
 Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, auto-talk, and the slash-command/skill GUI. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. The auto-talk control is shown only for Web sessions when `INTER_INSTANCE_CHAT_ENABLED=true`. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions remain read-only and can only branch into a Web session.
 
@@ -1310,7 +1365,7 @@ Web Projects are logical conversation groups equivalent to Discord channels. Eac
 
 The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits Markdown, text, JSON/YAML/TOML, and common code formats up to 1 MiB. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
-Chat, Files, Schedules, and Monitor share one header so navigation and the display menu stay in the same position. The system, light, or dark choice is stored in the browser.
+Chat, Files, Schedules, Monitor, and Extensions share one navigation shell. It uses a left rail on desktop and bottom navigation on mobile, where Monitor, Extensions, and Display are available from More. The system, light, or dark choice is stored in the browser.
 
 - Hidden paths, `.git`, `.xangi`, `.workspace_rag`, dependencies, build/coverage outputs, and symbolic links are rejected for listing, reading, and saving
 - The UI does not create, delete, rename, or run Git operations; it saves existing viewable files only
@@ -1349,7 +1404,7 @@ The Even UI only offers `claude` and `codex` provider labels. xangi accepts thos
 | Variable                             | Description                                                                                                                                | Default                         |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
 | `XANGI_EVEN_TERMINAL_TOKEN`          | Dedicated token for the Even Terminal compatibility API. Falls back to `XANGI_DEVICE_INBOX_TOKEN`, then `XANGI_PET_INBOX_TOKEN` when unset | (unset)                         |
-| `XANGI_EVEN_TERMINAL_BACKEND`        | Backend default used only for Even Terminal traffic (`claude-code` / `codex` / `cursor` / `grok` / `antigravity` / `github-copilot` / `local-llm`) | `AGENT_BACKEND`                 |
+| `XANGI_EVEN_TERMINAL_BACKEND`        | Backend default used only for Even Terminal traffic (built-in or linked extension backend ID)                                              | `AGENT_BACKEND`                 |
 | `XANGI_EVEN_TERMINAL_MODEL`          | Model default used only for Even Terminal traffic                                                                                          | `AGENT_MODEL` / backend default |
 | `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Local LLM mode default used only for Even Terminal traffic (`agent` / `lite` / `chat`)                                                     | `LOCAL_LLM_MODE` / `agent`      |
 | `XANGI_EVEN_TERMINAL_MAX_CHARS`      | Maximum plain-text response length prepared for the G2 display                                                                             | `400`                           |

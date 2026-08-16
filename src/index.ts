@@ -34,12 +34,14 @@ import { loadStoredSecrets } from './setup/runtime-secrets.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
 import { acquireDataDirLock } from './data-dir-lock.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
+import { startAutostartExtensions, stopManagedExtensions } from './extensions.js';
 dotenvConfig({ override: true });
 await applySetupRuntimeEnvFromProcess();
 await loadStoredSecrets();
 
 async function main() {
   const config = loadConfig();
+  await startAutostartExtensions({ workspace: config.agent.config.workdir });
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
   const platformStartupTasks: Promise<void>[] = [];
 
@@ -168,6 +170,8 @@ async function main() {
         idleResetEnabled: config.line.idleResetEnabled,
         idleResetHours: config.line.idleResetHours,
         resetTextPatterns: config.line.resetTextPatterns,
+        completionDisplay: config.completion,
+        completionNotifyAfterMs: config.completion.notifyAfterMs,
       }).then(() => {
         console.log('[xangi] LINE bot started');
       })
@@ -207,6 +211,7 @@ async function main() {
     eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler),
     backendResolver: resolver,
     config,
+    scheduler,
   });
 
   // Discord ボット: トークン未設定 (Web オンリーモード等) では Client を生成しない。
@@ -351,6 +356,7 @@ async function main() {
     runShutdownCleanup({
       stopScheduler: () => scheduler.stopAll(),
       finalizeActiveStreams,
+      stopExtensions: stopManagedExtensions,
       releaseDataDirLock,
       exit: (code) => process.exit(code),
     });

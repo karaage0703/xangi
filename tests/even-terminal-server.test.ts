@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src/agent-runner.js';
+import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
 interface RecordedRun {
   prompt: string;
@@ -436,6 +437,28 @@ describe('even-terminal compatibility API', () => {
       defaultBackend: 'local-llm',
       defaultModel: 'gemma-4-26b-a4b',
       defaultLocalLlmMode: 'chat',
+    });
+
+    server.runner.complete('ok');
+  });
+
+  it('accepts a linked extension as an Even Terminal backend default', async () => {
+    await installExtensionBackendFixture();
+    process.env.XANGI_EVEN_TERMINAL_BACKEND = 'example-backend';
+    const { createWebSession } = await import('../src/sessions.js');
+    const sessionId = createWebSession({ title: 'Even Terminal workspace search test' });
+
+    const accepted = await postJson(
+      `${server.url}/api/prompt`,
+      { text: 'find RAG notes', provider: 'codex', sessionId },
+      { Authorization: 'Bearer secret' }
+    );
+    expect(accepted.status).toBe(202);
+
+    await waitUntil(() => server.runner.runs.length > 0);
+    expect(server.runner.runs[0].options).toMatchObject({
+      platform: 'web',
+      defaultBackend: 'example-backend',
     });
 
     server.runner.complete('ok');

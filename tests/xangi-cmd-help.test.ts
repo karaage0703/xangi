@@ -9,9 +9,14 @@ describe('xangi tool help', () => {
 
   it('一覧、topic、command詳細を表示する', () => {
     expect(formatXangiCmdHelp()).toContain('xangi tool help <topic|command>');
+    expect(formatXangiCmdHelp('extension_request')).toContain('--query-json <json-object>');
     expect(formatXangiCmdHelp('schedule')).toContain('xangi tool schedule_add');
     expect(formatXangiCmdHelp('schedule_add')).toContain(
       'Usage: xangi tool schedule_add --input <自然言語またはcron>'
+    );
+    expect(formatXangiCmdHelp('schedule')).toContain('xangi tool schedule_update');
+    expect(formatXangiCmdHelp('schedule_update')).toContain(
+      'Usage: xangi tool schedule_update --id <schedule-id>'
     );
     expect(formatXangiCmdHelp('settings')).toContain('xangi tool runtime_settings');
   });

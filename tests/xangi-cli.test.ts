@@ -209,6 +209,19 @@ exit 0
     expect(result.stdout).not.toContain('--browser');
   });
 
+  it.each([['--help'], ['-h'], ['--managed', '--help']])(
+    'prints update-specific help without running the updater for %s',
+    async (...updateArgs) => {
+      const result = await runCli(['update', ...updateArgs]);
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain('Usage:');
+      expect(result.stdout).toContain('xangi update --managed');
+      expect(result.stdout).toContain('service is not restarted automatically');
+    }
+  );
+
   it.each([['--version'], ['-V'], ['version']])(
     'prints the Git description for a source checkout with %s',
     async (argument) => {

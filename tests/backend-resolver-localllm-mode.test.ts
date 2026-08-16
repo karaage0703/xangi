@@ -4,6 +4,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { BackendResolver } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
+import { installExtensionBackendFixture } from './helpers/extension-backend.js';
+
+const originalExtensionsFile = process.env.XANGI_EXTENSIONS_FILE;
 
 function makeConfig(): Config {
   return {
@@ -41,7 +44,7 @@ function makeConfig(): Config {
     agent: {
       backend: 'local-llm',
       config: {},
-      allowedBackends: ['local-llm', 'claude-code'],
+      allowedBackends: ['local-llm', 'claude-code', 'workspace-search'],
     },
   } as unknown as Config;
 }
@@ -63,6 +66,43 @@ describe('BackendResolver localLlmMode', () => {
     process.chdir(originalCwd);
     rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.CHANNEL_OVERRIDES;
+    delete process.env.WORKSPACE_SEARCH_RAG_URL;
+    delete process.env.ALLOWED_BACKENDS;
+    if (originalExtensionsFile === undefined) delete process.env.XANGI_EXTENSIONS_FILE;
+    else process.env.XANGI_EXTENSIONS_FILE = originalExtensionsFile;
+  });
+
+  it('利用できない extension backend を選択候補から除外する', () => {
+    process.env.ALLOWED_BACKENDS = 'local-llm,claude-code,workspace-search';
+    const resolver = new BackendResolver(makeConfig(), {
+      backendAvailable: (backend) => backend !== 'workspace-search',
+    });
+
+    expect(resolver.getAllowedBackends()).toContain('workspace-search');
+    expect(resolver.getSelectableBackends()).not.toContain('workspace-search');
+    expect(resolver.isBackendSelectable('workspace-search')).toBe(false);
+  });
+
+  it('extension backend が利用可能になれば動的に選択候補へ追加する', () => {
+    process.env.ALLOWED_BACKENDS = 'local-llm,claude-code,workspace-search';
+    let available = false;
+    const resolver = new BackendResolver(makeConfig(), {
+      backendAvailable: (backend) => backend !== 'workspace-search' || available,
+    });
+
+    expect(resolver.getSelectableBackends()).not.toContain('workspace-search');
+    available = true;
+    expect(resolver.getSelectableBackends()).toContain('workspace-search');
+  });
+
+  it('許可一覧が未指定ならlink後のextension backendを再起動なしで追加する', async () => {
+    const resolver = new BackendResolver(makeConfig());
+    expect(resolver.getSelectableBackends()).not.toContain('new-extension-backend');
+
+    await installExtensionBackendFixture('new-extension-backend', 'New extension');
+
+    expect(resolver.getAllowedBackends()).toContain('new-extension-backend');
+    expect(resolver.getSelectableBackends()).toContain('new-extension-backend');
   });
 
   it('CHANNEL_OVERRIDES から localLlmMode を読み込める', () => {

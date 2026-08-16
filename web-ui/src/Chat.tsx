@@ -10,6 +10,8 @@ import {
 } from 'react';
 import { clearRecoveredReadError, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
+import { extensionSetupStorageKey, parsePendingExtensionSetup } from './extensionSetup';
+import { ConfirmDialog, TextInputDialog } from './ConfirmDialog';
 import {
   applyPublishedLiveEvent,
   isPaneProcessing,
@@ -560,6 +562,8 @@ function MessageView({
   suggestionsEnabled,
   onReload,
   onSuggestion,
+  onError,
+  completionShowElapsed,
 }: {
   message: Message;
   history: TurnHistoryEntry[];
@@ -569,15 +573,21 @@ function MessageView({
   suggestionsEnabled: boolean;
   onReload: () => Promise<void>;
   onSuggestion: (suggestion: string) => void;
+  onError: (message: string) => void;
+  completionShowElapsed: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [suggestionsUsed, setSuggestionsUsed] = useState(false);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const usage = message.usage;
   const usageText = [
     usage?.num_turns ? `${usage.num_turns}ターン` : '',
-    usage?.duration_ms ? `${(usage.duration_ms / 1000).toFixed(1)}秒` : '',
+    completionShowElapsed && usage?.duration_ms
+      ? `⏱ ${(usage.duration_ms / 1000).toFixed(1)}秒`
+      : '',
     typeof usage?.total_cost_usd === 'number' ? `$${usage.total_cost_usd.toFixed(4)}` : '',
   ]
     .filter(Boolean)
@@ -589,6 +599,7 @@ function MessageView({
 
   async function saveEdit() {
     if (!message.id) return;
+    onError('');
     try {
       await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${message.id}`, {
         ...jsonInit('PATCH', { content: editValue }),
@@ -596,24 +607,25 @@ function MessageView({
       setEditing(false);
       await onReload();
     } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : String(cause));
+      onError(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
-  async function deleteMessage() {
-    if (
-      !message.id ||
-      !window.confirm('このメッセージを削除しますか？履歴ファイルを書き換えます。')
-    ) {
-      return;
-    }
+  async function confirmDeleteMessage() {
+    if (!message.id || deleting) return;
+    setDeleting(true);
+    onError('');
     try {
       await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${message.id}`, {
         method: 'DELETE',
       });
+      setDeleteConfirmationOpen(false);
       await onReload();
     } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : String(cause));
+      onError(cause instanceof Error ? cause.message : String(cause));
+      setDeleteConfirmationOpen(false);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -712,7 +724,7 @@ function MessageView({
           </button>
         )}
         {mutable && message.id && (
-          <button type="button" onClick={() => void deleteMessage()}>
+          <button type="button" onClick={() => setDeleteConfirmationOpen(true)}>
             削除
           </button>
         )}
@@ -749,6 +761,19 @@ function MessageView({
             )}
           </div>
         )}
+      <ConfirmDialog
+        open={deleteConfirmationOpen}
+        title="メッセージを削除"
+        description="このメッセージを削除し、履歴ファイルを書き換えます。この操作は元に戻せません。"
+        confirmLabel="削除"
+        busyLabel="削除中…"
+        busy={deleting}
+        variant="danger"
+        onCancel={() => {
+          if (!deleting) setDeleteConfirmationOpen(false);
+        }}
+        onConfirm={() => void confirmDeleteMessage()}
+      />
     </article>
   );
 }
@@ -799,6 +824,15 @@ function ChatPane({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [discordComposeEnabled, setDiscordComposeEnabled] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [restartConfirmation, setRestartConfirmation] = useState<{
+    input: string;
+    message: string;
+  } | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -811,6 +845,7 @@ function ChatPane({
   const activeRef = useRef(active);
   const linkedMessageId = messageIdFromHash(window.location.hash);
   const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
+  const setupStartedSessionRef = useRef<string | undefined>(undefined);
   const sessionId = pane.sessionId;
   const editable = canComposeInSession(detail, discordComposeEnabled);
   const discordRemoteMode = detail?.platform === 'discord' && discordComposeEnabled;
@@ -898,6 +933,9 @@ function ChatPane({
     setLiveToolsOpen(true);
     setTurnHistory([]);
     setDiscordComposeEnabled(false);
+    setRenameDialogOpen(false);
+    setRenameError('');
+    setRestartConfirmation(null);
     followBottomRef.current = !linkedMessageId;
     linkedMessageScrolledRef.current = undefined;
     setTimeoutState({});
@@ -1093,7 +1131,7 @@ function ChatPane({
           });
         });
         if (result.rejected?.length) {
-          window.alert(result.rejected.map((item) => `${item.name}: ${item.reason}`).join('\n'));
+          setError(result.rejected.map((item) => `${item.name}: ${item.reason}`).join('\n'));
         }
         const uploaded = result.files?.[0];
         if (uploaded) {
@@ -1146,15 +1184,30 @@ function ChatPane({
     await onSessionsInvalidated();
   }
 
-  async function editTitle() {
+  function openRenameDialog() {
     if (!sessionId) return;
-    const title = window.prompt('セッション名', detail?.title || summary?.title || '');
-    if (!title?.trim()) return;
-    await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-      ...jsonInit('PATCH', { title: title.trim() }),
-    });
-    setDetail((current) => (current ? { ...current, title: title.trim() } : current));
-    await onSessionsInvalidated();
+    setRenameValue(detail?.title || summary?.title || '');
+    setRenameError('');
+    setRenameDialogOpen(true);
+  }
+
+  async function confirmRename() {
+    const title = renameValue.trim();
+    if (!sessionId || !title || renaming) return;
+    setRenaming(true);
+    setRenameError('');
+    try {
+      await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        ...jsonInit('PATCH', { title }),
+      });
+      setDetail((current) => (current ? { ...current, title } : current));
+      setRenameDialogOpen(false);
+      await onSessionsInvalidated();
+    } catch (cause) {
+      setRenameError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRenaming(false);
+    }
   }
 
   async function stopChat() {
@@ -1232,13 +1285,31 @@ function ChatPane({
       setPaletteOpen(false);
       await extendTimeout();
     } else if (result.action === 'restart') {
-      if (!window.confirm(result.message || 'xangiを再起動しますか？')) return;
+      setRestartConfirmation({
+        input,
+        message: result.message || 'xangiを再起動しますか？',
+      });
+    }
+  }
+
+  async function confirmRestart() {
+    const pending = restartConfirmation;
+    if (!pending || restarting) return;
+    setRestarting(true);
+    setError('');
+    try {
       await requestJson('/api/web-commands', {
-        ...jsonInit('POST', { appSessionId: sessionId, input, confirm: true }),
+        ...jsonInit('POST', { appSessionId: sessionId, input: pending.input, confirm: true }),
       });
       setDraft('');
       setPaletteOpen(false);
+      setRestartConfirmation(null);
       setError('再起動を開始しました。再接続を待っています');
+    } catch (cause) {
+      setRestartConfirmation(null);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRestarting(false);
     }
   }
 
@@ -1359,6 +1430,17 @@ function ChatPane({
     }
   }
 
+  useEffect(() => {
+    if (!sessionId || !detail || busy || !editable) return;
+    if (setupStartedSessionRef.current === sessionId) return;
+    const key = extensionSetupStorageKey(sessionId);
+    const setup = parsePendingExtensionSetup(window.sessionStorage.getItem(key));
+    if (!setup) return;
+    setupStartedSessionRef.current = sessionId;
+    window.sessionStorage.removeItem(key);
+    void send(setup.prompt, setup.displayMessage);
+  }, [busy, detail, editable, sessionId]);
+
   const elapsed = thinkingStartedAt
     ? Math.max(0, Math.floor((clock - thinkingStartedAt) / 1000))
     : 0;
@@ -1404,7 +1486,7 @@ function ChatPane({
         <button
           type="button"
           className={sessionId ? 'pane-title' : 'pane-title empty'}
-          onClick={() => runPaneAction(editTitle)}
+          onClick={openRenameDialog}
           disabled={!sessionId}
         >
           {detail?.title || summary?.title || '(empty)'}
@@ -1471,7 +1553,9 @@ function ChatPane({
             mutable={Boolean(detail)}
             linked={message.id === linkedMessageId}
             suggestionsEnabled={editable}
+            completionShowElapsed={config.completionShowElapsed}
             onReload={() => loadDetail()}
+            onError={setError}
             onSuggestion={(suggestion) => {
               setDraft(suggestion);
               requestAnimationFrame(() => void send(suggestion));
@@ -1715,6 +1799,34 @@ function ChatPane({
           </span>
         )}
       </form>
+      <TextInputDialog
+        open={renameDialogOpen}
+        title="セッション名を変更"
+        label="セッション名"
+        value={renameValue}
+        confirmLabel="変更"
+        busyLabel="変更中…"
+        busy={renaming}
+        error={renameError}
+        onChange={setRenameValue}
+        onCancel={() => {
+          if (!renaming) setRenameDialogOpen(false);
+        }}
+        onConfirm={() => void confirmRename()}
+      />
+      <ConfirmDialog
+        open={Boolean(restartConfirmation)}
+        title="xangiを再起動"
+        description={restartConfirmation?.message || 'xangiを再起動しますか？'}
+        confirmLabel="再起動"
+        busyLabel="開始中…"
+        busy={restarting}
+        variant="danger"
+        onCancel={() => {
+          if (!restarting) setRestartConfirmation(null);
+        }}
+        onConfirm={() => void confirmRestart()}
+      />
     </section>
   );
 }
@@ -1730,61 +1842,22 @@ function SessionDeleteDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const backdropPointerDownRef = useRef(false);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (session && !dialog.open) {
-      const frame = requestAnimationFrame(() => {
-        if (!dialog.open) dialog.showModal();
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-    if (!session && dialog.open) dialog.close();
-  }, [session]);
-
   return (
-    <dialog
-      ref={dialogRef}
-      className="session-delete-dialog"
-      aria-labelledby="session-delete-title"
-      aria-describedby="session-delete-description"
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!deleting) onCancel();
-      }}
-      onPointerDown={(event) => {
-        backdropPointerDownRef.current = event.target === event.currentTarget;
-      }}
-      onClick={(event) => {
-        const clickedBackdrop =
-          event.target === event.currentTarget && backdropPointerDownRef.current;
-        backdropPointerDownRef.current = false;
-        if (clickedBackdrop && !deleting) onCancel();
-      }}
-    >
-      <div className="session-delete-dialog-body">
-        <h2 id="session-delete-title">セッションを削除</h2>
-        <p id="session-delete-description">
+    <ConfirmDialog
+      open={Boolean(session)}
+      title="セッションを削除"
+      description={
+        <>
           「{session?.title || 'このセッション'}」の会話履歴を削除します。この操作は元に戻せません。
-        </p>
-      </div>
-      <div className="session-delete-dialog-actions">
-        <button type="button" autoFocus disabled={deleting} onClick={onCancel}>
-          キャンセル
-        </button>
-        <button
-          type="button"
-          className="session-delete-dialog-danger"
-          disabled={deleting}
-          onClick={onConfirm}
-        >
-          {deleting ? '削除中…' : '削除'}
-        </button>
-      </div>
-    </dialog>
+        </>
+      }
+      confirmLabel="削除"
+      busyLabel="削除中…"
+      busy={deleting}
+      variant="danger"
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -1910,6 +1983,7 @@ export function Chat() {
     timeoutExtendEnabled: true,
     interChatEnabled: false,
     allowedBackends: [],
+    completionShowElapsed: true,
   });
   const [notice, setNotice] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
@@ -1917,6 +1991,7 @@ export function Chat() {
   const [sessionToMove, setSessionToMove] = useState<Session | null>(null);
   const [moveProjectId, setMoveProjectId] = useState('');
   const [movingSession, setMovingSession] = useState(false);
+  const [paneToClose, setPaneToClose] = useState('');
   const [refreshVersion, setRefreshVersion] = useState(0);
   const sessionsRef = useRef<Session[]>([]);
   const queryRef = useRef('');
@@ -2115,9 +2190,14 @@ export function Chat() {
   }
 
   function closePane(paneKey: string) {
-    if (busyPanes[paneKey] && !window.confirm('応答は継続したままペインを閉じますか？')) {
+    if (busyPanes[paneKey]) {
+      setPaneToClose(paneKey);
       return;
     }
+    closePaneNow(paneKey);
+  }
+
+  function closePaneNow(paneKey: string) {
     paneAbortersRef.current[paneKey]?.();
     delete paneAbortersRef.current[paneKey];
     setPanes((current) => {
@@ -2886,6 +2966,18 @@ export function Chat() {
           if (!movingSession) setSessionToMove(null);
         }}
         onConfirm={() => void moveSession()}
+      />
+      <ConfirmDialog
+        open={Boolean(paneToClose)}
+        title="応答中のペインを閉じる"
+        description="ペインを閉じても応答処理は継続します。あとから会話を開き直して結果を確認できます。"
+        confirmLabel="ペインを閉じる"
+        onCancel={() => setPaneToClose('')}
+        onConfirm={() => {
+          const paneKey = paneToClose;
+          setPaneToClose('');
+          if (paneKey) closePaneNow(paneKey);
+        }}
       />
     </main>
   );

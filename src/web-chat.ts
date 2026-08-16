@@ -43,6 +43,7 @@ import {
   readSessionMessagesPage,
   readSessionMessagesTail,
   updateMessageContent,
+  updateLatestMessageUsage,
   deleteMessage as deleteTranscriptMessage,
   ensureVisibleAssistantResponse,
 } from './transcript-logger.js';
@@ -95,6 +96,20 @@ import { executeWebCommand, getWebCommandDefinitions } from './web-slash-command
 import { WorkspaceBrowser, WorkspaceBrowserError } from './workspace-browser.js';
 import { prependWebProjectPrompt, WebProjectError, WebProjectStore } from './web-projects.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
+import {
+  createExtensionSetupRequest,
+  installDevelopmentExtension,
+  listDevelopmentExtensionCatalog,
+  loadExtensionIdsReservedForRepository,
+  resolveDevelopmentExtensionService,
+  uninstallDevelopmentExtension,
+} from './extension-catalog.js';
+import {
+  parsePublicGitHubRepositoryUrl,
+  preparePublicGitHubExtension,
+} from './extension-repository.js';
+import { loadExtensionManifest } from './extensions.js';
+import { createExtensionUpdateRequest } from './extension-update.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -116,6 +131,18 @@ const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
   '.css',
   '.xml',
 ]);
+
+function acceptsSameHostMutation(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const host = req.headers.host;
+  if (!host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
 
 function isRealPathWithin(root: string, target: string): boolean {
   try {
@@ -295,6 +322,7 @@ interface WebChatOptions {
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
   discoverModels?: typeof discoverBackendModels;
+  extensionUpdateRequest?: typeof createExtensionUpdateRequest;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -310,6 +338,7 @@ export function startWebChat(options: WebChatOptions): void {
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const workspaceBrowser = new WorkspaceBrowser(workdir);
   const webProjects = WebProjectStore.fromDataDir(dataDir);
+  const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
 
   const resolveProject = (projectId: unknown) => {
     if (typeof projectId !== 'string' || !projectId.trim()) return undefined;
@@ -338,9 +367,9 @@ export function startWebChat(options: WebChatOptions): void {
     if (!options.resolver) {
       throw new WebProjectError('この環境ではProjectのバックエンド設定を利用できません', 503);
     }
-    if (!options.resolver.isBackendAllowed(backend as AgentBackend)) {
+    if (!options.resolver.isBackendSelectable(backend as AgentBackend)) {
       throw new WebProjectError(
-        `許可されたバックエンドを指定してください: ${options.resolver.getAllowedBackends().join(', ')}`,
+        `利用可能なバックエンドを指定してください: ${options.resolver.getSelectableBackends().join(', ')}`,
         400
       );
     }
@@ -379,6 +408,7 @@ export function startWebChat(options: WebChatOptions): void {
   };
 
   options.scheduler?.registerAgentRunner('web', async (prompt, requestedSessionId, schedule) => {
+    const startedAt = Date.now();
     const appSessionId =
       requestedSessionId === WEB_SCHEDULE_NEW_SESSION_ID
         ? createWebSession({
@@ -393,19 +423,30 @@ export function startWebChat(options: WebChatOptions): void {
     const contextKey = webContextKey(appSessionId);
     const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
     const backendDefault = projectBackendDefault(project);
-    const result = await agentRunner.run(
-      `[プラットフォーム: Web]\n${prependWebProjectPrompt(project, prompt)}`,
-      {
-        sessionId: getSession(contextKey),
-        channelId: contextKey,
-        settingsChannelId: contextKey,
-        appSessionId,
-        platform: 'web',
-        defaultBackend: backendDefault?.backend,
-        defaultModel: backendDefault?.model,
-        defaultEffort: backendDefault?.effort,
-      }
-    );
+    let result: Awaited<ReturnType<AgentRunner['run']>>;
+    try {
+      result = await agentRunner.run(
+        `[プラットフォーム: Web]\n${prependWebProjectPrompt(project, prompt)}`,
+        {
+          sessionId: getSession(contextKey),
+          channelId: contextKey,
+          settingsChannelId: contextKey,
+          appSessionId,
+          platform: 'web',
+          defaultBackend: backendDefault?.backend,
+          defaultModel: backendDefault?.model,
+          defaultEffort: backendDefault?.effort,
+        }
+      );
+      updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
+        duration_ms: Math.max(1, Date.now() - startedAt),
+      });
+    } catch (error) {
+      updateLatestMessageUsage(workdir, appSessionId, ['error'], {
+        duration_ms: Math.max(1, Date.now() - startedAt),
+      });
+      throw error;
+    }
     setSession(contextKey, result.sessionId);
     setProviderSessionId(appSessionId, result.sessionId);
     incrementMessageCount(appSessionId);
@@ -772,6 +813,8 @@ export function startWebChat(options: WebChatOptions): void {
       url === '/schedules/' ||
       url === '/workspace' ||
       url === '/workspace/' ||
+      url === '/extensions' ||
+      url === '/extensions/' ||
       /^\/chat\/[^/]+\/?$/.test(url)
     ) {
       try {
@@ -835,7 +878,8 @@ export function startWebChat(options: WebChatOptions): void {
           uploadMaxBytes: uploadMaxBytes(),
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
           interChatEnabled,
-          allowedBackends: options.resolver?.getAllowedBackends() ?? [],
+          allowedBackends: options.resolver?.getSelectableBackends() ?? [],
+          completionShowElapsed: options.config?.completion.showElapsed ?? true,
         })
       );
       return;
@@ -851,11 +895,11 @@ export function startWebChat(options: WebChatOptions): void {
       const backend = new URL(rawUrl, 'http://localhost').searchParams.get(
         'backend'
       ) as AgentBackend | null;
-      if (!backend || !options.resolver.isBackendAllowed(backend)) {
+      if (!backend || !options.resolver.isBackendSelectable(backend)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            error: `backend must be one of: ${options.resolver.getAllowedBackends().join(', ')}`,
+            error: `backend must be one of: ${options.resolver.getSelectableBackends().join(', ')}`,
           })
         );
         return;
@@ -969,6 +1013,227 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    // Curated official entries are visible on a fresh install. Local manifests and repositories
+    // explicitly added by the operator are merged into the same catalog.
+    if (url === '/api/extensions' && req.method === 'GET') {
+      try {
+        const catalog = await listDevelopmentExtensionCatalog();
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(catalog));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    if (url === '/api/extensions/repositories' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const raw = await readRawBody(req, 8 * 1024);
+        const body = JSON.parse(raw) as unknown;
+        if (
+          typeof body !== 'object' ||
+          body === null ||
+          Array.isArray(body) ||
+          typeof (body as Record<string, unknown>).url !== 'string'
+        ) {
+          throw new Error('GitHub repository URL is required');
+        }
+        const repositoryUrl = (body as Record<string, string>).url;
+        const requestedRepository = parsePublicGitHubRepositoryUrl(repositoryUrl);
+        const source = await preparePublicGitHubExtension(repositoryUrl, {
+          reservedIds: await loadExtensionIdsReservedForRepository(
+            requestedRepository.repositoryUrl
+          ),
+        });
+        const extensionId = (
+          await loadExtensionManifest(source.manifestPath, { requireEntrypoint: false })
+        ).id;
+        const setup = await createExtensionSetupRequest(extensionId);
+        const sessionId = createWebSession({ title: `Setup: ${setup.displayName}` });
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sessionId,
+            prompt: setup.prompt,
+            displayMessage: setup.displayMessage,
+            source,
+          })
+        );
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionInstallMatch = url.match(/^\/api\/extensions\/([^/]+)\/install$/);
+    if (extensionInstallMatch && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const extension = await installDevelopmentExtension(
+          decodeURIComponent(extensionInstallMatch[1]),
+          workdir
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ extension }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionSetupMatch = url.match(/^\/api\/extensions\/([^/]+)\/setup$/);
+    if (extensionSetupMatch && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const setup = await createExtensionSetupRequest(decodeURIComponent(extensionSetupMatch[1]));
+        const sessionId = createWebSession({ title: `Setup: ${setup.displayName}` });
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sessionId,
+            prompt: setup.prompt,
+            displayMessage: setup.displayMessage,
+          })
+        );
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionUpdateMatch = url.match(/^\/api\/extensions\/([^/]+)\/update$/);
+    if (extensionUpdateMatch && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const update = await requestExtensionUpdate(decodeURIComponent(extensionUpdateMatch[1]));
+        const sessionId = createWebSession({ title: `Update: ${update.displayName}` });
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sessionId,
+            prompt: update.prompt,
+            displayMessage: update.displayMessage,
+            info: update.info,
+          })
+        );
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionUiMatch = url.match(/^\/api\/extensions\/([^/]+)\/ui$/);
+    if (extensionUiMatch && req.method === 'GET') {
+      try {
+        const target = await resolveDevelopmentExtensionService(
+          decodeURIComponent(extensionUiMatch[1])
+        );
+        const upstream = await fetch(`${target.baseUrl}${target.uiPath}`, {
+          headers: { Authorization: target.authorization },
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, {
+          'Content-Type': upstream.headers.get('content-type') || 'text/html; charset=utf-8',
+          'Content-Length': String(body.length),
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy':
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+        });
+        res.end(body);
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionServiceMatch = url.match(/^\/api\/extensions\/([^/]+)\/service(\/.*)$/);
+    if (extensionServiceMatch && ['GET', 'PUT', 'POST'].includes(req.method || '')) {
+      if (req.method !== 'GET' && !acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const target = await resolveDevelopmentExtensionService(
+          decodeURIComponent(extensionServiceMatch[1])
+        );
+        const query = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
+        const body = req.method === 'GET' ? undefined : await readRawBody(req, 1024 * 1024);
+        const upstream = await fetch(`${target.baseUrl}${extensionServiceMatch[2]}${query}`, {
+          method: req.method,
+          headers: {
+            Authorization: target.authorization,
+            ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
+          },
+          body,
+          signal: AbortSignal.timeout(30_000),
+        });
+        const responseBody = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, {
+          'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
+          'Content-Length': String(responseBody.length),
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(responseBody);
+      } catch (error) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionUninstallMatch = url.match(/^\/api\/extensions\/([^/]+)$/);
+    if (extensionUninstallMatch && req.method === 'DELETE') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const extension = await uninstallDevelopmentExtension(
+          decodeURIComponent(extensionUninstallMatch[1])
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ extension }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
     // Workspace browser/editor. Paths are always workspace-relative and validated again
     // by WorkspaceBrowser before filesystem access.
     if (url === '/api/workspace/entries' && req.method === 'GET') {
@@ -1034,7 +1299,7 @@ export function startWebChat(options: WebChatOptions): void {
       const selectedBackend = commandUrl.searchParams.get('backend') as AgentBackend | null;
       const selectedModel = commandUrl.searchParams.get('model') || undefined;
       const modelDiscovery =
-        selectedBackend && options.resolver?.isBackendAllowed(selectedBackend)
+        selectedBackend && options.resolver?.isBackendSelectable(selectedBackend)
           ? await (options.discoverModels ?? discoverBackendModels)(selectedBackend)
           : undefined;
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1418,13 +1683,14 @@ export function startWebChat(options: WebChatOptions): void {
           edited: m.edited,
           editedAt: m.editedAt,
           platformMessageId: m.platformMessageId,
-          usage: isObj
-            ? {
-                num_turns: obj.num_turns,
-                duration_ms: obj.duration_ms,
-                total_cost_usd: obj.total_cost_usd,
-              }
-            : undefined,
+          usage:
+            isObj || m.usage
+              ? {
+                  num_turns: m.usage?.num_turns ?? obj.num_turns,
+                  duration_ms: m.usage?.duration_ms ?? obj.duration_ms,
+                  total_cost_usd: m.usage?.total_cost_usd ?? obj.total_cost_usd,
+                }
+              : undefined,
           replySuggestions: assistantReplyData?.suggestions ?? [],
           attachments: displayedUser.attachments,
         };
@@ -2270,6 +2536,7 @@ export function startWebChat(options: WebChatOptions): void {
             );
           }
 
+          const startedAt = Date.now();
           try {
             latency.markAgentStart();
             const result = await runWithBubbleEvents(
@@ -2325,6 +2592,10 @@ export function startWebChat(options: WebChatOptions): void {
               }
             );
 
+            updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
+              duration_ms: Math.max(1, Date.now() - startedAt),
+            });
+
             const msgs = readSessionMessages(workdir, appSessionId);
             const reversed = [...msgs].reverse();
             const lastAssistant = reversed.find((m) => m.role === 'assistant');
@@ -2334,9 +2605,9 @@ export function startWebChat(options: WebChatOptions): void {
                 ? (lastAssistant.content as Record<string, unknown>)
                 : {};
             const usage = {
-              num_turns: usageObj.num_turns,
-              duration_ms: usageObj.duration_ms,
-              total_cost_usd: usageObj.total_cost_usd,
+              num_turns: lastAssistant?.usage?.num_turns ?? usageObj.num_turns,
+              duration_ms: lastAssistant?.usage?.duration_ms ?? usageObj.duration_ms,
+              total_cost_usd: lastAssistant?.usage?.total_cost_usd ?? usageObj.total_cost_usd,
             };
 
             const extracted = sanitizeReplySuggestionOutput(
@@ -2429,4 +2700,16 @@ async function readBody(req: import('http').IncomingMessage): Promise<Record<str
   } catch {
     return {};
   }
+}
+
+async function readRawBody(req: import('http').IncomingMessage, maxBytes: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const value = chunk as Buffer;
+    total += value.length;
+    if (total > maxBytes) throw new Error('extension request body is too large');
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }

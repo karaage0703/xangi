@@ -3,16 +3,35 @@
 set -euo pipefail
 
 ROOT_DIR="${1:-}"
+shift
+
+print_help() {
+  cat <<'EOF'
+Usage:
+  xangi update
+  xangi update --managed [--manifest URL] [--public-key PATH] [--allow-downgrade]
+
+Checkout update:
+  Fast-forwards the current branch, installs locked dependencies, and builds xangi.
+  The checkout must be clean, attached to a branch, and configured with an upstream.
+
+The service is not restarted automatically. Run `xangi service restart` when ready.
+EOF
+}
+
+for arg in "$@"; do
+  if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+    print_help
+    exit 0
+  fi
+  echo "Error: unknown checkout update option: $arg" >&2
+  exit 1
+done
+
 if [ -z "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR/.git" ] || [ ! -f "$ROOT_DIR/package.json" ]; then
   echo "Error: xangi checkout directory is invalid" >&2
   exit 1
 fi
-
-shift
-for arg in "$@"; do
-  echo "Error: unknown checkout update option: $arg" >&2
-  exit 1
-done
 
 cd "$ROOT_DIR"
 

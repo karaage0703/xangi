@@ -128,11 +128,12 @@ async function executeBackend(
   }
 
   const backend = request.backend as AgentBackend | undefined;
-  if (!backend || !resolver.isBackendAllowed(backend)) {
+  if (!backend || !resolver.isBackendSelectable(backend)) {
+    const selectableBackends = resolver.getSelectableBackends();
     throw new ValidationError(
       backend
-        ? `バックエンド '${backend}' は許可されていません。許可: ${resolver.getAllowedBackends().join(', ')}`
-        : `runtime_settings backend: --backend must be one of: ${resolver.getAllowedBackends().join(', ')}`
+        ? `バックエンド '${backend}' は現在利用できません。利用可能: ${selectableBackends.join(', ')}`
+        : `runtime_settings backend: --backend must be one of: ${selectableBackends.join(', ')}`
     );
   }
   if (request.model && !resolver.isModelAllowed(request.model)) {

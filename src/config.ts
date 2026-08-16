@@ -2,8 +2,9 @@ import * as fs from 'node:fs';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { EnvValidator } from './config-validate.js';
+import { listExtensionAgentBackends } from './extensions.js';
 
-export const ALL_AGENT_BACKENDS = [
+export const BUILTIN_AGENT_BACKENDS = [
   'claude-code',
   'codex',
   'cursor',
@@ -12,7 +13,19 @@ export const ALL_AGENT_BACKENDS = [
   'github-copilot',
   'local-llm',
 ] as const;
-export type AgentBackend = (typeof ALL_AGENT_BACKENDS)[number];
+export type AgentBackend = string;
+
+export function getAllAgentBackends(): AgentBackend[] {
+  return [
+    ...BUILTIN_AGENT_BACKENDS,
+    ...listExtensionAgentBackends()
+      .map((item) => item.id)
+      .filter((id) => !(BUILTIN_AGENT_BACKENDS as readonly string[]).includes(id)),
+  ];
+}
+
+/** Snapshot kept for callers that only need the backends available at startup. */
+export const ALL_AGENT_BACKENDS: AgentBackend[] = getAllAgentBackends();
 export type DiscordCompletionNotifyMode = 'off' | 'message' | 'mention';
 
 const DEFAULT_COMPLETION_NOTIFY_AFTER_MS = 10_000;
@@ -37,6 +50,12 @@ export interface AgentConfig {
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 export interface Config {
+  completion: {
+    /** 完了表示へ経過時間を含める（default: true）。 */
+    showElapsed: boolean;
+    /** 通常ターンで完了通知を出す最短経過時間（default: 10000ms）。 */
+    notifyAfterMs: number;
+  };
   /** 初回providerセッションの会話履歴先読み。全チャットプラットフォーム共通。 */
   historyPrefetch?: {
     enabled: boolean;
@@ -257,18 +276,11 @@ export function loadConfig(): Config {
         .filter(Boolean)
     : [];
 
-  const backend = (process.env.AGENT_BACKEND || 'claude-code') as AgentBackend;
-  if (
-    backend !== 'claude-code' &&
-    backend !== 'codex' &&
-    backend !== 'cursor' &&
-    backend !== 'grok' &&
-    backend !== 'antigravity' &&
-    backend !== 'github-copilot' &&
-    backend !== 'local-llm'
-  ) {
+  const availableBackends = getAllAgentBackends();
+  const backend = process.env.AGENT_BACKEND || 'claude-code';
+  if (!availableBackends.includes(backend)) {
     throw new Error(
-      `Invalid AGENT_BACKEND: ${backend}. Must be 'claude-code', 'codex', 'cursor', 'grok', 'antigravity', 'github-copilot', or 'local-llm'`
+      `Invalid AGENT_BACKEND: ${backend}. Must be one of: ${availableBackends.join(', ')}`
     );
   }
 
@@ -309,8 +321,8 @@ export function loadConfig(): Config {
   };
 
   // ALLOWED_BACKENDS パース（未設定なら全 backend 許可、typo は警告して除外）
-  const allowedBackends: AgentBackend[] = v.enumList('ALLOWED_BACKENDS', ALL_AGENT_BACKENDS) ?? [
-    ...ALL_AGENT_BACKENDS,
+  const allowedBackends: AgentBackend[] = v.enumList('ALLOWED_BACKENDS', availableBackends) ?? [
+    ...availableBackends,
   ];
 
   // LOCAL_LLM_MODE は local-llm/runner 等で直接参照されるが、typo 検出のためここで検証する
@@ -338,6 +350,12 @@ export function loadConfig(): Config {
     : undefined;
 
   const config: Config = {
+    completion: {
+      showElapsed: process.env.COMPLETION_SHOW_ELAPSED !== 'false',
+      notifyAfterMs: v.int('COMPLETION_NOTIFY_AFTER_MS', DEFAULT_COMPLETION_NOTIFY_AFTER_MS, {
+        min: 0,
+      }),
+    },
     historyPrefetch: {
       enabled: process.env.HISTORY_PREFETCH_ENABLED !== 'false',
       count: v.int('HISTORY_PREFETCH_COUNT', 10, { min: 1, max: 100 }),

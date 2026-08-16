@@ -15,8 +15,11 @@ describe('tool-server HTTP status codes', () => {
   const overrides = new Map<string, { backend: AgentBackend; model?: string }>();
   const resolver = {
     getAllowedBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
+    getSelectableBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
     getAllowedModels: () => undefined,
     isBackendAllowed: (backend: AgentBackend) =>
+      backend === 'codex' || backend === 'claude-code' || backend === 'workspace-search',
+    isBackendSelectable: (backend: AgentBackend) =>
       backend === 'codex' || backend === 'claude-code' || backend === 'workspace-search',
     isModelAllowed: () => true,
     setChannelOverride: (channelId: string, override: { backend: AgentBackend; model?: string }) =>
@@ -27,6 +30,7 @@ describe('tool-server HTTP status codes', () => {
     resolve: (channelId?: string) => overrides.get(channelId ?? '') ?? { backend: 'codex' as AgentBackend },
   } as BackendResolver;
   const config = {
+    agent: { config: { workdir: '/tmp/xangi-extension-update-test' } },
     discord: { completionNotifyMode: 'message', replyInThread: false },
     slack: { autoReplyChannels: [] },
     web: { replySuggestions: false, replySuggestionCount: 3 },
@@ -55,6 +59,17 @@ describe('tool-server HTTP status codes', () => {
             },
       webStatusCommand: async () =>
         JSON.stringify({ enabled: true, chatUrls: ['http://localhost:18888'] }),
+      extensionUpdateCommand: async (input) => ({
+        id: input.id,
+        previousVersion: '1.0.0',
+        version: '1.1.0',
+        previousCommitSha: 'a'.repeat(40),
+        commitSha: input.expectedCommitSha,
+        running: true,
+        healthy: true,
+        doctorPassed: true,
+        rolledBack: false,
+      }),
     });
     // listen() コールバック内で XANGI_TOOL_SERVER が再設定される。それを待つ
     return new Promise<void>((resolve) => {
@@ -160,6 +175,64 @@ describe('tool-server HTTP status codes', () => {
     const body = (await res.json()) as { ok: boolean; result: string };
     expect(body.ok).toBe(true);
     expect(body.result).toContain('Usage: xangi tool schedule_add');
+  });
+
+  it('routes a pinned repository-managed extension update through the host process', async () => {
+    const target = 'b'.repeat(40);
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'extension_update',
+        flags: { id: 'demo-extension', to: target },
+        context: {},
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; result: string };
+    expect(body.ok).toBe(true);
+    expect(JSON.parse(body.result)).toMatchObject({
+      id: 'demo-extension',
+      version: '1.1.0',
+      commitSha: target,
+      healthy: true,
+      doctorPassed: true,
+    });
+  });
+
+  it('routes schedule_update validation errors as HTTP 400', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'schedule_update',
+        flags: { message: '更新後の依頼' },
+        context: {},
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain('--id is required');
+  });
+
+  it('returns HTTP 400 when schedule input parsing throws', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'schedule_update',
+        flags: { id: 'any', input: '2025-99-99 10:00 不正な日付' },
+        context: {},
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain('Invalid time value');
   });
 
   it('returns the running instance Web UI status', async () => {

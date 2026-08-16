@@ -307,6 +307,31 @@ export function updateMessageContent(
 }
 
 /**
+ * 最新の対象roleへusageを付与する。自動計測値向けなので「編集済み」にはしない。
+ */
+export function updateLatestMessageUsage(
+  workdir: string,
+  appSessionId: string,
+  roles: readonly TranscriptEntry['role'][],
+  usage: Record<string, unknown>
+): TranscriptEntry | null {
+  const entries = readSessionMessages(workdir, appSessionId);
+  let index = -1;
+  for (let candidate = entries.length - 1; candidate >= 0; candidate--) {
+    if (roles.includes(entries[candidate].role)) {
+      index = candidate;
+      break;
+    }
+  }
+  if (index === -1) return null;
+
+  const entry = entries[index];
+  entry.usage = { ...entry.usage, ...usage };
+  rewriteSessionFile(workdir, appSessionId, entries);
+  return entry;
+}
+
+/**
  * メッセージを削除。対象が見つかれば true。
  */
 export function deleteMessage(workdir: string, appSessionId: string, messageId: string): boolean {

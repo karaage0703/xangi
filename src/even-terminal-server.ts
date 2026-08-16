@@ -9,7 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { AgentRunner } from './agent-runner.js';
-import type { AgentBackend } from './config.js';
+import { getAllAgentBackends, type AgentBackend } from './config.js';
 import type { LocalLlmMode } from './backend-resolver.js';
 import {
   WEB_CHAT_CONTEXT_PREFIX,
@@ -36,21 +36,12 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGES_PER_SESSION = 500;
 const MAX_TERMINAL_TEXT_CHARS = Number(process.env.XANGI_EVEN_TERMINAL_MAX_CHARS) || 400;
 const SUPPORTED_PROVIDERS = new Set(['claude', 'codex']);
-const SUPPORTED_BACKENDS = new Set<AgentBackend>([
-  'claude-code',
-  'codex',
-  'cursor',
-  'grok',
-  'antigravity',
-  'github-copilot',
-  'local-llm',
-]);
 const SUPPORTED_LOCAL_LLM_MODES = new Set<LocalLlmMode>(['agent', 'lite', 'chat']);
 
 function readEvenTerminalBackend(): AgentBackend | undefined {
   const value = process.env.XANGI_EVEN_TERMINAL_BACKEND?.trim();
   if (!value) return undefined;
-  if (SUPPORTED_BACKENDS.has(value as AgentBackend)) return value as AgentBackend;
+  if (getAllAgentBackends().includes(value)) return value;
   console.warn(`[even-terminal] Ignoring invalid XANGI_EVEN_TERMINAL_BACKEND=${value}`);
   return undefined;
 }

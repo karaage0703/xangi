@@ -74,7 +74,7 @@ describe('Discord Commands', () => {
         const editReply = vi.fn().mockResolvedValue(undefined);
         const handler = createInteractionHandler({
           config: { discord: { allowedUsers: ['user-123'] } } as Config,
-          resolver: { getAllowedBackends: () => [] } as unknown as BackendResolver,
+          resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
           agentRunner: { destroy } as never,
           scheduler: {} as never,
           workdir: testDir,
@@ -115,7 +115,7 @@ describe('Discord Commands', () => {
         const editReply = vi.fn().mockResolvedValue(undefined);
         const handler = createInteractionHandler({
           config: { discord: { allowedUsers: ['user-123'] } } as Config,
-          resolver: { getAllowedBackends: () => [] } as unknown as BackendResolver,
+          resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
           agentRunner: { destroy } as never,
           scheduler: {} as never,
           workdir: testDir,
@@ -460,7 +460,7 @@ describe('Discord Commands', () => {
   });
 
   describe('/backend command choices', () => {
-    it('registers only allowed backend choices', () => {
+    it('registers dynamic autocomplete for backend choices', () => {
       const config = {
         agent: {
           allowedBackends: ['codex', 'grok'],
@@ -478,12 +478,14 @@ describe('Discord Commands', () => {
       const setSubcommand = backend.options.find((opt: any) => opt.name === 'set');
       const typeOption = setSubcommand.options.find((opt: any) => opt.name === 'type');
 
-      expect(typeOption.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
+      expect(typeOption.autocomplete).toBe(true);
+      expect(typeOption.choices).toBeUndefined();
 
       const models = commands.find((cmd) => cmd.name === 'models') as any;
       const modelsBackend = models.options.find((opt: any) => opt.name === 'backend');
       expect(modelsBackend.required).toBe(false);
-      expect(modelsBackend.choices.map((choice: any) => choice.value)).toEqual(['codex', 'grok']);
+      expect(modelsBackend.autocomplete).toBe(true);
+      expect(modelsBackend.choices).toBeUndefined();
     });
 
     it('registers dynamic autocomplete for model and effort', () => {
@@ -504,9 +506,27 @@ describe('Discord Commands', () => {
       expect(effortOption.choices).toBeUndefined();
     });
 
+    it('returns only currently selectable backend candidates', async () => {
+      const resolver = {
+        getSelectableBackends: () => ['codex', 'grok'] as AgentBackend[],
+      } as BackendResolver;
+
+      await expect(
+        getDiscordAutocompleteChoices(
+          {
+            commandName: 'backend',
+            focusedName: 'type',
+            focusedValue: 'co',
+          },
+          [],
+          resolver
+        )
+      ).resolves.toEqual([{ name: 'Codex', value: 'codex' }]);
+    });
+
     it('discovers model candidates for the selected backend', async () => {
       const resolver = {
-        isBackendAllowed: (backend: string) => backend === 'local-llm',
+        isBackendSelectable: (backend: string) => backend === 'local-llm',
         getAllowedModels: () => undefined,
       } as BackendResolver;
       const discover = vi.fn().mockResolvedValue({
@@ -533,7 +553,7 @@ describe('Discord Commands', () => {
 
     it('returns only effort candidates supported by both xangi and the selected model', async () => {
       const resolver = {
-        isBackendAllowed: (backend: string) => backend === 'codex',
+        isBackendSelectable: (backend: string) => backend === 'codex',
         getAllowedModels: () => undefined,
       } as BackendResolver;
       const discover = vi.fn().mockResolvedValue({

@@ -4,6 +4,8 @@ import { getBackendDisplayName } from './agent-runner.js';
 import { resolveEnvFilePath } from './env-persist.js';
 import { validateChannelOverrides } from './config-validate.js';
 import { requiresExplicitModelForEffort, supportsEffort } from './backend-effort.js';
+import { resolveExtensionAgentBackend } from './extensions.js';
+import { BUILTIN_AGENT_BACKENDS, getAllAgentBackends } from './config.js';
 
 /**
  * Local LLM の動作モード
@@ -52,18 +54,29 @@ export class BackendResolver {
   private defaultBackend: AgentBackend;
   private defaultModel?: string;
   private allowedBackends: AgentBackend[];
+  private allowAllAvailableBackends: boolean;
   private allowedModels?: string[];
+  private backendAvailable: (backend: AgentBackend) => boolean;
 
   /** メモリ上のチャンネルオーバーライド */
   private channelOverrides: Map<string, ChannelOverride>;
   /** .envファイルのパス（永続化用） */
   private envFilePath?: string;
 
-  constructor(config: Config) {
+  constructor(
+    config: Config,
+    options: { backendAvailable?: (backend: AgentBackend) => boolean } = {}
+  ) {
     this.defaultBackend = config.agent.backend;
     this.defaultModel = config.agent.config.model;
     this.allowedBackends = config.agent.allowedBackends;
+    this.allowAllAvailableBackends = !process.env.ALLOWED_BACKENDS?.trim();
     this.allowedModels = config.agent.allowedModels;
+    this.backendAvailable =
+      options.backendAvailable ??
+      ((backend) =>
+        (BUILTIN_AGENT_BACKENDS as readonly string[]).includes(backend) ||
+        Boolean(resolveExtensionAgentBackend(backend)));
 
     // CHANNEL_OVERRIDES 環境変数から初期値を読み込み（スキーマ検証付き。
     // 不正なエントリは警告して除外し、有効なエントリだけ読み込む）
@@ -255,7 +268,14 @@ export class BackendResolver {
    * ALLOWED_BACKENDS 未設定時は config 側で全 backend 許可になる
    */
   isBackendAllowed(backend: AgentBackend): boolean {
-    return this.allowedBackends.includes(backend);
+    return this.allowAllAvailableBackends
+      ? getAllAgentBackends().includes(backend)
+      : this.allowedBackends.includes(backend);
+  }
+
+  /** 設定上許可され、かつ現在利用可能なバックエンドか。 */
+  isBackendSelectable(backend: AgentBackend): boolean {
+    return this.isBackendAllowed(backend) && this.backendAvailable(backend);
   }
 
   /**
@@ -281,7 +301,12 @@ export class BackendResolver {
    * 許可されているバックエンド一覧
    */
   getAllowedBackends(): AgentBackend[] {
-    return this.allowedBackends;
+    return this.allowAllAvailableBackends ? getAllAgentBackends() : this.allowedBackends;
+  }
+
+  /** UIやコマンドで新しく選択できるバックエンド一覧。 */
+  getSelectableBackends(): AgentBackend[] {
+    return this.getAllowedBackends().filter((backend) => this.backendAvailable(backend));
   }
 
   /**

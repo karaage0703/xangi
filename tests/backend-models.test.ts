@@ -9,6 +9,7 @@ import {
   parseGrokModels,
   type ModelDiscoveryCommandRunner,
 } from '../src/backend-models.js';
+import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
 describe('backend model parsers', () => {
   it('parses Codex app-server model/list response', () => {
@@ -24,10 +25,7 @@ describe('backend model parsers', () => {
               displayName: 'GPT-5.6-Sol',
               description: 'Latest frontier agentic coding model.',
               isDefault: true,
-              supportedReasoningEfforts: [
-                { reasoningEffort: 'low' },
-                { reasoningEffort: 'ultra' },
-              ],
+              supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }],
             },
           ],
         },
@@ -47,7 +45,9 @@ describe('backend model parsers', () => {
 
   it('parses Cursor account model output', () => {
     expect(
-      parseCursorModels('Available models\n\nauto - Auto (current, default)\ngpt-5.6-sol-high - GPT-5.6 Sol 1M High\n')
+      parseCursorModels(
+        'Available models\n\nauto - Auto (current, default)\ngpt-5.6-sol-high - GPT-5.6 Sol 1M High\n'
+      )
     ).toEqual([
       { id: 'auto', displayName: 'Auto', isDefault: true },
       { id: 'gpt-5.6-sol-high', displayName: 'GPT-5.6 Sol 1M High', isDefault: false },
@@ -68,10 +68,7 @@ describe('backend model parsers', () => {
       parseAntigravityModels(
         'Available models:\ngemini-3.6-flash-high\nGemini 3.5 Flash (Medium)\n'
       )
-    ).toEqual([
-      { id: 'gemini-3.6-flash-high' },
-      { id: 'Gemini 3.5 Flash (Medium)' },
-    ]);
+    ).toEqual([{ id: 'gemini-3.6-flash-high' }, { id: 'Gemini 3.5 Flash (Medium)' }]);
   });
 
   it('parses Antigravity 1.1.12 JSON and tab-delimited model output', () => {
@@ -117,6 +114,15 @@ describe('discoverBackendModels', () => {
     expect(runner).not.toHaveBeenCalled();
   });
 
+  it('reports that extension backends have no model list', async () => {
+    await installExtensionBackendFixture();
+    const runner = vi.fn<ModelDiscoveryCommandRunner>();
+    const result = await discoverBackendModels('example-backend', { runner });
+
+    expect(result).toMatchObject({ status: 'unsupported', models: [] });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it('does not hard-code GitHub Copilot models when listing is unsupported', async () => {
     const runner = vi.fn<ModelDiscoveryCommandRunner>();
     const result = await discoverBackendModels('github-copilot', { runner });
@@ -149,9 +155,7 @@ describe('discoverBackendModels', () => {
           command: {
             name: 'models',
             data: {
-              models: [
-                { id: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' },
-              ],
+              models: [{ id: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' }],
             },
           },
         }),
@@ -200,9 +204,7 @@ describe('discoverBackendModels', () => {
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',
       source: 'agy models (legacy fallback)',
-      models: [
-        { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
-      ],
+      models: [{ id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' }],
     });
     expect(runner.mock.calls.map(([command, args]) => [command, args])).toEqual([
       ['agy', ['--output-format', 'json', 'models']],
@@ -271,7 +273,9 @@ describe('discoverBackendModels', () => {
   });
 
   it('does not retry agy model discovery after an ordinary failure', async () => {
-    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockRejectedValue(new Error('network down'));
+    const runner = vi
+      .fn<ModelDiscoveryCommandRunner>()
+      .mockRejectedValue(new Error('network down'));
 
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'unavailable',
@@ -316,10 +320,7 @@ describe('backend model formatting', () => {
         backend: 'codex',
         source: 'codex app-server model/list',
         status: 'available',
-        models: [
-          { id: 'gpt-5.6-sol', isDefault: true },
-          { id: 'gpt-5.6-terra' },
-        ],
+        models: [{ id: 'gpt-5.6-sol', isDefault: true }, { id: 'gpt-5.6-terra' }],
       },
       ['gpt-5.6-terra']
     );

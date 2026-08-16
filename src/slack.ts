@@ -2,6 +2,7 @@ import { App, LogLevel } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
+import { buildCompletionSummary, DEFAULT_COMPLETION_DISPLAY } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { processManager } from './process-manager.js';
 import type { Skill } from './skills.js';
@@ -30,7 +31,7 @@ import {
   withoutFinalResponse,
 } from './tool-history.js';
 import { ensureSession, getActiveSessionId, getProviderSessionId } from './sessions.js';
-import { createSchedulerRunId } from './scheduler-run.js';
+import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
 import {
   attachPlatformMessageIdToLast,
   findEntryByPlatformMessageId,
@@ -130,21 +131,12 @@ function markSlackMessageProcessed(channelId: string, ts: string): boolean {
 }
 
 export function buildSlackCompletionNotification(input: {
-  threadTs?: string;
   elapsedMs: number;
   thresholdMs: number;
+  display: Config['completion'];
 }): string | null {
-  if (input.threadTs) return null;
   if (input.elapsedMs < input.thresholdMs) return null;
-  return `✅ 完了しました（${formatElapsed(input.elapsedMs)}）`;
-}
-
-function formatElapsed(elapsedMs: number): string {
-  const totalSec = Math.max(0, Math.round(elapsedMs / 1000));
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  if (min === 0) return `${sec}秒`;
-  return `${min}分${sec.toString().padStart(2, '0')}秒`;
+  return buildCompletionSummary({ elapsedMs: input.elapsedMs }, input.display);
 }
 
 /** 残り時間を mm:ss でフォーマット */
@@ -656,6 +648,7 @@ export function registerSlackSchedulerBridge(deps: {
   });
 
   scheduler.registerAgentRunner('slack', async (prompt, channelId) => {
+    const startedAt = Date.now();
     const initialText = '🤔 考え中...';
     const thinking = await client.chat.postMessage({
       channel: channelId,
@@ -704,7 +697,13 @@ export function registerSlackSchedulerBridge(deps: {
         channelId,
         messageTs,
         undefined,
-        markdownToSlackMrkdwn(displayText || '✅'),
+        markdownToSlackMrkdwn(
+          appendScheduleRunCompletion(
+            displayText || '✅',
+            Date.now() - startedAt,
+            config.completion ?? DEFAULT_COMPLETION_DISPLAY
+          )
+        ),
         []
       );
       return result;
@@ -713,7 +712,12 @@ export function registerSlackSchedulerBridge(deps: {
         .update({
           channel: channelId,
           ts: messageTs,
-          text: formatAgentErrorForUser(error),
+          text: appendScheduleRunCompletion(
+            formatAgentErrorForUser(error),
+            Date.now() - startedAt,
+            config.completion ?? DEFAULT_COMPLETION_DISPLAY,
+            'error'
+          ),
           blocks: [],
         })
         .catch(() => {});
@@ -1898,15 +1902,16 @@ export async function processMessage(
     }
 
     const completionNotification = buildSlackCompletionNotification({
-      threadTs,
       elapsedMs: Date.now() - startedAt,
       thresholdMs: config.slack.completionNotifyAfterMs ?? 10_000,
+      display: config.completion ?? DEFAULT_COMPLETION_DISPLAY,
     });
     if (completionNotification) {
       await client.chat
         .postMessage({
           channel: channelId,
           text: completionNotification,
+          ...(threadTs && { thread_ts: threadTs }),
         })
         .catch((err) => {
           console.error('[slack] Failed to send completion notification:', err?.message || err);

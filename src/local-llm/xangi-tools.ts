@@ -279,6 +279,38 @@ function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
   };
 }
 
+const scheduleUpdateHandler: ToolHandler = {
+  name: 'schedule_update',
+  description:
+    '既存スケジュールをIDを維持したまま更新する。未指定項目は保持される。本文だけならmessage、日時・種別も変えるならinputを指定する。',
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'スケジュールID' },
+      input: {
+        type: 'string',
+        description: '日時・種別・本文をまとめて更新する自然言語設定',
+      },
+      message: { type: 'string', description: '日時・種別を変えずに更新する本文' },
+      channel: { type: 'string', description: '新しい送信先チャンネルID' },
+      platform: {
+        type: 'string',
+        description: '新しいプラットフォーム（変更時はchannelも必須）',
+        enum: ['discord', 'slack', 'telegram', 'web'],
+      },
+    },
+    required: ['id'],
+  },
+  async execute(args): Promise<ToolResult> {
+    const flags: Record<string, string> = { id: String(args.id) };
+    if (args.input !== undefined) flags.input = String(args.input);
+    if (args.message !== undefined) flags.message = String(args.message);
+    if (args.channel !== undefined) flags.channel = String(args.channel);
+    if (args.platform !== undefined) flags.platform = String(args.platform);
+    return runXangiCmd(['schedule_update', ...flagsToArgs(flags)]);
+  },
+};
+
 const scheduleRemoveHandler: ToolHandler = {
   name: 'schedule_remove',
   description: 'スケジュールを削除する。',
@@ -637,6 +669,7 @@ export function getScheduleTools(platform?: ChatPlatform): ToolHandler[] {
   return [
     scheduleListHandler,
     createScheduleAddHandler(platform),
+    scheduleUpdateHandler,
     scheduleRemoveHandler,
     scheduleToggleHandler,
   ];

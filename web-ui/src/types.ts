@@ -161,6 +161,7 @@ export interface RuntimeConfig {
   timeoutExtendEnabled: boolean;
   interChatEnabled: boolean;
   allowedBackends: string[];
+  completionShowElapsed: boolean;
 }
 
 export type WebCommandCategory = 'session' | 'skills' | 'settings' | 'system';

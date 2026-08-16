@@ -14,8 +14,10 @@ function createResolver(
 ): BackendResolver {
   return {
     getAllowedBackends: () => allowedBackends,
+    getSelectableBackends: () => allowedBackends,
     getAllowedModels: () => allowedModels,
     isBackendAllowed: (backend: AgentBackend) => allowedBackends.includes(backend),
+    isBackendSelectable: (backend: AgentBackend) => allowedBackends.includes(backend),
     isModelAllowed: (model: string) => !allowedModels || allowedModels.includes(model),
     setChannelOverride: vi.fn(),
   } as BackendResolver;

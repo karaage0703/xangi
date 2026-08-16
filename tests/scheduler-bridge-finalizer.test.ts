@@ -107,7 +107,10 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
       content: '⏸ プロセス再起動により中断されました',
       components: [],
     });
-    expect(thinkingMsg.edit).toHaveBeenCalledWith({ content: 'done', components: [] });
+    expect(thinkingMsg.edit).toHaveBeenCalledWith({
+      content: expect.stringMatching(/^done\n\n✅ 完了（⏱ /),
+      components: [],
+    });
   });
 
   it('agent がエラーで落ちても finalizer は解除される', async () => {
@@ -253,7 +256,9 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
     );
     expect(thinkingMsg.delete).not.toHaveBeenCalled();
     expect(thinkingMsg.edit).toHaveBeenCalledWith({
-      content: expect.stringContaining('Agent process ended without a response or session ID'),
+      content: expect.stringMatching(
+        /Agent process ended without a response or session ID[\s\S]*⚠️ 終了（⏱ /
+      ),
       components: [],
     });
   });

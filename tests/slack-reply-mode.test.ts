@@ -161,7 +161,11 @@ function createBackendResolverStub(defaultBackend = 'claude-code') {
     isBackendAllowed: vi.fn((backend: string) =>
       ['claude-code', 'codex', 'cursor'].includes(backend)
     ),
+    isBackendSelectable: vi.fn((backend: string) =>
+      ['claude-code', 'codex', 'cursor'].includes(backend)
+    ),
     getAllowedBackends: vi.fn(() => ['claude-code', 'codex', 'cursor']),
+    getSelectableBackends: vi.fn(() => ['claude-code', 'codex', 'cursor']),
     isModelAllowed: vi.fn(() => true),
   } as unknown as BackendResolver;
   return { resolver, overrides };
@@ -246,7 +250,7 @@ describe('Slack /backend command', () => {
         resolver,
         agentRunner: {} as AgentRunner,
       })
-    ).rejects.toThrow('許可されていません');
+    ).rejects.toThrow('現在利用できません');
     expect(resolver.setChannelOverride).not.toHaveBeenCalled();
   });
 
@@ -335,31 +339,73 @@ describe('shouldReplyInSlackThread', () => {
   it('builds a completion notification for non-thread replies after threshold', () => {
     expect(
       buildSlackCompletionNotification({
-        threadTs: undefined,
         elapsedMs: 95_000,
         thresholdMs: 10_000,
+        display: { showElapsed: true },
       })
-    ).toBe('✅ 完了しました（1分35秒）');
-  });
-
-  it('does not notify while replying in a thread', () => {
-    expect(
-      buildSlackCompletionNotification({
-        threadTs: THREAD_TS,
-        elapsedMs: 95_000,
-        thresholdMs: 10_000,
-      })
-    ).toBeNull();
+    ).toBe('✅ 完了（⏱ 1分35秒）');
   });
 
   it('does not notify below threshold', () => {
     expect(
       buildSlackCompletionNotification({
-        threadTs: undefined,
         elapsedMs: 9_999,
         thresholdMs: 10_000,
+        display: { showElapsed: true },
       })
     ).toBeNull();
+  });
+
+  it('posts completion metrics into the active Slack thread', async () => {
+    const postMessage = vi.fn().mockResolvedValue({ ts: '1783402634.549099' });
+    const client = {
+      chat: { postMessage, update: vi.fn().mockResolvedValue({}) },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onComplete?.({
+        result: 'ok',
+        sessionId: 'provider-1',
+      });
+      return {
+        result: 'ok',
+        sessionId: 'provider-1',
+      };
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      completion: { showElapsed: true, notifyAfterMs: 10_000 },
+      slack: {
+        streaming: true,
+        showThinking: true,
+        replySuggestions: false,
+        completionNotifyAfterMs: 0,
+      },
+    } as Config;
+
+    await processMessage(
+      AUTO_REPLY_CHANNEL,
+      slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS),
+      THREAD_TS,
+      '完了メトリクステスト',
+      '1783402632.322829',
+      client,
+      agentRunner,
+      config
+    );
+
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: AUTO_REPLY_CHANNEL,
+        thread_ts: THREAD_TS,
+        text: expect.stringMatching(/^✅ 完了（⏱ .+）$/),
+      })
+    );
   });
 });
 
