@@ -80,6 +80,7 @@ export interface ExtensionActionResult {
   ok?: boolean;
   running?: boolean;
   healthy?: boolean;
+  ready?: boolean;
   changed?: boolean;
   unsupported?: boolean;
   detail?: string;
@@ -577,42 +578,91 @@ async function startManagedExtension(
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, XANGI_EXTENSION_AUTH_TOKEN: token },
   });
+  let ready: ManagedReadyMessage;
+  let baseUrl: string;
   try {
-    const ready = await waitForReady(linked, child, options.timeoutMs ?? 30_000);
+    ready = await waitForReady(linked, child, options.timeoutMs ?? 30_000);
     child.stdout?.resume();
     child.stderr?.resume();
     if (ready.id !== linked.id) throw new Error(`readiness id mismatch: ${ready.id}`);
     if (resolve(ready.workspace) !== workspace) {
       throw new Error(`readiness workspace mismatch: ${ready.workspace}`);
     }
-    const runtime: ManagedExtensionRuntime = {
-      id: linked.id,
-      workspace,
-      baseUrl: validateManagedBaseUrl(ready.baseUrl),
-      healthPath: manifest.capabilities[0]?.healthPath ?? '/health',
-      authorization: `Bearer ${token}`,
-      child,
-    };
-    managedRuntimes.set(linked.id, runtime);
-    child.once('close', (code, signal) => {
-      if (managedRuntimes.get(linked.id)?.child !== child) return;
-      managedRuntimes.delete(linked.id);
-      if (code !== 0 && signal !== 'SIGTERM') {
-        console.warn(`[extensions] ${linked.id} exited unexpectedly (${signal ?? `code ${code}`})`);
-      }
-    });
-    const status = await managedExtensionStatus(linked.id, workspace);
-    if (!status.healthy) throw new Error(`${linked.id} did not pass its health check`);
-    return { ...status, changed: true };
+    baseUrl = validateManagedBaseUrl(ready.baseUrl);
   } catch (error) {
-    child.stdin?.end();
-    child.kill('SIGTERM');
+    await terminateFailedStart(child);
     throw error;
+  }
+
+  const runtime: ManagedExtensionRuntime = {
+    id: linked.id,
+    workspace,
+    baseUrl,
+    healthPath: manifest.capabilities[0]?.healthPath ?? '/health',
+    authorization: `Bearer ${token}`,
+    child,
+  };
+  managedRuntimes.set(linked.id, runtime);
+  child.once('close', (code, signal) => {
+    if (managedRuntimes.get(linked.id)?.child !== child) return;
+    managedRuntimes.delete(linked.id);
+    if (code !== 0 && signal !== 'SIGTERM') {
+      console.warn(`[extensions] ${linked.id} exited unexpectedly (${signal ?? `code ${code}`})`);
+    }
+  });
+
+  // A valid readiness message establishes the managed runtime. Health is an
+  // observable state that may recover after a slow cold start, not a reason to
+  // tear down an otherwise valid child process.
+  const status = await managedExtensionStatus(linked.id, workspace);
+  await observeStartupChildExit(child, status.healthy === true ? 0 : 100);
+  if (
+    status.running !== true ||
+    managedChildExited(child) ||
+    managedRuntimes.get(linked.id)?.child !== child
+  ) {
+    if (managedRuntimes.get(linked.id)?.child === child) managedRuntimes.delete(linked.id);
+    await terminateFailedStart(child);
+    throw new Error(`${linked.id} exited during startup`);
+  }
+  return { ...status, changed: true };
+}
+
+async function observeStartupChildExit(
+  child: ReturnType<typeof spawn>,
+  graceMs: number
+): Promise<void> {
+  if (managedChildExited(child)) return;
+  await new Promise<void>((resolvePromise) => {
+    let settled = false;
+    let immediate: NodeJS.Immediate | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (immediate) clearImmediate(immediate);
+      if (timer) clearTimeout(timer);
+      child.removeListener('exit', finish);
+      resolvePromise();
+    };
+    child.once('exit', finish);
+    if (graceMs > 0) timer = setTimeout(finish, graceMs);
+    else immediate = setImmediate(finish);
+  });
+}
+
+function managedChildExited(child: ReturnType<typeof spawn>): boolean {
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return true;
+  try {
+    process.kill(child.pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
   }
 }
 
 async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null) return true;
+  if (child.exitCode !== null || child.signalCode !== null) return true;
   return new Promise((resolvePromise) => {
     const timer = setTimeout(() => resolvePromise(false), timeoutMs);
     child.once('close', () => {
@@ -622,17 +672,40 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): 
   });
 }
 
+async function terminateFailedStart(child: ReturnType<typeof spawn>): Promise<void> {
+  child.stdin?.end();
+  if (child.exitCode === null) child.kill('SIGTERM');
+  if (!(await waitForExit(child, 1_000))) child.kill('SIGKILL');
+  await waitForExit(child, 500);
+}
+
 async function stopManagedExtension(id: string): Promise<ExtensionActionResult> {
   const runtime = managedRuntimes.get(id);
   if (!runtime) {
-    return { schemaVersion: 2, id, ok: true, running: false, healthy: false, changed: false };
+    return {
+      schemaVersion: 2,
+      id,
+      ok: true,
+      running: false,
+      healthy: false,
+      ready: false,
+      changed: false,
+    };
   }
   managedRuntimes.delete(id);
   runtime.child.stdin?.end();
   if (!(await waitForExit(runtime.child, 1_000))) runtime.child.kill('SIGTERM');
   if (!(await waitForExit(runtime.child, 1_000))) runtime.child.kill('SIGKILL');
   await waitForExit(runtime.child, 500);
-  return { schemaVersion: 2, id, ok: true, running: false, healthy: false, changed: true };
+  return {
+    schemaVersion: 2,
+    id,
+    ok: true,
+    running: false,
+    healthy: false,
+    ready: false,
+    changed: true,
+  };
 }
 
 async function managedExtensionStatus(
@@ -642,7 +715,7 @@ async function managedExtensionStatus(
 ): Promise<ExtensionActionResult> {
   const runtime = managedRuntimes.get(id);
   if (!runtime || runtime.child.exitCode !== null) {
-    return { schemaVersion: 2, id, ok: false, running: false, healthy: false };
+    return { schemaVersion: 2, id, ok: false, running: false, healthy: false, ready: false };
   }
   const workspaceMatches =
     expectedWorkspace === undefined || runtime.workspace === resolve(expectedWorkspace);
@@ -653,13 +726,16 @@ async function managedExtensionStatus(
     });
     const health = response.ok ? ((await response.json()) as unknown) : undefined;
     const healthy = response.ok;
-    const ready = !requireReady || !isRecord(health) || health.ready !== false;
+    // Schema-v2 health payloads may explicitly report a warming state. Older
+    // extensions omit `ready`; a successful legacy health response is ready.
+    const ready = healthy && (!isRecord(health) || health.ready !== false);
     return {
       schemaVersion: 2,
       id,
-      ok: healthy && workspaceMatches && ready,
+      ok: healthy && workspaceMatches && (!requireReady || ready),
       running: true,
       healthy,
+      ready,
       workspace: runtime.workspace,
       workspaceMatches,
       ...(health !== undefined ? { health } : {}),
@@ -680,6 +756,7 @@ async function managedExtensionStatus(
       ok: false,
       running: true,
       healthy: false,
+      ready: false,
       workspace: runtime.workspace,
       workspaceMatches,
       detail: error instanceof Error ? error.message : String(error),
@@ -728,11 +805,19 @@ export async function startAutostartExtensions(
   for (const linked of await listExtensions()) {
     if (!linked.enabled || !linked.autostart) continue;
     try {
-      await runExtensionAction(linked, 'start', {
+      const status = await runExtensionAction(linked, 'start', {
         workspace: options.workspace,
         timeoutMs: 30_000,
       });
-      console.log(`[extensions] ${linked.id} is ready`);
+      if (status.ready === true) {
+        console.log(`[extensions] ${linked.id} is ready`);
+      } else if (status.running === true) {
+        console.warn(
+          `[extensions] ${linked.id} started but is not ready${status.detail ? `: ${status.detail}` : ''}`
+        );
+      } else {
+        console.warn(`[extensions] ${linked.id} failed to stay running after startup`);
+      }
     } catch (error) {
       console.warn(
         `[extensions] ${linked.id} failed to start: ${error instanceof Error ? error.message : String(error)}`
