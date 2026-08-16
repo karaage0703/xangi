@@ -233,7 +233,7 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
 export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefinition[] {
   const skills = loadSkills(ctx.workdir);
   const backendChoices =
-    ctx.resolver?.getAllowedBackends().map((backend) => ({
+    ctx.resolver?.getSelectableBackends().map((backend) => ({
       name: getBackendDisplayName(backend),
       value: backend,
     })) ?? [];
@@ -420,9 +420,9 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
   }
 
   const backend = args[1] as AgentBackend | undefined;
-  if (!backend || !resolver.isBackendAllowed(backend)) {
+  if (!backend || !resolver.isBackendSelectable(backend)) {
     throw new Error(
-      `許可されたバックエンドを指定してください: ${resolver.getAllowedBackends().join(', ')}`
+      `利用可能なバックエンドを指定してください: ${resolver.getSelectableBackends().join(', ')}`
     );
   }
 

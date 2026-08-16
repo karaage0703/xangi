@@ -6,9 +6,11 @@ import { join } from 'path';
 import {
   logPrompt,
   logResponse,
+  logError,
   readSessionMessages,
   readSessionMessagesTail,
   updateMessageContent,
+  updateLatestMessageUsage,
   deleteMessage,
   attachPlatformMessageIdToLast,
   ensureVisibleAssistantResponse,
@@ -52,6 +54,25 @@ describe('transcript-logger edit/delete', () => {
     expect(result).toBeNull();
     const after = readSessionMessages(workdir, sessionId);
     expect(after[0].content).toBe('foo'); // unchanged
+  });
+
+  it('updateLatestMessageUsage adds automatic metrics without marking the message edited', () => {
+    logPrompt(workdir, sessionId, 'run scheduled task');
+    logError(workdir, sessionId, 'failed');
+
+    const updated = updateLatestMessageUsage(workdir, sessionId, ['assistant', 'error'], {
+      duration_ms: 12_345,
+    });
+
+    expect(updated).toMatchObject({
+      role: 'error',
+      content: 'failed',
+      usage: { duration_ms: 12_345 },
+    });
+    expect(updated?.edited).toBeUndefined();
+    expect(readSessionMessages(workdir, sessionId).at(-1)).toMatchObject({
+      usage: { duration_ms: 12_345 },
+    });
   });
 
   it('deleteMessage removes the matching entry and keeps order of others', () => {

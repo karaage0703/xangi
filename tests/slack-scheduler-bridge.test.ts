@@ -90,8 +90,8 @@ describe('registerSlackSchedulerBridge', () => {
       text: expect.any(String),
       blocks: [],
     });
-    expect(completedPayload.text.replaceAll('\u200B', '')).toBe(
-      '*done* <https://example.com|Docs>'
+    expect(completedPayload.text.replaceAll('\u200B', '')).toMatch(
+      /^\*done\* <https:\/\/example\.com\|Docs>\n\n✅ 完了（⏱ /
     );
 
     const activity = await import('../src/activity-store.js');

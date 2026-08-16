@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
+import { ConfirmDialog } from './ConfirmDialog';
 import { sessionPath } from './sessionPermalink';
 
 export interface MonitorActivityHistory {
@@ -297,6 +298,7 @@ export function Monitor() {
   const [clock, setClock] = useState(Date.now());
   const [source, setSource] = useState('source --');
   const [closingId, setClosingId] = useState('');
+  const [sessionToClose, setSessionToClose] = useState<MonitorSession | null>(null);
   const [actionError, setActionError] = useState('');
   const sessionsRef = useRef<MonitorSession[]>([]);
   const loadSequenceRef = useRef(0);
@@ -365,31 +367,24 @@ export function Monitor() {
     }
   }, [applySnapshot]);
 
-  const closeSelectedSession = useCallback(
-    async (session: MonitorSession) => {
-      if (
-        !window.confirm(
-          `「${session.title || session.id}」を完了にしますか？\n会話履歴は残ります。`
-        )
-      ) {
-        return;
-      }
-      setClosingId(session.id);
-      setActionError('');
-      try {
-        const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
-          method: 'POST',
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        await loadSessions();
-      } catch (cause) {
-        setActionError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        setClosingId('');
-      }
-    },
-    [loadSessions]
-  );
+  const closeSelectedSession = useCallback(async () => {
+    const session = sessionToClose;
+    if (!session || closingId) return;
+    setClosingId(session.id);
+    setActionError('');
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
+        method: 'POST',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await loadSessions();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSessionToClose(null);
+      setClosingId('');
+    }
+  }, [closingId, loadSessions, sessionToClose]);
 
   const hasRunningSession = sessions.some(isRunning);
   useEffect(() => {
@@ -581,7 +576,7 @@ export function Monitor() {
                       type="button"
                       className="monitor-detail-session-close"
                       disabled={closingId === selected.id}
-                      onClick={() => void closeSelectedSession(selected)}
+                      onClick={() => setSessionToClose(selected)}
                     >
                       {closingId === selected.id ? '変更中…' : '完了にする'}
                     </button>
@@ -786,6 +781,23 @@ export function Monitor() {
           })}
         </section>
       </section>
+      <ConfirmDialog
+        open={Boolean(sessionToClose)}
+        title="セッションを完了"
+        description={
+          <>
+            「{sessionToClose?.title || 'このセッション'}
+            」を完了にします。会話履歴は残り、履歴から再開・分岐できます。
+          </>
+        }
+        confirmLabel="完了にする"
+        busyLabel="変更中…"
+        busy={Boolean(closingId)}
+        onCancel={() => {
+          if (!closingId) setSessionToClose(null);
+        }}
+        onConfirm={() => void closeSelectedSession()}
+      />
     </main>
   );
 }

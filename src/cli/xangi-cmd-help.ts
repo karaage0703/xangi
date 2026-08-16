@@ -11,6 +11,7 @@ export interface XangiCmdHelpEntry {
     | 'settings'
     | 'trigger'
     | 'system'
+    | 'extension'
     | 'local';
   summary: string;
   usage: string;
@@ -136,6 +137,16 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       'xangi tool schedule_add --input <自然言語またはcron> --channel <id> --platform <discord|slack|telegram|web>',
   },
   {
+    name: 'schedule_update',
+    topic: 'schedule',
+    summary: '既存スケジュールをIDを維持して更新',
+    usage:
+      'xangi tool schedule_update --id <schedule-id> [--input <自然言語またはcron> | --message <text>] [--channel <id>] [--platform <discord|slack|telegram|web>]',
+    notes: [
+      '未指定項目は保持される。--input と --message は同時指定不可。platform変更時は --channel も必要。',
+    ],
+  },
+  {
     name: 'schedule_remove',
     topic: 'schedule',
     summary: 'スケジュールを削除',
@@ -186,6 +197,28 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'system',
     summary: '設定一覧の表示または設定変更',
     usage: 'xangi tool system_settings [--key <key> --value <value>]',
+  },
+  {
+    name: 'extension_request',
+    topic: 'extension',
+    summary: '認証情報を公開せずmanaged extension APIを呼び出す',
+    usage:
+      'xangi tool extension_request --id <extension-id> --capability <capability-id> --path </path> [--method <GET|POST|PUT|DELETE>] [--query-json <json-object>] [--body-json <json>]',
+    notes: [
+      '--query-json はURLエンコードされる。認証tokenや内部portは出力されない。',
+      '--body-json はPOST/PUTでのみ使用できる。',
+    ],
+  },
+  {
+    name: 'extension_update',
+    topic: 'extension',
+    summary: '確認済みcommitへrepository-managed extensionをtransaction更新',
+    usage:
+      'xangi tool extension_update --id <extension-id> --to <40-character-commit-sha> [--accept-manifest-changes true]',
+    notes: [
+      'Extensions画面で作成された更新会話から使う。manifestにupdate.prepareを宣言したrepository sourceだけが対象。',
+      'manifestの権限・capability・entrypoint・agent backend・UI mapping・更新準備command変更はユーザー承認後だけ--accept-manifest-changes trueを付ける。',
+    ],
   },
   {
     name: 'inter_chat_send',
@@ -240,6 +273,7 @@ const TOPICS = [
   'settings',
   'trigger',
   'system',
+  'extension',
   'local',
 ] as const;
 

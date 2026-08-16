@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { formatDateTime, getJson, platformLabel, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { ProjectsResponse, Schedule, SchedulesResponse, WebProject } from './types';
 
 type ScheduleMode = 'once' | 'daily' | 'weekly' | 'cron' | 'startup';
@@ -173,6 +174,8 @@ export function Schedules() {
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState('1');
   const [expression, setExpression] = useState('0 9 * * *');
+  const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
+  const [deletingSchedule, setDeletingSchedule] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -298,16 +301,21 @@ export function Schedules() {
     }
   };
 
-  const remove = async (schedule: Schedule) => {
-    const name = schedule.label || timingLabel(schedule);
-    if (!window.confirm(`「${name}」を削除しますか？`)) return;
+  const remove = async () => {
+    const schedule = scheduleToDelete;
+    if (!schedule || deletingSchedule) return;
+    setDeletingSchedule(true);
     setMessage('');
     try {
       await requestJson(`/api/schedules/${schedule.id}`, { method: 'DELETE' });
       setSchedules((current) => current.filter((item) => item.id !== schedule.id));
       if (editingId === schedule.id) resetForm();
+      setScheduleToDelete(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
+      setScheduleToDelete(null);
+    } finally {
+      setDeletingSchedule(false);
     }
   };
 
@@ -591,7 +599,7 @@ export function Schedules() {
                       <button
                         className="schedule-delete"
                         type="button"
-                        onClick={() => void remove(schedule)}
+                        onClick={() => setScheduleToDelete(schedule)}
                       >
                         削除
                       </button>
@@ -603,6 +611,21 @@ export function Schedules() {
           </section>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(scheduleToDelete)}
+        title="スケジュールを削除"
+        description={`「${
+          scheduleToDelete ? scheduleToDelete.label || timingLabel(scheduleToDelete) : ''
+        }」を削除します。この操作は元に戻せません。`}
+        confirmLabel="削除"
+        busyLabel="削除中…"
+        busy={deletingSchedule}
+        variant="danger"
+        onCancel={() => {
+          if (!deletingSchedule) setScheduleToDelete(null);
+        }}
+        onConfirm={() => void remove()}
+      />
     </main>
   );
 }

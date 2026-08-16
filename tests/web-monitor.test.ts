@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -146,6 +146,24 @@ describe('Monitor kanban lanes', () => {
 });
 
 describe('Monitor session details', () => {
+  it('uses the in-page confirm dialog instead of window.confirm for WKWebView', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    const confirmDialogSource = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'ConfirmDialog.tsx'),
+      'utf8'
+    );
+    const sourceStylesheet = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'styles.css'),
+      'utf8'
+    );
+
+    expect(monitorSource).toContain('<ConfirmDialog');
+    expect(monitorSource).not.toContain('window.confirm');
+    expect(confirmDialogSource).toContain('dialog.showModal()');
+    expect(confirmDialogSource).toContain('clickedBackdrop');
+    expect(sourceStylesheet).toContain('.monitor-page > :not(.app-topbar, .confirm-dialog)');
+  });
+
   it('reveals an off-screen detail with motion that follows the user preference', () => {
     const calls: ScrollIntoViewOptions[] = [];
     const element = {

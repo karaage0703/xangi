@@ -21,8 +21,11 @@ describe('runtime_settings', () => {
     overrides = new Map();
     resolver = {
       getAllowedBackends: () => ['codex', 'local-llm', 'workspace-search'] as AgentBackend[],
+      getSelectableBackends: () => ['codex', 'local-llm', 'workspace-search'] as AgentBackend[],
       getAllowedModels: () => undefined,
       isBackendAllowed: (backend: AgentBackend) =>
+        ['codex', 'local-llm', 'workspace-search'].includes(backend),
+      isBackendSelectable: (backend: AgentBackend) =>
         ['codex', 'local-llm', 'workspace-search'].includes(backend),
       isModelAllowed: () => true,
       getDefault: () => ({ backend: 'codex' as AgentBackend }),

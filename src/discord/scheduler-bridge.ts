@@ -8,8 +8,9 @@ import { DISCORD_SAFE_LENGTH } from '../constants.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
-import { createSchedulerRunId } from '../scheduler-run.js';
+import { appendScheduleRunCompletion, createSchedulerRunId } from '../scheduler-run.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
+import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import { createProcessingButtons, discordProcessingMessages } from './ui.js';
 
 export interface SchedulerBridgeDeps {
@@ -58,6 +59,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
   // スケジューラにエージェント実行関数を登録
   scheduler.registerAgentRunner('discord', (prompt, channelId) =>
     enqueueChannelTurn(channelId, async () => {
+      const startedAt = Date.now();
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('send' in channel)) {
         throw new Error(`Channel not found: ${channelId}`);
@@ -134,12 +136,17 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
         // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
         const SEPARATOR_REGEX = /\n\s*===\s*\n/;
-        const messageParts = SEPARATOR_REGEX.test(displayText)
-          ? displayText
+        const timedDisplayText = appendScheduleRunCompletion(
+          displayText || '✅',
+          Date.now() - startedAt,
+          config.completion ?? DEFAULT_COMPLETION_DISPLAY
+        );
+        const messageParts = SEPARATOR_REGEX.test(timedDisplayText)
+          ? timedDisplayText
               .split(SEPARATOR_REGEX)
               .map((p) => p.trim())
               .filter(Boolean)
-          : [displayText];
+          : [timedDisplayText];
 
         // 最初のパートは既存のthinkingMsgを編集して送信
         const firstChunks = splitMessage(messageParts[0], DISCORD_SAFE_LENGTH);
@@ -170,7 +177,15 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         return result;
       } catch (error) {
         await thinkingMsg
-          .edit({ content: formatAgentErrorForUser(error), components: [] })
+          .edit({
+            content: appendScheduleRunCompletion(
+              formatAgentErrorForUser(error),
+              Date.now() - startedAt,
+              config.completion ?? DEFAULT_COMPLETION_DISPLAY,
+              'error'
+            ),
+            components: [],
+          })
           .catch(() => {});
         throw error;
       } finally {

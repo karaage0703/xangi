@@ -50,10 +50,24 @@ describe('Local LLM xangi tools by platform', () => {
     const toolNames = names('telegram');
 
     expect(toolNames).toContain('schedule_add');
+    expect(toolNames).toContain('schedule_update');
     expect(toolNames).toContain('system_restart');
     expect(toolNames).not.toContain('discord_history');
     expect(toolNames).not.toContain('slack_history');
     expect(toolNames).not.toContain('web_history');
+  });
+
+  it('exposes schedule_update with only id required', () => {
+    const tool = getXangiTools('discord').find((candidate) => candidate.name === 'schedule_update');
+    expect(tool).toBeDefined();
+    expect(tool!.parameters.required).toEqual(['id']);
+    expect(tool!.parameters.properties).toMatchObject({
+      id: { type: 'string' },
+      input: { type: 'string' },
+      message: { type: 'string' },
+      channel: { type: 'string' },
+      platform: { enum: ['discord', 'slack', 'telegram', 'web'] },
+    });
   });
 
   it('keeps the legacy all-platform set when platform is unknown', () => {

@@ -20,6 +20,7 @@ import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { buildCompletionNotification } from './completion-notify.js';
+import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import {
   getChannelAutoReply,
   getChannelCompletionNotifyMode,
@@ -589,6 +590,7 @@ export async function processPrompt(
       elapsedMs: Date.now() - startedAt,
       thresholdMs: config.discord.completionNotifyAfterMs ?? 10_000,
       userId: completionUserId ?? '',
+      display: config.completion ?? DEFAULT_COMPLETION_DISPLAY,
     });
     if (completionNotification && 'send' in outputChannel) {
       await (

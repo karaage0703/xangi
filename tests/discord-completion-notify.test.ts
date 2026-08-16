@@ -9,6 +9,7 @@ describe('Discord completion notification', () => {
         elapsedMs: 120_000,
         thresholdMs: 60_000,
         userId: 'u1',
+        display: { showElapsed: true },
       })
     ).toBeNull();
   });
@@ -20,6 +21,7 @@ describe('Discord completion notification', () => {
         elapsedMs: 59_000,
         thresholdMs: 60_000,
         userId: 'u1',
+        display: { showElapsed: true },
       })
     ).toBeNull();
   });
@@ -31,9 +33,10 @@ describe('Discord completion notification', () => {
         elapsedMs: 61_000,
         thresholdMs: 60_000,
         userId: 'u1',
+        display: { showElapsed: true },
       })
     ).toEqual({
-      content: '✅ 完了しました（1分01秒）',
+      content: '✅ 完了（⏱ 1分01秒）',
       allowedMentions: { parse: [] },
     });
   });
@@ -45,9 +48,10 @@ describe('Discord completion notification', () => {
         elapsedMs: 90_000,
         thresholdMs: 60_000,
         userId: '123',
+        display: { showElapsed: false },
       })
     ).toEqual({
-      content: '<@123> ✅ 完了しました（1分30秒）',
+      content: '<@123> ✅ 完了',
       allowedMentions: { parse: [], users: ['123'] },
     });
   });

@@ -136,7 +136,7 @@ xangi implements a minimal compatibility layer for the HTTP API expected by `@ev
 The Even Terminal UI only exposes `claude` and `codex` provider labels. xangi accepts those labels for compatibility, but the actual backend is still chosen by xangi's normal configuration:
 
 ```text
-AGENT_BACKEND=claude-code | codex | cursor | grok | antigravity | github-copilot | local-llm
+AGENT_BACKEND=<built-in or linked extension backend ID>
 ```
 
 Local LLM works by setting `AGENT_BACKEND=local-llm` on the xangi side, then choose either provider label in the Even UI.

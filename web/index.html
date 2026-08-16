@@ -2326,7 +2326,7 @@
             var u = opts.usage;
             var parts = [];
             if (u.num_turns != null) parts.push('\u{1F504} ' + u.num_turns + ' turns');
-            if (u.duration_ms != null)
+            if (window._completionShowElapsed !== false && u.duration_ms != null)
               parts.push('\u{23F1}️ ' + (u.duration_ms / 1000).toFixed(1) + 's');
             if (u.total_cost_usd != null) parts.push('\u{1F4B0} $' + u.total_cost_usd.toFixed(4));
             if (parts.length > 0) {
@@ -2822,7 +2822,7 @@
                         var parts = [];
                         if (d.usage.num_turns != null)
                           parts.push('\u{1F504} ' + d.usage.num_turns + ' turns');
-                        if (d.usage.duration_ms != null)
+                        if (window._completionShowElapsed !== false && d.usage.duration_ms != null)
                           parts.push('\u{23F1}️ ' + (d.usage.duration_ms / 1000).toFixed(1) + 's');
                         if (d.usage.total_cost_usd != null)
                           parts.push('\u{1F4B0} $' + d.usage.total_cost_usd.toFixed(4));
@@ -3516,6 +3516,7 @@
 
       // ─── 初期化 ───
       window._uploadAccept = '';
+      window._completionShowElapsed = true;
       window._webSkills = [];
       var timeoutExtendEnabled = true;
       (async function init() {
@@ -3523,6 +3524,7 @@
           var res = await fetch('/api/config');
           var cfg = await res.json();
           window._uploadAccept = cfg.uploadAccept || '';
+          window._completionShowElapsed = cfg.completionShowElapsed !== false;
           if (typeof cfg.timeoutExtendEnabled === 'boolean') {
             timeoutExtendEnabled = cfg.timeoutExtendEnabled;
           }

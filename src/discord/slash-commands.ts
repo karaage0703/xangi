@@ -7,13 +7,12 @@ import {
 } from 'discord.js';
 import type { ButtonInteraction } from 'discord.js';
 import {
-  ALL_AGENT_BACKENDS,
   type Config,
   type AgentBackend,
   type EffortLevel,
   type DiscordCompletionNotifyMode,
 } from '../config.js';
-import type { AgentRunner, RunResult } from '../agent-runner.js';
+import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
 import { getSupportedEffortLevels } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
@@ -92,24 +91,6 @@ export async function respondWithDiscordTurnHistory(
 const DISCORD_APPLICATION_COMMAND_LIMIT = 100;
 const DISCORD_MODEL_DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const BACKEND_CHOICE_LABELS: Record<AgentBackend, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  grok: 'Grok',
-  antigravity: 'Antigravity',
-  'github-copilot': 'GitHub Copilot',
-  'local-llm': 'Local LLM',
-};
-
-function getBackendChoices(config: Config): { name: string; value: AgentBackend }[] {
-  const allowedBackends = config.agent?.allowedBackends ?? [...ALL_AGENT_BACKENDS];
-  return allowedBackends.map((backend) => ({
-    name: BACKEND_CHOICE_LABELS[backend],
-    value: backend,
-  }));
-}
-
 /** スキル名を Discord コマンド名に変換（小文字英数字とハイフンのみ、最大32文字） */
 function skillCommandName(skillName: string): string {
   return skillName
@@ -152,7 +133,6 @@ export function buildSlashCommands(
   config: Config,
   skills: Skill[]
 ): ReturnType<SlashCommandBuilder['toJSON']>[] {
-  const backendChoices = getBackendChoices(config);
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
     new SlashCommandBuilder().setName('stop').setDescription('実行中のタスクを停止する').toJSON(),
@@ -173,7 +153,7 @@ export function buildSlashCommands(
           .setName('backend')
           .setDescription('バックエンド（省略時はすべて）')
           .setRequired(false)
-          .addChoices(...backendChoices)
+          .setAutocomplete(true)
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -262,7 +242,7 @@ export function buildSlashCommands(
               .setName('type')
               .setDescription('バックエンド名')
               .setRequired(true)
-              .addChoices(...backendChoices)
+              .setAutocomplete(true)
           )
           .addStringOption((opt) =>
             opt.setName('model').setDescription('モデル名').setAutocomplete(true)
@@ -489,8 +469,21 @@ export async function getDiscordAutocompleteChoices(
     );
   }
 
+  if (
+    (input.commandName === 'backend' && input.focusedName === 'type') ||
+    (input.commandName === 'models' && input.focusedName === 'backend')
+  ) {
+    return filterAutocompleteChoices(
+      resolver.getSelectableBackends().map((backend) => ({
+        name: getBackendDisplayName(backend),
+        value: backend,
+      })),
+      input.focusedValue
+    );
+  }
+
   if (input.commandName !== 'backend' || !input.backend) return [];
-  if (!resolver.isBackendAllowed(input.backend)) return [];
+  if (!resolver.isBackendSelectable(input.backend)) return [];
 
   if (input.focusedName === 'model') {
     const discovery = await discoverModels(input.backend);
@@ -537,7 +530,8 @@ async function handleAutocomplete(
   discoverModels: typeof discoverBackendModels
 ): Promise<void> {
   const focused = interaction.options.getFocused(true);
-  const backend = interaction.options.getString('type') as AgentBackend | null;
+  const backendOptionName = interaction.commandName === 'models' ? 'backend' : 'type';
+  const backend = interaction.options.getString(backendOptionName) as AgentBackend | null;
   const model = interaction.options.getString('model') ?? undefined;
   const choices = await getDiscordAutocompleteChoices(
     {
@@ -860,7 +854,7 @@ export function createInteractionHandler(
   } = deps;
 
   const autocompleteDiscoverModels = createDiscordModelDiscoveryCache(discoverModels);
-  for (const backend of resolver.getAllowedBackends()) {
+  for (const backend of resolver.getSelectableBackends()) {
     void autocompleteDiscoverModels(backend).catch((error) => {
       console.warn(`[xangi] Failed to prewarm ${backend} model autocomplete:`, error);
     });

@@ -17,13 +17,13 @@ export async function executeModelsCommand(
   resolver: BackendResolver,
   discover: typeof discoverBackendModels = discoverBackendModels
 ): Promise<string> {
-  const allowedBackends = resolver.getAllowedBackends();
-  let backends: AgentBackend[] = allowedBackends;
+  const selectableBackends = resolver.getSelectableBackends();
+  let backends: AgentBackend[] = selectableBackends;
 
   if (requestedBackend) {
-    if (!resolver.isBackendAllowed(requestedBackend as AgentBackend)) {
+    if (!resolver.isBackendSelectable(requestedBackend as AgentBackend)) {
       throw new ValidationError(
-        `利用可能なバックエンドを指定してください: ${allowedBackends.join(', ')}`
+        `利用可能なバックエンドを指定してください: ${selectableBackends.join(', ')}`
       );
     }
     backends = [requestedBackend as AgentBackend];
@@ -54,9 +54,9 @@ export async function selectModelForNextTurn(
   resolver: BackendResolver,
   discover: typeof discoverBackendModels = discoverBackendModels
 ): Promise<string> {
-  const allowedBackends = resolver.getAllowedBackends();
+  const allowedBackends = resolver.getSelectableBackends();
   const backend = options.backend as AgentBackend | undefined;
-  if (!backend || !resolver.isBackendAllowed(backend)) {
+  if (!backend || !resolver.isBackendSelectable(backend)) {
     throw new ValidationError(
       `models --use: --backend must be one of: ${allowedBackends.join(', ')}`
     );

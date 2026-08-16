@@ -33,6 +33,8 @@ import {
   type TelegramMediaCandidate,
 } from './telegram-media.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
+import { appendScheduleRunCompletion } from './scheduler-run.js';
+import { appendCompletionSummary, DEFAULT_COMPLETION_DISPLAY } from './completion-summary.js';
 
 const TELEGRAM_RETRY_BASE_MS = 1_000;
 const TELEGRAM_RETRY_MAX_MS = 60_000;
@@ -994,6 +996,7 @@ export async function startTelegramBot(opts: {
     const sendOptions =
       messageThreadId === undefined ? undefined : { message_thread_id: messageThreadId };
     return enqueueForChat(contextKey, async () => {
+      const startedAt = Date.now();
       let thinkingMessage: Awaited<ReturnType<typeof bot.api.sendMessage>>;
       try {
         thinkingMessage = await bot.api.sendMessage(chatId, '考え中...', sendOptions);
@@ -1046,7 +1049,12 @@ export async function startTelegramBot(opts: {
             bot.api.editMessageText(
               thinkingMessage.chat.id,
               thinkingMessage.message_id,
-              formatAgentErrorForUser(error)
+              appendScheduleRunCompletion(
+                formatAgentErrorForUser(error),
+                Date.now() - startedAt,
+                config.completion ?? DEFAULT_COMPLETION_DISPLAY,
+                'error'
+              )
             )
           );
           if (!editResult.ok) {
@@ -1061,7 +1069,11 @@ export async function startTelegramBot(opts: {
         const { filePaths, displayText } = mediaEnabled
           ? buildAttachmentResult(runResult.result, runResult.attachments)
           : { filePaths: [], displayText: runResult.result };
-        const result = displayText || (filePaths.length > 0 ? 'ファイルを生成しました。' : '✅');
+        const result = appendScheduleRunCompletion(
+          displayText || (filePaths.length > 0 ? 'ファイルを生成しました。' : '✅'),
+          Date.now() - startedAt,
+          config.completion ?? DEFAULT_COMPLETION_DISPLAY
+        );
         const chunks = splitMessage(result, 4096);
         const delivery = await deliverTelegramResult({
           chunks,
@@ -1556,6 +1568,7 @@ export async function startTelegramBot(opts: {
         streamSession.start();
       }
 
+      const startedAt = Date.now();
       let runResult: Awaited<ReturnType<typeof runWithBubbleEvents>> | null = null;
       let runError: unknown = null;
 
@@ -1601,9 +1614,18 @@ export async function startTelegramBot(opts: {
         : mediaEnabled
           ? buildAttachmentResult(runResult?.result || '', runResult?.attachments)
           : { filePaths: [], displayText: runResult?.result || '' };
-      const finalAnswer =
+      const plainFinalAnswer =
         attachmentResult.displayText ||
         (attachmentResult.filePaths.length > 0 ? 'ファイルを生成しました。' : '✅');
+      const elapsedMs = Date.now() - startedAt;
+      const finalAnswer =
+        !runError && elapsedMs >= (config.completion?.notifyAfterMs ?? 10_000)
+          ? appendCompletionSummary(
+              plainFinalAnswer,
+              { elapsedMs },
+              config.completion ?? DEFAULT_COMPLETION_DISPLAY
+            )
+          : plainFinalAnswer;
 
       const chunks = splitMessage(finalAnswer, 4096);
       const delivery = await deliverTelegramResult({

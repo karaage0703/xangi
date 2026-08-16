@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
 describe('config', () => {
   const originalEnv = process.env;
@@ -140,6 +141,27 @@ describe('config', () => {
     expect(config.discord.completionNotifyAfterMs).toBe(10_000);
   });
 
+  it('shows completion elapsed time by default and supports overriding it', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.COMPLETION_SHOW_ELAPSED;
+    delete process.env.COMPLETION_NOTIFY_AFTER_MS;
+
+    const { loadConfig } = await import('../src/config.js');
+    const defaults = loadConfig();
+    expect(defaults.completion).toEqual({
+      showElapsed: true,
+      notifyAfterMs: 10_000,
+    });
+
+    process.env.COMPLETION_SHOW_ELAPSED = 'false';
+    process.env.COMPLETION_NOTIFY_AFTER_MS = '1234';
+    const overridden = loadConfig();
+    expect(overridden.completion).toEqual({
+      showElapsed: false,
+      notifyAfterMs: 1234,
+    });
+  });
+
   it('should allow disabling Discord completion notifications via env', async () => {
     process.env.DISCORD_TOKEN = 'test-discord-token';
     process.env.DISCORD_COMPLETION_NOTIFY = 'off';
@@ -240,6 +262,16 @@ describe('config', () => {
     const config = loadConfig();
 
     expect(config.agent.backend).toBe('grok');
+  });
+
+  it('should accept a linked extension backend', async () => {
+    await installExtensionBackendFixture();
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'example-backend';
+    const { loadConfig } = await import('../src/config.js');
+    const config = loadConfig();
+
+    expect(config.agent.backend).toBe('example-backend');
   });
 
   it('should accept GitHub Copilot backend with permission skipping enabled by default', async () => {

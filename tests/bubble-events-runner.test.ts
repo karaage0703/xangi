@@ -128,6 +128,26 @@ describe('runWithBubbleEvents', () => {
     expect(seen.error).toBe(0);
   });
 
+  it('passes the unexpanded user text to deterministic runners', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    let receivedOptions: RunOptions | undefined;
+    const runner = new FakeRunner(async (_prompt, callbacks, options) => {
+      receivedOptions = options;
+      const result = { result: 'ok', sessionId: 's' };
+      callbacks.onComplete?.(result);
+      return result;
+    });
+
+    await runWithBubbleEvents(
+      runner,
+      '[platform metadata]\nexpanded prompt',
+      { threadId: 't', turnId: 'raw-user-text', platform: 'discord', userText: 'RAGを探して' },
+      {}
+    );
+
+    expect(receivedOptions?.userText).toBe('RAGを探して');
+  });
+
   it('keeps reply suggestion markup out of shared events while preserving raw callbacks', async () => {
     const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
     const rawTexts: string[] = [];

@@ -6,12 +6,13 @@ import {
   rmSync,
   existsSync,
   mkdirSync,
+  chmodSync,
   writeFileSync,
   utimesSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { Server } from 'http';
+import { createServer, type Server } from 'http';
 import { startWebChat } from '../src/web-chat.js';
 import {
   initSessions,
@@ -34,7 +35,7 @@ import {
 } from '../src/activity-store.js';
 import { events } from '../src/events-emitter.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
-import { logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
+import { logError, logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import { Scheduler } from '../src/scheduler.js';
 import { EventTrigger } from '../src/event-trigger.js';
@@ -42,6 +43,7 @@ import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.j
 import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
 import { canComposeInSession, shouldShowContinuationActions } from '../web-ui/src/Chat.js';
+import { stopManagedExtensions } from '../src/extensions.js';
 
 describe('Web Chat continuation actions', () => {
   it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
@@ -85,6 +87,7 @@ class FakeRunner implements AgentRunner {
   prompts: string[] = [];
   options: RunOptions[] = [];
   nextResult = 'ok';
+  nextError?: Error;
   persistResults = false;
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
@@ -92,6 +95,15 @@ class FakeRunner implements AgentRunner {
     this.callOrder.push(channelId);
     this.prompts.push(prompt);
     this.options.push(options ?? {});
+    if (this.nextError) {
+      const error = this.nextError;
+      this.nextError = undefined;
+      if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
+        logPrompt(process.env.WORKSPACE_PATH, options.appSessionId, prompt);
+        logError(process.env.WORKSPACE_PATH, options.appSessionId, error.message);
+      }
+      throw error;
+    }
     const result = { result: this.nextResult, sessionId: `provider-${channelId}` };
     if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
       const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
@@ -259,12 +271,16 @@ describe('web-chat HTTP API', () => {
   let resolver: BackendResolver;
   const prevWorkspace = process.env.WORKSPACE_PATH;
   const prevDataDir = process.env.DATA_DIR;
+  const prevExtensionManifests = process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+  const prevExtensionsFile = process.env.XANGI_EXTENSIONS_FILE;
 
   beforeEach(async () => {
     clearSessions();
     testDir = mkdtempSync(join(tmpdir(), 'web-chat-test-'));
     process.env.WORKSPACE_PATH = testDir;
     process.env.DATA_DIR = join(testDir, '.xangi');
+    delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+    process.env.XANGI_EXTENSIONS_FILE = join(testDir, '.xangi', 'extensions.json');
     initSessions(testDir);
 
     runner = new FakeRunner();
@@ -276,8 +292,10 @@ describe('web-chat HTTP API', () => {
       getDefault: () => ({ backend: 'claude-code' }),
       getChannelOverride: (channelId: string) => overrides.get(channelId),
       getAllowedBackends: () => ['claude-code', 'codex'] as AgentBackend[],
+      getSelectableBackends: () => ['claude-code', 'codex'] as AgentBackend[],
       getAllowedModels: () => ['gpt-test'],
       isBackendAllowed: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
+      isBackendSelectable: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
       isModelAllowed: (model: string) => model === 'gpt-test',
       setChannelOverride: (channelId: string, override: ChannelOverride) => {
         overrides.set(channelId, override);
@@ -305,6 +323,21 @@ describe('web-chat HTTP API', () => {
         status: 'available',
         models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['high'] }],
       }),
+      extensionUpdateRequest: async (id) => ({
+        id,
+        displayName: 'Demo Extension',
+        prompt: `Update ${id} with xangi tool extension_update --id ${id} --to ${'b'.repeat(40)}`,
+        displayMessage: 'Demo Extension の更新を確認します。',
+        info: {
+          id,
+          displayName: 'Demo Extension',
+          currentVersion: '1.0.0',
+          currentCommitSha: 'a'.repeat(40),
+          targetCommitSha: 'b'.repeat(40),
+          repositoryUrl: 'https://github.com/example/demo-extension',
+          updateAvailable: true,
+        },
+      }),
     });
     baseUrl = `http://127.0.0.1:${port}`;
 
@@ -323,7 +356,8 @@ describe('web-chat HTTP API', () => {
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stopManagedExtensions();
     // 既存テストの後始末: 注意:startWebChat は server を返さないが、各テストごとに別 port を使うので
     // この test ではプロセス終了で OS が掃除する前提。プロセスを汚さないよう pending を解放する。
     for (const ch of Array.from(runner?.pending.keys() ?? [])) {
@@ -339,6 +373,10 @@ describe('web-chat HTTP API', () => {
     else process.env.WORKSPACE_PATH = prevWorkspace;
     if (prevDataDir == null) delete process.env.DATA_DIR;
     else process.env.DATA_DIR = prevDataDir;
+    if (prevExtensionManifests == null) delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+    else process.env.XANGI_EXTENSION_DEV_MANIFESTS = prevExtensionManifests;
+    if (prevExtensionsFile == null) delete process.env.XANGI_EXTENSIONS_FILE;
+    else process.env.XANGI_EXTENSIONS_FILE = prevExtensionsFile;
   });
 
   it('POST /api/sessions creates a fresh web session without destroying others', async () => {
@@ -442,6 +480,7 @@ describe('web-chat HTTP API', () => {
     ]);
 
     const sessionsBeforeRun = listAllSessions().length;
+    runner.persistResults = true;
     await scheduler.getAgentRunner('web')?.(
       '朝の予定を確認して',
       '__new__',
@@ -452,6 +491,20 @@ describe('web-chat HTTP API', () => {
     );
     expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
     expect(newSession).toBeDefined();
+    const sessionDetail = (await (
+      await fetch(`${baseUrl}/api/sessions/${newSession!.id}`)
+    ).json()) as {
+      messages: Array<{ role: string; content: string; usage?: { duration_ms?: number } }>;
+    };
+    expect(sessionDetail.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'ok',
+          usage: expect.objectContaining({ duration_ms: expect.any(Number) }),
+        }),
+      ])
+    );
 
     const updated = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}`, {
       method: 'PATCH',
@@ -490,6 +543,45 @@ describe('web-chat HTTP API', () => {
     });
     expect(removed.status).toBe(200);
     expect(scheduler.get(added.schedule.id)).toBeUndefined();
+  });
+
+  it('stores elapsed time on failed Web schedule results', async () => {
+    runner.persistResults = true;
+    runner.nextError = new Error('scheduled failure');
+    const sessionsBeforeRun = listAllSessions().length;
+
+    await expect(
+      scheduler.getAgentRunner('web')?.('失敗する予定', '__new__', {
+        id: 'web-failure',
+        type: 'cron',
+        expression: '0 9 * * *',
+        message: '失敗する予定',
+        channelId: '__new__',
+        platform: 'web',
+        createdAt: new Date().toISOString(),
+        enabled: true,
+      })
+    ).rejects.toThrow('scheduled failure');
+
+    const failedSession = listAllSessions().find(
+      (session) => session.platform === 'web' && !session.projectId
+    );
+    expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
+    expect(failedSession).toBeDefined();
+    const detail = (await (
+      await fetch(`${baseUrl}/api/sessions/${failedSession!.id}`)
+    ).json()) as {
+      messages: Array<{ role: string; content: string; usage?: { duration_ms?: number } }>;
+    };
+    expect(detail.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'error',
+          content: 'scheduled failure',
+          usage: expect.objectContaining({ duration_ms: expect.any(Number) }),
+        }),
+      ])
+    );
   });
 
   it('creates logical Projects without directories and injects their prompt into Web turns', async () => {
@@ -633,6 +725,280 @@ describe('web-chat HTTP API', () => {
     ).json()) as { content: string; version: string };
     expect(file.content).toBe('# Hello\n');
     expect(file.version).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('serves the Extensions app route with the official catalog in fresh state', async () => {
+    const page = await fetch(`${baseUrl}/extensions`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('<div id="root"></div>');
+
+    const response = await fetch(`${baseUrl}/api/extensions`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      degraded: false,
+      extensions: [
+        expect.objectContaining({
+          id: 'xangi-search',
+          displayName: 'xangi search',
+          installed: false,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-search',
+        }),
+      ],
+      issues: [],
+    });
+  });
+
+  it('completes the Extensions API response when one repository manifest is unsupported', async () => {
+    const sourceRoot = join(
+      process.env.DATA_DIR!,
+      'extensions',
+      'sources',
+      'example--old-extension'
+    );
+    mkdirSync(sourceRoot, { recursive: true });
+    const manifestPath = join(sourceRoot, 'xangi-extension.json');
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ schemaVersion: 1, id: 'old-extension', version: '1.0.0' })
+    );
+    writeFileSync(
+      join(process.env.DATA_DIR!, 'extension-sources.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        sources: [
+          {
+            repository: 'example/old-extension',
+            repositoryUrl: 'https://github.com/example/old-extension',
+            commitSha: 'a'.repeat(40),
+            manifestPath,
+            assetSha256: 'b'.repeat(64),
+            addedAt: '2026-08-16T00:00:00.000Z',
+          },
+        ],
+      })
+    );
+
+    const response = await fetch(`${baseUrl}/api/extensions`, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      degraded: true,
+      extensions: [expect.objectContaining({ id: 'xangi-search' })],
+      issues: [expect.objectContaining({ code: 'manifest-invalid' })],
+    });
+  });
+
+  it('rejects unsafe extension repository URLs and cross-origin repository additions', async () => {
+    const blocked = await fetch(`${baseUrl}/api/extensions/repositories`, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/example/demo' }),
+    });
+    expect(blocked.status).toBe(403);
+
+    const invalid = await fetch(`${baseUrl}/api/extensions/repositories`, {
+      method: 'POST',
+      headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/example/demo' }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({
+      error: 'Use a public https://github.com/owner/repository URL',
+    });
+  });
+
+  it('opens a dedicated update conversation from the Extensions app', async () => {
+    const blocked = await fetch(`${baseUrl}/api/extensions/demo-extension/update`, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example' },
+    });
+    expect(blocked.status).toBe(403);
+
+    const response = await fetch(`${baseUrl}/api/extensions/demo-extension/update`, {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+    });
+    expect(response.status).toBe(200);
+    const update = (await response.json()) as {
+      sessionId: string;
+      prompt: string;
+      displayMessage: string;
+    };
+    expect(update.prompt).toContain('xangi tool extension_update');
+    expect(update.displayMessage).toBe('Demo Extension の更新を確認します。');
+    expect(getSessionEntry(update.sessionId)).toMatchObject({
+      platform: 'web',
+      title: 'Update: Demo Extension',
+    });
+  });
+
+  it('installs only configured extensions and rejects cross-origin mutations', async () => {
+    const extensionDir = join(testDir, 'demo-extension');
+    const executable = join(extensionDir, 'extension-cli');
+    const manifestPath = join(extensionDir, 'xangi-extension.json');
+    mkdirSync(extensionDir);
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+import http from 'node:http';
+const workspace = process.argv[process.argv.indexOf('--workspace') + 1];
+const token = process.env.XANGI_EXTENSION_AUTH_TOKEN;
+const server = http.createServer((request, response) => {
+  response.writeHead(request.headers.authorization === \`Bearer \${token}\` ? 200 : 401, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify({ service: 'demo-extension' }));
+});
+server.listen(0, '127.0.0.1', () => {
+  const address = server.address();
+  console.log(JSON.stringify({ schemaVersion: 2, event: 'ready', id: 'demo-extension', baseUrl: \`http://127.0.0.1:\${address.port}\`, workspace }));
+});
+process.stdin.resume();
+process.stdin.on('end', () => server.close());
+`
+    );
+    writeFileSync(join(extensionDir, 'XANGI_SETUP.md'), '# Setup\n');
+    writeFileSync(join(extensionDir, 'README.md'), '# Demo Extension\n\nExample workflows.\n');
+    chmodSync(executable, 0o755);
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        id: 'demo-extension',
+        displayName: 'Demo Extension',
+        version: '1.0.0',
+        entrypoint: 'extension-cli',
+        runtime: { kind: 'managed-http' },
+        capabilities: [],
+      })
+    );
+    process.env.XANGI_EXTENSION_DEV_MANIFESTS = JSON.stringify([manifestPath]);
+
+    const blocked = await fetch(`${baseUrl}/api/extensions/demo-extension/install`, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example' },
+    });
+    expect(blocked.status).toBe(403);
+
+    const installed = await fetch(`${baseUrl}/api/extensions/demo-extension/install`, {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+    });
+    expect(installed.status).toBe(200);
+    expect(await installed.json()).toEqual({
+      extension: expect.objectContaining({ id: 'demo-extension', installed: true, healthy: true }),
+    });
+
+    const setupResponse = await fetch(`${baseUrl}/api/extensions/demo-extension/setup`, {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+    });
+    expect(setupResponse.status).toBe(200);
+    const setup = (await setupResponse.json()) as {
+      sessionId: string;
+      prompt: string;
+      displayMessage: string;
+    };
+    expect(setup.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
+    expect(setup.prompt).toContain(join(extensionDir, 'README.md'));
+    expect(setup.prompt).toContain('その利用者向けの活用提案まで続けてください');
+    expect(setup.displayMessage).toBe('Demo Extension のセットアップを開始します。');
+    expect(getSessionEntry(setup.sessionId)).toMatchObject({
+      platform: 'web',
+      title: 'Setup: Demo Extension',
+    });
+  });
+
+  it('proxies a declared extension UI and its same-origin service requests', async () => {
+    const upstream = createServer(async (request, response) => {
+      if (request.url === '/health') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ service: 'ui-extension' }));
+        return;
+      }
+      if (request.url === '/ui') {
+        response.writeHead(200, { 'Content-Type': 'text/html' });
+        response.end('<h1>xangi search</h1>');
+        return;
+      }
+      if (request.url === '/settings' && request.method === 'PUT') {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(body);
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('upstream did not listen');
+
+    const extensionDir = join(testDir, 'ui-extension');
+    const executable = join(extensionDir, 'extension-cli');
+    const manifestPath = join(extensionDir, 'xangi-extension.json');
+    mkdirSync(extensionDir);
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+const workspace = process.argv[process.argv.indexOf('--workspace') + 1];
+console.log(JSON.stringify({ schemaVersion: 2, event: 'ready', id: 'ui-extension', baseUrl: 'http://127.0.0.1:${address.port}', workspace }));
+process.stdin.resume();
+process.stdin.on('end', () => process.exit(0));
+`
+    );
+    chmodSync(executable, 0o755);
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        id: 'ui-extension',
+        displayName: 'UI Extension',
+        version: '1.0.0',
+        entrypoint: 'extension-cli',
+        runtime: { kind: 'managed-http' },
+        ui: { capability: 'workspace.search', path: '/ui' },
+        capabilities: [
+          {
+            id: 'workspace.search',
+            protocol: 'http',
+            healthPath: '/health',
+          },
+        ],
+      })
+    );
+    process.env.XANGI_EXTENSION_DEV_MANIFESTS = JSON.stringify([manifestPath]);
+    try {
+      const installed = await fetch(`${baseUrl}/api/extensions/ui-extension/install`, {
+        method: 'POST',
+        headers: { Origin: baseUrl },
+      });
+      expect(installed.status).toBe(200);
+
+      const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
+      expect(page.status).toBe(200);
+      expect(page.headers.get('content-security-policy')).toContain("connect-src 'self'");
+      expect(await page.text()).toContain('xangi search');
+
+      const blocked = await fetch(`${baseUrl}/api/extensions/ui-extension/service/settings`, {
+        method: 'PUT',
+        headers: { Origin: 'https://attacker.example', 'Content-Type': 'application/json' },
+        body: '{"mode":"keyword"}',
+      });
+      expect(blocked.status).toBe(403);
+
+      const saved = await fetch(`${baseUrl}/api/extensions/ui-extension/service/settings`, {
+        method: 'PUT',
+        headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
+        body: '{"mode":"keyword"}',
+      });
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toEqual({ mode: 'keyword' });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve()))
+      );
+    }
   });
 
   it('saves workspace files and returns 409 for a stale editor version', async () => {
@@ -1096,6 +1462,7 @@ describe('web-chat HTTP API', () => {
       interChatEnabled?: boolean;
       allowedBackends?: string[];
       uploadMaxBytes?: number;
+      completionShowElapsed?: boolean;
     };
     const html = await (await fetch(baseUrl)).text();
     const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
@@ -1103,6 +1470,7 @@ describe('web-chat HTTP API', () => {
     expect(config.interChatEnabled).toBe(false);
     expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
     expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
+    expect(config.completionShowElapsed).toBe(true);
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain('/app/assets/');
     expect(html).toContain('viewport-fit=cover');
@@ -1120,6 +1488,10 @@ describe('web-chat HTTP API', () => {
       'utf8'
     );
     const chatSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Chat.tsx'), 'utf8');
+    const confirmDialogSource = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'ConfirmDialog.tsx'),
+      'utf8'
+    );
     const workspaceSource = readFileSync(
       join(process.cwd(), 'web-ui', 'src', 'Workspace.tsx'),
       'utf8'
@@ -1215,7 +1587,7 @@ describe('web-chat HTTP API', () => {
       /@media \(max-width: 768px\)[\s\S]*\.workspace-editor-tabs button\s*\{[^}]*min-height:\s*32px[^}]*font-size:\s*13px/s
     );
     expect(sourceStylesheet).toMatch(
-      /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
+      /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s
     );
     expect(sourceStylesheet).toMatch(/\.workspace-file-panel\s*\{[^}]*overflow-y:\s*auto/s);
     expect(sourceStylesheet).not.toMatch(/\.workspace-browser-header\s*\{/);
@@ -1226,10 +1598,11 @@ describe('web-chat HTTP API', () => {
       /className="workspace-editor-actions"[\s\S]*visibleSaveState !== 'idle'[\s\S]*workspace-save-status/
     );
     expect(chatSource).toContain('<SessionDeleteDialog');
-    expect(chatSource).toContain('dialog.showModal()');
+    expect(chatSource).toContain('<ConfirmDialog');
+    expect(confirmDialogSource).toContain('dialog.showModal()');
     expect(chatSource).not.toContain("window.confirm('このセッションを削除しますか？')");
     expect(sourceStylesheet).toMatch(
-      /\.session-delete-dialog-actions button,\s*\.session-project-dialog-actions button\s*\{[^}]*min-height:\s*44px/s
+      /\.confirm-dialog-actions button,\s*\.session-project-dialog-actions button\s*\{[^}]*min-height:\s*44px/s
     );
   });
 

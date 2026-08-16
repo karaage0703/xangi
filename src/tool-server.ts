@@ -28,13 +28,19 @@ import { webStatusCmd } from './web-status.js';
 import type { Config } from './config.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
+import type { Scheduler } from './scheduler.js';
+import { listExtensions, runExtensionAction, type ExtensionAction } from './extensions.js';
+import { executeExtensionRequest } from './extension-request.js';
+import { updateExtension } from './extension-update.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
 let backendResolver: BackendResolver | null = null;
 let runtimeConfig: Config | null = null;
+let scheduleManager: Scheduler | null = null;
 let modelDiscovery: typeof discoverBackendModels = discoverBackendModels;
 let webStatusCommand: typeof webStatusCmd = webStatusCmd;
+let extensionUpdateCommand: typeof updateExtension = updateExtension;
 
 interface ToolRequest {
   command: string;
@@ -75,7 +81,7 @@ async function executeCommand(
   } else if (command.startsWith('slack_') && command !== 'slack_history') {
     return slackApi(command, flags, context);
   } else if (command.startsWith('schedule_')) {
-    return scheduleCmd(command, flags);
+    return scheduleCmd(command, flags, scheduleManager ?? undefined);
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
   } else if (command === 'help') {
@@ -116,6 +122,45 @@ async function executeCommand(
     );
   } else if (command === 'web_status') {
     return webStatusCommand();
+  } else if (command === 'extension_runtime') {
+    if (!runtimeConfig) {
+      throw new ValidationError('extension_runtime is not available on this instance');
+    }
+    const action = flags.action as ExtensionAction | undefined;
+    if (!action || !['start', 'stop', 'restart', 'status', 'doctor'].includes(action)) {
+      throw new ValidationError('extension_runtime requires a lifecycle action');
+    }
+    const linked = await listExtensions();
+    const selected = flags.id ? linked.filter((item) => item.id === flags.id) : linked;
+    if (flags.id && selected.length === 0) {
+      throw new ValidationError(`Unknown extension: ${flags.id}`);
+    }
+    const results: string[] = [];
+    for (const item of selected) {
+      const result = await runExtensionAction(item, action, {
+        workspace: runtimeConfig.agent.config.workdir,
+      });
+      results.push(`${item.id}\t${JSON.stringify(result)}`);
+    }
+    return results.length ? results.join('\n') : 'No extensions linked';
+  } else if (command === 'extension_request') {
+    return executeExtensionRequest(flags);
+  } else if (command === 'extension_update') {
+    if (!runtimeConfig) {
+      throw new ValidationError('extension_update is not available on this instance');
+    }
+    if (!flags.id || !flags.to) {
+      throw new ValidationError('extension_update requires --id and --to');
+    }
+    const id = flags.id;
+    const targetCommitSha = flags.to;
+    const result = await extensionUpdateCommand({
+      id,
+      expectedCommitSha: targetCommitSha,
+      workspace: runtimeConfig.agent.config.workdir || process.cwd(),
+      acceptManifestChanges: flags['accept-manifest-changes'] === 'true',
+    });
+    return JSON.stringify(result);
   } else if (command === 'trigger') {
     if (!eventTrigger) {
       throw new ValidationError('Trigger is not available on this instance');
@@ -222,14 +267,18 @@ export function startToolServer(options?: {
   eventTrigger?: EventTrigger | null;
   backendResolver?: BackendResolver | null;
   config?: Config | null;
+  scheduler?: Scheduler | null;
   modelDiscovery?: typeof discoverBackendModels;
   webStatusCommand?: typeof webStatusCmd;
+  extensionUpdateCommand?: typeof updateExtension;
 }): void {
   eventTrigger = options?.eventTrigger ?? null;
   backendResolver = options?.backendResolver ?? null;
   runtimeConfig = options?.config ?? null;
+  scheduleManager = options?.scheduler ?? null;
   modelDiscovery = options?.modelDiscovery ?? discoverBackendModels;
   webStatusCommand = options?.webStatusCommand ?? webStatusCmd;
+  extensionUpdateCommand = options?.extensionUpdateCommand ?? updateExtension;
   server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 
@@ -358,4 +407,5 @@ export function stopToolServer(): void {
     delete process.env.XANGI_TOOL_SERVER;
   }
   runtimeConfig = null;
+  scheduleManager = null;
 }

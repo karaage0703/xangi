@@ -35,13 +35,13 @@ flowchart LR
 
 ### レイヤー構成
 
-| レイヤー           | 役割                            | 実装                                                                                     |
-| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------- |
-| Chat               | ユーザーインターフェース        | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                  |
-| xangi              | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                    |
-| Backend Resolution | チャンネル別バックエンド解決    | backend-resolver.ts, settings.ts                                                         |
+| レイヤー           | 役割                            | 実装                                                                                                         |
+| ------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Chat               | ユーザーインターフェース        | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                                      |
+| xangi              | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                                        |
+| Backend Resolution | チャンネル別バックエンド解決    | backend-resolver.ts, settings.ts                                                                             |
 | AI Backend         | 実際のAI処理                    | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, Local LLM (Ollama / vLLM) |
-| Workspace          | ファイル・スキル                | skills/, AGENTS.md, ローカル資料                                                         |
+| Workspace          | ファイル・スキル                | skills/, AGENTS.md, ローカル資料                                                                             |
 
 ## コンポーネント
 
@@ -89,7 +89,8 @@ flowchart LR
 - 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は途中コメントとツールを時系列で `History` ボタンから押した本人だけへ元スレッド内で表示する。ボタンにターン参照を保持するため、プロセス再起動後も永続ログから復元できる
 - スラッシュコマンドとリアクション対応
 - `chat.update` でメッセージ末尾に Stop / 延長 / 残り時間ボタン行を 1 秒粒度で差し替え
-- スレッド返信しないターンでは、一定時間以上かかった完了時に `✅ 完了しました（...）` の別メッセージを投稿して視認性を補う
+- `completion-summary.ts`が全platformの完了表示を共通化する
+- スレッド返信しないターンでは、一定時間以上かかった完了時に上記の別メッセージを投稿して視認性を補う
 
 ### Web Chat（web-chat.ts）
 
@@ -111,7 +112,7 @@ flowchart LR
 - `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
 - `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除をHTTP API経由で行う。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
-- Chat / Files / Schedules / Monitorは共通topbarとtheme selectorを使い、navigationと表示設定の位置を固定する。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
+- Chat / Files / Schedules / Monitor / Extensionsは共通navigation shellを使う。desktopでは左のactivity rail、768px以下またはtouch端末の低い横画面では下部navigationへ切り替え、Monitor・Extensions・theme selectorを`その他`sheetへ収める。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
 - Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
 ### macOS・Linux・WSL2セットアップ・更新コア
@@ -133,6 +134,12 @@ flowchart LR
 - `setup`の共通configはmanaged serviceとcheckout PM2の両方が読む。checkout PM2へは秘密値を含まないconfig pathとstate pathだけをecosystem経由で渡す
 - checkoutの`update`はclean worktree、branch、upstreamを検証して`git pull --ff-only`、依存更新、buildを行う。`--managed`指定時は署名済みmanaged updaterを使う
 - `doctor`はcheckoutではPM2を検出し、Web Chatの`/api/sessions`が返すworkdirをsetup configとrealpath比較する。tailscale accessでは、有効なWeb Chat portのTailscale Serve TCP転送がloopbackを向いていることも確認する
+- `extensions.ts`は明示的にlinkされた`xangi-extension.json`だけをmode 0600のregistryへ保存する。schema v2 manifestは相対entrypoint、`managed-http` runtime、HTTP capability、任意のUI pathを宣言し、固定URLやportは保持しない。xangiはentrypointの`serve --workspace <path>`を子processとして起動し、OS自動割当の`127.0.0.1` URLをreadiness JSONから取得する。親が生成したBearer tokenを子と内部proxyだけで共有し、browserやmanifestへ公開しない。readiness JSONのschema・ID・workspace・loopback URLの検証成功をruntime登録の境界とし、その後の初回health timeout、非2xx、`ready: false`はcold start中に回復できる状態として子processを停止・登録解除しない。状態は`running`（process生存）、`healthy`（healthが2xx）、`ready`（2xx payloadが`ready: false`でない）を分け、旧extensionの`ready`省略はreadyとして扱う。stdin切断とgraceful shutdownで子を停止する
+- Web UIの`/extensions`は、空env・空stateの初回起動でも公式curated catalogのxangi-searchを表示する。表示用catalogは公式項目を先に確保し、設定済みmanifest、repository source、linked registry、status確認を独立した入力として扱う。対応外schema、不正JSON、欠落fileなどが1件あっても正常な項目と公式項目をHTTP 200で返し、`degraded`と`issues`で部分失敗を通知する。旧schemaの変換、stateの自動修復、networkからの再取得は一覧表示では行わない。linked extensionがある場合はlinked manifestを表示内容の正本にし、repository sourceとcanonical manifest pathが一致する場合だけsource情報と更新操作を関連付ける。状態を判定できない項目は「未インストール」と断定せず、UIで状態不明として操作を無効化する。登録・setup・更新などstateを変更する経路は引き続きstrictな検証を行う。公式候補の表示だけではnetwork取得やcode実行を行わず、「追加」を選んだ時に公開GitHub repositoryの検証・取得と専用setup会話を開始する。CLIや配備作業で先にlinkされたextensionも、installed状態とは独立した「セットアップ」操作から同じ専用会話を開始できる。`XANGI_EXTENSION_DEV_MANIFESTS`に事前設定したlocal manifestと、利用者が追加した公開GitHub repositoryも同じcatalogへ統合する。GitHub URLは`https://github.com/owner/repository`のrootだけを受理し、認証情報を使わずpublic repositoryであることを確認する。default branchのcommit SHAへ固定したtarballを50 MB上限で取得し、単一rootかつ通常file/directoryだけであることを検証してから`${DATA_DIR}/extensions/sources/`へatomic展開する。repository rootの`xangi-extension.json`を検証し、repository URL・commit SHA・archive SHA-256・追加時刻・取得できたlicenseを`${DATA_DIR}/extension-sources.json`へmode 0600で保存する。この時点ではextension codeを実行しない。追加時は専用Webセッションを作り、manifestの`setup.instructions`、`XANGI_SETUP.md`、`README.md`の順でrepository内のsetup文書を選んでLLMへ渡す。setup文書は上位指示を上書きしない参考資料として扱い、agentへは現在のxangi instance固有のextension registry pathを安全な環境変数として渡す。低levelのinstall APIはregistryへのlinkと親process内runtime managerによるstart、removeはstopとunlinkを行い、codeやextension dataはdeleteしない。UIを宣言したextensionはカードの「開く」から同一origin proxyへ遷移し、xangiは実行中runtimeのURLへ認証付きで中継する。browserから任意path、upstream、Bearer tokenを指定できず、変更requestはWeb UIと同じhostだけを受け付ける
+- repository管理extensionの更新は、Extensions UIから専用の`Update: <displayName>` Webセッションを作る。対象はlinked済みの公開GitHub sourceで、manifestが`update.prepare.command`と`args`を宣言したextensionとし、特定ID・repository・package managerには依存しない。会話開始時にdefault branchのtarget commit SHAを固定し、LLMは説明・承認・結果報告を担当するが、任意のshell/git手順では更新しない。実変更はxangi親process内の`extension_update`がsource lockを取り、target/current SHAの再検証、候補manifest検証、停止、atomic source swap、最終配置pathでの更新準備、registry再link、start、doctorを行う。更新準備はshellを介さず、manifestのprogramと引数を分離して`execFile`で実行する。permission/capabilityの追加、entrypoint/agent backend/UI mapping/update preparationの変更は明示承認なしではswap前に停止する。swap後の失敗は旧directoryとregistryを復元し、更新前にrunningだった場合だけ旧版をstartしてdoctorする。更新成功後にのみsource stateのcommit SHAと`updatedAt`をatomic保存する。repository sourceを持たないlocal manifestとbackground自動更新は対象外とする
+- extensionのsetup requestはrepository root内のREADMEをsetup文書とは別に解決する。setup、status、doctorが成功した後、LLMはそのREADMEとworkspace内のREADME・AGENTS.md・上位directory構成に限定して利用者の目的と既存workflowを把握し、適合理由・最初の依頼または操作・期待結果を含む活用案を2〜3件提示する。推薦段階はread-onlyとし、workspace・設定の変更、自動化、外部送信、定期実行は別の明示確認へ分離する。
+- `autostart`が有効なextensionはxangi processの起動時に開始する。起動logはready済みと、processは開始したがwarming中の状態を区別する。全体の`doctor`は各extensionの`doctor`も集約し、`ready: false`をerrorとして報告するが、1 extensionの起動失敗やwarmingで他のchat platformまで停止させず、該当capabilityの利用時に明示エラーを返す
+- 機能固有adapterは共通lifecycleから分離する。`workspace.search` adapterはcapabilityのruntime URLを親processのmemoryから解決し、HTTP requestへ親だけが持つ認証headerを追加する。複数のxangi instanceはそれぞれ別の子process・自動割当port・workspaceを所有する。個別extensionの実装・運用仕様は各repositoryの文書を正本とする
 - `src/cli/xangi-main.ts`はCLI実行専用entrypointで、`src/cli/xangi.ts`がexportする`run()`を無条件に呼び、top-level errorを終了コードへ変換する。CLI library自身は`import.meta.url`と`process.argv[1]`を比較して実行可否を判定しない。これによりmanaged版の`~/.local/bin/xangi → app/bin/xangi → current → dist/cli/xangi-main.js`という複数symlink経路でも起動責務が曖昧にならない
 - checkoutの`bin/xangi`はlocal `tsx`で現在の`src/cli/xangi-main.ts`を実行し、Git管理外の古い`dist/`を使用しない。sourceを含まない配布bundleでは同梱`dist/cli/xangi-main.js`とNode runtimeを実行し、オンボーディングの正本になるREADMEと利用者向けdocsもallowlistで同梱する
 - `notionSyncEnabled` はデフォルトOFFのglobal gate。OFF中のstatus/disableはNotion APIへ接続せず、通常runもadapter生成前に拒否する。`run --once`だけが明示的な一回実行としてgateを越え、同期stateとbackupはdisable後も保持する
@@ -209,9 +216,11 @@ interface AgentRunner {
 }
 ```
 
-すべての Runner 実装 (Claude Code / Codex / Cursor / Grok / Antigravity / GitHub Copilot / Local LLM / Dynamic) は EventEmitter
+拡張はmanifestの `agentBackend` で同じインターフェースへ参加できる。xangiの `ExtensionAgentRunner` は共通HTTP契約とtranscript保存だけを担当し、検索・整形・モデル利用などの実装詳細は拡張側に置く。導入フローは[拡張機能連携](usage.md#拡張機能連携)を参照。
+
+セッション型の Runner 実装 (Claude Code / Codex / Cursor / Grok / Antigravity / GitHub Copilot / Local LLM / Dynamic) は EventEmitter
 でもあり、`timeout-started` / `timeout-extended` / `timeout-cleared` を emit して
-上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。
+上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。単発HTTP adapterはこのtimeout eventを持たない。
 
 ### Activity Store（activity-store.ts）
 
@@ -300,16 +309,16 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 
 ### AI CLIアダプター
 
-| ファイル             | 対応CLI             | 特徴                                                                            |
-| -------------------- | ------------------- | ------------------------------------------------------------------------------- |
-| claude-code.ts       | Claude Code         | ストリーミング対応、セッション管理                                              |
-| persistent-runner.ts | Claude Code（常駐） | `--input-format=stream-json` で常駐プロセス化、キュー管理、サーキットブレーカー |
-| codex-cli.ts         | Codex CLI           | OpenAI製、0.98.0対応、cancel対応                                                |
-| cursor-cli.ts        | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                    |
-| grok-cli.ts          | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                     |
-| antigravity-cli.ts   | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.8以降のJSON/stream-json、slash展開の能力判定、旧版フォールバック |
-| github-copilot-cli.ts | GitHub Copilot CLI | JSONL streaming、session再開、SKIP_PERMISSIONS連動の権限制御                       |
-| local-llm/runner.ts  | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応             |
+| ファイル              | 対応CLI             | 特徴                                                                                            |
+| --------------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
+| claude-code.ts        | Claude Code         | ストリーミング対応、セッション管理                                                              |
+| persistent-runner.ts  | Claude Code（常駐） | `--input-format=stream-json` で常駐プロセス化、キュー管理、サーキットブレーカー                 |
+| codex-cli.ts          | Codex CLI           | OpenAI製、0.98.0対応、cancel対応                                                                |
+| cursor-cli.ts         | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                                    |
+| grok-cli.ts           | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                                     |
+| antigravity-cli.ts    | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.8以降のJSON/stream-json、slash展開の能力判定、旧版フォールバック |
+| github-copilot-cli.ts | GitHub Copilot CLI  | JSONL streaming、session再開、SKIP_PERMISSIONS連動の権限制御                                    |
+| local-llm/runner.ts   | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応                             |
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
@@ -570,11 +579,11 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 
 `isSafeForRescue(name, args)` は擬似 tool_call の救済実行可否を判定する。denylist (`rm/curl/git` 等を弾く) は抜け道が多いため使わず、明示的な allowlist のみを許可:
 
-| カテゴリ                       | 対象                                                                                                                                                                                                                                       |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                           |
+| カテゴリ                       | 対象                                                                                                                                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                            |
 | `exec` / `bash` のサブコマンド | `xangi tool {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` のいずれかで始まる場合のみ（`models --use` は変更操作なので除外） |
-| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                                                        |
+| shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                                                         |
 
 それ以外は `{safe: false, reason}` を返し、`unsafe_tool_in_pseudo_format` 構造化エラーで LLM に proper function_calling 構造への切替を促す。
 
@@ -828,7 +837,7 @@ AI CLIの実装詳細を隠蔽し、交換可能に：
 
 ```bash
 # 設定でバックエンドを切り替え
-AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / github-copilot / local-llm
+AGENT_BACKEND=claude-code # or a built-in / linked extension backend ID
 ```
 
 将来的に新しいAI CLIが登場しても、アダプターを追加するだけで対応可能。
@@ -837,16 +846,16 @@ AGENT_BACKEND=claude-code # or codex / cursor / grok / antigravity / github-copi
 
 AIが出力する特殊コマンドを検出して自動実行：
 
-| 方式               | コマンド例                                                    | 動作                                                                                                                                              |
-| ------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLIツール          | `xangi tool discord_send --channel ID --message "..."`         | Discordメッセージ送信                                                                                                                             |
-| CLIツール          | `xangi tool schedule_add --input "毎日 9:00 ..." --channel ID` | スケジュール操作                                                                                                                                  |
-| CLIツール          | `xangi tool system_restart`                                    | プロセス再起動                                                                                                                                    |
-| テキストパース     | `MEDIA:/path/to/file`                                         | ファイル送信                                                                                                                                      |
-| テキストパース     | `\n===\n`                                                     | メッセージ分割                                                                                                                                    |
-| スラッシュコマンド | `/autoreply`                                                  | チャンネルごとのメンションなし応答を ON/OFF/default/表示（`settings.json` に永続化）                                                              |
-| スラッシュコマンド | `/respondtobots`                                              | bot 同士の応答 ON/OFF トグル（ホワイトリストは `RESPOND_TO_BOTS`、連続上限は `RESPOND_TO_BOTS_MAX_CONSECUTIVE`）                                  |
-| スラッシュコマンド | `/threadmode`                                                 | チャンネルごとの Discord 発言ごとスレッド返信モードを ON/OFF/default/表示（`settings.json` に永続化、全体デフォルトは `DISCORD_REPLY_IN_THREAD`） |
+| 方式               | コマンド例                                             | 動作                                                                                                                                              |
+| ------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLIツール          | `xangi tool discord_send --channel ID --message "..."` | Discordメッセージ送信                                                                                                                             |
+| CLIツール          | `xangi tool schedule_add ...` / `schedule_update ...`  | スケジュールの追加・更新                                                                                                                          |
+| CLIツール          | `xangi tool system_restart`                            | プロセス再起動                                                                                                                                    |
+| テキストパース     | `MEDIA:/path/to/file`                                  | ファイル送信                                                                                                                                      |
+| テキストパース     | `\n===\n`                                              | メッセージ分割                                                                                                                                    |
+| スラッシュコマンド | `/autoreply`                                           | チャンネルごとのメンションなし応答を ON/OFF/default/表示（`settings.json` に永続化）                                                              |
+| スラッシュコマンド | `/respondtobots`                                       | bot 同士の応答 ON/OFF トグル（ホワイトリストは `RESPOND_TO_BOTS`、連続上限は `RESPOND_TO_BOTS_MAX_CONSECUTIVE`）                                  |
+| スラッシュコマンド | `/threadmode`                                          | チャンネルごとの Discord 発言ごとスレッド返信モードを ON/OFF/default/表示（`settings.json` に永続化、全体デフォルトは `DISCORD_REPLY_IN_THREAD`） |
 
 CLIツール（`xangi tool`）は xangi 内蔵の tool-server（HTTPエンドポイント）経由で実行される。
 DISCORD_TOKEN 等のシークレットは xangi プロセス内に閉じ込められ、AI CLI からはアクセスできない。
@@ -1023,6 +1032,8 @@ src/
 ├── self-lifecycle.ts   # 自己restart許可の判定
 ├── shutdown.ts         # graceful shutdownの共通制御
 ├── web-projects.ts     # Web Projectの定義・永続化
+├── extension-repository.ts # 公開GitHub extensionの固定取得・検証・catalog永続化
+├── extension-update.ts     # repository管理extensionの会話起点更新・rollback transaction
 ├── web-slash-commands.ts # Web Chatコマンドregistry
 ├── workspace-browser.ts # Workspace閲覧・編集の境界
 ├── hooks.ts            # ワークスペースhooks（Stop hook 外部検証ゲート）

@@ -24,6 +24,8 @@ export const ALLOWED_ENV_KEYS = [
   'AGENT_MODEL',
   'SKIP_PERMISSIONS',
   'DATA_DIR',
+  // extension CLI must address the registry owned by this xangi instance
+  'XANGI_EXTENSIONS_FILE',
   'XANGI_TOOL_SERVER',
   'XANGI_CHANNEL_ID',
   'XANGI_PLATFORM',

@@ -10,7 +10,8 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
-import type { AgentRunner } from './agent-runner.js';
+import type { AgentRunner, RunResult } from './agent-runner.js';
+import { buildCompletionSummary, type CompletionDisplayOptions } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { ensureSession, getActiveSessionId, getSessionEntry, archiveSession } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
@@ -25,6 +26,15 @@ const LINE_CONTEXT_PREFIX = 'line:';
 
 // LINE text message は 5000 chars 制限 (公式仕様)
 const LINE_TEXT_MESSAGE_MAX = 5000;
+
+export function appendLineCompletionSummary(
+  text: string,
+  summary: string | undefined,
+  maxLength = LINE_TEXT_MESSAGE_MAX
+): string {
+  const suffix = summary ? `\n\n${summary}` : '';
+  return `${text.slice(0, Math.max(0, maxLength - suffix.length))}${suffix}`;
+}
 
 // Loading animation の許容値 (5の倍数、最大60)
 const LINE_LOADING_SECONDS_VALID: readonly number[] = [5, 10, 15, 20, 25, 30, 40, 50, 60];
@@ -125,6 +135,8 @@ export interface LineBotOptions {
   idleResetHours?: number;
   /** Reset コマンドのテキストパターン (default: 規定パターン)。空配列を渡すと検出無効 */
   resetTextPatterns?: readonly string[];
+  completionDisplay?: CompletionDisplayOptions;
+  completionNotifyAfterMs?: number;
 }
 
 /**
@@ -152,6 +164,10 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   const idleResetHours = options.idleResetHours ?? LINE_IDLE_RESET_HOURS_DEFAULT;
   const idleResetMs = Math.max(0, idleResetHours * 3600 * 1000);
   const resetTextPatterns = options.resetTextPatterns ?? LINE_RESET_TEXT_PATTERNS_DEFAULT;
+  const completionDisplay = options.completionDisplay ?? {
+    showElapsed: true,
+  };
+  const completionNotifyAfterMs = options.completionNotifyAfterMs ?? 10_000;
 
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
 
@@ -172,6 +188,8 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
         idleResetEnabled,
         idleResetMs,
         resetTextPatterns,
+        completionDisplay,
+        completionNotifyAfterMs,
       });
     } catch (err) {
       console.error('[xangi-line] request handler error:', err);
@@ -213,6 +231,8 @@ interface HandlerContext {
   idleResetEnabled: boolean;
   idleResetMs: number;
   resetTextPatterns: readonly string[];
+  completionDisplay: CompletionDisplayOptions;
+  completionNotifyAfterMs: number;
 }
 
 async function handleRequest(
@@ -397,7 +417,7 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
   }
 
   const startTime = Date.now();
-  let runResult: { result?: string } | null = null;
+  let runResult: RunResult | null = null;
   let runError: unknown = null;
 
   try {
@@ -423,10 +443,13 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
     }
   }
 
-  const replyText = runError
-    ? ERROR_FALLBACK_TEXT
-    : (runResult?.result || '').slice(0, LINE_TEXT_MESSAGE_MAX) || '…';
   const elapsedMs = Date.now() - startTime;
+  const rawReplyText = runError ? ERROR_FALLBACK_TEXT : runResult?.result || '…';
+  const completionSummary =
+    !runError && elapsedMs >= ctx.completionNotifyAfterMs
+      ? buildCompletionSummary({ elapsedMs }, ctx.completionDisplay)
+      : undefined;
+  const replyText = appendLineCompletionSummary(rawReplyText, completionSummary);
 
   // 送信経路の決定:
   //   - slow notice が発火済 → reply token 消費済なので push 必須

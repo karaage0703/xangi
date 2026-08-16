@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { snapLoadingSeconds, isResetCommand, hasSessionGoneIdle } from '../src/line.js';
+import {
+  appendLineCompletionSummary,
+  snapLoadingSeconds,
+  isResetCommand,
+  hasSessionGoneIdle,
+} from '../src/line.js';
+
+describe('appendLineCompletionSummary', () => {
+  it('reserves space for the summary within the LINE text limit', () => {
+    const summary = '✅ 完了（⏱ 12秒）';
+    const result = appendLineCompletionSummary('a'.repeat(100), summary, 50);
+
+    expect(result.length).toBeLessThanOrEqual(50);
+    expect(result.endsWith(`\n\n${summary}`)).toBe(true);
+  });
+
+  it('does not change short text when no summary is shown', () => {
+    expect(appendLineCompletionSummary('hello', undefined, 50)).toBe('hello');
+  });
+});
 
 describe('snapLoadingSeconds', () => {
   it('returns default (60) when undefined', () => {

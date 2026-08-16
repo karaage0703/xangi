@@ -6,11 +6,13 @@ describe('runShutdownCleanup', () => {
     const exit = vi.fn();
     const stopScheduler = vi.fn();
     const finalizeActiveStreams = vi.fn().mockResolvedValue(undefined);
+    const stopExtensions = vi.fn().mockResolvedValue(undefined);
     const releaseDataDirLock = vi.fn().mockResolvedValue(undefined);
 
     await runShutdownCleanup({
       stopScheduler,
       finalizeActiveStreams,
+      stopExtensions,
       releaseDataDirLock,
       exit,
       log: vi.fn(),
@@ -19,6 +21,7 @@ describe('runShutdownCleanup', () => {
 
     expect(stopScheduler).toHaveBeenCalledTimes(1);
     expect(finalizeActiveStreams).toHaveBeenCalledTimes(1);
+    expect(stopExtensions).toHaveBeenCalledTimes(1);
     expect(releaseDataDirLock).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
     expect(exit).toHaveBeenCalledTimes(1);

@@ -4,6 +4,7 @@ import {
   reportsUnsupportedOutputFormat,
 } from './antigravity-output.js';
 import type { AgentBackend } from './config.js';
+import { resolveExtensionAgentBackend } from './extensions.js';
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 
@@ -280,6 +281,16 @@ export async function discoverBackendModels(
         status: 'unsupported',
         models: [],
         message: 'CLIに独立した機械可読モデル一覧コマンドがありません',
+      };
+    }
+    const extensionBackend = resolveExtensionAgentBackend(backend);
+    if (extensionBackend) {
+      return {
+        backend,
+        source: extensionBackend.displayName,
+        status: 'unsupported',
+        models: [],
+        message: '拡張バックエンドはモデル一覧を提供していません',
       };
     }
     if (backend === 'local-llm') {
