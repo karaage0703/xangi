@@ -1198,6 +1198,7 @@ export function createInteractionHandler(
             // autoreply はスレッド単位で設定できるよう、親チャンネルIDへ丸めない。
             // 他の設定コマンドは従来どおり settingsChannelId (親チャンネル) を対象にする。
             channelId,
+            parentChannelId: settingsChannelId !== channelId ? settingsChannelId : undefined,
             platform: 'discord',
           },
           { config, resolver }

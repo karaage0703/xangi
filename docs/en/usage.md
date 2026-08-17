@@ -607,7 +607,7 @@ The AI can edit the `.env` file to change settings:
 → AI saves the equivalent `/autoreply` setting to `settings.json`
 ```
 
-Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF.
+Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF normally, or to the parent channel value inside a thread.
 When run inside a thread, it targets that thread instead of the parent channel. A thread without its own setting inherits the parent channel value, so you can keep a channel OFF while turning a single thread ON, or the other way around.
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 

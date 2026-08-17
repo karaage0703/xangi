@@ -20,16 +20,23 @@ import {
   discordToolHistoryByMessageId,
 } from '../src/discord/ui.js';
 import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
+import {
+  clearSettingsCache,
+  initSettings,
+  loadSettings,
+} from '../src/settings.js';
 
 let discordCommandsTempDir: string;
 
 beforeEach(() => {
   discordCommandsTempDir = mkdtempSync(join(tmpdir(), 'xangi-discord-commands-'));
   initSessions(discordCommandsTempDir);
+  initSettings(discordCommandsTempDir);
 });
 
 afterEach(() => {
   clearSessions();
+  clearSettingsCache();
   rmSync(discordCommandsTempDir, { recursive: true, force: true });
 });
 
@@ -307,6 +314,39 @@ describe('Discord Commands', () => {
         'off',
         'default',
       ]);
+    });
+
+    it('stores a thread autoreply override under the thread ID', async () => {
+      const reply = vi.fn().mockResolvedValue(undefined);
+      const handler = createInteractionHandler({
+        config: {
+          agent: {},
+          discord: { allowedUsers: ['user-123'], allowAutoreplyCommand: true },
+          slack: { autoReplyChannels: [] },
+          web: { replySuggestions: false, replySuggestionCount: 3 },
+        } as Config,
+        resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
+        agentRunner: {} as AgentRunner,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+      });
+      const interaction = {
+        isAutocomplete: () => false,
+        isButton: () => false,
+        isChatInputCommand: () => true,
+        commandName: 'autoreply',
+        channelId: 'thread-456',
+        channel: { isThread: () => true, parentId: 'parent-123' },
+        user: { id: 'user-123' },
+        options: { getString: vi.fn().mockReturnValue('on') },
+        reply,
+      };
+
+      await handler(interaction as never);
+
+      expect(loadSettings().discordAutoReplyChannels).toEqual({ 'thread-456': true });
+      expect(reply).toHaveBeenCalledWith(expect.stringContaining('autoreplyをonに設定しました'));
     });
   });
 
