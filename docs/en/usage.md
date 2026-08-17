@@ -607,13 +607,14 @@ The AI can edit the `.env` file to change settings:
 → AI saves the equivalent `/autoreply` setting to `settings.json`
 ```
 
-Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF.
+Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF normally, or to the parent channel value inside a thread.
+When run inside a thread, it targets that thread instead of the parent channel. A thread without its own setting inherits the parent channel value, so you can keep a channel OFF while turning a single thread ON, or the other way around.
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 
 Use `/threadmode mode:on|off|default|show` to inspect or toggle this channel's Discord per-message thread reply mode while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel override and falls back to the global `DISCORD_REPLY_IN_THREAD` default.
 For messages received inside an existing Discord thread, xangi automatically injects the thread starter message as `🧵 スレッド元`. This keeps the original parent-channel starter message available even when thread-local history does not include it.
 Thread prompts always include both the parent channel name/ID and thread name/ID, allowing the agent to distinguish and target either destination without another lookup.
-Inside Discord threads, `/autoreply`, `/notify`, `/threadmode`, and channel topic injection inherit the parent channel settings.
+Inside Discord threads, `/notify`, `/threadmode`, and channel topic injection target the parent channel settings. `/autoreply` is configured per thread and falls back to the parent channel value only when the thread has no setting of its own.
 To disable this command, set `ALLOW_THREAD_MODE_COMMAND=false` in `.env` (default: enabled).
 
 Use `/notify` to configure separate completion notifications for long Discord turns per channel. `DISCORD_COMPLETION_NOTIFY` is the startup default, while channel overrides are stored in `settings.json`. This applies only to normal Discord message turns; scheduler-triggered turns do not send completion notifications.

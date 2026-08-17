@@ -9,6 +9,7 @@ import {
   formatSettings,
   clearSettingsCache,
   getChannelAutoReply,
+  getChannelAutoReplyWithParent,
   getSlackChannelAutoReply,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
@@ -282,6 +283,53 @@ describe('settings', () => {
     it('should fall back to default setting', () => {
       const enabled = getChannelAutoReply({}, '123', false);
       expect(enabled).toBe(false);
+    });
+  });
+
+  describe('getChannelAutoReplyWithParent', () => {
+    it('should prefer the thread setting over the parent channel', () => {
+      const enabled = getChannelAutoReplyWithParent(
+        { discordAutoReplyChannels: { '111': true, '999': false } },
+        '111',
+        '999',
+        false
+      );
+      expect(enabled).toBe(true);
+    });
+
+    it('should let a thread turn auto-reply off while the parent stays on', () => {
+      const enabled = getChannelAutoReplyWithParent(
+        { discordAutoReplyChannels: { '111': false, '999': true } },
+        '111',
+        '999',
+        false
+      );
+      expect(enabled).toBe(false);
+    });
+
+    it('should inherit the parent channel when the thread has no setting', () => {
+      const enabled = getChannelAutoReplyWithParent(
+        { discordAutoReplyChannels: { '999': true } },
+        '111',
+        '999',
+        false
+      );
+      expect(enabled).toBe(true);
+    });
+
+    it('should fall back to the default when neither has a setting', () => {
+      expect(getChannelAutoReplyWithParent({}, '111', '999', false)).toBe(false);
+      expect(getChannelAutoReplyWithParent({}, '111', '999', true)).toBe(true);
+    });
+
+    it('should use only the channel setting outside threads', () => {
+      const enabled = getChannelAutoReplyWithParent(
+        { discordAutoReplyChannels: { '111': true } },
+        '111',
+        null,
+        false
+      );
+      expect(enabled).toBe(true);
     });
   });
 

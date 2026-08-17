@@ -624,13 +624,14 @@ AIは `.env` ファイルを編集して設定を変更できます：
 → AIが `/autoreply` 相当の設定を `settings.json` に保存
 ```
 
-`/autoreply mode:on|off|default|show` で、このチャンネルのメンションなし応答を稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、デフォルトの OFF に戻します。
+`/autoreply mode:on|off|default|show` で、このチャンネルのメンションなし応答を稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、通常はデフォルトの OFF、スレッド内では親チャンネルの値に戻します。
+スレッド内で実行した場合は、親チャンネルではなくそのスレッドを対象にします。スレッドに設定がなければ親チャンネルの値を継承するため、チャンネル全体は OFF のまま特定のスレッドだけ ON にしたり、その逆にしたりできます。
 このコマンドを無効にするには `.env` に `ALLOW_AUTOREPLY_COMMAND=false` を設定してください（デフォルト: 有効）。
 
 `/threadmode mode:on|off|default|show` で、このチャンネルの Discord 発言ごとスレッド返信モードを稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、全体デフォルトの `DISCORD_REPLY_IN_THREAD` に戻します。
 既存スレッド内で受けた発言では、スレッドの元メッセージを `🧵 スレッド元` としてプロンプトに自動追加します。これにより、親チャンネル側の starter message がスレッド履歴に出ない場合でも、最初の話題を文脈として扱えます。
 スレッド内のpromptには、親チャンネル名/IDとスレッド名/IDを常に併記します。AIは追加検索なしで、親チャンネルと現在のスレッドを区別して操作できます。
-Discord スレッド内では、`/autoreply` / `/notify` / `/threadmode` とチャンネル topic 注入は親チャンネル設定を継承します。
+Discord スレッド内では、`/notify` / `/threadmode` とチャンネル topic 注入は親チャンネル設定を対象にします。`/autoreply` はスレッド単位で設定でき、スレッドに設定がない場合のみ親チャンネルの値を継承します。
 このコマンドを無効にするには `.env` に `ALLOW_THREAD_MODE_COMMAND=false` を設定してください（デフォルト: 有効）。
 
 `/notify` コマンドで、長い Discord ターン完了時の別メッセージ通知をチャンネルごとに切り替えられます。起動時の `DISCORD_COMPLETION_NOTIFY` はデフォルト値として使われ、チャンネル override は `settings.json` に保存されます。対象は通常の Discord メッセージターンのみで、スケジュール起点ターンは通知しません。

@@ -22,7 +22,7 @@ import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { buildCompletionNotification } from './completion-notify.js';
 import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import {
-  getChannelAutoReply,
+  getChannelAutoReplyWithParent,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
   loadReplySuggestionsEnabled,
@@ -876,16 +876,19 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     const isDM = !message.guild;
     const settings = loadSettings();
     // スレッドは親チャンネルとは別IDを持つため、autoreply 設定はそのままでは継承されない。
-    // スレッド内のメッセージは親チャンネル (parentId) の autoreply 状態も見て継承する。
+    // スレッド自身に設定があればそれを優先し、無ければ親チャンネル (parentId) から継承する。
     const threadCh = message.channel as unknown as {
       isThread?: () => boolean;
       parentId?: string | null;
     };
     const parentChannelId =
       typeof threadCh.isThread === 'function' && threadCh.isThread() ? threadCh.parentId : null;
-    const isAutoReplyChannel =
-      getChannelAutoReply(settings, message.channel.id, false) ||
-      (parentChannelId != null && getChannelAutoReply(settings, parentChannelId, false));
+    const isAutoReplyChannel = getChannelAutoReplyWithParent(
+      settings,
+      message.channel.id,
+      parentChannelId,
+      false
+    );
 
     if (!isMentioned && !isDM && !isAutoReplyChannel) return;
 

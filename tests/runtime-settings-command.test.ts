@@ -101,6 +101,51 @@ describe('runtime_settings', () => {
     expect(loadSettings().slackAutoReplyChannels).toEqual({ C123: true });
   });
 
+  it('shows and restores the inherited parent autoreply value for a Discord thread', async () => {
+    await executeRuntimeSettingsCommand(
+      {
+        name: 'autoreply',
+        action: 'set',
+        value: 'on',
+        channelId: 'parent-123',
+        platform: 'discord',
+      },
+      { config, resolver }
+    );
+
+    const threadRequest = {
+      name: 'autoreply',
+      channelId: 'thread-456',
+      parentChannelId: 'parent-123',
+      platform: 'discord',
+    };
+    await expect(
+      executeRuntimeSettingsCommand(
+        { ...threadRequest, action: 'show' },
+        { config, resolver }
+      )
+    ).resolves.toContain('autoreply: on');
+
+    await executeRuntimeSettingsCommand(
+      { ...threadRequest, action: 'set', value: 'off' },
+      { config, resolver }
+    );
+    await expect(
+      executeRuntimeSettingsCommand(
+        { ...threadRequest, action: 'show' },
+        { config, resolver }
+      )
+    ).resolves.toContain('autoreply: off');
+
+    await expect(
+      executeRuntimeSettingsCommand(
+        { ...threadRequest, action: 'reset' },
+        { config, resolver }
+      )
+    ).resolves.toContain('autoreplyをonに設定しました');
+    expect(loadSettings().discordAutoReplyChannels).toEqual({ 'parent-123': true });
+  });
+
   it('supports every existing runtime mode with explicit, idempotent actions', async () => {
     const requests = [
       { name: 'llmmode', value: 'lite', platform: 'slack' },

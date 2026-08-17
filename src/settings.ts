@@ -186,6 +186,26 @@ export function getChannelAutoReply(
   return settings.discordAutoReplyChannels?.[channelId] ?? defaultEnabled;
 }
 
+/**
+ * スレッド内メッセージに対する autoreply の実効値を返す。
+ *
+ * スレッド自身に設定があればそれを使い、無ければ親チャンネルの設定を継承する。
+ * 設定値は「未設定 / on / off」の 3 状態あるため、スレッドと親の論理和では
+ * 未設定と明示的な off を区別できず、親が on のときスレッドだけ off にできない。
+ */
+export function getChannelAutoReplyWithParent(
+  settings: Settings,
+  channelId: string,
+  parentChannelId: string | null | undefined,
+  defaultEnabled: boolean
+): boolean {
+  const inherited =
+    parentChannelId != null
+      ? getChannelAutoReply(settings, parentChannelId, defaultEnabled)
+      : defaultEnabled;
+  return getChannelAutoReply(settings, channelId, inherited);
+}
+
 export function getSlackChannelAutoReply(
   settings: Settings,
   channelId: string,

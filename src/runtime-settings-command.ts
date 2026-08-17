@@ -1,7 +1,7 @@
 import type { AgentBackend, Config, DiscordCompletionNotifyMode, EffortLevel } from './config.js';
 import type { BackendResolver, LocalLlmMode } from './backend-resolver.js';
 import {
-  getChannelAutoReply,
+  getChannelAutoReplyWithParent,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
   getReplySuggestionsEnabled,
@@ -37,6 +37,7 @@ export interface RuntimeSettingsRequest {
   model?: string;
   effort?: string;
   channelId?: string;
+  parentChannelId?: string;
   platform?: string;
 }
 
@@ -204,7 +205,12 @@ function executeAutoReply(
     : (config.slack.autoReplyChannels?.includes(channelId) ?? false);
   const effective = () =>
     isDiscord
-      ? getChannelAutoReply(loadSettings(), channelId, defaultEnabled)
+      ? getChannelAutoReplyWithParent(
+          loadSettings(),
+          channelId,
+          request.parentChannelId,
+          defaultEnabled
+        )
       : getSlackChannelAutoReply(loadSettings(), channelId, defaultEnabled);
 
   if (action === 'show') {
