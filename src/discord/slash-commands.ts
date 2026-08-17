@@ -1195,7 +1195,9 @@ export function createInteractionHandler(
             name: 'autoreply',
             action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
             value: mode,
-            channelId: settingsChannelId,
+            // autoreply はスレッド単位で設定できるよう、親チャンネルIDへ丸めない。
+            // 他の設定コマンドは従来どおり settingsChannelId (親チャンネル) を対象にする。
+            channelId,
             platform: 'discord',
           },
           { config, resolver }
