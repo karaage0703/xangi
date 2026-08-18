@@ -9,7 +9,7 @@ interface ExtensionEntry {
   displayName: string;
   description?: string;
   permissions?: string[];
-  version: string;
+  version?: string;
   capabilities: string[];
   installed: boolean;
   running: boolean;
@@ -126,13 +126,16 @@ export function Extensions() {
     setActionId(extension.id);
     setError('');
     try {
-      const result = await requestJson<{ extension: ExtensionEntry }>(
-        `/api/extensions/${encodeURIComponent(extension.id)}`,
-        { method: 'DELETE' }
+      const result = await requestJson<{
+        sessionId: string;
+        prompt: string;
+        displayMessage: string;
+      }>(`/api/extensions/${encodeURIComponent(extension.id)}/uninstall`, { method: 'POST' });
+      window.sessionStorage.setItem(
+        extensionSetupStorageKey(result.sessionId),
+        JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
       );
-      setExtensions((current) =>
-        current.map((item) => (item.id === result.extension.id ? result.extension : item))
-      );
+      window.location.assign(sessionPath(result.sessionId));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -258,10 +261,12 @@ export function Extensions() {
                     </div>
                     <p className="extension-description">{extensionDescription(extension)}</p>
                     <dl className="extension-meta">
-                      <div>
-                        <dt>Version</dt>
-                        <dd>{extension.version}</dd>
-                      </div>
+                      {extension.version ? (
+                        <div>
+                          <dt>Version</dt>
+                          <dd>{extension.version}</dd>
+                        </div>
+                      ) : null}
                       <div>
                         <dt>Capabilities</dt>
                         <dd>{extension.capabilities.join(', ') || 'なし'}</dd>

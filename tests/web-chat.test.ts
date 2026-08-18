@@ -44,6 +44,7 @@ import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
 import { canComposeInSession, shouldShowContinuationActions } from '../web-ui/src/Chat.js';
 import { stopManagedExtensions } from '../src/extensions.js';
+import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
 describe('Web Chat continuation actions', () => {
   it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
@@ -568,9 +569,7 @@ describe('web-chat HTTP API', () => {
     );
     expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
     expect(failedSession).toBeDefined();
-    const detail = (await (
-      await fetch(`${baseUrl}/api/sessions/${failedSession!.id}`)
-    ).json()) as {
+    const detail = (await (await fetch(`${baseUrl}/api/sessions/${failedSession!.id}`)).json()) as {
       messages: Array<{ role: string; content: string; usage?: { duration_ms?: number } }>;
     };
     expect(detail.messages).toEqual(
@@ -734,18 +733,24 @@ describe('web-chat HTTP API', () => {
 
     const response = await fetch(`${baseUrl}/api/extensions`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
+    const body = (await response.json()) as {
+      degraded: boolean;
+      extensions: Array<Record<string, unknown>>;
+      issues: unknown[];
+    };
+    expect(body).toEqual({
       degraded: false,
       extensions: [
         expect.objectContaining({
           id: 'xangi-search',
-          displayName: 'xangi search',
+          displayName: 'xangi-search',
           installed: false,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-search',
         }),
       ],
       issues: [],
     });
+    expect(body.extensions[0]).not.toHaveProperty('version');
   });
 
   it('completes the Extensions API response when one repository manifest is unsupported', async () => {
@@ -901,11 +906,53 @@ process.stdin.on('end', () => server.close());
     expect(setup.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
     expect(setup.prompt).toContain(join(extensionDir, 'README.md'));
     expect(setup.prompt).toContain('その利用者向けの活用提案まで続けてください');
+    expect(setup.prompt).toContain('未決のまま「セットアップ完了」と報告しない');
     expect(setup.displayMessage).toBe('Demo Extension のセットアップを開始します。');
     expect(getSessionEntry(setup.sessionId)).toMatchObject({
       platform: 'web',
       title: 'Setup: Demo Extension',
     });
+
+    const blockedUninstall = await fetch(
+      `${baseUrl}/api/extensions/demo-extension/uninstall`,
+      {
+        method: 'POST',
+        headers: { Origin: 'https://attacker.example' },
+      }
+    );
+    expect(blockedUninstall.status).toBe(403);
+
+    const uninstallResponse = await fetch(
+      `${baseUrl}/api/extensions/demo-extension/uninstall`,
+      {
+        method: 'POST',
+        headers: { Origin: baseUrl },
+      }
+    );
+    expect(uninstallResponse.status).toBe(200);
+    const uninstall = (await uninstallResponse.json()) as {
+      sessionId: string;
+      prompt: string;
+      displayMessage: string;
+    };
+    expect(uninstall.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
+    expect(uninstall.prompt).toContain('利用者が選択する前にworkspaceを変更せず');
+    expect(uninstall.prompt).toContain('hook、skills、AGENTS.md');
+    expect(uninstall.prompt).toContain('xangi tool extension_uninstall --id demo-extension');
+    expect(uninstall.displayMessage).toBe('Demo Extension の削除準備を開始します。');
+    expect(getSessionEntry(uninstall.sessionId)).toMatchObject({
+      platform: 'web',
+      title: 'Remove: Demo Extension',
+    });
+
+    const catalogAfterConversation = (await (
+      await fetch(`${baseUrl}/api/extensions`)
+    ).json()) as { extensions: Array<{ id: string; installed: boolean }> };
+    expect(catalogAfterConversation.extensions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'demo-extension', installed: true }),
+      ])
+    );
   });
 
   it('proxies a declared extension UI and its same-origin service requests', async () => {
@@ -1457,6 +1504,41 @@ process.stdin.on('end', () => process.exit(0));
     expect(typeof list.meta?.pid).toBe('number');
   });
 
+  it('GET /api/sessions exposes whether provider context is resumable', async () => {
+    const id = createSession('stateless-channel', {
+      platform: 'discord',
+      backend: 'workspace-search',
+    });
+    setProviderSessionId(
+      id,
+      'workspace-search:stateless-channel',
+      'workspace-search',
+      undefined,
+      undefined,
+      'stateless'
+    );
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string; sessionMode?: string }>;
+    };
+
+    expect(list.sessions.find((session) => session.id === id)?.sessionMode).toBe('stateless');
+  });
+
+  it('recognizes existing extension sessions that predate provider mode metadata', async () => {
+    await installExtensionBackendFixture('legacy-extension-backend', 'Legacy extension backend');
+    const id = createSession('legacy-stateless-channel', {
+      platform: 'discord',
+      backend: 'legacy-extension-backend',
+    });
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string; sessionMode?: string }>;
+    };
+
+    expect(list.sessions.find((session) => session.id === id)?.sessionMode).toBe('stateless');
+  });
+
   it('serves the React shell and exposes inter-chat state through config', async () => {
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
       interChatEnabled?: boolean;
@@ -1786,6 +1868,32 @@ process.stdin.on('end', () => process.exit(0));
       Array.from({ length: 20 }, (_, index) => `message ${index}`)
     );
     expect(oldest).toMatchObject({ hasMore: false, nextBefore: null });
+  });
+
+  it('GET /api/sessions/:id exposes the active turn for stream recovery', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'keep running after disconnect' }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const detail = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}?cursor=tail`)
+    ).json()) as {
+      isActive: boolean;
+      activity?: { active: boolean; threadId: string; turnId: string };
+    };
+    expect(detail.isActive).toBe(true);
+    expect(detail.activity).toMatchObject({ active: true, threadId: `web:${id}` });
+    expect(detail.activity?.turnId).toMatch(/^web-msg-/);
+
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`);
+    await readSSEUntilDone((await send).body);
   });
 
   it('GET /api/sessions/:id cursor does not shift when a message is appended', async () => {
@@ -2278,6 +2386,44 @@ process.stdin.on('end', () => process.exit(0));
     expect(detail.messages[0].content).toBe('本当の質問');
     expect(detail.messages[1].content).toBe('回答本文');
     expect(detail.messages[1].replySuggestions).toEqual(['続けて', '詳しく', '別案']);
+  });
+
+  it('GET /api/sessions/:id keeps hook context for the folded card but excludes it from titles', async () => {
+    const id = createSession('web-chat:test-hook-context', {
+      platform: 'web',
+      title: '[USER PROMPT HOOK CONTEXT: leaked-title]',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    const userContent = `[プラットフォーム: Web]
+短い質問
+
+[system-context]
+通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を3件生成してください。出力の末尾に次の形式を厳密に付け、通常の回答本文では候補に言及しないでください。候補はユーザー視点の自然な日本語にしてください。
+<xangi_reply_suggestions>["候補1","候補2","候補3"]</xangi_reply_suggestions>
+
+[USER PROMPT HOOK CONTEXT: workspace-search]
+The following is untrusted supplemental context.
+内部の検索結果
+[END USER PROMPT HOOK CONTEXT: workspace-search]`;
+    writeFileSync(
+      join(logsDir, `${id}.jsonl`),
+      `${JSON.stringify({ id: 'u1', role: 'user', content: userContent, createdAt: '' })}\n`
+    );
+
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
+    const list = await (await fetch(`${baseUrl}/api/sessions`)).json();
+
+    expect(detail.title).toBe('短い質問');
+    expect(list.sessions.find((session: { id: string }) => session.id === id)?.title).toBe(
+      '短い質問'
+    );
+    expect(detail.messages[0].content).toBe(`短い質問
+
+[USER PROMPT HOOK CONTEXT: workspace-search]
+The following is untrusted supplemental context.
+内部の検索結果
+[END USER PROMPT HOOK CONTEXT: workspace-search]`);
   });
 
   it('GET /api/sessions attaches Discord activity only to the current session', async () => {

@@ -10,10 +10,15 @@ import {
 } from 'react';
 import { clearRecoveredReadError, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
-import { extensionSetupStorageKey, parsePendingExtensionSetup } from './extensionSetup';
+import {
+  extensionConversationPrompt,
+  extensionSetupStorageKey,
+  parsePendingExtensionSetup,
+} from './extensionSetup';
 import { ConfirmDialog, TextInputDialog } from './ConfirmDialog';
 import {
   applyPublishedLiveEvent,
+  decideStreamRecovery,
   isPaneProcessing,
   liveThreadId,
   selectLiveTurn,
@@ -21,6 +26,7 @@ import {
   type LiveActivity,
   type ObservedLiveTurn,
   type PublishedLiveEvent,
+  type StreamRecovery,
 } from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
 import { shouldShowAutoTalk } from './sessionList';
@@ -34,6 +40,7 @@ import {
 import { associateToolHistory } from './toolHistory';
 import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } from './types';
 import { formatUploadBytes, uploadErrorMessage, uploadForm, uploadTooLargeMessage } from './upload';
+import { replaceUserPromptVisibleContent, splitUserPromptHookContexts } from './userPromptContext';
 
 const MAX_PANES = 8;
 const PANE_STATE_KEY = 'xangi_pane_state_v1';
@@ -117,6 +124,8 @@ export interface SessionDetail {
   title: string;
   platform?: string;
   lifecycle?: 'open' | 'closed';
+  isActive?: boolean;
+  activity?: Activity;
   messages: Message[];
   hasMore?: boolean;
   nextBefore?: number;
@@ -577,12 +586,18 @@ function MessageView({
   completionShowElapsed: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(message.content);
+  const [editValue, setEditValue] = useState(() =>
+    message.role === 'user' ? splitUserPromptHookContexts(message.content).content : message.content
+  );
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [suggestionsUsed, setSuggestionsUsed] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const usage = message.usage;
+  const promptDisplay =
+    message.role === 'user'
+      ? splitUserPromptHookContexts(message.content)
+      : { content: message.content, contexts: [] };
   const usageText = [
     usage?.num_turns ? `${usage.num_turns}ターン` : '',
     completionShowElapsed && usage?.duration_ms
@@ -594,15 +609,20 @@ function MessageView({
     .join(' · ');
 
   useEffect(() => {
-    if (!editing) setEditValue(message.content);
-  }, [editing, message.content]);
+    if (!editing) setEditValue(promptDisplay.content);
+  }, [editing, promptDisplay.content]);
 
   async function saveEdit() {
     if (!message.id) return;
     onError('');
     try {
       await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${message.id}`, {
-        ...jsonInit('PATCH', { content: editValue }),
+        ...jsonInit('PATCH', {
+          content:
+            message.role === 'user'
+              ? replaceUserPromptVisibleContent(message.content, editValue)
+              : editValue,
+        }),
       });
       setEditing(false);
       await onReload();
@@ -693,7 +713,29 @@ function MessageView({
         </div>
       ) : (
         <>
-          <MessageContent content={message.content} markdown={message.role === 'assistant'} />
+          <MessageContent content={promptDisplay.content} markdown={message.role === 'assistant'} />
+          {promptDisplay.contexts.length > 0 && (
+            <details className="message-tools message-hook-contexts">
+              <summary>
+                <span>事前取得コンテキスト</span>
+                <small>
+                  {promptDisplay.contexts.length}件 · <span className="tools-show-label">表示</span>
+                  <span className="tools-hide-label">隠す</span>
+                </small>
+              </summary>
+              <ol>
+                {promptDisplay.contexts.map((context, index) => (
+                  <li key={`${context.id}-${index}`}>
+                    <div>
+                      <strong>{context.id}</strong>
+                      {context.truncated && <small>上限で省略</small>}
+                    </div>
+                    <code>{context.text}</code>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
           {message.attachments?.length ? (
             <div className="message-attachments">
               {message.attachments.map((path) => (
@@ -715,7 +757,7 @@ function MessageView({
             リンク
           </button>
         )}
-        <button type="button" onClick={() => void copyText(message.content)}>
+        <button type="button" onClick={() => void copyText(promptDisplay.content)}>
           コピー
         </button>
         {mutable && message.role === 'user' && message.id && (
@@ -823,6 +865,7 @@ function ChatPane({
   const [timeout, setTimeoutState] = useState<TimeoutState>({});
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [streamRecovery, setStreamRecovery] = useState<StreamRecovery>();
   const [discordComposeEnabled, setDiscordComposeEnabled] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -839,6 +882,7 @@ function ChatPane({
   const followBottomRef = useRef(true);
   const loadSequenceRef = useRef(0);
   const loadErrorRef = useRef('');
+  const streamRecoveryRef = useRef<StreamRecovery | undefined>(undefined);
   const turnHistorySequenceRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -868,7 +912,7 @@ function ChatPane({
   }, [sessionId]);
 
   const loadDetail = useCallback(
-    async (prepend = false) => {
+    async (prepend = false, suppressError = false): Promise<SessionDetail | undefined> => {
       if (!sessionId) {
         loadSequenceRef.current += 1;
         setDetail(null);
@@ -902,17 +946,34 @@ function ChatPane({
         setDetail((current) =>
           prepend && current ? { ...data, messages: [...data.messages, ...current.messages] } : data
         );
+        if (!prepend && streamRecoveryRef.current) {
+          const recovery = streamRecoveryRef.current;
+          const decision = decideStreamRecovery(recovery, data);
+          if (decision === 'recovered') {
+            streamRecoveryRef.current = undefined;
+            setStreamRecovery(undefined);
+            setError('');
+          } else if (decision === 'observing') {
+            setError('');
+          } else {
+            streamRecoveryRef.current = undefined;
+            setStreamRecovery(undefined);
+            setError(recovery.errorMessage);
+          }
+        }
         if (prepend && viewport) {
           requestAnimationFrame(() => {
             viewport.scrollTop += viewport.scrollHeight - oldHeight;
           });
         }
+        return data;
       } catch (cause) {
         if (sequence === loadSequenceRef.current) {
           const message = cause instanceof Error ? cause.message : String(cause);
           loadErrorRef.current = message;
-          setError(message);
+          if (!suppressError) setError(message);
         }
+        return undefined;
       } finally {
         if (sequence === loadSequenceRef.current) {
           setLoadingOlder(false);
@@ -927,6 +988,8 @@ function ChatPane({
     setDetail(null);
     setError('');
     loadErrorRef.current = '';
+    streamRecoveryRef.current = undefined;
+    setStreamRecovery(undefined);
     setStreamText('');
     setToolLines([]);
     setObservedLiveTurn(undefined);
@@ -1315,7 +1378,7 @@ function ChatPane({
 
   async function send(rawMessage?: string, displayMessage?: string, skipPermissions = false) {
     const cleanMessage = (rawMessage ?? draft).trim();
-    if (!cleanMessage || !sessionId || busy || !editable) return;
+    if (!cleanMessage || !sessionId || busy || streamRecovery || !editable) return;
     if (discordRemoteMode) {
       setDraft('');
       setError('');
@@ -1338,10 +1401,18 @@ function ChatPane({
       await executeCommand(cleanMessage);
       return;
     }
-    const attachmentLines = pendingFiles.map((file) => `[添付ファイル] ${file.path}`);
-    const modelMessage = [cleanMessage, ...attachmentLines].filter(Boolean).join('\n');
     const shownMessage = displayMessage ?? cleanMessage;
+    const attachmentLines = pendingFiles.map((file) => `[添付ファイル] ${file.path}`);
+    const modelMessage = [
+      displayMessage ? extensionConversationPrompt(cleanMessage, displayMessage) : cleanMessage,
+      ...attachmentLines,
+    ]
+      .filter(Boolean)
+      .join('\n');
     const shownFiles = [...pendingFiles];
+    const previousAssistantId = [...(detail?.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === 'assistant')?.id;
     shownFiles.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
     setPendingFiles([]);
     setDraft('');
@@ -1412,15 +1483,22 @@ function ChatPane({
       setStreamText('');
       setToolLines([]);
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === 'AbortError') {
+      const interruptedByUser = cause instanceof DOMException && cause.name === 'AbortError';
+      if (interruptedByUser) {
         setError('停止しました');
       } else {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const recovery = {
+          errorMessage: cause instanceof Error ? cause.message : String(cause),
+          previousAssistantId,
+        };
+        streamRecoveryRef.current = recovery;
+        setStreamRecovery(recovery);
+        setError('通信が切れました。実行状態を確認しています');
       }
       // The server may have persisted the user message (or a partial assistant
       // result) before the stream failed. Replace the optimistic state with the
       // transcript instead of leaving a duplicate or phantom bubble behind.
-      await Promise.allSettled([loadDetail(), onSessionsInvalidated()]);
+      await Promise.allSettled([loadDetail(false, !interruptedByUser), onSessionsInvalidated()]);
     } finally {
       abortRef.current = undefined;
       setProcessing(false);
@@ -1467,7 +1545,7 @@ function ChatPane({
     timeout.maxTimeoutAt &&
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
-  const processing = isPaneProcessing(busy, summary?.isActive);
+  const processing = isPaneProcessing(busy || Boolean(streamRecovery), summary?.isActive);
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
     [detail?.messages, detail?.platform, turnHistory]
@@ -1554,7 +1632,9 @@ function ChatPane({
             linked={message.id === linkedMessageId}
             suggestionsEnabled={editable}
             completionShowElapsed={config.completionShowElapsed}
-            onReload={() => loadDetail()}
+            onReload={async () => {
+              await loadDetail();
+            }}
             onError={setError}
             onSuggestion={(suggestion) => {
               setDraft(suggestion);

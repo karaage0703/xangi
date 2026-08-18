@@ -45,6 +45,7 @@ export interface MonitorSession {
   isActive?: boolean;
   isCurrent?: boolean;
   lifecycle?: 'open' | 'closed';
+  sessionMode?: 'stateful' | 'stateless';
   closedAt?: string;
   closeReason?: string;
   activity?: MonitorActivity;
@@ -95,6 +96,10 @@ const LANES: Array<{ value: MonitorLane; label: string; description: string }> =
 
 function isRunning(session: MonitorSession): boolean {
   return session.isActive === true;
+}
+
+export function isMonitorVisible(session: MonitorSession): boolean {
+  return isRunning(session) || session.sessionMode !== 'stateless';
 }
 
 function isChatPlatform(session: MonitorSession): boolean {
@@ -319,7 +324,7 @@ export function Monitor() {
   }, [selectedId]);
 
   const applySnapshot = useCallback((data: MonitorSessionsResponse) => {
-    const nextSessions = data.sessions || [];
+    const nextSessions = (data.sessions || []).filter(isMonitorVisible);
     sessionsRef.current = nextSessions;
     setSessions(nextSessions);
     setSelectedId((current) =>
@@ -414,15 +419,19 @@ export function Monitor() {
         const event = JSON.parse((rawEvent as MessageEvent<string>).data) as MonitorActivityEvent;
         const matched = sessionsRef.current.some((session) => eventMatchesSession(event, session));
         if (matched) {
-          const updatedSessions = sessionsRef.current.map((session) =>
-            eventMatchesSession(event, session) ? activityFromEvent(session, event) : session
-          );
+          const updatedSessions = sessionsRef.current
+            .map((session) =>
+              eventMatchesSession(event, session) ? activityFromEvent(session, event) : session
+            )
+            .filter(isMonitorVisible);
           sessionsRef.current = updatedSessions;
           setSessions(updatedSessions);
         }
         setUpdatedAt(Date.now());
         setOnline(true);
-        if (!matched) loadSessions().catch(() => setOnline(false));
+        if (!matched || event.type !== 'turn.started') {
+          loadSessions().catch(() => setOnline(false));
+        }
       } catch {
         setOnline(false);
       }
@@ -437,18 +446,22 @@ export function Monitor() {
         const platform = data.threadId.slice(0, separator);
         const context = data.threadId.slice(separator + 1);
         let matched = false;
-        const updatedSessions = sessionsRef.current.map((session) => {
-          const isMatch =
-            session.platform === platform &&
-            (platform === 'web' ? session.id === context : session.contextKey === context);
-          if (isMatch) matched = true;
-          return isMatch ? applyActivitySnapshot(session, data.activity) : session;
-        });
+        const updatedSessions = sessionsRef.current
+          .map((session) => {
+            const isMatch =
+              session.platform === platform &&
+              (platform === 'web' ? session.id === context : session.contextKey === context);
+            if (isMatch) matched = true;
+            return isMatch ? applyActivitySnapshot(session, data.activity) : session;
+          })
+          .filter(isMonitorVisible);
         sessionsRef.current = updatedSessions;
         setSessions(updatedSessions);
         setUpdatedAt(Date.now());
         setOnline(true);
-        if (!matched) void loadSessions().catch(() => setOnline(false));
+        if (!matched || !data.activity.active) {
+          void loadSessions().catch(() => setOnline(false));
+        }
       } catch {
         setOnline(false);
       }

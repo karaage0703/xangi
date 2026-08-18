@@ -21,12 +21,15 @@ import { sanitizeSessionTitle } from './session-title.js';
 export type SessionScope = 'interactive' | 'scheduler';
 export type SessionLifecycle = 'open' | 'closed';
 export type SessionCloseReason = 'new' | 'leave' | 'monitor' | 'web' | 'archive' | 'other';
+export type ProviderSessionMode = 'stateful' | 'stateless';
 
 export interface AgentInfo {
   backend: string; // AgentBackend (kept as string for persisted backward compatibility)
   model?: string;
   effort?: string;
   providerSessionId?: string;
+  /** Whether the backend keeps provider-side context that can be resumed. */
+  sessionMode?: ProviderSessionMode;
 }
 
 export interface SessionEntry {
@@ -382,7 +385,8 @@ export function setProviderSessionId(
   providerSessionId: string,
   backend?: string,
   model?: string,
-  effort?: string
+  effort?: string,
+  sessionMode?: ProviderSessionMode
 ): void {
   const entry = data.sessions[appSessionId];
   if (!entry) return;
@@ -391,6 +395,25 @@ export function setProviderSessionId(
     model: model ?? entry.agent?.model,
     effort: effort ?? entry.agent?.effort,
     providerSessionId,
+    sessionMode: sessionMode ?? entry.agent?.sessionMode,
+  };
+  entry.updatedAt = new Date().toISOString();
+  saveSessionsToFile();
+}
+
+/** Persist backend continuation semantics before a request starts, including failed requests. */
+export function setProviderSessionMode(
+  appSessionId: string,
+  backend: string,
+  sessionMode: ProviderSessionMode
+): void {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return;
+  if (entry.agent?.backend === backend && entry.agent.sessionMode === sessionMode) return;
+  entry.agent = {
+    ...entry.agent,
+    backend,
+    sessionMode,
   };
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();

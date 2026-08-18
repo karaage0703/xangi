@@ -36,4 +36,57 @@ describe('tool command dispatcher', () => {
       'http://127.0.0.1:41002/api/execute',
     ]);
   });
+
+  it('reads extension query JSON from stdin without forwarding the marker flag', async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.flags).toEqual({
+        id: 'xangi-search',
+        capability: 'workspace.search',
+        path: '/search',
+        'query-json': '{"q":"secret query","k":4}',
+      });
+      return new Response(JSON.stringify({ ok: true, result: 'found' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await expect(
+      runToolCommand(
+        [
+          'extension_request',
+          '--id',
+          'xangi-search',
+          '--capability',
+          'workspace.search',
+          '--path',
+          '/search',
+          '--query-json-stdin',
+        ],
+        {
+          env: { XANGI_TOOL_SERVER: 'http://127.0.0.1:41001' },
+          fetchImpl,
+          readStdin: async () => '{"q":"secret query","k":4}',
+        }
+      )
+    ).resolves.toBe('found');
+  });
+
+  it('rejects query stdin outside extension_request and conflicting query sources', async () => {
+    await expect(
+      runToolCommand(['schedule_list', '--query-json-stdin'], {
+        env: { XANGI_TOOL_SERVER: 'http://127.0.0.1:41001' },
+        readStdin: async () => '{}',
+      })
+    ).rejects.toThrow(/only supported by extension_request/);
+    await expect(
+      runToolCommand(
+        ['extension_request', '--query-json', '{}', '--query-json-stdin'],
+        {
+          env: { XANGI_TOOL_SERVER: 'http://127.0.0.1:41001' },
+          readStdin: async () => '{}',
+        }
+      )
+    ).rejects.toThrow(/cannot be used together/);
+  });
 });

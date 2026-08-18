@@ -34,6 +34,8 @@ export interface RunOptions {
 export interface RunResult {
   result: string;
   sessionId: string;
+  /** Whether the backend can continue provider-side context across turns. */
+  sessionMode?: 'stateful' | 'stateless';
   /**
    * 構造化された添付ファイルパス（realpath、サンドボックス検証済み）。
    * Local LLM の attach_file ツール経由で宣言された添付。応答テキストからの

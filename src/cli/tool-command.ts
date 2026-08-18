@@ -21,6 +21,22 @@ export interface ParsedToolCommand {
   flags: Record<string, string>;
 }
 
+const MAX_STDIN_JSON_BYTES = 1_000_000;
+
+async function readStdinJson(): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_STDIN_JSON_BYTES) {
+      throw new Error('--query-json-stdin exceeds the 1,000,000 byte limit');
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8').trim();
+}
+
 export function parseToolCommandArgs(args: string[]): ParsedToolCommand {
   const command = args[0] || 'help';
   const flags: Record<string, string> = {};
@@ -55,11 +71,25 @@ export async function runToolCommand(
   options: {
     env?: ToolCommandEnvironment;
     fetchImpl?: typeof fetch;
+    readStdin?: () => Promise<string>;
   } = {}
 ): Promise<string> {
   const env = options.env ?? process.env;
   const serverUrl = env.XANGI_TOOL_SERVER;
   const { command, flags } = parseToolCommandArgs(args);
+
+  if (flags['query-json-stdin'] === 'true') {
+    if (command !== 'extension_request') {
+      throw new Error('--query-json-stdin is only supported by extension_request');
+    }
+    if (flags['query-json'] !== undefined) {
+      throw new Error('--query-json and --query-json-stdin cannot be used together');
+    }
+    const raw = await (options.readStdin ?? readStdinJson)();
+    if (!raw) throw new Error('--query-json-stdin received empty input');
+    flags['query-json'] = raw;
+    delete flags['query-json-stdin'];
+  }
 
   if (command === 'system_restart') {
     assertRuntimeStateCanStart({ env: env as NodeJS.ProcessEnv });

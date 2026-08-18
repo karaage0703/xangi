@@ -412,6 +412,22 @@ const systemSettingsHandler: ToolHandler = {
   },
 };
 
+const extensionUninstallHandler: ToolHandler = {
+  name: 'extension_uninstall',
+  description:
+    '承認済みのworkspace cleanup後、現在のxangi instanceでextensionを停止・unlinkして完了状態を検証する。',
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: '削除するextension ID' },
+    },
+    required: ['id'],
+  },
+  async execute(args): Promise<ToolResult> {
+    return runXangiCmd(['extension_uninstall', '--id', String(args.id)]);
+  },
+};
+
 function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandler {
   return {
     name: 'runtime_settings',
@@ -685,6 +701,11 @@ export function getSystemTools(platform?: ChatPlatform): ToolHandler[] {
   ];
 }
 
+/** Extension lifecycle関連ツール */
+export function getExtensionTools(): ToolHandler[] {
+  return [extensionUninstallHandler];
+}
+
 /** 履歴取得ツール (web_history / slack_history)。プラットフォームに応じてランナーが呼ぶ */
 export function getHistoryTools(): ToolHandler[] {
   return [webHistoryHandler, slackHistoryHandler];
@@ -698,12 +719,17 @@ export function getAllXangiTools(): ToolHandler[] {
     webHistoryHandler,
     ...getScheduleTools(),
     ...getSystemTools(),
+    ...getExtensionTools(),
   ];
 }
 
 /** 実行プラットフォームに応じたxangiツール */
 export function getXangiTools(platform?: ChatPlatform): ToolHandler[] {
-  const commonTools = [...getScheduleTools(platform), ...getSystemTools(platform)];
+  const commonTools = [
+    ...getScheduleTools(platform),
+    ...getSystemTools(platform),
+    ...getExtensionTools(),
+  ];
 
   if (platform === 'web') {
     return [...getWebTools(), ...commonTools];

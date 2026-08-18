@@ -19,7 +19,7 @@ xangiの詳細な使い方ガイドです。
 - [Docker実行](#docker実行)
 - [Extension連携](#extension連携)
 - [Local LLM](#local-llm)
-- [ワークスペース hooks（Stop hook）](#ワークスペース-hooksstop-hook)
+- [ワークスペース hooks](#ワークスペース-hooks)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
 - [セキュリティ](#セキュリティ)
 - [環境変数一覧](#環境変数一覧)
@@ -124,7 +124,7 @@ API（プログラマブル操作）:
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`で延長。省略時は現在の残り時間を加算（残り時間を2倍）
 - `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。誤操作を避けるため、Web UIではMonitor詳細から実行する
 
-MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
+MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後はMonitorから消えます。検索結果などの会話ログはChatに残ります。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
 
 ## スケジューラー
 
@@ -867,9 +867,11 @@ managed extensionの状態は`running`、`healthy`、`ready`を別々に表示�
 
 初回起動時も公式catalogのxangi-searchが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
 
-CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。
+CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup文書に承認待ちの設定・workspace変更・任意機能がある場合、LLMはそれをgenericな活用案や次回依頼へ先送りせず、重要な差分・影響・選択肢を具体的に提示します。返答待ちの項目は変更せず、未決の間はsetup完了と報告しません。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。
 
-公開GitHub repositoryから追加し、manifestに`update.prepare`を宣言したextensionには「更新を確認」が表示されます。選ぶとdefault branchの最新commitを確認し、`Update: <displayName>`という専用会話を開きます。会話は現在版と対象commitを説明してから、xangi親processの固定更新toolを実行します。更新toolは対象commitを再確認し、停止、source差し替え、更新準備、再link、起動、`doctor`を順番に行います。途中で失敗した場合は旧sourceへ戻し、更新前に動作中だったextensionを再起動して`doctor`します。permission、capability、entrypoint、agent backend、UI mapping、更新準備commandが増加・変更された場合は更新前に追加承認が必要です。local manifestは更新元repositoryを持たないため対象外で、background自動更新も行いません。
+Extensions画面で「削除」を選ぶと、即座に停止・登録解除せず、専用の`Remove: <displayName>`会話を開きます。LLMはrepositoryのsetup文書とREADMEを読み、現在のworkspaceに残るextension固有のhook、skill、`AGENTS.md`ルール、schedule、その他の設定を調べます。変更前に対象path・ID・削除内容・保持内容・影響を具体的に提示し、利用者はworkspace連携も解除するか、workspace変更を残してextensionだけ停止・登録解除するかを選択します。承認後にだけ最小差分でworkspaceを変更し、現在のxangi親processが所有する固定toolで停止・unlink・未登録・runtime停止をまとめて確認します。任意のPATH上のCLIは使いません。結果には完了状態、hook設定が反映される時点、再起動要否を含みます。download済みsource、extension所有data、index、設定、FACTは通常の削除では保持し、完全消去は別の明示確認に分離します。低levelの`DELETE /api/extensions/:id`は自動化と互換性のため停止・unlinkだけを行います。
+
+公開GitHub repositoryから追加し、manifestに`update.prepare`を宣言したextensionには「更新を確認」が表示されます。選ぶとdefault branchの最新commitを確認し、`Update: <displayName>`という専用会話を開きます。会話は現在版と対象commitを説明してから、xangi親processの固定更新toolを実行します。更新toolは対象commitを再確認し、停止、source差し替え、更新準備、再link、起動、`doctor`を順番に行います。途中で失敗した場合は旧sourceへ戻し、更新前に動作中だったextensionを再起動して`doctor`します。permission、capability、entrypoint、agent backend、UI mapping、更新準備commandが増加・変更された場合は更新前に追加承認が必要です。更新成功後は同じ会話で、LLMが更新後のsetup文書・同梱スキルとworkspace側の同名スキル・関連する`AGENTS.md`ルールを比較します。APIや操作手順などに実質的な差分がある場合だけ、理由、対象path、変更概要を提案します。extension更新への承認はworkspace変更の承認を兼ねないため、スキルや`AGENTS.md`は改めて承認されるまで変更しません。local manifestは更新元repositoryを持たないため対象外で、background自動更新も行いません。
 
 更新準備はshell文字列ではなく、実行programと引数を分離して宣言します。xangiは新sourceの最終配置directoryをworking directoryとして、shellを介さず実行します。
 
@@ -974,11 +976,6 @@ LOCAL_LLM_TOOLS=false
 LOCAL_LLM_SKILLS=false
 LOCAL_LLM_XANGI_COMMANDS=false
 
-# 例: トリガー付き雑談
-LOCAL_LLM_TOOLS=false
-LOCAL_LLM_SKILLS=false
-LOCAL_LLM_XANGI_COMMANDS=false
-LOCAL_LLM_TRIGGERS=true
 ```
 
 | 変数                       | 説明                                                             | デフォルト |
@@ -986,70 +983,14 @@ LOCAL_LLM_TRIGGERS=true
 | `LOCAL_LLM_TOOLS`          | ツール実行（exec/read/write/edit/glob/grep/send_file/web_fetch） | `true`     |
 | `LOCAL_LLM_SKILLS`         | スキル一覧注入                                                   | `true`     |
 | `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS注入                                               | `true`     |
-| `LOCAL_LLM_TRIGGERS`       | トリガー（!コマンド）                                            | `false`    |
 
 `LOCAL_LLM_MODE` でプリセットも使えます（個別設定が優先）：
 
-- `agent`（デフォルト）— tools / skills / xangi_commands ON、triggers OFF
+- `agent`（デフォルト）— tools / skills / xangi_commands ON
 - `chat` — 全部 OFF（純粋雑談ボット）
-- `lite` — tools / xangi_commands / triggers ON、skills OFF（軽めだが Discord/Slack 操作はできるチャットボット向け）
+- `lite` — tools / xangi_commands ON、skills OFF（軽めだが Discord/Slack 操作はできるチャットボット向け）
 
 ワークスペースコンテキスト（AGENTS.md等）はどの設定でも注入されます。
-
-### Triggers（カスタムツール）
-
-ワークスペースの `triggers/` ディレクトリにシェルスクリプトを置くだけで、LLMが使えるカスタムツールを追加できます。`LOCAL_LLM_TRIGGERS=true` で有効化。
-
-LLMがfunction callingでトリガーを呼び出し、handler.shを実行して結果を返します。
-
-#### セットアップ
-
-ワークスペースに `triggers/` ディレクトリを作成し、コマンドごとにサブディレクトリを配置します。
-
-```
-workspace/
-  triggers/
-    weather/
-      trigger.yaml    # トリガー定義
-      handler.sh      # 実行スクリプト
-    search/
-      trigger.yaml
-      handler.sh
-```
-
-#### trigger.yaml フォーマット
-
-```yaml
-name: weather
-description: '天気予報を取得する（例: weather 名古屋）'
-handler: handler.sh
-```
-
-| フィールド    | 必須 | 説明                                              |
-| ------------- | ---- | ------------------------------------------------- |
-| `name`        | Yes  | ツール名（LLMがfunction callingで呼ぶ名前）       |
-| `description` | No   | ツールの説明（LLMに渡されるツール定義に含まれる） |
-| `handler`     | Yes  | 実行スクリプトのファイル名                        |
-
-#### handler の仕様
-
-- ワークスペースルートを `cwd` として `bash handler.sh [引数...]` で実行
-- 引数はLLMがfunction callingで渡した`args`をスペース区切りで渡す
-- タイムアウト: `EXEC_TIMEOUT_MS`（デフォルト120秒）
-- `stdout` の内容がLLMに返され、LLMが自然な文章で応答を生成
-
-#### 動作フロー
-
-1. xangi起動時にワークスペースの `triggers/` をスキャンしてツール定義を自動生成
-2. LLMにカスタムツールとして登録
-3. LLMがfunction callingでツールを呼び出し
-4. handler.shが実行され、結果がLLMに返される
-5. LLMが結果を踏まえて自然な文章で応答
-
-#### 注意事項
-
-- ツールが有効なモード（lite/agent）で動作します
-- 新しいトリガーを追加したらxangiを再起動してください
 
 ### マルチモーダル（画像入力）
 
@@ -1109,15 +1050,18 @@ Local LLMバックエンドはチャンネルごとにセッション（会話�
 
 その他Ollama/vLLMで利用可能なモデルに対応しています。
 
-## ワークスペース hooks（Stop hook）
+## ワークスペース hooks
 
-エージェントループのターン終了時に外部検証プロセス（hook）を挟む機構。Claude Code / Codex CLI の Stop hook と互換の契約を採用しているため、同じ hook スクリプトを複数のランタイムで共用できる。現在対応しているのは Local LLM バックエンドのターン終了（`Stop` イベント）のみ。
+エージェントループのライフサイクルに外部プロセスを挟む機構。1つの設定ファイルで、LLM実行前の動的context追加（`UserPromptSubmit`）と、Local LLMのターン終了時検証（`Stop`）をイベント別に設定できる。
 
-使い所の例: 「あとで確認して報告します」と約束したのにスケジュール登録ツールを呼んでいない応答を block し、登録を促すフィードバックを返す（やりっぱなし防止）。
+- `UserPromptSubmit`: 全バックエンド共通。ユーザーがpromptを送信した後、LLMが処理する前に発火する
+- `Stop`: Local LLMのみ。最終応答を検証し、必要なら1回だけ継続ラウンドを促す
 
 ### 設定
 
-hooks はデフォルト有効です。ワークスペースに `hooks/hooks.json` を置くだけで動きます（無ければ何もしない no-op）。skills / triggers と同じ「置いたら効く」の慣行です。
+hooks はデフォルト有効です。ワークスペースに `hooks/hooks.json` を置くだけで動きます（無ければ何もしない no-op）。skills と同じ「置いたら効く」の慣行です。
+
+`UserPromptSubmit`の設定は各turn前、`Stop`は各gate前に再評価します。hookの追加・削除はxangiを再起動せず次のhook eventから反映され、編集中に一時的に不正なJSONになった場合は直前の正常設定を維持します。
 
 ```bash
 # 一時的に止めたい場合のみ（キルスイッチ）
@@ -1131,12 +1075,54 @@ hooks はデフォルト有効です。ワークスペースに `hooks/hooks.jso
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "id": "workspace-search",
+        "exec": {
+          "file": "/absolute/path/to/context-adapter",
+          "args": []
+        },
+        "timeoutMs": 5000,
+        "maxOutputChars": 12000
+      }
+    ],
     "Stop": [{ "command": "python3 hooks/check-promise/hook.py", "timeoutMs": 10000 }]
   }
 }
 ```
 
-### hook の契約（Claude Code 互換）
+### UserPromptSubmitの契約
+
+`exec.file`と固定の`exec.args`をshellを介さず実行し、platform adapterが保持するwrapper展開前のユーザー入力をstdin JSONで渡す。ユーザー入力をcommand文字列やargvへ展開しない。
+
+```json
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "...",
+  "cwd": "/path/to/workspace",
+  "prompt": "ユーザーが入力した元テキスト",
+  "channel_id": "...",
+  "platform": "discord"
+}
+```
+
+exit 0のstdoutを追加contextとして元promptの末尾へ加える。plain textと、Claude Code / Gemini CLI互換の構造化JSONを受け付ける。
+
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "LLMへ渡す追加情報"
+  }
+}
+```
+
+- hookは独立に並列実行し、設定順でcontextを結合する
+- stdoutは未信頼の補助データとして区切り、system promptや元promptを置換しない
+- timeout、異常終了、空出力、spawn失敗はそのhookだけskipする（フェイルオープン）
+- timeoutは既定5秒・上限10秒、LLM投入量はhookごとに既定10,000文字・設定上限50,000文字、全hook合計20,000文字、stdout取り込みは64KBまで
+- `RunOptions.userText`が無い内部実行では発火しない
+
+### Stop hookの契約（Claude Code互換）
 
 hook はターン終了時にコマンドとして実行され（cwd = ワークスペース）、stdin に JSON を受け取る:
 
@@ -1183,10 +1169,10 @@ block の返し方（どちらでも可）:
 
 ### 制限
 
-- 対応イベントは `Stop` のみ（`PreToolUse` 等は将来拡張）
-- 対応バックエンドは `local-llm` のみ。`claude-code` / `codex` バックエンドでは各 CLI 自身の hooks 機構（Claude Code の `.claude/settings.json` / Codex の lifecycle hooks）を使う
-- 複数 hook は登録順に直列実行し、最初に block を返した hook で確定
-- hook の stdout/stderr の取り込みは 64KB まで、タイムアウトは既定 10 秒・上限 60 秒
+- 対応イベントは `UserPromptSubmit` と `Stop`（`PreToolUse` 等は将来拡張）
+- `UserPromptSubmit`は全バックエンド共通、`Stop`は`local-llm`のみ
+- `Stop`は複数hookを登録順に直列実行し、最初にblockを返したhookで確定する
+- 既存`Stop.command`は互換性のためshell commandとして動く。ユーザー入力を受ける`UserPromptSubmit`では安全な`exec.file + exec.args[]`のみ許可する
 
 ## Tool Trajectory Logger
 
@@ -1351,7 +1337,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `CHANNEL_OVERRIDES`             | チャンネル別バックエンド設定（JSON）。Discord スレッドでは親チャンネルIDの設定を継承                                    | -                            |
 | `EXTENSION_BACKEND_TIMEOUT_MS`  | 拡張バックエンドへのHTTP要求タイムアウト（ms）                                                                          | `5000`                       |
 | `XANGI_PUBLIC_WEB_URL`          | 拡張へ渡す、外部から到達可能なWeb Chatのbase URL                                                                        | 未設定                       |
-| `XANGI_EXTENSIONS_FILE`         | extension registryの絶対path（通常は自動決定）                                                                          | OS別config directory         |
+| `XANGI_EXTENSIONS_FILE`         | extension registryの絶対path（通常は自動決定）                                                                          | `${DATA_DIR}/extensions.json` |
 | `XANGI_EXTENSION_DEV_MANIFESTS` | `/extensions`に表示する信頼済みlocal manifestのJSON配列またはOS path区切りリスト                                        | 未設定                       |
 | `ANTHROPIC_API_KEY`             | Claude Code backend に渡す Anthropic API key（Claude Code利用時のみ）                                                   | -                            |
 | `CLAUDE_CODE_BARE`              | Claude Code に `--bare` を渡し、OAuth/keychain ではなく API key 認証に固定                                              | `false`                      |
@@ -1372,7 +1358,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 | 変数                  | 説明                                                                                                                 | デフォルト                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `XANGI_HOOKS_ENABLED` | ターン終了時の Stop hook 実行（[ワークスペース hooks](#ワークスペース-hooksstop-hook) 参照）。`false` でキルスイッチ | `true`                         |
+| `XANGI_HOOKS_ENABLED` | ワークスペース hooks（[ワークスペース hooks](#ワークスペース-hooks) 参照）。`false` でキルスイッチ                 | `true`                         |
 | `XANGI_HOOKS_FILE`    | hooks 設定ファイルのパス                                                                                             | `<workspace>/hooks/hooks.json` |
 
 ### WebチャットUI
@@ -1389,7 +1375,7 @@ Web ChatはReact + Viteで、新規会話、セッション検索と段階読込
 
 Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトと既定のbackend / model / effortを設定できる。modelとeffortの候補は、選択したbackendから動的取得される。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。既存のWeb会話はセッション行の`Projectへ移動`から所属先を変更でき、`Projectなし`へ戻すこともできる。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。`/backend reset`で会話固有設定を消すとProject設定へ戻る。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/YAML/TOML・主要コード形式を開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/JSONL/YAML/TOML、C/C++・Rust・Go、Astro・Vue・Svelte・Sass系を含む主要コード形式、ログ・diff・patch・TSV・CFGを開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
 Chat / Files / Schedules / Monitor / Extensionsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
 
@@ -1542,7 +1528,6 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_TOOLS`                       | ツール実行                                                                   | `true`                                                           |
 | `LOCAL_LLM_SKILLS`                      | スキル一覧注入                                                               | `true`                                                           |
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS注入                                                           | `true`                                                           |
-| `LOCAL_LLM_TRIGGERS`                    | トリガー（!コマンド）                                                        | `false`                                                          |
 | `LOCAL_LLM_MODEL`                       | 使用するモデル名                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | APIキー（vLLM等で必要な場合）                                                | -                                                                |
 | `LOCAL_LLM_THINKING`                    | Thinkingモデルの推論を有効にするか                                           | `true`                                                           |

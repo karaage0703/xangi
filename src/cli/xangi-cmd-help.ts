@@ -203,9 +203,10 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'extension',
     summary: '認証情報を公開せずmanaged extension APIを呼び出す',
     usage:
-      'xangi tool extension_request --id <extension-id> --capability <capability-id> --path </path> [--method <GET|POST|PUT|DELETE>] [--query-json <json-object>] [--body-json <json>]',
+      'xangi tool extension_request --id <extension-id> --capability <capability-id> --path </path> [--method <GET|POST|PUT|DELETE>] [--query-json <json-object> | --query-json-stdin] [--body-json <json>]',
     notes: [
       '--query-json はURLエンコードされる。認証tokenや内部portは出力されない。',
+      '--query-json-stdin はstdinのJSON objectをqueryに使い、値をargvへ載せない。',
       '--body-json はPOST/PUTでのみ使用できる。',
     ],
   },
@@ -218,6 +219,16 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     notes: [
       'Extensions画面で作成された更新会話から使う。manifestにupdate.prepareを宣言したrepository sourceだけが対象。',
       'manifestの権限・capability・entrypoint・agent backend・UI mapping・更新準備command変更はユーザー承認後だけ--accept-manifest-changes trueを付ける。',
+    ],
+  },
+  {
+    name: 'extension_uninstall',
+    topic: 'extension',
+    summary: '現在のinstanceでextensionを停止・unlinkして結果を検証',
+    usage: 'xangi tool extension_uninstall --id <extension-id>',
+    notes: [
+      'Extensions画面で作成された削除会話から、workspace cleanup承認後に1回だけ使う。',
+      'download済みsource、extension data、index、設定は削除しない。',
     ],
   },
   {

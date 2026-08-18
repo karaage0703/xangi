@@ -29,6 +29,29 @@ export interface PublishedLiveEvent {
   text?: string;
 }
 
+export interface StreamRecovery {
+  errorMessage: string;
+  previousAssistantId?: string;
+}
+
+export type StreamRecoveryDecision = 'recovered' | 'observing' | 'failed';
+
+export function decideStreamRecovery(
+  recovery: StreamRecovery,
+  detail: {
+    isActive?: boolean;
+    messages: Array<{ id?: string; role: string }>;
+  }
+): StreamRecoveryDecision {
+  const latestAssistantId = [...detail.messages]
+    .reverse()
+    .find((message) => message.role === 'assistant')?.id;
+  if (latestAssistantId && latestAssistantId !== recovery.previousAssistantId) {
+    return 'recovered';
+  }
+  return detail.isActive ? 'observing' : 'failed';
+}
+
 export function isPaneProcessing(localBusy: boolean, sessionActive?: boolean): boolean {
   return localBusy || sessionActive === true;
 }

@@ -746,7 +746,7 @@ const ALL_TOOLS: ToolHandler[] = [
   toolSearchToolHandler,
 ];
 
-// 動的に追加されたツール（トリガー由来等）
+// 動的に追加されたツール（xangiコマンド等）
 let dynamicTools: ToolHandler[] = [];
 
 export function getBuiltinTools(): ToolHandler[] {
@@ -754,7 +754,7 @@ export function getBuiltinTools(): ToolHandler[] {
 }
 
 /**
- * 動的ツールを登録する（トリガーのツール化等）
+ * 動的ツールを登録する（xangiコマンドのツール化等）
  */
 export function registerDynamicTools(tools: ToolHandler[]): void {
   dynamicTools = tools;
@@ -777,7 +777,7 @@ export function toLLMTools(handlers: ToolHandler[]): LLMTool[] {
 
 /**
  * デフォの常駐 tool 名（builtin core + tool_search）。
- * xangi-tools と triggers 系は deferred（tool_search 経由で呼び出す）。
+ * xangi-tools は deferred（tool_search 経由で呼び出す）。
  */
 const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'read',

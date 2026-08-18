@@ -22,7 +22,7 @@ afterEach(async () => {
   );
 });
 
-async function fixture() {
+async function fixture(options: { withSetupDocument?: boolean } = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'xangi-extension-update-'));
   temporaryDirectories.push(dataDir);
   let sha = 'a'.repeat(40);
@@ -62,12 +62,16 @@ async function fixture() {
         version,
         entrypoint: 'bin/demo-extension',
         runtime: { kind: 'managed-http' },
+        ...(options.withSetupDocument === false
+          ? {}
+          : { setup: { instructions: 'XANGI_SETUP.md' } }),
         update: { prepare: updatePreparation },
         permissions,
         capabilities: [],
       })
     );
     await writeFile(join(destination, 'README.md'), '# Setup\n');
+    await writeFile(join(destination, 'XANGI_SETUP.md'), '# Extension setup\n');
   };
   const source = await preparePublicGitHubExtension(
     'https://github.com/example/demo-extension',
@@ -124,6 +128,29 @@ describe('repository-managed extension updates', () => {
     expect(request.prompt).toContain(
       `xangi tool extension_update --id demo-extension --to ${'b'.repeat(40)}`
     );
+    expect(request.prompt).toContain(`extension root: ${dirname(setup.linked.manifestPath)}`);
+    expect(request.prompt).toContain(
+      `setup document: ${join(dirname(setup.linked.manifestPath), 'XANGI_SETUP.md')}`
+    );
+    expect(request.prompt).toContain('更新後のextensionとworkspaceの統合状態');
+    expect(request.prompt).toContain('同梱スキルとworkspace側の同名スキル');
+    expect(request.prompt).toContain('AGENTS.md');
+    expect(request.prompt).toContain('明示承認するまで');
+    expect(request.prompt).toContain('表記や整形だけの差分は提案しません');
+  });
+
+  it('keeps the workspace review optional when no setup document is declared', async () => {
+    const setup = await fixture({ withSetupDocument: false });
+    setup.setCandidate({ sha: 'b'.repeat(40), version: '1.1.0' });
+
+    const request = await createExtensionUpdateRequest('demo-extension', {
+      dataDir: setup.dataDir,
+      fetch: setup.request,
+      listLinkedExtensions: async () => [setup.linked],
+    });
+
+    expect(request.prompt).toContain('setup document: not declared');
+    expect(request.prompt).toContain('利用者向けsetup文書や同梱スキルがある場合だけ');
   });
 
   it('prepares, relinks, starts, and doctors a pinned update in the host process', async () => {

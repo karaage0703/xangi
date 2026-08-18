@@ -290,14 +290,45 @@ function sourceCheckoutDir(): string | undefined {
 
 async function checkoutHealthUrl(dir: string): Promise<string> {
   let port = '18888';
-  try {
-    const content = await readFile(join(dir, '.env'), 'utf8');
-    const match = content.match(/^WEB_CHAT_PORT\s*=\s*["']?([^\s"']+)["']?\s*$/m);
-    if (match?.[1]) port = match[1];
-  } catch {
-    // A missing checkout .env falls back to the Web Chat default.
-  }
+  const env = await readCheckoutEnv(dir);
+  if (env.WEB_CHAT_PORT) port = env.WEB_CHAT_PORT;
   return `http://127.0.0.1:${port}/health`;
+}
+
+async function readCheckoutEnv(dir: string): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  let content: string;
+  try {
+    content = await readFile(join(dir, '.env'), 'utf8');
+  } catch {
+    return env;
+  }
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    env[match[1]] = value;
+  }
+  return env;
+}
+
+async function checkoutRuntimeWorkspace(dir: string, configuredWorkspace: string): Promise<string> {
+  const env = await readCheckoutEnv(dir);
+  const setupConfigIsExplicitlyDisabled =
+    Object.hasOwn(env, 'XANGI_SETUP_CONFIG_PATH') &&
+    Object.hasOwn(env, 'XANGI_SETUP_STATE_DIR') &&
+    !env.XANGI_SETUP_CONFIG_PATH &&
+    !env.XANGI_SETUP_STATE_DIR;
+  if (!setupConfigIsExplicitlyDisabled) return configuredWorkspace;
+  return env.WORKSPACE_PATH || dir;
 }
 
 async function checkCheckoutPm2(dir: string): Promise<DoctorCheck> {
@@ -388,10 +419,13 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
     await checkHealth(healthUrl, options.fetchImpl ?? fetch)
   );
   if (configResult.config?.webChatEnabled) {
+    const expectedWorkspace = checkoutDir
+      ? await checkoutRuntimeWorkspace(checkoutDir, configResult.config.workspacePath)
+      : configResult.config.workspacePath;
     checks.push(
       await checkRuntimeWorkspace(
         options.runtimeInfoUrl ?? new URL('/api/sessions', healthUrl).href,
-        configResult.config.workspacePath,
+        expectedWorkspace,
         options.fetchImpl ?? fetch
       )
     );

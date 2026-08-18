@@ -112,6 +112,7 @@ export class ExtensionAgentRunner implements AgentRunner {
       const runResult: RunResult = {
         result: payload.result,
         sessionId: payload.sessionId ?? `${current.id}:${options?.channelId ?? randomUUID()}`,
+        sessionMode: 'stateless',
       };
       if (options?.appSessionId && this.workdir) {
         logResponse(this.workdir, options.appSessionId, {

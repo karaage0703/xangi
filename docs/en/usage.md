@@ -19,7 +19,7 @@ Detailed usage guide for xangi.
 - [Docker Deployment](#docker-deployment)
 - [Extension Integration](#extension-integration)
 - [Local LLM](#local-llm)
-- [Workspace Hooks (Stop Hook)](#workspace-hooks-stop-hook)
+- [Workspace Hooks](#workspace-hooks)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
 - [Security](#security)
 - [Environment Variables Reference](#environment-variables-reference)
@@ -122,7 +122,7 @@ Programmatic API:
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`; when omitted, adds the current remaining time (doubling it)
 - `POST /api/sessions/:id/close` — Mark the Session Closed, detach its next-input routing pointer, and destroy its runner while preserving conversation history. To reduce accidental actions, the Web UI exposes it from Monitor details
 
-Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
+Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running and leaves Monitor after the response completes; its conversation log remains available in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
 
 ## Scheduler
 
@@ -850,9 +850,11 @@ Managed extension status reports `running`, `healthy`, and `ready` separately. `
 
 xangi-search is visible in the official catalog on a first run. Listing the entry does not fetch or execute its repository; after Add is selected, xangi pins and validates the public repository and starts a dedicated setup conversation. Users may still enter any public GitHub repository URL or configure trusted local development manifests.
 
-An extension linked earlier through the CLI or deployment tooling still shows Setup while it is available. Selecting it opens the dedicated conversation from the repository setup document without stopping or reinstalling the extension. After setup, status, and doctor checks succeed, the LLM reads the extension README and relevant signals from the current workspace README, AGENTS.md, and top-level directory structure. It then proposes two or three uses matched to the user's goals and existing workflow. Each proposal includes why it fits, the first request or action to try, and the expected result. Recommendations alone do not modify the workspace or settings, and automation, external sending, or scheduled execution still requires separate confirmation.
+An extension linked earlier through the CLI or deployment tooling still shows Setup while it is available. Selecting it opens the dedicated conversation from the repository setup document without stopping or reinstalling the extension. When the setup document contains a setting, workspace change, or optional feature that requires approval, the LLM presents the material difference, impact, and choices instead of deferring them to a generic recommendation or future request. It does not make the change before approval or report setup as complete while a choice remains pending. After setup, status, and doctor checks succeed, the LLM reads the extension README and relevant signals from the current workspace README, AGENTS.md, and top-level directory structure. It then proposes two or three uses matched to the user's goals and existing workflow. Each proposal includes why it fits, the first request or action to try, and the expected result. Recommendations alone do not modify the workspace or settings, and automation, external sending, or scheduled execution still requires separate confirmation.
 
-Extensions added from a public GitHub repository show Check for updates when their manifest declares `update.prepare`. Selecting it resolves the latest default-branch commit and opens a dedicated `Update: <displayName>` conversation. The conversation explains the installed and target commits, then invokes a fixed update tool owned by the xangi parent process. The tool revalidates the target commit, stops the extension, swaps the source, runs its update preparation, relinks, starts, and runs `doctor`. On failure it restores the previous source and, if the extension was running before the update, restarts and doctors that version. Added permissions or capabilities and changed entrypoints, agent backends, UI mappings, or update preparation commands require an additional explicit approval. Local manifests have no managed repository target and are therefore excluded; background automatic updates are also out of scope.
+Selecting Remove on the Extensions page opens a dedicated `Remove: <displayName>` conversation instead of stopping and unlinking immediately. The LLM reads the repository setup document and README, then inspects the current workspace for extension-specific hooks, skills, `AGENTS.md` rules, schedules, and other settings. Before changing anything, it presents the exact paths or IDs, what would be removed or retained, and the impact. The user chooses whether to remove confirmed workspace integrations or retain workspace changes and only stop and unlink the extension. Only after approval does the LLM apply a minimal workspace diff and invoke a fixed tool owned by the current xangi parent process. The tool stops and unlinks the extension, verifies the registry and runtime state, and returns completion, hook reload timing, and restart requirements without using an arbitrary CLI from `PATH`. Downloaded source, extension-owned data, indexes, settings, and facts remain in place during a normal removal; a full purge requires a separate explicit confirmation. The low-level `DELETE /api/extensions/:id` remains available for automation and compatibility and only stops and unlinks.
+
+Extensions added from a public GitHub repository show Check for updates when their manifest declares `update.prepare`. Selecting it resolves the latest default-branch commit and opens a dedicated `Update: <displayName>` conversation. The conversation explains the installed and target commits, then invokes a fixed update tool owned by the xangi parent process. The tool revalidates the target commit, stops the extension, swaps the source, runs its update preparation, relinks, starts, and runs `doctor`. On failure it restores the previous source and, if the extension was running before the update, restarts and doctors that version. Added permissions or capabilities and changed entrypoints, agent backends, UI mappings, or update preparation commands require an additional explicit approval. After a successful update, the same conversation has the LLM compare the updated setup document and bundled skills with same-name workspace skills and related `AGENTS.md` rules. It proposes changes only for material API or workflow differences and includes the reason, target paths, and summary. Approval of the extension update does not authorize workspace edits, so skills and `AGENTS.md` remain unchanged until separately approved. Local manifests have no managed repository target and are therefore excluded; background automatic updates are also out of scope.
 
 Update preparation declares a program and arguments separately instead of a shell command string. xangi runs it without a shell, using the new source's final directory as the working directory.
 
@@ -957,11 +959,6 @@ LOCAL_LLM_TOOLS=false
 LOCAL_LLM_SKILLS=false
 LOCAL_LLM_XANGI_COMMANDS=false
 
-# Example: chat with triggers
-LOCAL_LLM_TOOLS=false
-LOCAL_LLM_SKILLS=false
-LOCAL_LLM_XANGI_COMMANDS=false
-LOCAL_LLM_TRIGGERS=true
 ```
 
 | Variable                   | Description                                                         | Default |
@@ -969,70 +966,14 @@ LOCAL_LLM_TRIGGERS=true
 | `LOCAL_LLM_TOOLS`          | Tool execution (exec/read/write/edit/glob/grep/send_file/web_fetch) | `true`  |
 | `LOCAL_LLM_SKILLS`         | Skill list injection                                                | `true`  |
 | `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS injection                                            | `true`  |
-| `LOCAL_LLM_TRIGGERS`       | Triggers (!commands)                                                | `false` |
 
 `LOCAL_LLM_MODE` presets are also available (individual settings take priority):
 
-- `agent` (default) — tools / skills / xangi_commands ON, triggers OFF
+- `agent` (default) — tools / skills / xangi_commands ON
 - `chat` — all off (pure chitchat bot)
-- `lite` — tools / xangi_commands / triggers ON, skills OFF (chatty bot that can still operate Discord/Slack)
+- `lite` — tools / xangi_commands ON, skills OFF (chatty bot that can still operate Discord/Slack)
 
 Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
-
-### Triggers (Custom Tools)
-
-Add custom tools to the LLM by placing shell scripts in the `triggers/` directory. Enable with `LOCAL_LLM_TRIGGERS=true`.
-
-The LLM calls triggers via function calling, and handler.sh is executed to return results.
-
-#### Setup
-
-Create a `triggers/` directory in your workspace with subdirectories for each command:
-
-```
-workspace/
-  triggers/
-    weather/
-      trigger.yaml    # Trigger definition
-      handler.sh      # Handler script
-    search/
-      trigger.yaml
-      handler.sh
-```
-
-#### trigger.yaml Format
-
-```yaml
-name: weather
-description: 'Get weather forecast (e.g., weather Tokyo)'
-handler: handler.sh
-```
-
-| Field         | Required | Description                                                      |
-| ------------- | -------- | ---------------------------------------------------------------- |
-| `name`        | Yes      | Tool name (used by LLM in function calling)                      |
-| `description` | No       | Tool description (included in the tool definition passed to LLM) |
-| `handler`     | Yes      | Handler script filename                                          |
-
-#### Handler Specification
-
-- Executed as `bash handler.sh [args...]` with workspace root as `cwd`
-- Arguments are passed from the LLM's function calling `args` parameter
-- Timeout: `EXEC_TIMEOUT_MS` (default 120 seconds)
-- `stdout` content is returned to the LLM, which generates a natural language response
-
-#### How It Works
-
-1. On startup, xangi scans `triggers/` and auto-generates tool definitions
-2. Triggers are registered as custom tools for the LLM
-3. LLM calls the tool via function calling
-4. handler.sh is executed and results are returned to the LLM
-5. LLM generates a natural response based on the results
-
-#### Notes
-
-- Works in modes with tools enabled (lite/agent)
-- Restart xangi after adding new triggers
 
 ### Multimodal (Image Input)
 
@@ -1092,15 +1033,18 @@ The Local LLM backend maintains sessions (conversation history) per channel. Whe
 
 Other models available via Ollama/vLLM are also supported.
 
-## Workspace Hooks (Stop Hook)
+## Workspace Hooks
 
-A mechanism that inserts an external verification process (hook) at the end of each agent-loop turn. The contract is compatible with the Stop hooks of Claude Code / Codex CLI, so the same hook script can be shared across runtimes. Currently only the turn end (`Stop` event) of the Local LLM backend is supported.
+A mechanism for running external processes at agent-loop lifecycle points. A single configuration file supports event-specific dynamic context before any backend starts (`UserPromptSubmit`) and final-response validation for Local LLM (`Stop`).
 
-Example use case: block a response that promises "I'll check and report later" without actually calling the schedule registration tool, and feed back a reminder to register (preventing run-and-forget).
+- `UserPromptSubmit`: all backends; fires after prompt submission and before the LLM starts processing it
+- `Stop`: Local LLM only; validates the final response and can request one continuation round
 
 ### Configuration
 
-Hooks are enabled by default. Just place `hooks/hooks.json` in your workspace and it works (no-op if absent) — the same "place it and it works" convention as skills / triggers.
+Hooks are enabled by default. Just place `hooks/hooks.json` in your workspace and it works (no-op if absent) — the same "place it and it works" convention as skills.
+
+`UserPromptSubmit` configuration is reevaluated before every turn and `Stop` before every gate. Adding or removing hooks takes effect at the next hook event without restarting xangi, while a temporarily invalid JSON file retains the last valid configuration.
 
 ```bash
 # Only if you want to temporarily disable hooks (kill switch)
@@ -1114,12 +1058,54 @@ Place `hooks/hooks.json` in your workspace:
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "id": "workspace-search",
+        "exec": {
+          "file": "/absolute/path/to/context-adapter",
+          "args": []
+        },
+        "timeoutMs": 5000,
+        "maxOutputChars": 12000
+      }
+    ],
     "Stop": [{ "command": "python3 hooks/check-promise/hook.py", "timeoutMs": 10000 }]
   }
 }
 ```
 
-### Hook Contract (Claude Code Compatible)
+### UserPromptSubmit Contract
+
+The hook executes `exec.file` with fixed `exec.args` and no shell. It receives the platform adapter's unexpanded user text as JSON on stdin. User input is never interpolated into the command string or argv.
+
+```json
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "...",
+  "cwd": "/path/to/workspace",
+  "prompt": "the original user text",
+  "channel_id": "...",
+  "platform": "discord"
+}
+```
+
+On exit 0, stdout is appended to the original prompt as supplemental context. Plain text and the Claude Code / Gemini CLI structured JSON form are accepted:
+
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "supplemental context for the LLM"
+  }
+}
+```
+
+- Hooks run independently in parallel; contexts are combined in configuration order
+- Output is delimited as untrusted supplemental data and cannot replace the system or original prompt
+- Timeout, non-zero exit, empty output, and spawn failures skip only that hook (fail-open)
+- Timeout defaults to 5s with a 10s cap; model-visible output defaults to 10,000 characters per hook with a configurable 50,000-character cap and a 20,000-character aggregate cap; stdout capture is capped at 64KB
+- Internal runs without `RunOptions.userText` do not fire the event
+
+### Stop Hook Contract (Claude Code Compatible)
 
 The hook is executed as a command at turn end (cwd = workspace) and receives JSON on stdin:
 
@@ -1166,10 +1152,10 @@ Anything else (no output / non-JSON / other exit codes / timeout / spawn failure
 
 ### Limitations
 
-- Only the `Stop` event is supported (`PreToolUse` etc. are future extensions)
-- Only the `local-llm` backend is supported. For the `claude-code` / `codex` backends, use each CLI's own hooks mechanism (Claude Code's `.claude/settings.json` / Codex's lifecycle hooks)
-- Multiple hooks run sequentially in registration order; the first block wins
-- Hook stdout/stderr capture is limited to 64KB; timeout defaults to 10s with a 60s cap
+- Supported events are `UserPromptSubmit` and `Stop` (`PreToolUse` etc. are future extensions)
+- `UserPromptSubmit` works with every backend; `Stop` remains Local LLM only
+- Multiple `Stop` hooks run sequentially in registration order; the first block wins
+- Existing `Stop.command` remains a shell command for compatibility. `UserPromptSubmit`, which receives user input, only accepts safe `exec.file + exec.args[]`
 
 ## Tool Trajectory Logger
 
@@ -1325,7 +1311,7 @@ Shared completion-display settings:
 | `CHANNEL_OVERRIDES`             | Per-channel backend settings (JSON). Discord threads inherit the parent channel's entry                                        | -                         |
 | `EXTENSION_BACKEND_TIMEOUT_MS`  | HTTP timeout for extension-backed agent requests                                                                               | `5000`                    |
 | `XANGI_PUBLIC_WEB_URL`          | Externally reachable Web Chat base URL passed to extensions                                                                    | unset                     |
-| `XANGI_EXTENSIONS_FILE`         | Absolute extension registry path (normally resolved automatically)                                                             | OS config directory       |
+| `XANGI_EXTENSIONS_FILE`         | Absolute extension registry path (normally resolved automatically)                                                             | `${DATA_DIR}/extensions.json` |
 | `XANGI_EXTENSION_DEV_MANIFESTS` | Trusted local manifests shown at `/extensions`, as a JSON array or OS path-delimited list                                      | unset                     |
 | `ANTHROPIC_API_KEY`             | Anthropic API key passed only to the Claude Code backend                                                                       | -                         |
 | `CLAUDE_CODE_BARE`              | Pass `--bare` to Claude Code and force API-key auth instead of OAuth/keychain auth                                             | `false`                   |
@@ -1346,7 +1332,7 @@ Shared completion-display settings:
 
 | Variable              | Description                                                                                              | Default                        |
 | --------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `XANGI_HOOKS_ENABLED` | Run Stop hooks at turn end (see [Workspace Hooks](#workspace-hooks-stop-hook)). `false` is a kill switch | `true`                         |
+| `XANGI_HOOKS_ENABLED` | Workspace hooks (see [Workspace Hooks](#workspace-hooks)). `false` is a kill switch                    | `true`                         |
 | `XANGI_HOOKS_FILE`    | Path to the hooks config file                                                                            | `<workspace>/hooks/hooks.json` |
 
 ### Web Chat UI
@@ -1366,7 +1352,7 @@ Web Chat uses React + Vite and supports new conversations, paged session search,
 
 Web Projects are logical conversation groups equivalent to Discord channels. Each Project can define an extra prompt and default backend, model, and effort. Model and effort choices are discovered dynamically from the selected backend. The `Projects` link in the sidebar opens a dedicated list for creating, configuring, and filtering by Project. Use `Move to Project` on an existing Web conversation to change its Project or return it to `No Project`. Project defaults apply from the next turn; a conversation-level `/backend set` takes precedence, and `/backend reset` returns to the Project default. Project names are not expanded in the sidebar itself. All Projects use the same `WORKSPACE_PATH`; creating one does not create a directory, Git repository, or `AGENTS.md`. Project definitions are stored in `DATA_DIR/web-projects.json`, while the Project association is stored with each session.
 
-The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits Markdown, text, JSON/YAML/TOML, and common code formats up to 1 MiB. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
+The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
 Chat, Files, Schedules, Monitor, and Extensions share one navigation shell. It uses a left rail on desktop and bottom navigation on mobile, where Monitor, Extensions, and Display are available from More. The system, light, or dark choice is stored in the browser.
 
@@ -1513,7 +1499,6 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_TOOLS`                       | Tool execution                                                                         | `true`                                                           |
 | `LOCAL_LLM_SKILLS`                      | Skill list injection                                                                   | `true`                                                           |
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS injection                                                               | `true`                                                           |
-| `LOCAL_LLM_TRIGGERS`                    | Triggers (!commands)                                                                   | `false`                                                          |
 | `LOCAL_LLM_MODEL`                       | Model name                                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | API key (if required by vLLM, etc.)                                                    | -                                                                |
 | `LOCAL_LLM_THINKING`                    | Enable thinking model reasoning                                                        | `true`                                                           |

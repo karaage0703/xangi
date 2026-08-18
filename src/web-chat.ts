@@ -61,6 +61,7 @@ import {
   deriveSessionOrigin,
   deriveTitleFromFirstMessage,
   stripPromptMetadata,
+  stripUserPromptHookContexts,
   truncateSessionTitle,
 } from './session-title.js';
 import { isSchedulerRunId } from './scheduler-run.js';
@@ -98,6 +99,7 @@ import { prependWebProjectPrompt, WebProjectError, WebProjectStore } from './web
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import {
   createExtensionSetupRequest,
+  createExtensionUninstallRequest,
   installDevelopmentExtension,
   listDevelopmentExtensionCatalog,
   loadExtensionIdsReservedForRepository,
@@ -108,7 +110,7 @@ import {
   parsePublicGitHubRepositoryUrl,
   preparePublicGitHubExtension,
 } from './extension-repository.js';
-import { loadExtensionManifest } from './extensions.js';
+import { loadExtensionManifest, resolveExtensionAgentBackend } from './extensions.js';
 import { createExtensionUpdateRequest } from './extension-update.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -305,7 +307,7 @@ function sessionThreadId(session: {
 const busySessions = new Set<string>();
 
 function hasInternalPromptMetadata(text: string): boolean {
-  return /\[システム注記:|\[runtime\]|<prefetched-history\b|(?:<|\[)system-context(?:>|\])|<xangi_reply|(?:🧵 スレッド元|💬 返信元)|\[チャンネルルール（必ず従うこと）\]/.test(
+  return /\[システム注記:|\[runtime\]|<prefetched-history\b|(?:<|\[)system-context(?:>|\])|<xangi_reply|(?:🧵 スレッド元|💬 返信元)|\[チャンネルルール（必ず従うこと）\]|\[USER PROMPT HOOK CONTEXT:/.test(
     text
   );
 }
@@ -580,6 +582,11 @@ export function startWebChat(options: WebChatOptions): void {
         closeReason: s.closeReason,
         autoTalk: s.autoTalk === true,
         autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
+        sessionMode:
+          s.agent?.sessionMode ??
+          (s.agent?.backend && resolveExtensionAgentBackend(s.agent.backend)
+            ? 'stateless'
+            : 'stateful'),
         timeoutAt: timeoutState?.active ? timeoutState.timeoutAt : undefined,
         maxTimeoutAt: timeoutState?.active ? timeoutState.maxTimeoutAt : undefined,
         timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
@@ -625,6 +632,7 @@ export function startWebChat(options: WebChatOptions): void {
           lifecycle: 'closed' as const,
           autoTalk: false,
           autoTalkActive: false,
+          sessionMode: 'stateful' as const,
           timeoutAt: undefined,
           maxTimeoutAt: undefined,
           timeoutMs: undefined,
@@ -1141,6 +1149,36 @@ export function startWebChat(options: WebChatOptions): void {
             prompt: update.prompt,
             displayMessage: update.displayMessage,
             info: update.info,
+          })
+        );
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const extensionUninstallConversationMatch = url.match(
+      /^\/api\/extensions\/([^/]+)\/uninstall$/
+    );
+    if (extensionUninstallConversationMatch && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        return;
+      }
+      try {
+        const uninstall = await createExtensionUninstallRequest(
+          decodeURIComponent(extensionUninstallConversationMatch[1])
+        );
+        const sessionId = createWebSession({ title: `Remove: ${uninstall.displayName}` });
+        invalidateSessionSnapshots();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            sessionId,
+            prompt: uninstall.prompt,
+            displayMessage: uninstall.displayMessage,
           })
         );
       } catch (error) {
@@ -1695,6 +1733,12 @@ export function startWebChat(options: WebChatOptions): void {
           attachments: displayedUser.attachments,
         };
       });
+      const isCurrentSession = Boolean(entry && getActiveSessionId(entry.contextKey) === entry.id);
+      const activityThreadId =
+        entry && isCurrentSession
+          ? sessionThreadId(entry)
+          : deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
+      const activity = activityThreadId ? getActivity(activityThreadId) : undefined;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -1703,11 +1747,15 @@ export function startWebChat(options: WebChatOptions): void {
             (entry?.title && !hasInternalPromptMetadata(entry.title) ? entry.title : '') ||
             deriveTitleFromFirstMessage(workdir, appSessionId) ||
             truncateSessionTitle(
-              messages.find((m) => m.role === 'user')?.content?.toString() || ''
+              stripUserPromptHookContexts(
+                messages.find((m) => m.role === 'user')?.content?.toString() || ''
+              )
             ) ||
             appSessionId,
           platform: entry?.platform,
           lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
+          isActive: activity?.active === true,
+          activity,
           messages,
           limit,
           before,

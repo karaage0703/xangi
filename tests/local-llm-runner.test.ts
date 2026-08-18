@@ -139,7 +139,6 @@ describe('LocalLlmRunner liteMode', () => {
     expect(runner.enableTools).toBe(true);
     expect(runner.enableSkills).toBe(true);
     expect(runner.enableXangiCommands).toBe(true);
-    expect(runner.enableTriggers).toBe(false);
   });
 
   it('should use lite defaults when LOCAL_LLM_MODE=lite', () => {
@@ -148,7 +147,6 @@ describe('LocalLlmRunner liteMode', () => {
     expect(runner.enableTools).toBe(true);
     expect(runner.enableSkills).toBe(false);
     expect(runner.enableXangiCommands).toBe(true);
-    expect(runner.enableTriggers).toBe(true);
   });
 
   it('should use chat defaults when LOCAL_LLM_MODE=chat', () => {
@@ -157,7 +155,6 @@ describe('LocalLlmRunner liteMode', () => {
     expect(runner.enableTools).toBe(false);
     expect(runner.enableSkills).toBe(false);
     expect(runner.enableXangiCommands).toBe(false);
-    expect(runner.enableTriggers).toBe(false);
   });
 
   it('should allow individual overrides over mode defaults', () => {

@@ -103,6 +103,8 @@ describe('BackendResolver localLlmMode', () => {
 
     expect(resolver.getAllowedBackends()).toContain('new-extension-backend');
     expect(resolver.getSelectableBackends()).toContain('new-extension-backend');
+    resolver.setChannelOverride('extension-channel', { backend: 'new-extension-backend' });
+    expect(resolver.resolve('extension-channel').sessionMode).toBe('stateless');
   });
 
   it('CHANNEL_OVERRIDES から localLlmMode を読み込める', () => {

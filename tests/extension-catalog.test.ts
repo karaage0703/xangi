@@ -4,7 +4,9 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createExtensionSetupRequest,
+  createExtensionUninstallRequest,
   extensionIdsReservedForRepository,
+  finalizeDevelopmentExtensionUninstall,
   installDevelopmentExtension,
   listDevelopmentExtensionCatalog,
   listDevelopmentExtensions,
@@ -125,11 +127,12 @@ describe('development extension catalog', () => {
     expect(entries).toEqual([
       expect.objectContaining({
         id: 'xangi-search',
-        displayName: 'xangi search',
+        displayName: 'xangi-search',
         installed: false,
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-search',
       }),
     ]);
+    expect(entries[0]).not.toHaveProperty('version');
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
     ]).toEqual([]);
@@ -485,6 +488,19 @@ describe('development extension catalog', () => {
     );
   });
 
+  it('親processのfinalizerで停止・unlinkと完了状態をまとめて検証する', async () => {
+    const { root } = await fixture();
+    await installDevelopmentExtension('demo-search', root);
+
+    await expect(finalizeDevelopmentExtensionUninstall('demo-search')).resolves.toMatchObject({
+      extension: { id: 'demo-search', installed: false, running: false },
+      linked: false,
+      complete: true,
+      hookConfigReload: 'next-hook-event',
+      requiresRestart: false,
+    });
+  });
+
   it('rejects ids that are not present in the configured catalog', async () => {
     const { root } = await fixture();
     await expect(installDevelopmentExtension('unknown', root)).rejects.toThrow(
@@ -506,6 +522,41 @@ describe('development extension catalog', () => {
     expect(setup.prompt).toContain('その利用者向けの活用提案まで続けてください');
     expect(setup.prompt).toContain('なぜ合うか');
     expect(setup.prompt).toContain('活用提案の段階ではworkspaceや設定を変更せず');
+    expect(setup.prompt).toContain('genericな活用案や「次に依頼する文」へ置き換えず');
+    expect(setup.prompt).toContain('未決のまま「セットアップ完了」と報告しない');
+    expect(setup.prompt).toContain('同じsetup会話で残りの作業と確認を続けてください');
+  });
+
+  it('builds a guarded uninstall request without changing the installed extension', async () => {
+    const { root } = await fixture();
+    await installDevelopmentExtension('demo-search', root);
+
+    const uninstall = await createExtensionUninstallRequest('demo-search');
+
+    expect(uninstall).toMatchObject({
+      id: 'demo-search',
+      displayName: 'Demo Search',
+      displayMessage: 'Demo Search の削除準備を開始します。',
+    });
+    expect(uninstall.prompt).toContain(join(root, 'XANGI_SETUP.md'));
+    expect(uninstall.prompt).toContain(`README document: ${join(root, 'README.md')}`);
+    expect(uninstall.prompt).toContain('利用者が選択する前にworkspaceを変更せず');
+    expect(uninstall.prompt).toContain('hook、skills、AGENTS.md');
+    expect(uninstall.prompt).toContain('対象path、hook IDや設定key');
+    expect(uninstall.prompt).toContain('extensionだけ停止・unlink');
+    expect(uninstall.prompt).toContain('index、設定、FACTはこの削除では消さず');
+    expect(uninstall.prompt).toContain('xangi tool extension_uninstall --id demo-search');
+    expect(uninstall.prompt).toContain('任意のPATH上のxangi CLIでstop・unlinkしない');
+    await expect(listDevelopmentExtensions()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'demo-search', installed: true })])
+    );
+  });
+
+  it('rejects an uninstall conversation for an extension that is not installed', async () => {
+    await fixture();
+    await expect(createExtensionUninstallRequest('demo-search')).rejects.toThrow(
+      'Extension is not installed'
+    );
   });
 
   it('keeps setup available when the repository has no README', async () => {
