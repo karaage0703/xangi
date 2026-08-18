@@ -116,6 +116,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function defaultExtensionsFile(): string {
   if (process.env.XANGI_EXTENSIONS_FILE) return process.env.XANGI_EXTENSIONS_FILE;
+  if (process.env.DATA_DIR) return join(resolve(process.env.DATA_DIR), 'extensions.json');
+  if (process.env.WORKSPACE_PATH) {
+    return join(resolve(process.env.WORKSPACE_PATH), '.xangi', 'extensions.json');
+  }
+  return legacyExtensionsFile();
+}
+
+function legacyExtensionsFile(): string {
   const currentPlatform = platform();
   if (currentPlatform !== 'darwin' && currentPlatform !== 'linux') {
     return join(homedir(), '.config', 'xangi', 'extensions.json');
@@ -129,6 +137,12 @@ export function defaultExtensionsFile(): string {
     xdgStateHome: process.env.XDG_STATE_HOME,
   });
   return join(layout.configDir, 'extensions.json');
+}
+
+function effectiveDataDir(): string | undefined {
+  if (process.env.DATA_DIR) return resolve(process.env.DATA_DIR);
+  if (process.env.WORKSPACE_PATH) return join(resolve(process.env.WORKSPACE_PATH), '.xangi');
+  return undefined;
 }
 
 export function parseExtensionManifest(value: unknown): ExtensionManifest {
@@ -363,6 +377,38 @@ async function writeExtensionStore(store: ExtensionStore, configPath: string): P
   await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
   await chmod(temporary, 0o600);
   await rename(temporary, configPath);
+}
+
+/**
+ * Move only entries owned by this instance out of the pre-DATA_DIR registry.
+ *
+ * Older xangi versions stored one registry per OS user. Copying that complete
+ * file would reproduce the cross-instance leak, so only repository-managed
+ * manifests below this instance's DATA_DIR are eligible. Listing remains
+ * read-only; startup invokes this migration before autostart.
+ */
+export async function migrateLegacyExtensionStore(
+  options: { legacyPath?: string } = {}
+): Promise<number> {
+  if (process.env.XANGI_EXTENSIONS_FILE) return 0;
+  const dataDir = effectiveDataDir();
+  if (!dataDir) return 0;
+  const destination = defaultExtensionsFile();
+  const legacy = options.legacyPath ?? legacyExtensionsFile();
+  if (resolve(destination) === resolve(legacy) || existsSync(destination) || !existsSync(legacy)) {
+    return 0;
+  }
+
+  const managedRoot = join(dataDir, 'extensions', 'sources');
+  const legacyStore = await readExtensionStore(legacy);
+  const owned = legacyStore.extensions.filter((linked) => {
+    const rel = relative(managedRoot, resolve(linked.manifestPath));
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  });
+  if (owned.length === 0) return 0;
+
+  await writeExtensionStore({ schemaVersion: 1, extensions: owned }, destination);
+  return owned.length;
 }
 
 export async function linkExtension(
@@ -802,6 +848,12 @@ export function resolveExtensionCapability(
 export async function startAutostartExtensions(
   options: { workspace?: string } = {}
 ): Promise<void> {
+  const migrated = await migrateLegacyExtensionStore();
+  if (migrated > 0) {
+    console.log(
+      `[extensions] migrated ${migrated} instance-owned extension${migrated === 1 ? '' : 's'} to ${defaultExtensionsFile()}`
+    );
+  }
   for (const linked of await listExtensions()) {
     if (!linked.enabled || !linked.autostart) continue;
     try {

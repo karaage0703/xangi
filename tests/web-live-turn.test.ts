@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyPublishedLiveEvent,
+  decideStreamRecovery,
   isPaneProcessing,
   liveThreadId,
   selectLiveTurn,
@@ -107,5 +108,51 @@ describe('Web Chat live turn', () => {
         { state: 'complete', summary: '完了', active: false, turnId: 'turn-1' }
       )
     ).toBeUndefined();
+  });
+
+  it('recovers a disconnected request from a newly persisted assistant response', () => {
+    expect(
+      decideStreamRecovery(
+        { errorMessage: 'Load failed', previousAssistantId: 'assistant-old' },
+        {
+          isActive: false,
+          messages: [
+            { id: 'assistant-old', role: 'assistant' },
+            { id: 'user-new', role: 'user' },
+            { id: 'assistant-new', role: 'assistant' },
+          ],
+        }
+      )
+    ).toBe('recovered');
+  });
+
+  it('observes the server turn after the direct response stream disconnects', () => {
+    expect(
+      decideStreamRecovery(
+        { errorMessage: 'Load failed', previousAssistantId: 'assistant-old' },
+        {
+          isActive: true,
+          messages: [
+            { id: 'assistant-old', role: 'assistant' },
+            { id: 'user-new', role: 'user' },
+          ],
+        }
+      )
+    ).toBe('observing');
+  });
+
+  it('keeps a real transport error when the server has neither activity nor a result', () => {
+    expect(
+      decideStreamRecovery(
+        { errorMessage: 'Load failed', previousAssistantId: 'assistant-old' },
+        {
+          isActive: false,
+          messages: [
+            { id: 'assistant-old', role: 'assistant' },
+            { id: 'user-new', role: 'user' },
+          ],
+        }
+      )
+    ).toBe('failed');
   });
 });

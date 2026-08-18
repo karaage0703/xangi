@@ -9,11 +9,10 @@ import { BUILTIN_AGENT_BACKENDS, getAllAgentBackends } from './config.js';
 
 /**
  * Local LLM の動作モード
- * - agent: 全機能ON（tools/skills/xangi-commands、triggers OFF）
- * - lite: tools/xangi-commands/triggers ON、skills OFF（軽量、Discord 操作向け）
+ * - agent: 全機能ON（tools/skills/xangi-commands）
  * - chat: 全機能 OFF（純粋な会話）
  */
-export type LocalLlmMode = 'agent' | 'lite' | 'chat';
+export type LocalLlmMode = 'agent' | 'chat';
 
 /**
  * チャンネルごとのオーバーライド設定
@@ -33,6 +32,8 @@ export interface ResolvedBackend {
   backend: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  /** Extension-backed agents currently execute independent requests without provider context. */
+  sessionMode?: 'stateless';
   /** Local LLM mode override（local-llm backend の時のみ意味あり） */
   localLlmMode?: LocalLlmMode;
 }
@@ -139,6 +140,9 @@ export class BackendResolver {
       return {
         backend: defaultBackend,
         model: defaultModel,
+        ...(resolveExtensionAgentBackend(defaultBackend)
+          ? { sessionMode: 'stateless' as const }
+          : {}),
         localLlmMode: defaultLocalLlmMode,
       };
     }
@@ -148,6 +152,9 @@ export class BackendResolver {
       return {
         backend: defaultBackend,
         model: defaultModel,
+        ...(resolveExtensionAgentBackend(defaultBackend)
+          ? { sessionMode: 'stateless' as const }
+          : {}),
         localLlmMode: defaultLocalLlmMode,
       };
     }
@@ -157,6 +164,9 @@ export class BackendResolver {
       backend: resolvedBackend,
       model: override.model ?? (override.backend ? undefined : defaultModel),
       effort: override.effort,
+      ...(resolveExtensionAgentBackend(resolvedBackend)
+        ? { sessionMode: 'stateless' as const }
+        : {}),
       localLlmMode: override.localLlmMode ?? defaultLocalLlmMode,
     };
   }

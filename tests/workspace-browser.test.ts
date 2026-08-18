@@ -38,6 +38,61 @@ describe('WorkspaceBrowser', () => {
     expect(notes.entries.map((entry) => entry.path)).toEqual(['notes/today.md']);
   });
 
+  it('lists and reads JSON Lines files', async () => {
+    mkdirSync(join(workspace, 'logs'));
+    mkdirSync(join(workspace, 'logs', 'sessions'));
+    const content = '{"role":"user","content":"hello"}\n';
+    writeFileSync(join(workspace, 'logs', 'sessions', 'session.jsonl'), content);
+
+    const sessions = await browser.list('logs/sessions');
+    const opened = await browser.read('logs/sessions/session.jsonl');
+
+    expect(sessions.entries.map((entry) => entry.path)).toEqual([
+      'logs/sessions/session.jsonl',
+    ]);
+    expect(opened.content).toBe(content);
+  });
+
+  it.each([
+    '.astro',
+    '.c',
+    '.cc',
+    '.cfg',
+    '.cjs',
+    '.cpp',
+    '.cts',
+    '.cxx',
+    '.diff',
+    '.go',
+    '.h',
+    '.hh',
+    '.hpp',
+    '.hxx',
+    '.inl',
+    '.ipp',
+    '.less',
+    '.log',
+    '.mdx',
+    '.mts',
+    '.patch',
+    '.rs',
+    '.sass',
+    '.scss',
+    '.svelte',
+    '.tsv',
+    '.vue',
+  ])('lists and reads %s text files', async (extension) => {
+    const name = `source${extension}`;
+    const content = `content for ${extension}\n`;
+    writeFileSync(join(workspace, 'notes', name), content);
+
+    const notes = await browser.list('notes');
+    const opened = await browser.read(`notes/${name}`);
+
+    expect(notes.entries.some((entry) => entry.path === `notes/${name}`)).toBe(true);
+    expect(opened.content).toBe(content);
+  });
+
   it('extracts tags from Markdown frontmatter without failing on malformed YAML', async () => {
     writeFileSync(
       join(workspace, 'tagged.md'),

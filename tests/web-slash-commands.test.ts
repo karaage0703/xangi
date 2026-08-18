@@ -61,7 +61,7 @@ class FakeResolver {
     this.cleared = true;
   }
 
-  setChannelLocalLlmMode(_channelId: string, mode: 'agent' | 'lite' | 'chat' | null): void {
+  setChannelLocalLlmMode(_channelId: string, mode: 'agent' | 'chat' | null): void {
     if (mode === null && this.override) delete this.override.localLlmMode;
     else this.override = { ...(this.override ?? {}), localLlmMode: mode ?? undefined };
   }
@@ -201,6 +201,18 @@ describe('Web slash command adapter', () => {
     await executeWebCommand('/backend reset', context);
     expect(resolver.cleared).toBe(true);
     expect(resolver.override).toBeUndefined();
+  });
+
+  it('rejects the removed lite Local LLM mode', async () => {
+    const context = {
+      appSessionId: 'web-1',
+      workdir,
+      resolver: resolver as unknown as BackendResolver,
+    };
+
+    await expect(executeWebCommand('/llmmode lite', context)).rejects.toThrow(
+      '使い方: /llmmode show|agent|chat|default'
+    );
   });
 
   it('shows and restores the Project backend default when no session override exists', async () => {

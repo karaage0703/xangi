@@ -13,6 +13,7 @@ describe('Local LLM xangi tools by platform', () => {
     expect(toolNames).toContain('media_send');
     expect(toolNames).toContain('web_status');
     expect(toolNames).toContain('runtime_settings');
+    expect(toolNames).toContain('extension_uninstall');
     expect(toolNames).not.toContain('discord_history');
     expect(toolNames).not.toContain('discord_send');
     expect(toolNames).not.toContain('slack_history');
@@ -68,6 +69,15 @@ describe('Local LLM xangi tools by platform', () => {
       channel: { type: 'string' },
       platform: { enum: ['discord', 'slack', 'telegram', 'web'] },
     });
+  });
+
+  it('exposes parent-owned extension_uninstall on every platform', () => {
+    for (const platform of ['web', 'discord', 'slack', 'telegram'] as const) {
+      const tool = getXangiTools(platform).find(
+        (candidate) => candidate.name === 'extension_uninstall'
+      );
+      expect(tool?.parameters.required).toEqual(['id']);
+    }
   });
 
   it('keeps the legacy all-platform set when platform is unknown', () => {

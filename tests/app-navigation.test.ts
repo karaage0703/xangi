@@ -10,10 +10,10 @@ describe('AppNavigation', () => {
     expect(DESTINATIONS.filter((destination) => destination.placement === 'primary')).toEqual([
       expect.objectContaining({ id: 'chat', href: '/' }),
       expect.objectContaining({ id: 'workspace', href: '/workspace' }),
-      expect.objectContaining({ id: 'schedules', href: '/schedules' }),
+      expect.objectContaining({ id: 'monitor', href: '/monitor' }),
     ]);
     expect(DESTINATIONS.filter((destination) => destination.placement === 'secondary')).toEqual([
-      expect.objectContaining({ id: 'monitor', href: '/monitor' }),
+      expect.objectContaining({ id: 'schedules', href: '/schedules' }),
       expect.objectContaining({ id: 'extensions', href: '/extensions' }),
     ]);
   });

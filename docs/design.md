@@ -70,7 +70,7 @@ flowchart LR
 
 - per-channel / per-thread セッション分離（`contextKey = discord:<channelId>`。スレッド返信モードで新規スレッドを作成できた場合は `discord:<threadId>`）
 - Discord API 投稿先は親チャンネルまたは作成済みスレッド、runner / timeout / Stop / processing 管理は確定済みの `runKey = contextKey` で分離し、同じDiscordチャンネル内の別スレッドを別実行単位として扱う。スレッドのpromptには親チャンネル名/IDとスレッド名/IDを併記し、追加検索なしでどちらも送信先に選べるようにする
-- Discord スレッド内の per-channel 設定解決は親チャンネルIDを使う。`CHANNEL_OVERRIDES`（`/backend` / `/llmmode`）、`settings.json`（`/autoreply` / `/notify` / `/threadmode`）、チャンネル topic 注入は親チャンネル設定を継承する
+- Discord スレッド内の per-channel 設定解決は原則として親チャンネルIDを使う。`CHANNEL_OVERRIDES`（`/backend` / `/llmmode`）、`settings.json`（`/notify` / `/threadmode`）、チャンネル topic 注入は親チャンネル設定を継承する。`/autoreply`だけはスレッドIDへ明示overrideを保存し、未設定時に親チャンネルの値を継承する
 - 既存スレッド内の発言では、Discord の starter message（親チャンネル側の元メッセージ）を `🧵 スレッド元` としてプロンプトに注入し、スレッド履歴だけでは見えない最初の話題にフォーカスする
 - スレッド・添付ファイル・リアクション対応
 - ストリーミング表示は `stream-session.ts`（Slack / Web と共通コア）で思考表示・更新スロットリングを統一し、ボタン UI を `message.edit` で 1 秒粒度に更新
@@ -107,9 +107,9 @@ flowchart LR
 - Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない。不正なProject項目はその項目だけを読み飛ばし、利用できないbackend/model/effortはそのProjectで無効化して、他の機能を起動し続ける
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
-- `GET /api/sessions` は既定で最新100件と`activity`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
+- `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
-- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
+- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は入力待ち・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
 - `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除をHTTP API経由で行う。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
 - Chat / Files / Schedules / Monitor / Extensionsは共通navigation shellを使う。desktopでは左のactivity rail、768px以下またはtouch端末の低い横画面では下部navigationへ切り替え、Monitor・Extensions・theme selectorを`その他`sheetへ収める。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
@@ -134,10 +134,11 @@ flowchart LR
 - `setup`の共通configはmanaged serviceとcheckout PM2の両方が読む。checkout PM2へは秘密値を含まないconfig pathとstate pathだけをecosystem経由で渡す
 - checkoutの`update`はclean worktree、branch、upstreamを検証して`git pull --ff-only`、依存更新、buildを行う。`--managed`指定時は署名済みmanaged updaterを使う
 - `doctor`はcheckoutではPM2を検出し、Web Chatの`/api/sessions`が返すworkdirをsetup configとrealpath比較する。tailscale accessでは、有効なWeb Chat portのTailscale Serve TCP転送がloopbackを向いていることも確認する
-- `extensions.ts`は明示的にlinkされた`xangi-extension.json`だけをmode 0600のregistryへ保存する。schema v2 manifestは相対entrypoint、`managed-http` runtime、HTTP capability、任意のUI pathを宣言し、固定URLやportは保持しない。xangiはentrypointの`serve --workspace <path>`を子processとして起動し、OS自動割当の`127.0.0.1` URLをreadiness JSONから取得する。親が生成したBearer tokenを子と内部proxyだけで共有し、browserやmanifestへ公開しない。readiness JSONのschema・ID・workspace・loopback URLの検証成功をruntime登録の境界とし、その後の初回health timeout、非2xx、`ready: false`はcold start中に回復できる状態として子processを停止・登録解除しない。状態は`running`（process生存）、`healthy`（healthが2xx）、`ready`（2xx payloadが`ready: false`でない）を分け、旧extensionの`ready`省略はreadyとして扱う。stdin切断とgraceful shutdownで子を停止する
+- `extensions.ts`は明示的にlinkされた`xangi-extension.json`だけを`${DATA_DIR}/extensions.json`のmode 0600 registryへ保存し、同じOS userで動く別DATA_DIRのinstanceとは共有しない。旧OS user共通registryは起動時に、現在の`${DATA_DIR}/extensions/sources/`配下にmanifestがあるentryだけを新registryへ移行し、他instanceのentryはコピーしない。schema v2 manifestは相対entrypoint、`managed-http` runtime、HTTP capability、任意のUI pathを宣言し、固定URLやportは保持しない。xangiはentrypointの`serve --workspace <path>`を子processとして起動し、OS自動割当の`127.0.0.1` URLをreadiness JSONから取得する。親が生成したBearer tokenを子と内部proxyだけで共有し、browserやmanifestへ公開しない。readiness JSONのschema・ID・workspace・loopback URLの検証成功をruntime登録の境界とし、その後の初回health timeout、非2xx、`ready: false`はcold start中に回復できる状態として子processを停止・登録解除しない。状態は`running`（process生存）、`healthy`（healthが2xx）、`ready`（2xx payloadが`ready: false`でない）を分け、旧extensionの`ready`省略はreadyとして扱う。stdin切断とgraceful shutdownで子を停止する
 - Web UIの`/extensions`は、空env・空stateの初回起動でも公式curated catalogのxangi-searchを表示する。表示用catalogは公式項目を先に確保し、設定済みmanifest、repository source、linked registry、status確認を独立した入力として扱う。対応外schema、不正JSON、欠落fileなどが1件あっても正常な項目と公式項目をHTTP 200で返し、`degraded`と`issues`で部分失敗を通知する。旧schemaの変換、stateの自動修復、networkからの再取得は一覧表示では行わない。linked extensionがある場合はlinked manifestを表示内容の正本にし、repository sourceとcanonical manifest pathが一致する場合だけsource情報と更新操作を関連付ける。状態を判定できない項目は「未インストール」と断定せず、UIで状態不明として操作を無効化する。登録・setup・更新などstateを変更する経路は引き続きstrictな検証を行う。公式候補の表示だけではnetwork取得やcode実行を行わず、「追加」を選んだ時に公開GitHub repositoryの検証・取得と専用setup会話を開始する。CLIや配備作業で先にlinkされたextensionも、installed状態とは独立した「セットアップ」操作から同じ専用会話を開始できる。`XANGI_EXTENSION_DEV_MANIFESTS`に事前設定したlocal manifestと、利用者が追加した公開GitHub repositoryも同じcatalogへ統合する。GitHub URLは`https://github.com/owner/repository`のrootだけを受理し、認証情報を使わずpublic repositoryであることを確認する。default branchのcommit SHAへ固定したtarballを50 MB上限で取得し、単一rootかつ通常file/directoryだけであることを検証してから`${DATA_DIR}/extensions/sources/`へatomic展開する。repository rootの`xangi-extension.json`を検証し、repository URL・commit SHA・archive SHA-256・追加時刻・取得できたlicenseを`${DATA_DIR}/extension-sources.json`へmode 0600で保存する。この時点ではextension codeを実行しない。追加時は専用Webセッションを作り、manifestの`setup.instructions`、`XANGI_SETUP.md`、`README.md`の順でrepository内のsetup文書を選んでLLMへ渡す。setup文書は上位指示を上書きしない参考資料として扱い、agentへは現在のxangi instance固有のextension registry pathを安全な環境変数として渡す。低levelのinstall APIはregistryへのlinkと親process内runtime managerによるstart、removeはstopとunlinkを行い、codeやextension dataはdeleteしない。UIを宣言したextensionはカードの「開く」から同一origin proxyへ遷移し、xangiは実行中runtimeのURLへ認証付きで中継する。browserから任意path、upstream、Bearer tokenを指定できず、変更requestはWeb UIと同じhostだけを受け付ける
-- repository管理extensionの更新は、Extensions UIから専用の`Update: <displayName>` Webセッションを作る。対象はlinked済みの公開GitHub sourceで、manifestが`update.prepare.command`と`args`を宣言したextensionとし、特定ID・repository・package managerには依存しない。会話開始時にdefault branchのtarget commit SHAを固定し、LLMは説明・承認・結果報告を担当するが、任意のshell/git手順では更新しない。実変更はxangi親process内の`extension_update`がsource lockを取り、target/current SHAの再検証、候補manifest検証、停止、atomic source swap、最終配置pathでの更新準備、registry再link、start、doctorを行う。更新準備はshellを介さず、manifestのprogramと引数を分離して`execFile`で実行する。permission/capabilityの追加、entrypoint/agent backend/UI mapping/update preparationの変更は明示承認なしではswap前に停止する。swap後の失敗は旧directoryとregistryを復元し、更新前にrunningだった場合だけ旧版をstartしてdoctorする。更新成功後にのみsource stateのcommit SHAと`updatedAt`をatomic保存する。repository sourceを持たないlocal manifestとbackground自動更新は対象外とする
-- extensionのsetup requestはrepository root内のREADMEをsetup文書とは別に解決する。setup、status、doctorが成功した後、LLMはそのREADMEとworkspace内のREADME・AGENTS.md・上位directory構成に限定して利用者の目的と既存workflowを把握し、適合理由・最初の依頼または操作・期待結果を含む活用案を2〜3件提示する。推薦段階はread-onlyとし、workspace・設定の変更、自動化、外部送信、定期実行は別の明示確認へ分離する。
+- Extensions画面の通常削除は即時unlinkせず、linked manifestのsetup文書とREADMEを渡した専用LLM会話を開始する。LLMはworkspace内のextension固有hook、skill、`AGENTS.md`ルール、schedule、その他の設定を特定し、具体的な差分と保持項目を提示して承認後だけ最小cleanupを行う。その後、任意のPATH上のCLIではなく現在のxangi親processが所有する`extension_uninstall`固定toolを呼ぶ。toolは同じinstanceでstop、unlink、registry未登録とruntime停止を検証し、`complete`、`linked`、hook反映時点、再起動要否を返す。sourceとextension dataは既定で保持し、完全消去は別承認へ分離する。低levelの`DELETE /api/extensions/:id`は自動化・互換用としてstopとunlinkだけを行う
+- repository管理extensionの更新は、Extensions UIから専用の`Update: <displayName>` Webセッションを作る。対象はlinked済みの公開GitHub sourceで、manifestが`update.prepare.command`と`args`を宣言したextensionとし、特定ID・repository・package managerには依存しない。会話開始時にdefault branchのtarget commit SHAを固定し、LLMは説明・承認・結果報告を担当するが、任意のshell/git手順では更新しない。実変更はxangi親process内の`extension_update`がsource lockを取り、target/current SHAの再検証、候補manifest検証、停止、atomic source swap、最終配置pathでの更新準備、registry再link、start、doctorを行う。更新準備はshellを介さず、manifestのprogramと引数を分離して`execFile`で実行する。permission/capabilityの追加、entrypoint/agent backend/UI mapping/update preparationの変更は明示承認なしではswap前に停止する。swap後の失敗は旧directoryとregistryを復元し、更新前にrunningだった場合だけ旧版をstartしてdoctorする。更新成功後にのみsource stateのcommit SHAと`updatedAt`をatomic保存する。更新が成功した後、同じLLMはmanifestのsetup文書を更新後の内容で読み直し、repository内の同梱スキルとworkspace側の同名スキル、関連する`AGENTS.md`ルールを比較する。API・操作手順・常時適用ルールに実質差分がある時だけ、理由・対象path・変更概要を提示し、workspace変更は別の明示承認を得てから最小差分で行う。表記・整形だけの差分、workspaceの自動更新、repository sourceを持たないlocal manifest、background自動更新は対象外とする
+- extensionのsetup requestはrepository root内のREADMEをsetup文書とは別に解決する。setup文書に承認待ちの設定・workspace変更・任意機能がある場合、LLMはgenericな活用案や次回依頼へ置き換えず、重要な差分・影響・選択肢を具体的に提示する。返答待ちの項目は変更せず、未決の間はsetup完了と報告せずに同じsetup会話で継続する。setup、status、doctorが成功した後、LLMはそのREADMEとworkspace内のREADME・AGENTS.md・上位directory構成に限定して利用者の目的と既存workflowを把握し、適合理由・最初の依頼または操作・期待結果を含む活用案を2〜3件提示する。推薦段階はread-onlyとし、workspace・設定の変更、自動化、外部送信、定期実行は別の明示確認へ分離する。
 - `autostart`が有効なextensionはxangi processの起動時に開始する。起動logはready済みと、processは開始したがwarming中の状態を区別する。全体の`doctor`は各extensionの`doctor`も集約し、`ready: false`をerrorとして報告するが、1 extensionの起動失敗やwarmingで他のchat platformまで停止させず、該当capabilityの利用時に明示エラーを返す
 - 機能固有adapterは共通lifecycleから分離する。`workspace.search` adapterはcapabilityのruntime URLを親processのmemoryから解決し、HTTP requestへ親だけが持つ認証headerを追加する。複数のxangi instanceはそれぞれ別の子process・自動割当port・workspaceを所有する。個別extensionの実装・運用仕様は各repositoryの文書を正本とする
 - `src/cli/xangi-main.ts`はCLI実行専用entrypointで、`src/cli/xangi.ts`がexportする`run()`を無条件に呼び、top-level errorを終了コードへ変換する。CLI library自身は`import.meta.url`と`process.argv[1]`を比較して実行可否を判定しない。これによりmanaged版の`~/.local/bin/xangi → app/bin/xangi → current → dist/cli/xangi-main.js`という複数symlink経路でも起動責務が曖昧にならない
@@ -446,7 +447,7 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 
 **チャンネル毎 LocalLlmMode override（backend-resolver.ts）:**
 
-`ChannelOverride.localLlmMode?: 'agent' | 'lite' | 'chat'` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で per-channel に Local LLM 動作モードを切替可能。
+`ChannelOverride.localLlmMode?: 'agent' | 'chat'` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で per-channel に Local LLM 動作モードを切替可能。
 
 ```json
 {
@@ -460,11 +461,10 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 
 `MODE_DEFAULTS` (runner.ts):
 
-| mode    | tools | skills | xangiCommands | triggers |
-| ------- | ----- | ------ | ------------- | -------- |
-| `agent` | ✅    | ✅     | ✅            | –        |
-| `lite`  | ✅    | –      | ✅            | ✅       |
-| `chat`  | –     | –      | –             | –        |
+| mode    | tools | skills | xangiCommands |
+| ------- | ----- | ------ | ------------- |
+| `agent` | ✅    | ✅     | ✅            |
+| `chat`  | –     | –      | –             |
 
 **per-call 適用フロー:**
 
@@ -481,7 +481,7 @@ buildSystemPrompt(flags) と llmTools = callFlags.tools ? getAllTools() : []
 
 **`/llmmode` slash コマンド（index.ts）:**
 
-`/llmmode <agent|lite|chat|default|show>` で対話的に per-channel mode を切替。`agent/lite/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
+`/llmmode <agent|chat|default|show>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
 
 **Tool 遅延ロード（tool_search、Codex / Claude Code 流）:**
 
@@ -598,16 +598,22 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 - `already_executed`: 同一シグネチャが冪等キャッシュ HIT / loop 検出 (再実行禁止)
 - `unparseable_pseudo_call`: drift 検出されたが parse 失敗 (malformed args / 不明形式)
 
-#### ワークスペース hooks (Stop hook ゲート)
+#### ワークスペース hooks
 
-多段防御が「ツール呼び出しの形」を守る層なのに対し、hooks は「応答の中身とツール実行の整合」を検証する層。ターン終了時に外部プロセス (hook) へ最終応答テキストと実行済みツール一覧を渡し、block が返ったらフィードバックを system message として注入して 1 回だけ継続ラウンドを回す。
+共通の設定loaderの下で、イベントごとに入力・出力契約を分離する。`UserPromptSubmit`は`DynamicRunnerManager`で全バックエンドのLLM実行前に発火し、`Stop`はLocal LLMのターン終了時検証を担当する。
+
+- `UserPromptSubmit`: platform adapterの未展開`userText`をstdin JSONで外部プロセスへ渡し、exit 0のstdoutを未信頼の補助contextとして元prompt末尾へ加える。複数hookは独立に並列実行し、設定順で結合する。`UserPromptSubmit`は各turn前、`Stop`は各gate前に設定を再評価するため、追加・削除は再起動なしで次のhook eventから反映する。不正な一時状態では直前の正常設定を維持する
+- 安全な起動: `file + args[]`を`shell:false`で実行し、ユーザー入力をcommand/argvへ展開しない。子プロセスenvは`getSafeEnv()`のallowlistに限定する
+- 全バックエンド共通配線: `DynamicRunnerManager.run()` / `runStream()`がbackend解決後、内部runnerへ委譲する直前に実行する。`userText`が無い内部実行ではskipする
+- 量と遅延の上限: timeoutは既定5秒・上限10秒、LLM投入はhookごとに既定10,000文字・設定上限50,000文字、全hook合計20,000文字、captureは64KB。異常はそのhookだけfail-openでskipする
+- `Stop`: ターン終了時に最終応答テキストと実行済みツール一覧を渡し、blockが返ったらフィードバックをsystem messageとして注入して1回だけ継続ラウンドを回す
 
 - 契約は Claude Code / Codex CLI の Stop hook と互換 (stdin JSON、exit 0 + `{"decision":"block","reason":"..."}` または exit 2 + stderr)。同じ hook スクリプトをランタイム間で共用できる
 - xangi 拡張として `tools_called` (このターンで実際に実行されたツール名リスト、実行順) を payload に含める。ハーネス自身がツール実行を把握しているため、hook 側で transcript を parse する必要がない
 - フェイルオープン: hook 側の異常 (タイムアウト / 不正出力 / spawn 失敗 / 設定ファイル破損) はすべて素通り。ガードが本体応答を wedge しない
 - モード連動: ツール無効モード (chat) ではゲート自体をスキップする。継続ラウンドでフィードバックに対処する手段が無い状態で block すると、LLM が擬似 tool_call テキストで対処しようとして応答品質が落ちるため (実機観察)
 - 1 ターン 1 ナッジ: 継続ラウンドの結果は再チェックしない。hook は「強制」ではなく「ターン終了前に確認を 1 回挟む」装置
-- 実装: `src/hooks.ts` (設定ロード + `StopHookRunner`)、`LocalLlmRunner.applyStopHookGate()` (`run` / `runStream` 両経路に配線)。発火は tool trajectory に `stop_hook_block` イベントで記録される
+- 実装: `src/hooks.ts` (共通設定ロード + イベント別runner)、`src/dynamic-runner.ts` (`UserPromptSubmit`)、`LocalLlmRunner.applyStopHookGate()` (`Stop`)。Stop発火はtool trajectoryに`stop_hook_block`イベントで記録される
 - 履歴整合: block 時は `assistant(元応答)` → `system(feedback)` → `assistant(継続応答)` の順にセッション履歴へ積まれ、次ターン以降の文脈でも「何が起きたか」が追える
 
 #### Observability: tool trajectory
@@ -744,20 +750,6 @@ git fetch/push/ls-remote 等（AI CLI内）
 - トークン生成失敗時はPATへのフォールバックなし（エラー）
 - ラッパーディレクトリは子プロセスの `PATH` 先頭へ固定し、`BASH_ENV` でも再適用する。非対話 shell の起動時に rc file 等が `PATH` を組み直しても、通常の `gh` / `git` がラッパーを shadow しないようにする
 - `git` ラッパーは GitHub HTTPS credential のみを対象にし、SSH remote には介入しない
-
-### トリガー機能（local-llm/triggers.ts）
-
-Local LLMのchatモードで、LLM応答テキスト内のマジックワードを検出してスクリプトを自動実行する。
-
-```
-triggers/
-├── my-trigger/
-│   ├── trigger.yaml    # name, description, handler を定義
-│   └── handler.sh      # 実行スクリプト
-```
-
-- ワークスペースの `triggers/` ディレクトリから `trigger.yaml` を読み込み
-- LLM応答テキストにトリガーワードが含まれていれば handler を実行
 
 ### スキルシステム（skills.ts）
 
@@ -904,7 +896,7 @@ AI の応答テキストからファイルパスを拾って添付する処理�
 
 #### 環境変数の永続化と Docker のセキュリティ設計
 
-`/autoreply` / `/notify` / `/threadmode` は `settings.json`、`/respondtobots` / `/backend` / `/llmmode` は `.env` 書き戻しを使う。Discord スレッド内でこれらの slash command を実行した場合、スレッドIDではなく親チャンネルIDの設定として読み書きする。`.env` 側の「設定の持続」は **2 層構造** で動作する。混同しがちなので明示的に整理する:
+`/autoreply` / `/notify` / `/threadmode` は `settings.json`、`/respondtobots` / `/backend` / `/llmmode` は `.env` 書き戻しを使う。Discord スレッド内では、`/autoreply`だけがスレッドIDの設定を読み書きし、未設定時は親チャンネルの値を継承する。`/notify` / `/threadmode` / `/backend` / `/llmmode` は従来どおり親チャンネルIDを対象にする。`.env` 側の「設定の持続」は **2 層構造** で動作する。混同しがちなので明示的に整理する:
 
 **層 1: 起動時の env vars 注入 (常に有効)**
 
@@ -1053,7 +1045,6 @@ src/
 ├── tool-call-sanitize.ts # 表示テキストに漏れたツールコール構文の除去
 ├── access-urls.ts      # 起動時に表示する Web UI アクセスURL解決
 ├── constants.ts        # アプリケーション定数
-├── schedule-cli.ts     # スケジューラCLI（レガシー、tool-server移行済み）
 ├── cli/                # CLIモジュール（tool-serverから呼ばれる）
 │   ├── discord-api.ts  #   Discord REST API直叩き
 │   ├── schedule-cmd.ts #   スケジュール操作
@@ -1073,7 +1064,6 @@ src/
 │   ├── tools.ts        #   ビルトインツール（exec/read/write/edit/glob/grep/send_file/web_fetch）
 │   ├── xangi-tools.ts  #   xangi専用ツール（function calling版）
 │   ├── image-utils.ts  #   画像処理ユーティリティ（マルチモーダル対応）
-│   ├── triggers.ts     #   トリガー機能（chatモードのマジックワード検出・実行）
 │   ├── pseudo-toolcall.ts #  擬似tool_callテキストの解析・救済（rescue allowlist）
 │   └── types.ts        #   型定義
 ├── tool-trajectory/    # ツール実行軌跡の観測ログ（logs/tool-trajectory/*.jsonl）

@@ -1,11 +1,16 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { BackendResolver } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
-import { createSession, initSessions, setProviderSessionId } from '../src/sessions.js';
+import {
+  createSession,
+  getSessionEntry,
+  initSessions,
+  setProviderSessionId,
+} from '../src/sessions.js';
 
 function makeConfig(platform: Config['agent']['platform']): Config {
   return {
@@ -111,6 +116,86 @@ describe('DynamicRunnerManager platform routing', () => {
     );
   });
 
+  it('runs UserPromptSubmit before both run paths and passes enriched prompt to every backend', async () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-hook-'));
+    try {
+      mkdirSync(join(workdir, 'hooks'));
+      const hookScript = `
+        let raw = '';
+        process.stdin.on('data', (chunk) => (raw += chunk));
+        process.stdin.on('end', () => {
+          const input = JSON.parse(raw);
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: { additionalContext: 'prefetched:' + input.prompt }
+          }));
+        });
+      `;
+      writeFileSync(
+        join(workdir, 'hooks', 'hooks.json'),
+        JSON.stringify({
+          hooks: {
+            UserPromptSubmit: [
+              { id: 'prefetch', exec: { file: process.execPath, args: ['-e', hookScript] } },
+            ],
+          },
+        })
+      );
+      const config = makeConfig('discord');
+      config.agent.config.workdir = workdir;
+      const resolved = { backend: 'local-llm' as const, model: 'test' };
+      const resolver = {
+        resolve: vi.fn().mockReturnValue(resolved),
+        getDefault: vi.fn().mockReturnValue(resolved),
+      } as unknown as BackendResolver;
+      const manager = new DynamicRunnerManager(config, resolver);
+      const run = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+      const runStream = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+      (
+        manager as unknown as {
+          defaultRunner: { run: typeof run; runStream: typeof runStream };
+        }
+      ).defaultRunner = { run, runStream };
+
+      const options = {
+        channelId: 'thread-456',
+        appSessionId: 'app-session-1',
+        platform: 'discord' as const,
+        userText: 'raw user query',
+      };
+      await manager.run('composed prompt', options);
+      await manager.runStream('stream prompt', {}, options);
+
+      expect(run.mock.calls[0]?.[0]).toContain('prefetched:raw user query');
+      expect(runStream.mock.calls[0]?.[0]).toContain('prefetched:raw user query');
+      expect(run.mock.calls[0]?.[0]).toContain('[USER PROMPT HOOK CONTEXT: prefetch]');
+
+      writeFileSync(
+        join(workdir, 'hooks', 'hooks.json'),
+        JSON.stringify({ hooks: { UserPromptSubmit: [] } })
+      );
+      await manager.run('prompt after hook removal', options);
+      expect(run.mock.calls[1]?.[0]).toBe('prompt after hook removal');
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run UserPromptSubmit without unexpanded userText', async () => {
+    const config = makeConfig('discord');
+    const resolved = { backend: 'local-llm' as const, model: 'test' };
+    const resolver = {
+      resolve: vi.fn().mockReturnValue(resolved),
+      getDefault: vi.fn().mockReturnValue(resolved),
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver);
+    const run = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+    (manager as unknown as { defaultRunner: { run: typeof run } }).defaultRunner = { run };
+
+    await manager.run('prompt without raw input');
+
+    expect(run).toHaveBeenCalledWith('prompt without raw input', undefined);
+  });
+
   it('passes a Project default backend, model, and effort to backend resolution', async () => {
     const config = makeConfig('web');
     const resolved = { backend: 'local-llm' as const, model: 'test' };
@@ -177,6 +262,71 @@ describe('DynamicRunnerManager platform routing', () => {
 
     hasRunner.mockReturnValue(true);
     expect(manager.hasRunner('web-chat:session-1')).toBe(true);
+  });
+
+  it('records stateless provider metadata returned by a backend', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'dynamic-runner-stateless-'));
+    try {
+      initSessions(tempDir);
+      const appSessionId = createSession('discord-channel', { platform: 'discord' });
+      const config = makeConfig('discord');
+      const manager = new DynamicRunnerManager(config, new BackendResolver(config));
+      const run = vi.fn().mockResolvedValue({
+        result: 'result',
+        sessionId: 'search:discord-channel',
+        sessionMode: 'stateless' as const,
+      });
+      (
+        manager as unknown as {
+          defaultRunner: { run: typeof run };
+        }
+      ).defaultRunner = { run };
+
+      await manager.run('prompt', {
+        channelId: 'discord-channel',
+        appSessionId,
+      });
+
+      expect(getSessionEntry(appSessionId)?.agent?.sessionMode).toBe('stateless');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records stateless mode before a backend request can fail', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'dynamic-runner-stateless-error-'));
+    try {
+      initSessions(tempDir);
+      const appSessionId = createSession('discord-channel', { platform: 'discord' });
+      const config = makeConfig('discord');
+      const resolved = {
+        backend: 'local-llm' as const,
+        model: 'test',
+        sessionMode: 'stateless' as const,
+      };
+      const resolver = {
+        resolve: vi.fn().mockReturnValue(resolved),
+        getDefault: vi.fn().mockReturnValue(resolved),
+      } as unknown as BackendResolver;
+      const manager = new DynamicRunnerManager(config, resolver);
+      const run = vi.fn().mockRejectedValue(new Error('search failed'));
+      (
+        manager as unknown as {
+          defaultRunner: { run: typeof run };
+        }
+      ).defaultRunner = { run };
+
+      await expect(
+        manager.run('prompt', {
+          channelId: 'discord-channel',
+          appSessionId,
+        })
+      ).rejects.toThrow('search failed');
+
+      expect(getSessionEntry(appSessionId)?.agent?.sessionMode).toBe('stateless');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('drops a provider session when the resolved model or effort changed', () => {

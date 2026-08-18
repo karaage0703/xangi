@@ -32,6 +32,7 @@ import type { Scheduler } from './scheduler.js';
 import { listExtensions, runExtensionAction, type ExtensionAction } from './extensions.js';
 import { executeExtensionRequest } from './extension-request.js';
 import { updateExtension } from './extension-update.js';
+import { finalizeDevelopmentExtensionUninstall } from './extension-catalog.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
@@ -41,6 +42,8 @@ let scheduleManager: Scheduler | null = null;
 let modelDiscovery: typeof discoverBackendModels = discoverBackendModels;
 let webStatusCommand: typeof webStatusCmd = webStatusCmd;
 let extensionUpdateCommand: typeof updateExtension = updateExtension;
+let extensionUninstallCommand: typeof finalizeDevelopmentExtensionUninstall =
+  finalizeDevelopmentExtensionUninstall;
 
 interface ToolRequest {
   command: string;
@@ -161,6 +164,14 @@ async function executeCommand(
       acceptManifestChanges: flags['accept-manifest-changes'] === 'true',
     });
     return JSON.stringify(result);
+  } else if (command === 'extension_uninstall') {
+    if (!runtimeConfig) {
+      throw new ValidationError('extension_uninstall is not available on this instance');
+    }
+    if (!flags.id) {
+      throw new ValidationError('extension_uninstall requires --id');
+    }
+    return JSON.stringify(await extensionUninstallCommand(flags.id));
   } else if (command === 'trigger') {
     if (!eventTrigger) {
       throw new ValidationError('Trigger is not available on this instance');
@@ -271,6 +282,7 @@ export function startToolServer(options?: {
   modelDiscovery?: typeof discoverBackendModels;
   webStatusCommand?: typeof webStatusCmd;
   extensionUpdateCommand?: typeof updateExtension;
+  extensionUninstallCommand?: typeof finalizeDevelopmentExtensionUninstall;
 }): void {
   eventTrigger = options?.eventTrigger ?? null;
   backendResolver = options?.backendResolver ?? null;
@@ -279,6 +291,8 @@ export function startToolServer(options?: {
   modelDiscovery = options?.modelDiscovery ?? discoverBackendModels;
   webStatusCommand = options?.webStatusCommand ?? webStatusCmd;
   extensionUpdateCommand = options?.extensionUpdateCommand ?? updateExtension;
+  extensionUninstallCommand =
+    options?.extensionUninstallCommand ?? finalizeDevelopmentExtensionUninstall;
   server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
 

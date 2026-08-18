@@ -63,15 +63,15 @@ describe('EnvValidator', () => {
   describe('enumOf', () => {
     it('大文字小文字を無視してマッチする', () => {
       const v = new EnvValidator({ LOCAL_LLM_MODE: 'AGENT' });
-      expect(v.enumOf('LOCAL_LLM_MODE', ['agent', 'lite', 'chat'] as const, 'agent')).toBe('agent');
+      expect(v.enumOf('LOCAL_LLM_MODE', ['agent', 'chat'] as const, 'agent')).toBe('agent');
       expect(v.issues).toHaveLength(0);
     });
 
     it('typo はデフォルトにフォールバックして issue を記録', () => {
       const v = new EnvValidator({ LOCAL_LLM_MODE: 'agnet' });
-      expect(v.enumOf('LOCAL_LLM_MODE', ['agent', 'lite', 'chat'] as const, 'agent')).toBe('agent');
+      expect(v.enumOf('LOCAL_LLM_MODE', ['agent', 'chat'] as const, 'agent')).toBe('agent');
       expect(v.issues).toHaveLength(1);
-      expect(v.issues[0].message).toContain('agent / lite / chat');
+      expect(v.issues[0].message).toContain('agent / chat');
     });
   });
 
@@ -126,14 +126,14 @@ describe('validateChannelOverrides', () => {
   it('有効な設定はそのまま通す', async () => {
     await installExtensionBackendFixture();
     const raw = JSON.stringify({
-      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'lite' },
+      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'chat' },
       '234567890123456789': { backend: 'claude-code', effort: 'high' },
       '345678901234567890': { backend: 'example-backend' },
     });
     const { overrides, issues } = validateChannelOverrides(raw);
     expect(issues).toHaveLength(0);
     expect(overrides).toEqual({
-      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'lite' },
+      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'chat' },
       '234567890123456789': { backend: 'claude-code', effort: 'high' },
       '345678901234567890': { backend: 'example-backend' },
     });
@@ -164,7 +164,7 @@ describe('validateChannelOverrides', () => {
   it('effort / localLlmMode の不正値はエントリ除外', () => {
     const raw = JSON.stringify({
       '111': { backend: 'codex', effort: 'ultra' },
-      '222': { backend: 'local-llm', localLlmMode: 'turbo' },
+      '222': { backend: 'local-llm', localLlmMode: 'lite' },
       '333': { backend: 'grok' },
     });
     const { overrides, issues } = validateChannelOverrides(raw);

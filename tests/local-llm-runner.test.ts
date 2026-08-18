@@ -110,7 +110,7 @@ describe('formatLlmError', () => {
   });
 });
 
-describe('LocalLlmRunner liteMode', () => {
+describe('LocalLlmRunner mode', () => {
   const savedEnv: Record<string, string | undefined> = {};
   const envKeys = ['LOCAL_LLM_MODE', 'LOCAL_LLM_BASE_URL', 'LOCAL_LLM_MODEL'];
 
@@ -139,16 +139,15 @@ describe('LocalLlmRunner liteMode', () => {
     expect(runner.enableTools).toBe(true);
     expect(runner.enableSkills).toBe(true);
     expect(runner.enableXangiCommands).toBe(true);
-    expect(runner.enableTriggers).toBe(false);
   });
 
-  it('should use lite defaults when LOCAL_LLM_MODE=lite', () => {
+  it('should fall back to agent defaults when removed LOCAL_LLM_MODE=lite is set', () => {
     process.env.LOCAL_LLM_MODE = 'lite';
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
     expect(runner.enableTools).toBe(true);
-    expect(runner.enableSkills).toBe(false);
+    expect(runner.enableSkills).toBe(true);
     expect(runner.enableXangiCommands).toBe(true);
-    expect(runner.enableTriggers).toBe(true);
+    expect(runner.startupMode).toBe('agent');
   });
 
   it('should use chat defaults when LOCAL_LLM_MODE=chat', () => {
@@ -157,7 +156,6 @@ describe('LocalLlmRunner liteMode', () => {
     expect(runner.enableTools).toBe(false);
     expect(runner.enableSkills).toBe(false);
     expect(runner.enableXangiCommands).toBe(false);
-    expect(runner.enableTriggers).toBe(false);
   });
 
   it('should allow individual overrides over mode defaults', () => {
@@ -786,7 +784,7 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
   beforeEach(() => {
     workdir = mkdtempSync(join(tmpdir(), 'xangi-drift-'));
     mkdirSync(join(workdir, 'logs', 'sessions'), { recursive: true });
-    process.env.LOCAL_LLM_MODE = 'chat'; // enableTools=false → lite 単発 chat 経路
+    process.env.LOCAL_LLM_MODE = 'chat'; // enableTools=false → 単発 chat 経路
   });
 
   afterEach(() => {

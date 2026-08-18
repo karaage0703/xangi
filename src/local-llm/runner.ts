@@ -34,7 +34,6 @@ import {
   readSessionMessages,
   type TranscriptEntry,
 } from '../transcript-logger.js';
-import { loadTriggers, triggersToToolHandlers, type Trigger } from './triggers.js';
 import { getXangiTools } from './xangi-tools.js';
 import { prependRuntimeContext } from '../runtime-context.js';
 import {
@@ -46,7 +45,7 @@ import {
   FRIENDLY_FALLBACK_MESSAGE,
 } from './pseudo-toolcall.js';
 import { stripToolCallArtifacts } from '../tool-call-sanitize.js';
-import { createStopHookRunner, type StopHookRunner } from '../hooks.js';
+import { createReloadingStopHookRunner, type ReloadingStopHookRunner } from '../hooks.js';
 import {
   ToolTrajectoryLogger,
   loggerOptionsFromEnv,
@@ -531,14 +530,12 @@ interface ModeFlags {
   tools: boolean;
   skills: boolean;
   xangiCommands: boolean;
-  triggers: boolean;
 }
 
-/** モード別 defaults（agent/lite/chat） */
+/** モード別 defaults（agent/chat） */
 const MODE_DEFAULTS: Record<LocalLlmMode, ModeFlags> = {
-  agent: { tools: true, skills: true, xangiCommands: true, triggers: false },
-  chat: { tools: false, skills: false, xangiCommands: false, triggers: false },
-  lite: { tools: true, skills: false, xangiCommands: true, triggers: true },
+  agent: { tools: true, skills: true, xangiCommands: true },
+  chat: { tools: false, skills: false, xangiCommands: false },
 };
 
 /** LLMエラーがセッション履歴に起因するかを判定 */
@@ -642,9 +639,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   readonly enableTools: boolean;
   readonly enableSkills: boolean;
   readonly enableXangiCommands: boolean;
-  readonly enableTriggers: boolean;
-  /** トリガー定義 */
-  private triggers: Trigger[];
   /** Context budget（env から動的計算） */
   readonly contextBudget: ContextBudget;
   /** 起動時に解決された LocalLlmMode（per-call override がなければこれを使う） */
@@ -674,10 +668,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   private readonly baseUrlForTrajectory: string;
   private readonly featuresForTrajectory: string[];
   /**
-   * Stop hook ランナー (XANGI_HOOKS_ENABLED=true + hooks/hooks.json に Stop 定義があるときのみ非 null)。
-   * ターン終了時に外部検証プロセスを挟み、block ならフィードバックを注入して 1 回だけ継続ラウンドを回す。
+   * Stop hook ランナー。hooksが有効なら設定未定義でもreloaderを保持し、各gate前の
+   * 追加・削除を反映する。blockならフィードバックを注入して1回だけ継続ラウンドを回す。
    */
-  private readonly stopHooks: StopHookRunner | null;
+  private readonly stopHooks: ReloadingStopHookRunner | null;
 
   constructor(config: AgentConfig & { platform?: ChatPlatform }) {
     super();
@@ -701,9 +695,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const modeEnv = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
     const defaults = MODE_DEFAULTS[modeEnv as LocalLlmMode] || MODE_DEFAULTS.agent;
     this.startupMode =
-      modeEnv === 'agent' || modeEnv === 'lite' || modeEnv === 'chat'
-        ? (modeEnv as LocalLlmMode)
-        : 'agent';
+      modeEnv === 'agent' || modeEnv === 'chat' ? (modeEnv as LocalLlmMode) : 'agent';
 
     this.enableTools =
       process.env.LOCAL_LLM_TOOLS !== undefined
@@ -717,16 +709,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       process.env.LOCAL_LLM_XANGI_COMMANDS !== undefined
         ? process.env.LOCAL_LLM_XANGI_COMMANDS !== 'false'
         : defaults.xangiCommands;
-    this.enableTriggers =
-      process.env.LOCAL_LLM_TRIGGERS !== undefined
-        ? process.env.LOCAL_LLM_TRIGGERS !== 'false'
-        : defaults.triggers;
-
     this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx, temperature);
     this.workdir = config.workdir || process.cwd();
 
-    // Stop hooks (ターン終了ゲート)。設定が無ければ null で、ゲートは素通り
-    this.stopHooks = createStopHookRunner(this.workdir);
+    // Stop hooks (ターン終了ゲート)。設定変更は再起動せず次のgateで反映
+    this.stopHooks = createReloadingStopHookRunner(this.workdir);
 
     // Context budget を env から計算（明示優先、未指定なら NUM_CTX から逆算）
     this.contextBudget = loadContextBudget(process.env);
@@ -741,20 +728,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       this.defaultActiveToolNames = new Set(getAllTools().map((t) => t.name));
     }
 
-    // トリガーを読み込み
-    this.triggers = this.enableTriggers ? loadTriggers(this.workdir) : [];
-
-    // ツールモードが有効ならトリガー＋xangiコマンドをツールとして登録
+    // ツールモードが有効ならxangiコマンドをツールとして登録
     if (this.enableTools) {
       const dynamicTools = [];
-
-      if (this.triggers.length > 0) {
-        const triggerTools = triggersToToolHandlers(this.triggers, this.workdir);
-        dynamicTools.push(...triggerTools);
-        console.log(
-          `[local-llm] Triggers registered as tools: ${triggerTools.map((t) => t.name).join(', ')}`
-        );
-      }
 
       if (this.enableXangiCommands) {
         const xangiTools = getXangiTools(this.platform);
@@ -774,7 +750,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         this.enableTools && 'tools',
         this.enableSkills && 'skills',
         this.enableXangiCommands && 'xangi-commands',
-        this.enableTriggers && 'triggers',
       ]
         .filter(Boolean)
         .join(', ') || 'chat-only';
@@ -787,7 +762,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       tools: this.enableTools,
       skills: this.enableSkills,
       xangiCommands: this.enableXangiCommands,
-      triggers: this.enableTriggers,
     };
 
     // Context budget を起動時に表示
@@ -883,7 +857,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * - 未指定時: 起動時の flags を使う
    */
   private resolveCallModeFlags(callMode?: LocalLlmMode): ModeFlags {
-    if (callMode && (callMode === 'agent' || callMode === 'lite' || callMode === 'chat')) {
+    if (callMode && (callMode === 'agent' || callMode === 'chat')) {
       return { ...MODE_DEFAULTS[callMode] };
     }
     return { ...this.startupFlags };
@@ -1263,7 +1237,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
   /**
    * エージェントループ（run用）: ツール呼び出しを含む非ストリーミング実行
-   * liteモードではツールなしの1回呼び出しで完了する。
+   * ツール無効時は1回のLLM呼び出しで完了する。
    */
   private async executeAgentLoop(
     session: Session,
@@ -1276,7 +1250,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     appSessionId?: string
   ): Promise<string> {
     const logId = appSessionId || channelId;
-    // ツール無効: 1回のLLM呼び出しで完了 + トリガー検出
+    // ツール無効: 1回のLLM呼び出しで完了
     if (!this.enableTools) {
       let response;
       try {
@@ -1293,7 +1267,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       session.messages.push({ role: 'assistant', content: response.content });
 
       // 非ストリーミング経路でも drift strip を適用する（executeStreamLoop と対称）。
-      // lite モードでも擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
+      // Local LLMでは擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
       return this.finalizeNonStreamContent(response.content);
     }
 
@@ -1573,7 +1547,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
   /**
    * ストリーミングループ: ツール呼び出し + 最終応答ストリーミング
-   * liteモードではツールループをスキップし、直接ストリーミングで応答する。
+   * ツールが無効な場合はツールループをスキップし、直接ストリーミングで応答する。
    */
   private async executeStreamLoop(
     session: Session,
@@ -2130,28 +2104,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     // ワークスペースコンテキスト（CLAUDE.md, AGENTS.md, MEMORY.md）— 常に注入
     const context = loadWorkspaceContext(this.workdir);
     if (context) parts.push(context);
-
-    // トリガー（毎回リロード）
-    if (f.triggers) {
-      this.triggers = loadTriggers(this.workdir);
-      if (this.triggers.length > 0) {
-        if (f.tools) {
-          // ツールモード: トリガーをツールとして登録 + 使い方をプロンプトに追加
-          const triggerTools = triggersToToolHandlers(this.triggers, this.workdir);
-          registerDynamicTools(triggerTools);
-          const toolLines = this.triggers.map((t) => `- **${t.name}**(args): ${t.description}`);
-          parts.push(
-            [
-              '## カスタムツール',
-              '',
-              '以下のツールが利用可能です。該当するリクエストには**必ずツールを呼び出して**ください。自分の知識で回答しないでください。',
-              '',
-              ...toolLines,
-            ].join('\n')
-          );
-        }
-      }
-    }
 
     // スキル一覧
     if (f.skills) {

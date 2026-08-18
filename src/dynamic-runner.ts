@@ -16,8 +16,14 @@ import {
   getActiveSessionId,
   getSessionEntry,
   setProviderSessionId,
+  setProviderSessionMode,
 } from './sessions.js';
 import type { ChatPlatform } from './prompts/index.js';
+import {
+  appendUserPromptSubmitContext,
+  createReloadingUserPromptSubmitHookRunner,
+  type ReloadingUserPromptSubmitHookRunner,
+} from './hooks.js';
 
 /**
  * チャンネルごとにバックエンドを動的に切り替えるランナーマネージャー
@@ -33,6 +39,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private resolver: BackendResolver;
   private config: Config;
   private platform?: ChatPlatform;
+  private readonly workdir: string;
+  private readonly userPromptSubmitHooks: ReloadingUserPromptSubmitHookRunner | null;
 
   /** デフォルトのランナー（.env設定ベース） */
   private defaultRunner: AgentRunner;
@@ -45,6 +53,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     this.config = config;
     this.resolver = resolver;
     this.platform = config.agent.platform;
+    this.workdir = config.agent.config.workdir || process.cwd();
+    this.userPromptSubmitHooks = createReloadingUserPromptSubmitHookRunner(this.workdir);
 
     // デフォルトランナーを作成
     this.defaultRunner = createAgentRunner(config.agent.backend, config.agent.config, {
@@ -179,6 +189,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const channelId = options?.channelId;
     const settingsChannelId = options?.settingsChannelId ?? channelId;
     const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
+    this.recordResolvedSessionMode(options, resolved);
     const runner = this.getRunner(channelId, resolved, options?.platform);
 
     // effort / localLlmMode をオプションに注入（resolved 由来）
@@ -187,7 +198,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved
     );
 
-    const result = await runner.run(prompt, runOptions);
+    const enrichedPrompt = await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const result = await runner.run(enrichedPrompt, runOptions);
     this.recordResolvedBackend(runOptions, resolved, result);
     return result;
   }
@@ -203,6 +215,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const channelId = options?.channelId;
     const settingsChannelId = options?.settingsChannelId ?? channelId;
     const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
+    this.recordResolvedSessionMode(options, resolved);
     const runner = this.getRunner(channelId, resolved, options?.platform);
 
     const runOptions = this.injectResolvedFields(
@@ -210,9 +223,33 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved
     );
 
-    const result = await runner.runStream(prompt, callbacks, runOptions);
+    const enrichedPrompt = await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const result = await runner.runStream(enrichedPrompt, callbacks, runOptions);
     this.recordResolvedBackend(runOptions, resolved, result);
     return result;
+  }
+
+  private async applyUserPromptSubmitHooks(
+    prompt: string,
+    options: RunOptions | undefined
+  ): Promise<string> {
+    const rawUserText = options?.userText;
+    if (!this.userPromptSubmitHooks || !rawUserText) return prompt;
+
+    const contexts = await this.userPromptSubmitHooks.run({
+      hook_event_name: 'UserPromptSubmit',
+      session_id:
+        options.appSessionId ||
+        options.sessionId ||
+        options.channelId ||
+        options.settingsChannelId ||
+        '',
+      cwd: this.workdir,
+      prompt: rawUserText,
+      channel_id: options.channelId,
+      platform: options.platform ?? this.platform,
+    });
+    return appendUserPromptSubmitContext(prompt, contexts);
   }
 
   private dropMismatchedProviderSession(
@@ -270,7 +307,20 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       result.sessionId,
       resolved.backend,
       resolved.model,
-      resolved.effort
+      resolved.effort,
+      result.sessionMode
+    );
+  }
+
+  private recordResolvedSessionMode(
+    options: RunOptions | undefined,
+    resolved: ResolvedBackend
+  ): void {
+    if (!options?.appSessionId) return;
+    setProviderSessionMode(
+      options.appSessionId,
+      resolved.backend,
+      resolved.sessionMode ?? 'stateful'
     );
   }
 

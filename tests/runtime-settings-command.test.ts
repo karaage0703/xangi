@@ -40,7 +40,7 @@ describe('runtime_settings', () => {
         overrides.set(channelId, override);
       }),
       deleteChannelOverride: vi.fn((channelId: string) => overrides.delete(channelId)),
-      setChannelLocalLlmMode: vi.fn((channelId: string, mode: 'agent' | 'lite' | 'chat' | null) => {
+      setChannelLocalLlmMode: vi.fn((channelId: string, mode: 'agent' | 'chat' | null) => {
         const current = { ...(overrides.get(channelId) ?? {}) };
         if (mode === null) delete current.localLlmMode;
         else current.localLlmMode = mode;
@@ -148,7 +148,7 @@ describe('runtime_settings', () => {
 
   it('supports every existing runtime mode with explicit, idempotent actions', async () => {
     const requests = [
-      { name: 'llmmode', value: 'lite', platform: 'slack' },
+      { name: 'llmmode', value: 'agent', platform: 'slack' },
       { name: 'autoreply', value: 'on', platform: 'discord' },
       { name: 'notify', value: 'mention', platform: 'discord' },
       { name: 'threadmode', value: 'on', platform: 'discord' },
@@ -168,7 +168,7 @@ describe('runtime_settings', () => {
     expect(settings.discordThreadModeChannels?.['123']).toBe(true);
     expect(settings.replySuggestionsEnabled).toBe(true);
     expect(config.discord.respondToBotsEnabled).toBe(true);
-    expect(overrides.get('123')?.localLlmMode).toBe('lite');
+    expect(overrides.get('123')?.localLlmMode).toBe('agent');
   });
 
   it('rejects Discord-only settings on Slack', async () => {
@@ -184,6 +184,21 @@ describe('runtime_settings', () => {
         { config, resolver }
       )
     ).rejects.toThrow('slack is not supported');
+  });
+
+  it('rejects the removed lite Local LLM mode', async () => {
+    await expect(
+      executeRuntimeSettingsCommand(
+        {
+          name: 'llmmode',
+          action: 'set',
+          value: 'lite',
+          channelId: '123',
+          platform: 'slack',
+        },
+        { config, resolver }
+      )
+    ).rejects.toThrow('must be one of: agent, chat');
   });
 
   it('honors the Discord llmmode command permission', async () => {

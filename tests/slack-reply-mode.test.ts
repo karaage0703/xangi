@@ -144,6 +144,24 @@ const OTHER_CHANNEL = 'C_OTHER_CHANNEL';
 const DM_CHANNEL = 'D_DIRECT';
 const THREAD_TS = '1234567890.000001';
 
+async function withoutMinimumDisplayDelay<T>(run: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ['setTimeout'] });
+  try {
+    const pending = run();
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+}
+
+function processMessageWithoutMinimumDisplayDelay(
+  ...args: Parameters<typeof processMessage>
+): Promise<void> {
+  return withoutMinimumDisplayDelay(() => processMessage(...args));
+}
+
 function createBackendResolverStub(defaultBackend = 'claude-code') {
   const overrides = new Map<string, ChannelOverride>();
   const resolver = {
@@ -388,7 +406,7 @@ describe('shouldReplyInSlackThread', () => {
       },
     } as Config;
 
-    await processMessage(
+    await processMessageWithoutMinimumDisplayDelay(
       AUTO_REPLY_CHANNEL,
       slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS),
       THREAD_TS,
@@ -758,7 +776,7 @@ describe('processMessage', () => {
       slack: { streaming: true, showThinking: true, replySuggestions: false },
     } as Config;
 
-    await processMessage(
+    await processMessageWithoutMinimumDisplayDelay(
       AUTO_REPLY_CHANNEL,
       slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS),
       THREAD_TS,
@@ -797,7 +815,7 @@ describe('processMessage', () => {
     } as Config;
     const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
 
-    await processMessage(
+    await processMessageWithoutMinimumDisplayDelay(
       AUTO_REPLY_CHANNEL,
       runKey,
       THREAD_TS,
@@ -871,7 +889,7 @@ describe('processMessage', () => {
     } as Config;
     const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
 
-    await processMessage(
+    await processMessageWithoutMinimumDisplayDelay(
       AUTO_REPLY_CHANNEL,
       runKey,
       THREAD_TS,
@@ -944,7 +962,7 @@ describe('processMessage', () => {
     } as Config;
     const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
 
-    await processMessage(
+    await processMessageWithoutMinimumDisplayDelay(
       AUTO_REPLY_CHANNEL,
       runKey,
       THREAD_TS,
@@ -1041,8 +1059,10 @@ describe('processMessage', () => {
       agentRunner,
       config
     );
-    release();
-    await first;
+    await withoutMinimumDisplayDelay(() => {
+      release();
+      return first;
+    });
 
     expect(runStream).toHaveBeenCalledTimes(1);
   });

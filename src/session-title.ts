@@ -28,7 +28,9 @@ const CHANNEL_RULE_CONTEXT = /\n{2,}\[チャンネルルール（必ず従うこ
 const PREFETCH_FOLLOWUP =
   /初期文脈確認だけを目的に history コマンドを再実行しないでください。さらに古い履歴や追加件数が必要な場合だけ実行してください。\s*/g;
 const REPLY_SUGGESTION_CONTEXT =
-  /\s*\[system-context\]\s*通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を\d+件生成してください。[\s\S]*?<\/xangi_reply_suggestions>\s*$/;
+  /\s*\[system-context\]\s*通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を\d+件生成してください。[\s\S]*?<\/xangi_reply_suggestions>(?=\s*(?:\[USER PROMPT HOOK CONTEXT:|$))/;
+const USER_PROMPT_HOOK_CONTEXT =
+  /^\[USER PROMPT HOOK CONTEXT: ([A-Za-z0-9._-]+)(?: \(truncated\))?\]\r?\n[\s\S]*?^\[END USER PROMPT HOOK CONTEXT: \1\](?:\r?\n)?/gm;
 
 function readFirstUserContent(workdir: string, sessionId: string): string {
   let fd: number | undefined;
@@ -110,6 +112,11 @@ export function stripPromptMetadata(text: string): string {
   return stripReplySuggestionMarkup(s).replace(CHANNEL_RULE_CONTEXT, '').trim();
 }
 
+/** 会話タイトルなど短い表示値からUserPromptSubmitの内部contextだけを除去する。 */
+export function stripUserPromptHookContexts(text: string): string {
+  return text.replace(USER_PROMPT_HOOK_CONTEXT, '').trim();
+}
+
 /** セッションタイトルから孤立したUTF-16 surrogateを除去する。 */
 export function sanitizeSessionTitle(title: string): string {
   return title.replace(
@@ -133,7 +140,9 @@ export function truncateSessionTitle(title: string): string {
  * 表示用タイトルを生成する。50 文字に切り詰める。導出できなければ空文字。
  */
 export function deriveTitleFromFirstMessage(workdir: string, sessionId: string): string {
-  return truncateSessionTitle(stripPromptMetadata(readFirstUserContent(workdir, sessionId)));
+  return truncateSessionTitle(
+    stripUserPromptHookContexts(stripPromptMetadata(readFirstUserContent(workdir, sessionId)))
+  );
 }
 
 /** セッション台帳から消えた古いログの activity thread ID を先頭プロンプトから復元する。 */

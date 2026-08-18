@@ -2325,6 +2325,16 @@ button:disabled {
   margin-bottom: 3px;
 }
 
+.message-hook-contexts {
+  margin-top: 8px;
+}
+
+.message-hook-contexts li > div small {
+  flex: 0 0 auto;
+  color: var(--ink-subtle);
+  font-size: 9px;
+}
+
 .message-tools strong {
   overflow: hidden;
   font-size: 11px;

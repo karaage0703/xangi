@@ -16,6 +16,7 @@ import {
   createSession,
   createWebSession,
   setProviderSessionId,
+  setProviderSessionMode,
   listAllSessions,
   hasSessionGoneIdle,
   updateSessionProject,
@@ -346,6 +347,34 @@ describe('sessions', () => {
         model: 'gpt-5.6',
         effort: 'high',
         providerSessionId: 'provider-def',
+      });
+    });
+
+    it('persists stateless provider metadata across later session updates', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-1');
+      setProviderSessionId(
+        appId,
+        'search:channel-1',
+        'workspace-search',
+        undefined,
+        undefined,
+        'stateless'
+      );
+      setProviderSessionId(appId, 'search:channel-1');
+
+      expect(getSessionEntry(appId)?.agent?.sessionMode).toBe('stateless');
+    });
+
+    it('records provider session mode before a provider session ID exists', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-1');
+
+      setProviderSessionMode(appId, 'workspace-search', 'stateless');
+
+      expect(getSessionEntry(appId)?.agent).toMatchObject({
+        backend: 'workspace-search',
+        sessionMode: 'stateless',
       });
     });
   });

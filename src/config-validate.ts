@@ -167,7 +167,7 @@ function validBackends(): string[] {
   ];
 }
 const VALID_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
-const VALID_LLM_MODES = ['agent', 'lite', 'chat'] as const;
+const VALID_LLM_MODES = ['agent', 'chat'] as const;
 
 function isRecognizedChannelId(channelId: string): boolean {
   return (

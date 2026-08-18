@@ -132,7 +132,7 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
   {
     name: 'llmmode',
     description: 'Local LLMモードを表示・変更',
-    usage: '/llmmode show|agent|lite|chat|default',
+    usage: '/llmmode show|agent|chat|default',
     category: 'settings',
     options: [
       {
@@ -143,7 +143,6 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
         choices: [
           { name: '現在の設定を表示', value: 'show' },
           { name: 'agent（全機能）', value: 'agent' },
-          { name: 'lite（軽量）', value: 'lite' },
           { name: 'chat（純粋な会話）', value: 'chat' },
           { name: 'デフォルトへ戻す', value: 'default' },
         ],
@@ -492,8 +491,8 @@ function handleLlmMode(args: string[], ctx: WebCommandContext): WebCommandResult
     resolver.setChannelLocalLlmMode(channelId, null);
     return { kind: 'message', message: 'Local LLMモードをデフォルトへ戻しました。' };
   }
-  if (mode !== 'agent' && mode !== 'lite' && mode !== 'chat') {
-    throw new Error('使い方: /llmmode show|agent|lite|chat|default');
+  if (mode !== 'agent' && mode !== 'chat') {
+    throw new Error('使い方: /llmmode show|agent|chat|default');
   }
   resolver.setChannelLocalLlmMode(channelId, mode);
   return { kind: 'message', message: `Local LLMモードを \`${mode}\` に設定しました。` };

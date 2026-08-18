@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  defaultExtensionsFile,
   linkExtension,
   listExtensions,
   listExtensionAgentBackends,
+  migrateLegacyExtensionStore,
   parseExtensionManifest,
   resolveCapabilityBaseUrl,
   runExtensionAction,
@@ -17,12 +19,18 @@ import {
 } from '../src/extensions.js';
 
 const previousConfig = process.env.XANGI_EXTENSIONS_FILE;
+const previousDataDir = process.env.DATA_DIR;
+const previousWorkspace = process.env.WORKSPACE_PATH;
 
 afterEach(async () => {
   await stopManagedExtensions();
   vi.restoreAllMocks();
   if (previousConfig === undefined) delete process.env.XANGI_EXTENSIONS_FILE;
   else process.env.XANGI_EXTENSIONS_FILE = previousConfig;
+  if (previousDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = previousDataDir;
+  if (previousWorkspace === undefined) delete process.env.WORKSPACE_PATH;
+  else process.env.WORKSPACE_PATH = previousWorkspace;
 });
 
 async function fixture() {
@@ -151,6 +159,75 @@ process.stdin.on('end', () => server.close());
 }
 
 describe('extensions', () => {
+  it('isolates the default registry by DATA_DIR under the same OS user', async () => {
+    const { root, manifestPath } = await fixture();
+    delete process.env.XANGI_EXTENSIONS_FILE;
+    delete process.env.WORKSPACE_PATH;
+    const instanceA = join(root, 'instance-a');
+    const instanceB = join(root, 'instance-b');
+
+    process.env.DATA_DIR = instanceA;
+    expect(defaultExtensionsFile()).toBe(join(instanceA, 'extensions.json'));
+    await linkExtension(manifestPath);
+
+    process.env.DATA_DIR = instanceB;
+    expect(defaultExtensionsFile()).toBe(join(instanceB, 'extensions.json'));
+    expect(await listExtensions()).toEqual([]);
+
+    process.env.DATA_DIR = instanceA;
+    expect(await listExtensions()).toHaveLength(1);
+  });
+
+  it('migrates only legacy entries owned by the current DATA_DIR', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-extension-migration-'));
+    const dataDir = join(root, 'instance');
+    const ownedManifest = join(
+      dataDir,
+      'extensions',
+      'sources',
+      'owner--repo',
+      'xangi-extension.json'
+    );
+    const foreignManifest = join(
+      root,
+      'other-instance',
+      'extensions',
+      'sources',
+      'owner--repo',
+      'xangi-extension.json'
+    );
+    const legacyPath = join(root, 'config', 'xangi', 'extensions.json');
+    await (
+      await import('node:fs/promises')
+    ).mkdir(join(root, 'config', 'xangi'), {
+      recursive: true,
+    });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          extensions: [
+            { id: 'owned', manifestPath: ownedManifest, enabled: true, autostart: true },
+            { id: 'foreign', manifestPath: foreignManifest, enabled: true, autostart: true },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      { mode: 0o600 }
+    );
+    delete process.env.XANGI_EXTENSIONS_FILE;
+    delete process.env.WORKSPACE_PATH;
+    process.env.DATA_DIR = dataDir;
+
+    await expect(migrateLegacyExtensionStore({ legacyPath })).resolves.toBe(1);
+    await expect(listExtensions()).resolves.toEqual([
+      { id: 'owned', manifestPath: ownedManifest, enabled: true, autostart: true },
+    ]);
+    await expect(migrateLegacyExtensionStore({ legacyPath })).resolves.toBe(0);
+  });
+
   it('rejects unsafe entrypoints', () => {
     expect(() =>
       parseExtensionManifest({

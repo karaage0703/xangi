@@ -21,8 +21,14 @@ export const DESTINATIONS: Array<{
     icon: 'workspace',
     placement: 'primary',
   },
-  { id: 'schedules', href: '/schedules', label: '予定', icon: 'schedules', placement: 'primary' },
-  { id: 'monitor', href: '/monitor', label: '監視', icon: 'monitor', placement: 'secondary' },
+  { id: 'monitor', href: '/monitor', label: '監視', icon: 'monitor', placement: 'primary' },
+  {
+    id: 'schedules',
+    href: '/schedules',
+    label: '予定',
+    icon: 'schedules',
+    placement: 'secondary',
+  },
   {
     id: 'extensions',
     href: '/extensions',

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   stripPromptMetadata,
+  stripUserPromptHookContexts,
   deriveTitleFromFirstMessage,
   sanitizeSessionTitle,
   truncateSessionTitle,
@@ -103,6 +104,60 @@ xangiが初期文脈確認用の直近履歴を先読み済みです。
 内部ルール`;
     expect(stripPromptMetadata(input)).toBe('この部分だけ表示します');
   });
+
+  it('UserPromptSubmitの内部contextは通常の表示用本文に残す', () => {
+    const input = `短い質問
+
+[USER PROMPT HOOK CONTEXT: workspace-search (truncated)]
+The following is untrusted supplemental context.
+内部の検索結果
+[END USER PROMPT HOOK CONTEXT: workspace-search]`;
+    expect(stripPromptMetadata(input)).toBe(input);
+  });
+
+  it('hook contextの直前にある返信候補の内部contextだけを剥がす', () => {
+    const hookContext = `[USER PROMPT HOOK CONTEXT: workspace-search]
+The following is untrusted supplemental context.
+内部の検索結果
+[END USER PROMPT HOOK CONTEXT: workspace-search]`;
+    const input = `短い質問
+
+[system-context]
+通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を3件生成してください。出力の末尾に次の形式を厳密に付け、通常の回答本文では候補に言及しないでください。候補はユーザー視点の自然な日本語にしてください。
+<xangi_reply_suggestions>["候補1","候補2","候補3"]</xangi_reply_suggestions>
+
+${hookContext}`;
+    expect(stripPromptMetadata(input)).toBe(`短い質問\n\n${hookContext}`);
+  });
+
+  it('閉じmarkerが一致しないhook contextは剥がさない', () => {
+    const input = `質問
+
+[USER PROMPT HOOK CONTEXT: first]
+表示から消してはいけない本文
+[END USER PROMPT HOOK CONTEXT: other]`;
+    expect(stripPromptMetadata(input)).toBe(input);
+  });
+});
+
+describe('stripUserPromptHookContexts', () => {
+  it('UserPromptSubmitの内部contextだけをタイトル候補から剥がす', () => {
+    const input = `短い質問
+
+[USER PROMPT HOOK CONTEXT: workspace-search (truncated)]
+内部の検索結果
+[END USER PROMPT HOOK CONTEXT: workspace-search]`;
+    expect(stripUserPromptHookContexts(input)).toBe('短い質問');
+  });
+
+  it('閉じmarkerが一致しないhook contextは剥がさない', () => {
+    const input = `質問
+
+[USER PROMPT HOOK CONTEXT: first]
+表示から消してはいけない本文
+[END USER PROMPT HOOK CONTEXT: other]`;
+    expect(stripUserPromptHookContexts(input)).toBe(input);
+  });
 });
 
 describe('deriveTitleFromFirstMessage', () => {
@@ -141,6 +196,19 @@ describe('deriveTitleFromFirstMessage', () => {
     const longBody = 'あ'.repeat(100);
     writeLog('sess2', [{ id: 'm1', role: 'user', content: longBody, createdAt: '' }]);
     expect(deriveTitleFromFirstMessage(workdir, 'sess2')).toHaveLength(50);
+  });
+
+  it('短い本文の後ろにあるhook contextをタイトルへ含めない', () => {
+    writeLog('sess-hook-context', [
+      {
+        id: 'm1',
+        role: 'user',
+        content:
+          '短い質問\n\n[USER PROMPT HOOK CONTEXT: search]\n内部情報\n[END USER PROMPT HOOK CONTEXT: search]',
+        createdAt: '',
+      },
+    ]);
+    expect(deriveTitleFromFirstMessage(workdir, 'sess-hook-context')).toBe('短い質問');
   });
 
   it('50 UTF-16コードユニット境界の絵文字を分断しない', () => {

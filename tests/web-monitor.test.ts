@@ -7,6 +7,7 @@ import { deriveSessionOrigin } from '../src/session-title.js';
 import {
   activityFromEvent,
   applyActivitySnapshot,
+  isMonitorVisible,
   monitorLane,
   revealMonitorDetail,
   type MonitorSession,
@@ -24,6 +25,12 @@ function session(overrides: Partial<MonitorSession>): MonitorSession {
 }
 
 describe('Monitor kanban lanes', () => {
+  it('shows stateless backends only while their request is running', () => {
+    expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: true }))).toBe(true);
+    expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: false }))).toBe(false);
+    expect(isMonitorVisible(session({ sessionMode: 'stateful', isActive: false }))).toBe(true);
+  });
+
   it('puts active sessions in running even when the last activity was an error', () => {
     expect(
       monitorLane(

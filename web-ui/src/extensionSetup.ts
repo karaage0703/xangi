@@ -20,3 +20,7 @@ export function parsePendingExtensionSetup(value: string | null): PendingExtensi
     return null;
   }
 }
+
+export function extensionConversationPrompt(prompt: string, displayMessage: string): string {
+  return `<system-context>\n${prompt}\n</system-context>\n\n${displayMessage}`;
+}

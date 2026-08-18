@@ -70,6 +70,23 @@ describe('tool-server HTTP status codes', () => {
         doctorPassed: true,
         rolledBack: false,
       }),
+      extensionUninstallCommand: async (id) => ({
+        extension: {
+          id,
+          displayName: 'Demo Extension',
+          capabilities: [],
+          installed: false,
+          running: false,
+          healthy: false,
+          uiAvailable: false,
+          statusKnown: true,
+          actionsAvailable: false,
+        },
+        linked: false,
+        complete: true,
+        hookConfigReload: 'next-hook-event',
+        requiresRestart: false,
+      }),
     });
     // listen() コールバック内で XANGI_TOOL_SERVER が再設定される。それを待つ
     return new Promise<void>((resolve) => {
@@ -199,6 +216,40 @@ describe('tool-server HTTP status codes', () => {
       healthy: true,
       doctorPassed: true,
     });
+  });
+
+  it('routes extension uninstall through the host process and returns completion state', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'extension_uninstall',
+        flags: { id: 'demo-extension' },
+        context: {},
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; result: string };
+    expect(JSON.parse(body.result)).toMatchObject({
+      extension: { id: 'demo-extension', installed: false, running: false },
+      linked: false,
+      complete: true,
+      hookConfigReload: 'next-hook-event',
+      requiresRestart: false,
+    });
+  });
+
+  it('rejects extension uninstall without an id', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'extension_uninstall', flags: {}, context: {} }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.error).toContain('extension_uninstall requires --id');
   });
 
   it('routes schedule_update validation errors as HTTP 400', async () => {

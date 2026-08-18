@@ -192,6 +192,59 @@ describe('collectDoctorChecks', () => {
     );
   });
 
+  it('uses an independent checkout workspace when shared setup is explicitly disabled', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    Object.defineProperty(process, 'arch', { value: 'arm64' });
+    const homeDir = join(tmpdir(), `xangi-doctor-independent-${process.pid}-${Date.now()}`);
+    const configPath = join(homeDir, 'config.json');
+    const configuredWorkspace = join(homeDir, 'configured-workspace');
+    const checkoutDir = join(homeDir, 'checkout');
+    const checkoutWorkspace = join(homeDir, 'checkout-workspace');
+    await mkdir(configuredWorkspace, { recursive: true });
+    await mkdir(checkoutWorkspace, { recursive: true });
+    await mkdir(checkoutDir, { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        backend: 'codex',
+        workspacePath: configuredWorkspace,
+        webChatEnabled: true,
+      })
+    );
+    await chmod(configPath, 0o600);
+    await writeFile(
+      join(checkoutDir, '.env'),
+      [
+        `WORKSPACE_PATH=${checkoutWorkspace}`,
+        'XANGI_SETUP_CONFIG_PATH=',
+        'XANGI_SETUP_STATE_DIR=',
+        'WEB_CHAT_PORT=19992',
+        '',
+      ].join('\n')
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
+      String(input).endsWith('/api/sessions')
+        ? new Response(JSON.stringify({ meta: { workdir: checkoutWorkspace } }), { status: 200 })
+        : new Response('{}', { status: 200 })
+    );
+
+    const checks = await collectDoctorChecks({
+      homeDir,
+      configPath,
+      checkoutDir,
+      pathEnv: '',
+      serviceCheck: async () => ({ name: 'service', level: 'ok', detail: 'running' }),
+      fetchImpl,
+      extensionChecks: async () => [],
+    });
+
+    expect(checks).toContainEqual({
+      name: 'runtime-workspace',
+      level: 'ok',
+      detail: 'matches configured workspace',
+    });
+  });
+
   it('verifies the selected Tailscale Serve forwarding port', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     Object.defineProperty(process, 'arch', { value: 'x64' });

@@ -47,6 +47,7 @@ describe('ExtensionAgentRunner', () => {
     ).resolves.toEqual({
       result: 'extension result',
       sessionId: 'example-backend:channel-1',
+      sessionMode: 'stateless',
     });
     expect(fetchFn.mock.calls[0][0].toString()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/agent$/);
   });

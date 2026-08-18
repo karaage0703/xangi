@@ -36,7 +36,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGES_PER_SESSION = 500;
 const MAX_TERMINAL_TEXT_CHARS = Number(process.env.XANGI_EVEN_TERMINAL_MAX_CHARS) || 400;
 const SUPPORTED_PROVIDERS = new Set(['claude', 'codex']);
-const SUPPORTED_LOCAL_LLM_MODES = new Set<LocalLlmMode>(['agent', 'lite', 'chat']);
+const SUPPORTED_LOCAL_LLM_MODES = new Set<LocalLlmMode>(['agent', 'chat']);
 
 function readEvenTerminalBackend(): AgentBackend | undefined {
   const value = process.env.XANGI_EVEN_TERMINAL_BACKEND?.trim();
