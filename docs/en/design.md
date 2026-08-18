@@ -450,7 +450,7 @@ The `ContextBudget` value includes derivation details (`source: 'explicit' | 'de
 
 **Per-channel LocalLlmMode Override (backend-resolver.ts):**
 
-`ChannelOverride.localLlmMode?: 'agent' | 'lite' | 'chat'` sits alongside `backend / model / effort`, allowing per-channel Local LLM mode via `CHANNEL_OVERRIDES` JSON.
+`ChannelOverride.localLlmMode?: 'agent' | 'chat'` sits alongside `backend / model / effort`, allowing per-channel Local LLM mode via `CHANNEL_OVERRIDES` JSON.
 
 ```json
 {
@@ -467,7 +467,6 @@ The `ContextBudget` value includes derivation details (`source: 'explicit' | 'de
 | mode    | tools | skills | xangiCommands |
 | ------- | ----- | ------ | ------------- |
 | `agent` | ✅    | ✅     | ✅            |
-| `lite`  | ✅    | –      | ✅            |
 | `chat`  | –     | –      | –             |
 
 **Per-call application flow:**
@@ -485,7 +484,7 @@ Note: individual env vars at startup (e.g. `LOCAL_LLM_TOOLS=false`) are **ignore
 
 **`/llmmode` slash command (index.ts):**
 
-`/llmmode <agent|lite|chat|default|show>` flips the per-channel mode interactively. `agent/lite/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `show` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
+`/llmmode <agent|chat|default|show>` flips the per-channel mode interactively. `agent/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `show` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
 
 **Tool Deferred Loading (`tool_search`, Codex / Claude Code style):**
 

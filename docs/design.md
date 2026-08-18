@@ -447,7 +447,7 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 
 **チャンネル毎 LocalLlmMode override（backend-resolver.ts）:**
 
-`ChannelOverride.localLlmMode?: 'agent' | 'lite' | 'chat'` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で per-channel に Local LLM 動作モードを切替可能。
+`ChannelOverride.localLlmMode?: 'agent' | 'chat'` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で per-channel に Local LLM 動作モードを切替可能。
 
 ```json
 {
@@ -464,7 +464,6 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 | mode    | tools | skills | xangiCommands |
 | ------- | ----- | ------ | ------------- |
 | `agent` | ✅    | ✅     | ✅            |
-| `lite`  | ✅    | –      | ✅            |
 | `chat`  | –     | –      | –             |
 
 **per-call 適用フロー:**
@@ -482,7 +481,7 @@ buildSystemPrompt(flags) と llmTools = callFlags.tools ? getAllTools() : []
 
 **`/llmmode` slash コマンド（index.ts）:**
 
-`/llmmode <agent|lite|chat|default|show>` で対話的に per-channel mode を切替。`agent/lite/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
+`/llmmode <agent|chat|default|show>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
 
 **Tool 遅延ロード（tool_search、Codex / Claude Code 流）:**
 

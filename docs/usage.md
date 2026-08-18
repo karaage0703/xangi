@@ -535,7 +535,7 @@ docker build -t myapp . && \
 | `/notify <off\|message\|mention\|default\|show>` | このチャンネルの完了通知を切替（再起動不要、`settings.json` に永続化）                               |
 | `/respondtobots`                                 | bot メッセージへの応答を ON/OFF トグル（反応対象は `RESPOND_TO_BOTS` 環境変数で事前指定）            |
 | `/threadmode <on\|off\|default\|show>`           | このチャンネルの Discord 発言ごとスレッド返信モードを切替（再起動不要、`settings.json` に永続化）    |
-| `/llmmode <agent\|lite\|chat\|default\|show>`    | このチャンネルの Local LLM 動作モードを per-channel で切替（`.env` の `CHANNEL_OVERRIDES` に永続化） |
+| `/llmmode <agent\|chat\|default\|show>`         | このチャンネルの Local LLM 動作モードを per-channel で切替（`.env` の `CHANNEL_OVERRIDES` に永続化） |
 
 ### バックエンド動的切り替え
 
@@ -988,7 +988,6 @@ LOCAL_LLM_XANGI_COMMANDS=false
 
 - `agent`（デフォルト）— tools / skills / xangi_commands ON
 - `chat` — 全部 OFF（純粋雑談ボット）
-- `lite` — tools / xangi_commands ON、skills OFF（軽めだが Discord/Slack 操作はできるチャットボット向け）
 
 ワークスペースコンテキスト（AGENTS.md等）はどの設定でも注入されます。
 
@@ -1432,7 +1431,7 @@ Even 側の provider 選択は `claude` / `codex` ラベルとして受け取る
 | `XANGI_EVEN_TERMINAL_TOKEN`          | Even Terminal 互換 API 専用 token。未設定時は `XANGI_DEVICE_INBOX_TOKEN` → `XANGI_PET_INBOX_TOKEN` に fallback | (未設定)                        |
 | `XANGI_EVEN_TERMINAL_BACKEND`        | Even Terminal 経由だけのbackend default（組み込み、またはリンク済み拡張のbackend ID）                          | `AGENT_BACKEND`                 |
 | `XANGI_EVEN_TERMINAL_MODEL`          | Even Terminal 経由だけの model default                                                                         | `AGENT_MODEL` / backend側の既定 |
-| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `lite` / `chat`)                                    | `LOCAL_LLM_MODE` / `agent`      |
+| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Even Terminal 経由だけの Local LLM mode default (`agent` / `chat`)                                             | `LOCAL_LLM_MODE` / `agent`      |
 
 ### Terminal / Device セッション (`xangi tool terminal_session`)
 
@@ -1524,7 +1523,7 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | 変数                                    | 説明                                                                         | デフォルト                                                       |
 | --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `LOCAL_LLM_BASE_URL`                    | LLMサーバーURL                                                               | `http://localhost:11434`                                         |
-| `LOCAL_LLM_MODE`                        | プリセット（`agent` / `chat` / `lite`）                                      | `agent`                                                          |
+| `LOCAL_LLM_MODE`                        | プリセット（`agent` / `chat`）                                               | `agent`                                                          |
 | `LOCAL_LLM_TOOLS`                       | ツール実行                                                                   | `true`                                                           |
 | `LOCAL_LLM_SKILLS`                      | スキル一覧注入                                                               | `true`                                                           |
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS注入                                                           | `true`                                                           |

@@ -110,19 +110,19 @@ describe('BackendResolver localLlmMode', () => {
   it('CHANNEL_OVERRIDES から localLlmMode を読み込める', () => {
     process.env.CHANNEL_OVERRIDES = JSON.stringify({
       ch1: { backend: 'local-llm', localLlmMode: 'agent' },
-      ch2: { backend: 'local-llm', localLlmMode: 'lite' },
+      ch2: { backend: 'local-llm', localLlmMode: 'chat' },
     });
     const resolver = new BackendResolver(makeConfig());
 
     expect(resolver.resolve('ch1').localLlmMode).toBe('agent');
-    expect(resolver.resolve('ch2').localLlmMode).toBe('lite');
+    expect(resolver.resolve('ch2').localLlmMode).toBe('chat');
     expect(resolver.resolve('ch_unknown').localLlmMode).toBeUndefined();
   });
 
   it('setChannelLocalLlmMode で個別に設定できる', () => {
     const resolver = new BackendResolver(makeConfig());
-    resolver.setChannelLocalLlmMode('ch1', 'lite');
-    expect(resolver.resolve('ch1').localLlmMode).toBe('lite');
+    resolver.setChannelLocalLlmMode('ch1', 'agent');
+    expect(resolver.resolve('ch1').localLlmMode).toBe('agent');
 
     // 上書き
     resolver.setChannelLocalLlmMode('ch1', 'chat');
@@ -131,7 +131,7 @@ describe('BackendResolver localLlmMode', () => {
 
   it('setChannelLocalLlmMode(null) で削除できる', () => {
     const resolver = new BackendResolver(makeConfig());
-    resolver.setChannelLocalLlmMode('ch1', 'lite');
+    resolver.setChannelLocalLlmMode('ch1', 'agent');
     resolver.setChannelLocalLlmMode('ch1', null);
     expect(resolver.resolve('ch1').localLlmMode).toBeUndefined();
   });
@@ -142,16 +142,16 @@ describe('BackendResolver localLlmMode', () => {
     });
     const resolver = new BackendResolver(makeConfig());
 
-    resolver.setChannelLocalLlmMode('ch1', 'lite');
+    resolver.setChannelLocalLlmMode('ch1', 'chat');
     const r = resolver.resolve('ch1');
-    expect(r.localLlmMode).toBe('lite');
+    expect(r.localLlmMode).toBe('chat');
     expect(r.backend).toBe('local-llm');
     expect(r.model).toBe('gemma4');
   });
 
   it('localLlmMode のみのエントリで mode を null にすると entry 自体が削除される', () => {
     const resolver = new BackendResolver(makeConfig());
-    resolver.setChannelLocalLlmMode('ch1', 'lite');
+    resolver.setChannelLocalLlmMode('ch1', 'agent');
     resolver.setChannelLocalLlmMode('ch1', null);
     expect(resolver.getChannelOverride('ch1')).toBeUndefined();
   });
@@ -167,11 +167,11 @@ describe('BackendResolver localLlmMode', () => {
 
   it('resolve() の戻り値に localLlmMode が含まれる', () => {
     process.env.CHANNEL_OVERRIDES = JSON.stringify({
-      ch1: { localLlmMode: 'lite' },
+      ch1: { localLlmMode: 'chat' },
     });
     const resolver = new BackendResolver(makeConfig());
     const r = resolver.resolve('ch1');
-    expect(r.localLlmMode).toBe('lite');
+    expect(r.localLlmMode).toBe('chat');
   });
 
   it('default backend が非対応なら effort のみの環境設定を読み込まない', () => {
@@ -216,7 +216,7 @@ describe('BackendResolver localLlmMode', () => {
   it('request default を CHANNEL_OVERRIDES より低い優先度で適用できる', () => {
     process.env.CHANNEL_OVERRIDES = JSON.stringify({
       ch1: { backend: 'claude-code', localLlmMode: 'agent' },
-      ch2: { localLlmMode: 'lite' },
+      ch2: { localLlmMode: 'agent' },
     });
     const resolver = new BackendResolver(makeConfig());
 
@@ -238,7 +238,7 @@ describe('BackendResolver localLlmMode', () => {
     expect(resolver.resolve('ch2', fallback)).toMatchObject({
       backend: 'local-llm',
       model: 'gemma-4-26b-a4b',
-      localLlmMode: 'lite',
+      localLlmMode: 'agent',
     });
   });
 });

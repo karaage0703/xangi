@@ -319,9 +319,7 @@ export function buildSlashCommands(
     commands.push(
       new SlashCommandBuilder()
         .setName('llmmode')
-        .setDescription(
-          'このチャンネルの Local LLM 動作モードを切替 (agent/lite/chat/default/show)'
-        )
+        .setDescription('このチャンネルの Local LLM 動作モードを切替 (agent/chat/default/show)')
         .addStringOption((option) =>
           option
             .setName('mode')
@@ -329,7 +327,6 @@ export function buildSlashCommands(
             .setRequired(true)
             .addChoices(
               { name: 'agent (全機能ON、複雑タスク向け)', value: 'agent' },
-              { name: 'lite (skills OFF、軽量、Discord 操作向け)', value: 'lite' },
               { name: 'chat (全機能OFF、純粋会話)', value: 'chat' },
               { name: 'default (チャンネル override 削除、起動時値に戻す)', value: 'default' },
               { name: 'show (現在の設定を表示)', value: 'show' }
@@ -1272,7 +1269,7 @@ export function createInteractionHandler(
         return;
       }
       const mode = interaction.options.getString('mode', true) as
-        'agent' | 'lite' | 'chat' | 'default' | 'show';
+        'agent' | 'chat' | 'default' | 'show';
       await interaction.reply(
         await executeRuntimeSettingsCommand(
           {

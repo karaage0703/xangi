@@ -183,7 +183,7 @@ function executeLlmMode(request: RuntimeSettingsRequest, resolver: BackendResolv
     resolver.setChannelLocalLlmMode(channelId, null);
     return `Local LLM mode overrideを削除しました。次のturnから適用されます。`;
   }
-  const mode = requireValue(request, ['agent', 'lite', 'chat']) as LocalLlmMode;
+  const mode = requireValue(request, ['agent', 'chat']) as LocalLlmMode;
   resolver.setChannelLocalLlmMode(channelId, mode);
   return `Local LLM modeを${mode}に設定しました。次のturnから適用されます。`;
 }

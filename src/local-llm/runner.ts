@@ -532,11 +532,10 @@ interface ModeFlags {
   xangiCommands: boolean;
 }
 
-/** モード別 defaults（agent/lite/chat） */
+/** モード別 defaults（agent/chat） */
 const MODE_DEFAULTS: Record<LocalLlmMode, ModeFlags> = {
   agent: { tools: true, skills: true, xangiCommands: true },
   chat: { tools: false, skills: false, xangiCommands: false },
-  lite: { tools: true, skills: false, xangiCommands: true },
 };
 
 /** LLMエラーがセッション履歴に起因するかを判定 */
@@ -696,9 +695,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const modeEnv = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
     const defaults = MODE_DEFAULTS[modeEnv as LocalLlmMode] || MODE_DEFAULTS.agent;
     this.startupMode =
-      modeEnv === 'agent' || modeEnv === 'lite' || modeEnv === 'chat'
-        ? (modeEnv as LocalLlmMode)
-        : 'agent';
+      modeEnv === 'agent' || modeEnv === 'chat' ? (modeEnv as LocalLlmMode) : 'agent';
 
     this.enableTools =
       process.env.LOCAL_LLM_TOOLS !== undefined
@@ -860,7 +857,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * - 未指定時: 起動時の flags を使う
    */
   private resolveCallModeFlags(callMode?: LocalLlmMode): ModeFlags {
-    if (callMode && (callMode === 'agent' || callMode === 'lite' || callMode === 'chat')) {
+    if (callMode && (callMode === 'agent' || callMode === 'chat')) {
       return { ...MODE_DEFAULTS[callMode] };
     }
     return { ...this.startupFlags };
@@ -1270,7 +1267,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       session.messages.push({ role: 'assistant', content: response.content });
 
       // 非ストリーミング経路でも drift strip を適用する（executeStreamLoop と対称）。
-      // lite モードでも擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
+      // Local LLMでは擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
       return this.finalizeNonStreamContent(response.content);
     }
 
@@ -1550,7 +1547,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
   /**
    * ストリーミングループ: ツール呼び出し + 最終応答ストリーミング
-   * liteモードではツールループをスキップし、直接ストリーミングで応答する。
+   * ツールが無効な場合はツールループをスキップし、直接ストリーミングで応答する。
    */
   private async executeStreamLoop(
     session: Session,

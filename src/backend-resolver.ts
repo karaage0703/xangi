@@ -10,10 +10,9 @@ import { BUILTIN_AGENT_BACKENDS, getAllAgentBackends } from './config.js';
 /**
  * Local LLM の動作モード
  * - agent: 全機能ON（tools/skills/xangi-commands）
- * - lite: tools/xangi-commands ON、skills OFF（軽量、Discord 操作向け）
  * - chat: 全機能 OFF（純粋な会話）
  */
-export type LocalLlmMode = 'agent' | 'lite' | 'chat';
+export type LocalLlmMode = 'agent' | 'chat';
 
 /**
  * チャンネルごとのオーバーライド設定

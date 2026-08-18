@@ -1218,7 +1218,7 @@ process.stdin.on('end', () => process.exit(0));
       data.commands
         .find((command) => command.name === 'llmmode')
         ?.options?.[0].choices?.map((choice) => choice.value)
-    ).toEqual(['show', 'agent', 'lite', 'chat', 'default']);
+    ).toEqual(['show', 'agent', 'chat', 'default']);
 
     const dynamicRes = await fetch(`${baseUrl}/api/web-commands?backend=codex&model=gpt-test`);
     const dynamicData = (await dynamicRes.json()) as typeof data;

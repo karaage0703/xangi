@@ -519,7 +519,7 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | `/notify <off\|message\|mention\|default\|show>` | Configure completion notifications for this channel (no restart needed, persisted to `settings.json`)                 |
 | `/respondtobots`                                 | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env)                                              |
 | `/threadmode <on\|off\|default\|show>`           | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
-| `/llmmode <agent\|lite\|chat\|default\|show>`    | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
+| `/llmmode <agent\|chat\|default\|show>`         | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
 
 ### Backend Dynamic Switching
 
@@ -971,7 +971,6 @@ LOCAL_LLM_XANGI_COMMANDS=false
 
 - `agent` (default) — tools / skills / xangi_commands ON
 - `chat` — all off (pure chitchat bot)
-- `lite` — tools / xangi_commands ON, skills OFF (chatty bot that can still operate Discord/Slack)
 
 Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
 
@@ -1395,7 +1394,7 @@ The Even UI only offers `claude` and `codex` provider labels. xangi accepts thos
 | `XANGI_EVEN_TERMINAL_TOKEN`          | Dedicated token for the Even Terminal compatibility API. Falls back to `XANGI_DEVICE_INBOX_TOKEN`, then `XANGI_PET_INBOX_TOKEN` when unset | (unset)                         |
 | `XANGI_EVEN_TERMINAL_BACKEND`        | Backend default used only for Even Terminal traffic (built-in or linked extension backend ID)                                              | `AGENT_BACKEND`                 |
 | `XANGI_EVEN_TERMINAL_MODEL`          | Model default used only for Even Terminal traffic                                                                                          | `AGENT_MODEL` / backend default |
-| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Local LLM mode default used only for Even Terminal traffic (`agent` / `lite` / `chat`)                                                     | `LOCAL_LLM_MODE` / `agent`      |
+| `XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE` | Local LLM mode default used only for Even Terminal traffic (`agent` / `chat`)                                                              | `LOCAL_LLM_MODE` / `agent`      |
 | `XANGI_EVEN_TERMINAL_MAX_CHARS`      | Maximum plain-text response length prepared for the G2 display                                                                             | `400`                           |
 
 ### Terminal / Device Sessions (`xangi tool terminal_session`)
@@ -1495,7 +1494,7 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | Variable                                | Description                                                                            | Default                                                          |
 | --------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `LOCAL_LLM_BASE_URL`                    | LLM server URL                                                                         | `http://localhost:11434`                                         |
-| `LOCAL_LLM_MODE`                        | Preset (`agent` / `chat` / `lite`)                                                     | `agent`                                                          |
+| `LOCAL_LLM_MODE`                        | Preset (`agent` / `chat`)                                                              | `agent`                                                          |
 | `LOCAL_LLM_TOOLS`                       | Tool execution                                                                         | `true`                                                           |
 | `LOCAL_LLM_SKILLS`                      | Skill list injection                                                                   | `true`                                                           |
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS injection                                                               | `true`                                                           |
