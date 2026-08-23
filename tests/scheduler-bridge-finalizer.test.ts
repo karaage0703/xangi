@@ -11,6 +11,7 @@ import {
   getSessionEntry,
   initSessions,
 } from '../src/sessions.js';
+import type { AgentRunContext } from '../src/scheduler.js';
 
 type AgentRunResult = { result: string; sessionId: string; attachments?: string[] };
 type StreamCallbacks = {
@@ -20,9 +21,30 @@ type StreamCallbacks = {
   onError?: (error: Error) => void;
 };
 
-function buildBridge(runImpl: (callbacks: StreamCallbacks) => Promise<AgentRunResult>) {
-  let capturedRunner: ((prompt: string, channelId: string) => Promise<string>) | undefined;
+function buildBridge(
+  runImpl: (callbacks: StreamCallbacks) => Promise<AgentRunResult>,
+  workspaceRegistry?: {
+    resolve: (
+      platform: string,
+      channelId: string
+    ) => Promise<{
+      id: string;
+      name: string;
+      path: string;
+      isDefault: boolean;
+    }>;
+  }
+) {
+  let capturedRunner:
+    | ((
+        prompt: string,
+        channelId: string,
+        schedule?: undefined,
+        context?: AgentRunContext
+      ) => Promise<string>)
+    | undefined;
   const thinkingMsg = {
+    id: 'discord-message-1',
     edit: vi.fn(async (_content: string) => {}),
     delete: vi.fn(async () => {}),
   };
@@ -30,7 +52,15 @@ function buildBridge(runImpl: (callbacks: StreamCallbacks) => Promise<AgentRunRe
   const scheduler = {
     registerSender: vi.fn(),
     registerAgentRunner: vi.fn(
-      (_platform: string, fn: (prompt: string, channelId: string) => Promise<string>) => {
+      (
+        _platform: string,
+        fn: (
+          prompt: string,
+          channelId: string,
+          schedule?: undefined,
+          context?: AgentRunContext
+        ) => Promise<string>
+      ) => {
         capturedRunner = fn;
       }
     ),
@@ -57,6 +87,7 @@ function buildBridge(runImpl: (callbacks: StreamCallbacks) => Promise<AgentRunRe
     client,
     config,
     agentRunner,
+    workspaceRegistry,
   } as unknown as Parameters<typeof registerDiscordSchedulerBridge>[0]);
   if (!capturedRunner) throw new Error('agent runner not registered');
   return { runner: capturedRunner, thinkingMsg, channel, agentRunner };
@@ -99,7 +130,8 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
       sessionId: 's1',
     }));
 
-    await runner('test prompt', 'channel-1');
+    const onDelivery = vi.fn();
+    await runner('test prompt', 'channel-1', undefined, { onDelivery });
     expect(activeStreamFinalizerCount()).toBe(0);
 
     await finalizeActiveStreams();
@@ -110,6 +142,12 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
     expect(thinkingMsg.edit).toHaveBeenCalledWith({
       content: expect.stringMatching(/^done\n\n✅ 完了（⏱ /),
       components: [],
+    });
+    expect(onDelivery).toHaveBeenCalledWith({
+      platform: 'discord',
+      destinationId: 'channel-1',
+      messageIds: ['discord-message-1'],
+      sessionId: 's1',
     });
   });
 
@@ -158,7 +196,37 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
       expect.objectContaining({
         sessionId: undefined,
         channelId: 'channel-1',
+        runnerKey: 'schedule:channel-1',
         appSessionId: expect.stringMatching(/^scheduler-run-discord-/),
+      })
+    );
+  });
+
+  it('スケジューラ実行はチャンネル設定のワークスペースを使う', async () => {
+    const workspaceRegistry = {
+      resolve: vi.fn(async () => ({
+        id: 'project',
+        name: 'project',
+        path: '/mounted/project',
+        isDefault: false,
+      })),
+    };
+    const { runner, agentRunner } = buildBridge(
+      async () => ({ result: 'done', sessionId: 's1' }),
+      workspaceRegistry
+    );
+
+    await runner('scheduled prompt', 'channel-1');
+
+    expect(workspaceRegistry.resolve).toHaveBeenCalledWith('discord', 'channel-1');
+    expect(agentRunner.runStream).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({
+        channelId: 'channel-1',
+        runnerKey: 'schedule:channel-1',
+        settingsChannelId: 'channel-1',
+        workdir: '/mounted/project',
       })
     );
   });

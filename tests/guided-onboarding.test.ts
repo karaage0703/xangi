@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveAppLayout } from '../src/installer/layout.js';
 import {
   applyGuidedSetup,
+  buildGuidedLaunchArgs,
   buildOnboardingPrompt,
   completeGuidedSetup,
   detectGuidedBackends,
@@ -32,20 +33,48 @@ async function fixture() {
 }
 
 describe('guided setup backend preflight', () => {
+  it('launches OpenCode in non-interactive run mode with the configured model', () => {
+    const backend = {
+      id: 'opencode' as const,
+      label: 'OpenCode',
+      command: 'opencode',
+      executable: '/usr/local/bin/opencode',
+      version: '1.18.21',
+      authGuide: 'opencode auth login',
+    };
+    expect(buildGuidedLaunchArgs(backend, 'setup prompt', { AGENT_MODEL: 'xangi-local/qwen' })).toEqual([
+      'run',
+      '--auto',
+      '--agent',
+      'build',
+      '--model',
+      'xangi-local/qwen',
+      'setup prompt',
+    ]);
+  });
+
   it('detects only executable supported agent CLIs and records versions', async () => {
-    const executable = new Set(['/agents/codex', '/agents/claude', '/agents/grok']);
+    const executable = new Set([
+      '/agents/codex',
+      '/agents/opencode',
+      '/agents/claude',
+      '/agents/grok',
+    ]);
     const detected = await detectGuidedBackends({
       pathEnv: '/agents',
       canExecute: async (path) => executable.has(path),
       version: (path) =>
         path.endsWith('codex')
           ? 'codex 1.2.3'
-          : path.endsWith('claude')
-            ? 'claude 4.5.6'
-            : undefined,
+          : path.endsWith('opencode')
+            ? 'opencode 1.18.21'
+            : path.endsWith('claude')
+              ? 'claude 4.5.6'
+              : undefined,
     });
     expect(detected.map(({ id, version }) => ({ id, version }))).toEqual([
       { id: 'codex', version: 'codex 1.2.3' },
+      { id: 'opencode', version: 'opencode 1.18.21' },
       { id: 'claude-code', version: 'claude 4.5.6' },
     ]);
   });
@@ -93,7 +122,9 @@ describe('guided setup backend preflight', () => {
   it('gives deterministic install guidance when no agent is available', () => {
     expect(missingBackendGuide()).toContain('setup-ai-tools.sh');
     expect(missingBackendGuide()).toContain('bash <(curl -fsSL');
-    expect(missingBackendGuide()).toContain('codex / claude-code / cursor / grok / antigravity');
+    expect(missingBackendGuide()).toContain(
+      'codex / claude-code / cursor / grok / antigravity / github-copilot / opencode'
+    );
     expect(missingBackendGuide()).toContain('もう一度 `xangi setup` を実行');
     expect(missingBackendGuide()).not.toContain('npm install');
   });

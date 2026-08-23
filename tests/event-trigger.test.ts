@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import {
   EventTrigger,
@@ -5,12 +8,19 @@ import {
   TRIGGER_MAX_MESSAGE_LENGTH,
   type TriggerConfig,
 } from '../src/event-trigger.js';
-import type { Scheduler } from '../src/scheduler.js';
+import type { AgentRunContext, PlatformDeliveryReceipt, Scheduler } from '../src/scheduler.js';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
 
 /** AgentRunFn / SendMessageFn だけ持つ最小の Scheduler フェイク */
 function makeFakeScheduler(overrides?: {
-  runner?: ((prompt: string, channelId: string) => Promise<string>) | null;
+  runner?:
+    | ((
+        prompt: string,
+        channelId: string,
+        schedule?: undefined,
+        context?: AgentRunContext
+      ) => Promise<string>)
+    | null;
   sender?: ((channelId: string, message: string) => Promise<void>) | null;
 }): {
   scheduler: Scheduler;
@@ -184,7 +194,12 @@ describe('EventTrigger firing', () => {
     expect(res.status).toBe(202);
     expect(res.body.platform).toBe('web');
     await flush();
-    expect(runner).toHaveBeenCalledWith(expect.stringContaining('render finished'), 'pane123');
+    expect(runner).toHaveBeenCalledWith(
+      expect.stringContaining('render finished'),
+      'pane123',
+      undefined,
+      expect.objectContaining({ onDelivery: expect.any(Function) })
+    );
     expect(sender).toHaveBeenCalledWith('pane123', '⚡ trigger: render');
   });
 
@@ -236,6 +251,155 @@ describe('EventTrigger firing', () => {
     expect(res.status).toBe(202);
     await flush();
     expect(runner).toHaveBeenCalledOnce();
+  });
+
+  it('persists a platform-neutral delivery receipt and restores it after restart', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'xangi-trigger-receipt-'));
+    let resolveRun: (value: string) => void = () => {};
+    let reportDelivery: ((receipt: PlatformDeliveryReceipt) => void) | undefined;
+    const pendingRunner = (
+      _prompt: string,
+      _channelId: string,
+      _schedule?: undefined,
+      context?: AgentRunContext
+    ) => {
+      reportDelivery = context?.onDelivery;
+      return new Promise<string>((resolve) => {
+        resolveRun = resolve;
+      });
+    };
+    const { scheduler } = makeFakeScheduler({ runner: pendingRunner });
+    const trigger = new EventTrigger(makeConfig(), scheduler, { dataDir });
+
+    try {
+      const fired = await trigger.handleLocal({
+        channel: 'pane-1',
+        message: 'done',
+        source: 'worker',
+        platform: 'web',
+      });
+      const triggerId = String(fired.body.triggerId);
+      expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({
+        triggerId,
+        platform: 'web',
+        destinationId: 'pane-1',
+        status: 'running',
+      });
+
+      reportDelivery?.({
+        platform: 'web',
+        destinationId: 'pane-1',
+        sessionId: 'provider-session-1',
+      });
+      resolveRun('agent result');
+      await flush();
+
+      const delivered = trigger.getReceipt(triggerId);
+      expect(delivered.body.receipt).toMatchObject({
+        status: 'delivered',
+        resultLength: 12,
+        delivery: {
+          platform: 'web',
+          destinationId: 'pane-1',
+          sessionId: 'provider-session-1',
+        },
+      });
+      expect(
+        JSON.parse(readFileSync(join(dataDir, 'trigger-receipts.json'), 'utf-8'))
+      ).toHaveLength(1);
+
+      const restored = new EventTrigger(makeConfig(), scheduler, { dataDir });
+      expect(restored.getReceipt(triggerId).body.receipt).toEqual(delivered.body.receipt);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['discord', 'discord-channel'],
+    ['slack', 'slack-channel'],
+    ['telegram', 'telegram-chat'],
+    ['web', 'web-session'],
+  ] as const)('records delivery references for %s', async (platform, destinationId) => {
+    const scheduler = {
+      getAgentRunner: (registeredPlatform: string) =>
+        registeredPlatform === platform
+          ? async (
+              _prompt: string,
+              channelId: string,
+              _schedule?: undefined,
+              context?: AgentRunContext
+            ) => {
+              context?.onDelivery?.({
+                platform,
+                destinationId: channelId,
+                messageIds: platform === 'web' ? undefined : [`${platform}-message`],
+                sessionId: platform === 'web' ? 'web-provider-session' : undefined,
+              });
+              return 'ok';
+            }
+          : undefined,
+      getSender: () => undefined,
+    } as unknown as Scheduler;
+    const trigger = new EventTrigger(makeConfig(), scheduler);
+    const fired = await trigger.handleLocal({
+      channel: destinationId,
+      message: 'done',
+      source: `${platform}-worker`,
+      platform,
+    });
+    await flush();
+    expect(trigger.getReceipt(String(fired.body.triggerId)).body.receipt).toMatchObject({
+      status: 'delivered',
+      platform,
+      destinationId,
+      delivery: { platform, destinationId },
+    });
+  });
+
+  it('marks an in-flight receipt as interrupted after restart', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'xangi-trigger-interrupted-'));
+    const { scheduler } = makeFakeScheduler();
+    const acceptedAt = new Date().toISOString();
+    writeFileSync(
+      join(dataDir, 'trigger-receipts.json'),
+      JSON.stringify([
+        {
+          triggerId: 'trg_before_restart',
+          source: 'worker',
+          platform: 'slack',
+          destinationId: 'C123',
+          status: 'running',
+          acceptedAt,
+          startedAt: acceptedAt,
+        },
+      ])
+    );
+
+    try {
+      const restored = new EventTrigger(makeConfig(), scheduler, { dataDir });
+      expect(restored.getReceipt('trg_before_restart').body.receipt).toMatchObject({
+        status: 'interrupted',
+        error: 'xangi restarted before the trigger turn completed',
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records runner failures separately from delivery failures', async () => {
+    const { scheduler } = makeFakeScheduler({
+      runner: async () => {
+        throw new Error('provider unavailable');
+      },
+    });
+    const trigger = new EventTrigger(makeConfig(), scheduler);
+    const fired = await trigger.handleLocal({ channel: 'c1', message: 'done', source: 'worker' });
+    await flush();
+    expect(trigger.getReceipt(String(fired.body.triggerId)).body.receipt).toMatchObject({
+      status: 'failed',
+      error: 'provider unavailable',
+    });
   });
 });
 
@@ -297,6 +461,27 @@ describe('tool-server POST /api/trigger', () => {
     const body = (await res.json()) as { ok: boolean; triggerId: string };
     expect(body.ok).toBe(true);
     expect(body.triggerId).toMatch(/^trg_/);
+
+    const status = await fetch(`${serverUrl}/api/trigger/${body.triggerId}`, {
+      headers: { Authorization: AUTH },
+    });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      ok: true,
+      receipt: { triggerId: body.triggerId, platform: 'discord', destinationId: 'c1' },
+    });
+  });
+
+  it('requires bearer auth for trigger status', async () => {
+    const res = await fetch(`${serverUrl}/api/trigger/trg_missing`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 for an invalid encoded trigger ID', async () => {
+    const res = await fetch(`${serverUrl}/api/trigger/%zz`, {
+      headers: { Authorization: AUTH },
+    });
+    expect(res.status).toBe(400);
   });
 
   it('returns 400 for invalid JSON body', async () => {
@@ -321,5 +506,17 @@ describe('tool-server POST /api/trigger', () => {
     const body = (await res.json()) as { ok: boolean; result: string };
     expect(body.ok).toBe(true);
     expect(body.result).toContain('トリガーを発火しました');
+    const triggerId = body.result.match(/id: (trg_[^,)]+)/)?.[1];
+    expect(triggerId).toBeDefined();
+
+    const status = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'trigger_status', flags: { id: triggerId } }),
+    });
+    expect(status.status).toBe(200);
+    const statusBody = (await status.json()) as { ok: boolean; result: string };
+    expect(statusBody.ok).toBe(true);
+    expect(JSON.parse(statusBody.result)).toMatchObject({ triggerId, source: 'cli-test' });
   });
 });

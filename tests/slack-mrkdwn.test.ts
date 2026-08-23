@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { markdownToSlackMrkdwn } from '../src/slack-mrkdwn.js';
 
-const visibleText = (text: string): string => text.replaceAll('\u200B', '');
+const visibleText = (text: string): string => text.replace(/[\u200B\u2060]/g, '');
 
 describe('markdownToSlackMrkdwn', () => {
   it('太字 ** / __ を * へ変換する', () => {
@@ -15,6 +15,13 @@ describe('markdownToSlackMrkdwn', () => {
 
   it('太字と斜体が混在しても壊れない', () => {
     expect(visibleText(markdownToSlackMrkdwn('**太字**と*斜体*'))).toBe('*太字*と_斜体_');
+  });
+
+  it('日本語に隣接する太字へWORD JOINER境界を追加する', () => {
+    expect(markdownToSlackMrkdwn('**標準Markdown**の表示テストです。')).toBe(
+      '*標準Markdown*\u2060の表示テストです。'
+    );
+    expect(markdownToSlackMrkdwn('前**太字**後')).toBe('前\u2060*太字*\u2060後');
   });
 
   it('打ち消し線 ~~ を ~ へ変換する', () => {
@@ -53,7 +60,13 @@ describe('markdownToSlackMrkdwn', () => {
 
   it('フェンスコードブロック内は変換しない', () => {
     const src = '```js\nconst a = **1**;\n# not heading\n```';
-    expect(markdownToSlackMrkdwn(src)).toBe(src);
+    expect(markdownToSlackMrkdwn(src)).toBe('```\nconst a = **1**;\n# not heading\n```');
+  });
+
+  it('Slackで本文表示されるコードフェンスの言語名を除去する', () => {
+    expect(markdownToSlackMrkdwn('```typescript\nconst value = 1;\n```')).toBe(
+      '```\nconst value = 1;\n```'
+    );
   });
 
   it('コードブロックの外だけ変換する', () => {

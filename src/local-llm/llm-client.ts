@@ -167,7 +167,8 @@ export class LLMClient {
     private readonly thinking: boolean = false,
     private readonly defaultMaxTokens: number = 8192,
     private readonly numCtx?: number,
-    private readonly defaultTemperature?: number
+    private readonly defaultTemperature?: number,
+    private readonly defaultReasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort
   ) {
     this.timeoutMs = parseInt(process.env.TIMEOUT_MS || '300000', 10);
   }
@@ -312,6 +313,8 @@ export class LLMClient {
       stream: false,
       max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
     };
+    const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
+    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
 
     applyOpenAITools(body, options);
 
@@ -423,6 +426,8 @@ export class LLMClient {
       stream: true,
       max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
     };
+    const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
+    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
 
     // tools / tool_choice — chatOpenAI と同等。streaming でも tool calling 機構を有効にする。
     // tools 未指定の streaming だと、LLM が tool 呼びたい場面で擬似 tool_call 文字列を

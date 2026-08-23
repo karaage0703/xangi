@@ -45,6 +45,25 @@ describe('typed setup config', () => {
     ).toThrow(SetupValidationError);
   });
 
+  it('accepts an xangi-owned OpenCode config and rejects it for other backends', () => {
+    const opencode = {
+      ...valid,
+      backend: 'opencode',
+      model: 'xangi-local/qwen3.8-27b',
+      opencodeConfigPath: '/Users/example/.config/xangi/opencode.json',
+    };
+    expect(parseSetupConfig(opencode)).toEqual(opencode);
+    expect(() => parseSetupConfig({ ...opencode, backend: 'codex' })).toThrow(
+      SetupValidationError
+    );
+    expect(() => parseSetupConfig({ ...opencode, opencodeConfigPath: 'opencode.json' })).toThrow(
+      SetupValidationError
+    );
+    expect(() => parseSetupConfig({ ...opencode, model: undefined })).toThrow(
+      SetupValidationError
+    );
+  });
+
   it('ignores the removed legacy Notion sync flag', () => {
     expect(parseSetupConfig({ ...valid, notionSyncEnabled: true })).toEqual(valid);
   });

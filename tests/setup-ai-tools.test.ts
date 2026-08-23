@@ -38,14 +38,37 @@ describe('standalone AI coding tool setup', () => {
       join(data.bin, 'claude'),
       '[ "$1 $2" = "auth status" ] && exit 1\n[ "$1" = "--version" ] && echo "claude 4.5.6"'
     );
+    await fakeCommand(
+      join(data.bin, 'opencode'),
+      '[ "$1" = "--version" ] && echo "1.18.21"'
+    );
 
     const result = await exec('bash', ['packaging/setup-ai-tools.sh', 'check'], {
       env: { ...process.env, HOME: data.home, PATH: `${data.bin}:/usr/bin:/bin` },
     });
     expect(result.stdout).toContain('codex          ready (codex 1.2.3)');
+    expect(result.stdout).toContain(
+      'opencode       installed; authentication is checked on launch (1.18.21)'
+    );
     expect(result.stdout).toContain('claude-code    installed; login required (claude 4.5.6)');
     expect(result.stdout).toContain('cursor         not installed');
     expect(result.stdout).toContain('github-copilot not installed');
+  });
+
+  it('launches OpenCode authentication without reinstalling it', async () => {
+    const data = await fixture();
+    const log = join(data.root, 'opencode.log');
+    await fakeCommand(
+      join(data.bin, 'opencode'),
+      `printf '%s\n' "$*" >> '${log}'\n[ "$1" = "--version" ] && echo "1.18.21"\nexit 0`
+    );
+    const result = await exec('bash', ['packaging/setup-ai-tools.sh', 'opencode'], {
+      env: { ...process.env, HOME: data.home, PATH: `${data.bin}:/usr/bin:/bin` },
+    });
+    expect(result.stdout).toContain('セットアップを終了しました');
+    await expect((await import('node:fs/promises')).readFile(log, 'utf8')).resolves.toContain(
+      'auth login'
+    );
   });
 
   it('launches GitHub Copilot for interactive /login without reinstalling it', async () => {

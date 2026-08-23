@@ -14,7 +14,9 @@
  * - source 単位のレート制限と同時実行ガードで暴走・連打を防ぐ
  */
 import { timingSafeEqual } from 'crypto';
-import type { Scheduler, Platform } from './scheduler.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+import type { PlatformDeliveryReceipt, Scheduler, Platform } from './scheduler.js';
 import { webAppSessionId } from './sessions.js';
 
 /** トリガー受付メッセージの上限文字数 */
@@ -46,6 +48,25 @@ export interface TriggerResult {
   body: Record<string, unknown>;
 }
 
+export type TriggerReceiptStatus =
+  'accepted' | 'running' | 'completed' | 'delivered' | 'failed' | 'interrupted';
+
+export interface TriggerReceipt {
+  triggerId: string;
+  source: string;
+  platform: Platform;
+  destinationId: string;
+  status: TriggerReceiptStatus;
+  acceptedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  delivery?: PlatformDeliveryReceipt & { deliveredAt: string };
+  resultLength?: number;
+  error?: string;
+}
+
+const MAX_TRIGGER_RECEIPTS = 1000;
+
 /**
  * 環境変数からトリガー設定を読み込む
  */
@@ -73,11 +94,32 @@ export class EventTrigger {
   private lastFiredAt = new Map<string, number>();
   private runningSources = new Set<string>();
   private counter = 0;
+  private receipts = new Map<string, TriggerReceipt>();
+  private receiptsFile?: string;
 
   constructor(
     private config: TriggerConfig,
-    private scheduler: Scheduler
-  ) {}
+    private scheduler: Scheduler,
+    options?: { dataDir?: string }
+  ) {
+    if (options?.dataDir) {
+      this.receiptsFile = join(options.dataDir, 'trigger-receipts.json');
+      this.loadReceipts();
+    }
+  }
+
+  /** trigger ID から現在の実行・配信状態を取得する。 */
+  getReceipt(triggerId: string): TriggerResult {
+    const receipt = this.receipts.get(triggerId);
+    return receipt
+      ? { status: 200, body: { ok: true, receipt } }
+      : { status: 404, body: { ok: false, error: `Trigger not found: ${triggerId}` } };
+  }
+
+  handleStatusHttp(triggerId: string, authorizationHeader: string | undefined): TriggerResult {
+    const authError = this.authorizeHttp(authorizationHeader);
+    return authError ?? this.getReceipt(triggerId);
+  }
 
   /**
    * HTTP 経由のトリガーリクエストを処理する（Bearer 認証必須）
@@ -86,11 +128,16 @@ export class EventTrigger {
     body: TriggerRequestBody,
     authorizationHeader: string | undefined
   ): Promise<TriggerResult> {
+    const authError = this.authorizeHttp(authorizationHeader);
+    if (authError) return authError;
+    return this.fire(body);
+  }
+
+  private authorizeHttp(authorizationHeader: string | undefined): TriggerResult | undefined {
     if (!this.config.enabled) {
       return { status: 404, body: { ok: false, error: 'Trigger is not enabled' } };
     }
     if (!this.config.token) {
-      // トークン未設定で受け付けると認証なしの入口になるため拒否
       console.warn('[trigger] Rejected: XANGI_TRIGGER_TOKEN is not set');
       return {
         status: 401,
@@ -102,7 +149,7 @@ export class EventTrigger {
     if (!provided || !verifyToken(this.config.token, provided)) {
       return { status: 401, body: { ok: false, error: 'Invalid or missing bearer token' } };
     }
-    return this.fire(body);
+    return undefined;
   }
 
   /**
@@ -187,6 +234,14 @@ export class EventTrigger {
     this.lastFiredAt.set(source, now);
     this.counter += 1;
     const triggerId = `trg_${now.toString(36)}_${this.counter}`;
+    this.setReceipt({
+      triggerId,
+      source,
+      platform,
+      destinationId: channel,
+      status: 'accepted',
+      acceptedAt: new Date(now).toISOString(),
+    });
 
     // 発火の可視化: チャンネルに ⚡ ラベルを先に投げる（失敗しても本処理は続行）
     const sender = this.scheduler.getSender(platform);
@@ -199,12 +254,36 @@ export class EventTrigger {
     // エージェントターンは fire-and-forget（HTTP 応答はターン完了を待たない）
     const prompt = `[イベントトリガー発火: source=${source}, id=${triggerId}]\n${message}`;
     this.runningSources.add(source);
+    this.updateReceipt(triggerId, { status: 'running', startedAt: new Date().toISOString() });
     console.log(`[trigger] ${triggerId} source=${source} platform=${platform} → turn started`);
-    runner(prompt, channel)
+    runner(prompt, channel, undefined, {
+      onDelivery: (delivery) => {
+        this.updateReceipt(triggerId, {
+          status: 'delivered',
+          delivery: {
+            ...delivery,
+            platform,
+            destinationId: channel,
+            deliveredAt: new Date().toISOString(),
+          },
+        });
+      },
+    })
       .then((result) => {
+        const current = this.receipts.get(triggerId);
+        this.updateReceipt(triggerId, {
+          status: current?.delivery ? 'delivered' : 'completed',
+          completedAt: new Date().toISOString(),
+          resultLength: result.length,
+        });
         console.log(`[trigger] ${triggerId} completed (${result.length} chars)`);
       })
       .catch((err) => {
+        this.updateReceipt(triggerId, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: err instanceof Error ? err.message : String(err),
+        });
         console.error(`[trigger] ${triggerId} failed:`, err);
       })
       .finally(() => {
@@ -212,5 +291,57 @@ export class EventTrigger {
       });
 
     return { status: 202, body: { ok: true, triggerId, source, platform } };
+  }
+
+  private updateReceipt(triggerId: string, patch: Partial<TriggerReceipt>): void {
+    const current = this.receipts.get(triggerId);
+    if (!current) return;
+    this.setReceipt({ ...current, ...patch });
+  }
+
+  private setReceipt(receipt: TriggerReceipt): void {
+    this.receipts.set(receipt.triggerId, receipt);
+    while (this.receipts.size > MAX_TRIGGER_RECEIPTS) {
+      const oldest = this.receipts.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.receipts.delete(oldest);
+    }
+    this.persistReceipts();
+  }
+
+  private loadReceipts(): void {
+    if (!this.receiptsFile || !existsSync(this.receiptsFile)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(this.receiptsFile, 'utf-8')) as TriggerReceipt[];
+      if (!Array.isArray(parsed)) return;
+      let recoveredInterrupted = false;
+      for (const stored of parsed.slice(-MAX_TRIGGER_RECEIPTS)) {
+        if (!stored?.triggerId) continue;
+        const receipt = { ...stored };
+        if (receipt.status === 'accepted' || receipt.status === 'running') {
+          receipt.status = 'interrupted';
+          receipt.completedAt = new Date().toISOString();
+          receipt.error = 'xangi restarted before the trigger turn completed';
+          recoveredInterrupted = true;
+        }
+        this.receipts.set(receipt.triggerId, receipt);
+      }
+      if (recoveredInterrupted) this.persistReceipts();
+    } catch (error) {
+      console.warn('[trigger] Failed to load receipts:', error);
+    }
+  }
+
+  private persistReceipts(): void {
+    if (!this.receiptsFile) return;
+    try {
+      const dir = dirname(this.receiptsFile);
+      mkdirSync(dir, { recursive: true });
+      const tmp = `${this.receiptsFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify([...this.receipts.values()], null, 2), 'utf-8');
+      renameSync(tmp, this.receiptsFile);
+    } catch (error) {
+      console.warn('[trigger] Failed to persist receipts:', error);
+    }
   }
 }

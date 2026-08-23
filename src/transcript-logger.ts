@@ -1,12 +1,15 @@
 import {
   appendFileSync,
   closeSync,
+  constants,
+  copyFileSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
   readSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
@@ -36,12 +39,99 @@ export interface TranscriptEntry {
   platformMessageId?: string;
 }
 
-function getSessionLogPath(workdir: string, appSessionId: string): string {
-  const dir = join(workdir, 'logs', 'sessions');
+let centralDataDir: string | null = null;
+let legacyStartupWorkdir: string | null = null;
+
+/**
+ * Runtime transcript storage is process-global and follows DATA_DIR, not the
+ * workspace selected for an individual session. Tests and standalone callers
+ * that do not initialize it retain the historical workdir-based behavior.
+ */
+export function initTranscriptStorage(dataDir: string, startupWorkdir: string): void {
+  centralDataDir = dataDir;
+  legacyStartupWorkdir = startupWorkdir;
+}
+
+export function resetTranscriptStorageForTests(): void {
+  centralDataDir = null;
+  legacyStartupWorkdir = null;
+}
+
+function transcriptDirectory(root: string): string {
+  return join(root, 'logs', 'sessions');
+}
+
+export function isValidTranscriptSessionId(appSessionId: string): boolean {
+  return (
+    appSessionId.length > 0 &&
+    appSessionId !== '.' &&
+    appSessionId !== '..' &&
+    !appSessionId.includes('/') &&
+    !appSessionId.includes('\\') &&
+    !appSessionId.includes('\0')
+  );
+}
+
+function transcriptFileName(appSessionId: string): string {
+  if (!isValidTranscriptSessionId(appSessionId)) {
+    throw new Error('Invalid transcript session ID');
+  }
+  return `${appSessionId}.jsonl`;
+}
+
+function getSessionLogPathForWrite(workdir: string, appSessionId: string): string {
+  const dir = transcriptDirectory(centralDataDir ?? workdir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  return join(dir, `${appSessionId}.jsonl`);
+  const fileName = transcriptFileName(appSessionId);
+  const destination = join(dir, fileName);
+  if (centralDataDir && !existsSync(destination)) {
+    const legacy = [legacyStartupWorkdir]
+      .filter(Boolean)
+      .map((root) => join(transcriptDirectory(root as string), fileName))
+      .find((candidate) => candidate !== destination && existsSync(candidate));
+    if (legacy) {
+      try {
+        copyFileSync(legacy, destination, constants.COPYFILE_EXCL);
+      } catch (error) {
+        const code =
+          error && typeof error === 'object' && 'code' in error
+            ? (error as NodeJS.ErrnoException).code
+            : undefined;
+        if (code !== 'EEXIST') throw error;
+      }
+    }
+  }
+  return destination;
+}
+
+export function getTranscriptDirectories(workdir: string): string[] {
+  const roots = centralDataDir ? [centralDataDir, legacyStartupWorkdir] : [workdir];
+  return [...new Set(roots.filter(Boolean) as string[])]
+    .map(transcriptDirectory)
+    .filter(existsSync);
+}
+
+export function getSessionLogPathForRead(workdir: string, appSessionId: string): string {
+  const fileName = transcriptFileName(appSessionId);
+  for (const dir of getTranscriptDirectories(workdir)) {
+    const candidate = join(dir, fileName);
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(transcriptDirectory(centralDataDir ?? workdir), fileName);
+}
+
+export function deleteSessionTranscript(workdir: string, appSessionId: string): boolean {
+  const fileName = transcriptFileName(appSessionId);
+  let deleted = false;
+  for (const dir of getTranscriptDirectories(workdir)) {
+    const candidate = join(dir, fileName);
+    if (!existsSync(candidate)) continue;
+    unlinkSync(candidate);
+    deleted = true;
+  }
+  return deleted;
 }
 
 function generateMessageId(): string {
@@ -50,7 +140,7 @@ function generateMessageId(): string {
 
 function writeEntry(workdir: string, appSessionId: string, entry: TranscriptEntry): void {
   try {
-    const filePath = getSessionLogPath(workdir, appSessionId);
+    const filePath = getSessionLogPathForWrite(workdir, appSessionId);
     const line = JSON.stringify(entry);
     appendFileSync(filePath, line + '\n');
   } catch (err) {
@@ -103,7 +193,7 @@ export function logError(workdir: string, appSessionId: string, error: string): 
  */
 export function readSessionMessages(workdir: string, appSessionId: string): TranscriptEntry[] {
   try {
-    const filePath = getSessionLogPath(workdir, appSessionId);
+    const filePath = getSessionLogPathForRead(workdir, appSessionId);
     if (!existsSync(filePath)) return [];
     const content = readFileSync(filePath, 'utf-8');
     return content
@@ -129,7 +219,7 @@ export function readSessionMessagesTail(
   const safeBefore = Math.max(0, Math.floor(before));
   let fd: number | undefined;
   try {
-    const filePath = getSessionLogPath(workdir, appSessionId);
+    const filePath = getSessionLogPathForRead(workdir, appSessionId);
     if (!existsSync(filePath)) return [];
     fd = openSync(filePath, 'r');
     let position = statSync(filePath).size;
@@ -174,7 +264,7 @@ export function readSessionMessagesPage(
   if (limit <= 0) return { entries: [], hasMore: false, nextCursor: null };
   let fd: number | undefined;
   try {
-    const filePath = getSessionLogPath(workdir, appSessionId);
+    const filePath = getSessionLogPathForRead(workdir, appSessionId);
     if (!existsSync(filePath)) return { entries: [], hasMore: false, nextCursor: null };
     fd = openSync(filePath, 'r');
     const fileSize = statSync(filePath).size;
@@ -232,7 +322,7 @@ function rewriteSessionFile(
   appSessionId: string,
   entries: TranscriptEntry[]
 ): void {
-  const filePath = getSessionLogPath(workdir, appSessionId);
+  const filePath = getSessionLogPathForWrite(workdir, appSessionId);
   const lines = entries.map((e) => JSON.stringify(e)).join('\n');
   writeFileSync(filePath, entries.length > 0 ? lines + '\n' : '');
 }

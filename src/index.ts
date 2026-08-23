@@ -6,9 +6,12 @@ import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
 import { startSlackBot } from './slack.js';
 import { initSettings, loadSettings } from './settings.js';
-import { Scheduler } from './scheduler.js';
+import { Scheduler, type Platform } from './scheduler.js';
 import { initSessions } from './sessions.js';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { realpathSync } from 'fs';
+import { initTranscriptStorage } from './transcript-logger.js';
+import { WorkspaceRegistry } from './workspace-registry.js';
 import { config as dotenvConfig } from 'dotenv';
 import { startWebChat } from './web-chat.js';
 import { startLineBot } from './line.js';
@@ -28,7 +31,12 @@ import {
 } from './discord/message-handler.js';
 import { finalizeActiveStreams } from './stream-finalizer.js';
 import { registerDiscordSchedulerBridge } from './discord/scheduler-bridge.js';
+import {
+  resolveCachedDiscordDestinationLabel,
+  warmDiscordScheduleDestinations,
+} from './discord/destination-label.js';
 import { runShutdownCleanup } from './shutdown.js';
+import { processManager } from './process-manager.js';
 import { getSelfLifecyclePermission } from './self-lifecycle.js';
 import { loadStoredSecrets } from './setup/runtime-secrets.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
@@ -41,8 +49,13 @@ await loadStoredSecrets();
 
 async function main() {
   const config = loadConfig();
+  const workdir = realpathSync(resolve(config.agent.config.workdir || process.cwd()));
+  config.agent.config.workdir = workdir;
   await startAutostartExtensions({ workspace: config.agent.config.workdir });
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
+  const destinationLabelResolverRef: {
+    current?: (platform: Platform, destinationId: string) => string | undefined;
+  } = {};
   const platformStartupTasks: Promise<void>[] = [];
 
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
@@ -100,12 +113,12 @@ async function main() {
   );
 
   // スキルを読み込み（`/skill` 再読込と共有する可変参照）
-  const workdir = config.agent.config.workdir || process.cwd();
   const skillsRef: SkillsRef = { current: loadSkills(workdir) };
   console.log(`[xangi] Loaded ${skillsRef.current.length} skills from ${workdir}`);
 
   // dataDir（永続データの保存先）を決定
-  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
+  const dataDir = resolve(process.env.DATA_DIR || join(workdir, '.xangi'));
+  initTranscriptStorage(dataDir, workdir);
 
   // dataDir を排他ロック
   // 同じ dataDir を複数の xangi インスタンスで共有すると sessions.json の
@@ -123,6 +136,15 @@ async function main() {
 
   // セッション永続化を初期化
   initSessions(dataDir);
+
+  const configuredWorkspaceRoots = process.env.XANGI_WORKSPACE_ALLOWED_ROOTS?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const workspaceRegistry = await WorkspaceRegistry.open({
+    dataDir,
+    defaultWorkspacePath: workdir,
+    allowedRoots: configuredWorkspaceRoots?.length ? configuredWorkspaceRoots : undefined,
+  });
 
   // 外部イベントストリーム (pull 型 SSE) の設定をログ出力。
   // 実際の購読 URL は web-chat 起動時に Tailscale 解決込みで `[xangi-events (SSE)]
@@ -149,6 +171,8 @@ async function main() {
       scheduler,
       skillsRef,
       discordRemoteInputRef,
+      destinationLabelResolverRef,
+      workspaceRegistry,
     });
   }
 
@@ -208,7 +232,7 @@ async function main() {
   const { startToolServer } = await import('./tool-server.js');
   const { EventTrigger, loadTriggerConfig } = await import('./event-trigger.js');
   startToolServer({
-    eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler),
+    eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler, { dataDir }),
     backendResolver: resolver,
     config,
     scheduler,
@@ -229,6 +253,10 @@ async function main() {
       // 受け取り、必要に応じて fetch() する。
       partials: [Partials.Message, Partials.Channel],
     });
+    destinationLabelResolverRef.current = (platform, destinationId) =>
+      platform === 'discord'
+        ? resolveCachedDiscordDestinationLabel(client, destinationId)
+        : undefined;
 
     // runner の timeout-* イベントを Discord メッセージ更新に紐付け
     registerDiscordTimeoutUi(agentRunner);
@@ -263,6 +291,8 @@ async function main() {
           console.log(`[xangi] ${commands.length} slash commands registered for: ${guild.name}`);
         }
 
+        await warmDiscordScheduleDestinations(client, scheduler.list());
+
         // グローバルコマンドをクリア（重複防止）
         await rest.put(Routes.applicationCommands(c.user.id), { body: [] });
         console.log('[xangi] Cleared global commands');
@@ -281,8 +311,9 @@ async function main() {
         scheduler,
         workdir,
         skillsRef,
+        workspaceRegistry,
         onReplySuggestion: (interaction, suggestion) =>
-          processReplySuggestion(interaction, agentRunner, config, suggestion),
+          processReplySuggestion(interaction, agentRunner, config, suggestion, workspaceRegistry),
       })
     );
 
@@ -297,10 +328,11 @@ async function main() {
       config,
       agentRunner,
       workdir,
+      workspaceRegistry,
     });
 
     // スケジューラに Discord 送信関数とエージェント実行関数を登録
-    registerDiscordSchedulerBridge({ scheduler, client, config, agentRunner });
+    registerDiscordSchedulerBridge({ scheduler, client, config, agentRunner, workspaceRegistry });
 
     // Discordの初回接続は他platformと同時に開始。一時的なDNS/接続障害は
     // WebやSlackを止めず、同一process内で回復するまで再試行する。
@@ -352,14 +384,22 @@ async function main() {
   scheduler.startAll(config.scheduler);
 
   // シャットダウン時にスケジューラを停止し、dataDir ロックを解放
-  const shutdown = () =>
-    runShutdownCleanup({
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = () => {
+    shutdownPromise ??= runShutdownCleanup({
       stopScheduler: () => scheduler.stopAll(),
       finalizeActiveStreams,
+      stopAgentProcesses: async () => {
+        agentRunner.shutdown();
+        await processManager.stopAllAndWait();
+      },
       stopExtensions: stopManagedExtensions,
       releaseDataDirLock,
       exit: (code) => process.exit(code),
+      hardTimeoutMs: 7_000,
     });
+    return shutdownPromise;
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

@@ -449,10 +449,10 @@ button:disabled {
 }
 
 .project-view {
-  width: min(760px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   overflow-y: auto;
-  padding: 32px 28px 64px;
+  padding: 32px max(28px, calc((100% - 760px) / 2 + 28px)) 64px;
 }
 
 .project-view-header {
@@ -500,6 +500,12 @@ button:disabled {
 
 .project-view-new:hover {
   background: var(--accent-tint);
+}
+
+.project-view-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .project-view-list {
@@ -690,6 +696,144 @@ button:disabled {
   border-color: var(--accent);
   color: var(--surface);
   background: var(--accent);
+}
+
+.project-form button.danger {
+  margin-right: auto;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.workspace-manager {
+  display: grid;
+  gap: 14px;
+  margin-top: 28px;
+}
+
+.workspace-manager button,
+.workspace-register-form button {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  color: inherit;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.workspace-manager button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workspace-manager-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-manager-heading h2,
+.workspace-manager-heading p {
+  margin: 0;
+}
+
+.workspace-manager-heading h2 {
+  font-size: 18px;
+}
+
+.workspace-manager-heading p {
+  margin-top: 4px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.workspace-register-form {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface-subtle);
+}
+
+.workspace-register-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.workspace-register-form label > span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.workspace-register-form input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.workspace-register-form input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-tint);
+  outline-offset: 1px;
+}
+
+.workspace-register-form button.primary {
+  border-color: var(--accent);
+  color: var(--surface);
+  background: var(--accent);
+}
+
+.workspace-manager-list {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-manager-row {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+
+.workspace-manager-row:hover {
+  background: var(--hover);
+}
+
+.workspace-manager-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-manager-copy strong,
+.workspace-manager-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-manager-copy strong {
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.workspace-manager-copy small {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.workspace-unregister:not(:disabled) {
+  color: var(--danger);
 }
 
 .sidebar-new-chat:hover {
@@ -977,6 +1121,7 @@ button:disabled {
 .workspace-file-controls select,
 .workspace-file-controls button {
   font-size: 13px;
+  font-weight: 400;
 }
 
 .app-page-navigation {
@@ -2574,6 +2719,147 @@ video.media-preview {
   color: var(--accent-ink);
 }
 
+.html-artifact {
+  width: min(100%, 760px);
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgb(55 53 47 / 8%);
+}
+
+.html-artifact > header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px 8px 12px;
+}
+
+.html-artifact > header > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.html-artifact > header strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-artifact-kicker {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.html-artifact-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.html-artifact-actions a,
+.html-artifact-actions button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 5px 8px;
+  color: var(--ink-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.html-artifact-actions a:hover,
+.html-artifact-actions a:focus-visible,
+.html-artifact-actions button:hover,
+.html-artifact-actions button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.html-artifact iframe {
+  display: block;
+  width: 100%;
+  height: clamp(320px, 52vw, 560px);
+  border: 0;
+  background: #fff;
+}
+
+.html-artifact-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.html-artifact-dialog::backdrop {
+  background: var(--surface);
+}
+
+.html-artifact-dialog > header {
+  display: flex;
+  height: calc(52px + env(safe-area-inset-top));
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0
+    max(12px, env(safe-area-inset-left));
+}
+
+.html-artifact-dialog > header strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-artifact-dialog > header button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 6px 10px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.html-artifact-dialog > header button:hover,
+.html-artifact-dialog > header button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.html-artifact-dialog iframe {
+  display: block;
+  width: 100%;
+  height: calc(100dvh - 52px - env(safe-area-inset-top));
+  border: 0;
+  background: #fff;
+}
+
 .message-actions {
   display: flex;
   min-height: 25px;
@@ -3521,11 +3807,11 @@ video.media-preview {
 }
 
 .schedules-content {
-  width: min(1180px, 100%);
+  width: 100%;
   min-height: 0;
-  margin: 0 auto;
+  margin: 0;
   overflow-y: auto;
-  padding: 34px 28px 64px;
+  padding: 34px max(28px, calc((100% - 1180px) / 2 + 28px)) 64px;
 }
 
 .schedules-header {
@@ -4351,6 +4637,11 @@ video.media-preview {
 
   .project-view-header {
     align-items: flex-start;
+  }
+
+  .project-view-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .project-view-header h1 {

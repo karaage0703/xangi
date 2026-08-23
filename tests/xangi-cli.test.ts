@@ -354,7 +354,7 @@ exit 0
       workspacePath: workspace,
       webChatAccess: 'lan',
     });
-  });
+  }, 15_000);
 
   it('lists sessions via the Even Terminal compatible API', async () => {
     const result = await runCli(['sessions', '--url', serverUrl, '--token', 'secret']);

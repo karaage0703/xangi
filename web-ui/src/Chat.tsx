@@ -88,6 +88,14 @@ interface Project {
   backend?: string;
   model?: string;
   effort?: string;
+  workspaceId?: string;
+}
+
+interface RegisteredWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  isDefault: boolean;
 }
 
 interface ModelDiscoveryResponse {
@@ -2031,6 +2039,7 @@ export function Chat() {
   const [activeKey, setActiveKey] = useState(restored.activeKey);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
   const [activeProjectId, setActiveProjectId] = useState(
     () => window.localStorage.getItem(PROJECT_STATE_KEY) || ''
   );
@@ -2042,6 +2051,7 @@ export function Chat() {
   const [projectBackend, setProjectBackend] = useState('');
   const [projectModel, setProjectModel] = useState('');
   const [projectEffort, setProjectEffort] = useState('');
+  const [projectWorkspaceId, setProjectWorkspaceId] = useState('default');
   const [projectModelOptions, setProjectModelOptions] = useState<ModelDiscoveryResponse['models']>(
     []
   );
@@ -2049,6 +2059,14 @@ export function Chat() {
   const [projectModelStatus, setProjectModelStatus] = useState('');
   const [loadingProjectModels, setLoadingProjectModels] = useState(false);
   const [savingProject, setSavingProject] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [workspacePath, setWorkspacePath] = useState('');
+  const [savingWorkspace, setSavingWorkspace] = useState(false);
+  const [workspaceToRemove, setWorkspaceToRemove] = useState<RegisteredWorkspace | null>(null);
+  const [removingWorkspace, setRemovingWorkspace] = useState(false);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [nextOffset, setNextOffset] = useState<number>();
@@ -2122,6 +2140,9 @@ export function Chat() {
           current && !result.projects.some((project) => project.id === current) ? '' : current
         );
       }),
+      requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces').then((result) =>
+        setWorkspaces(result.workspaces)
+      ),
     ]).catch((cause: unknown) => setNotice(cause instanceof Error ? cause.message : String(cause)));
   }, []);
 
@@ -2353,12 +2374,14 @@ export function Chat() {
   }
 
   function openNewProjectForm() {
+    setWorkspaceManagerOpen(false);
     setEditingProjectId(undefined);
     setProjectName('');
     setProjectPrompt('');
     setProjectBackend('');
     setProjectModel('');
     setProjectEffort('');
+    setProjectWorkspaceId('default');
     setProjectFormOpen(true);
   }
 
@@ -2366,12 +2389,14 @@ export function Chat() {
     project = projects.find((candidate) => candidate.id === activeProjectId)
   ) {
     if (!project) return;
+    setWorkspaceManagerOpen(false);
     setEditingProjectId(project.id);
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
     setProjectBackend(project.backend || '');
     setProjectModel(project.model || '');
     setProjectEffort(project.effort || '');
+    setProjectWorkspaceId(project.workspaceId || 'default');
     setProjectFormOpen(true);
   }
 
@@ -2386,6 +2411,7 @@ export function Chat() {
         backend: projectBackend || null,
         model: projectBackend && projectModel ? projectModel : null,
         effort: projectBackend && projectEffort ? projectEffort : null,
+        workspaceId: projectWorkspaceId,
       };
       const endpoint = editingProjectId
         ? `/api/projects/${encodeURIComponent(editingProjectId)}`
@@ -2405,11 +2431,83 @@ export function Chat() {
       setProjectBackend('');
       setProjectModel('');
       setProjectEffort('');
+      setProjectWorkspaceId('default');
       setNotice('');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSavingProject(false);
+    }
+  }
+
+  async function deleteProject() {
+    if (!projectToDelete || deletingProject) return;
+    setDeletingProject(true);
+    try {
+      await requestJson(`/api/projects/${encodeURIComponent(projectToDelete.id)}`, {
+        method: 'DELETE',
+      });
+      const refreshed = await requestJson<ProjectsResponse>('/api/projects');
+      setProjects(refreshed.projects);
+      if (activeProjectId === projectToDelete.id) setActiveProjectId('');
+      setProjectToDelete(null);
+      setProjectFormOpen(false);
+      setEditingProjectId(undefined);
+      setNotice('Projectを削除しました。会話履歴とWorkspaceは残っています');
+      await loadSessions(0, query, false);
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+      setProjectToDelete(null);
+    } finally {
+      setDeletingProject(false);
+    }
+  }
+
+  function openWorkspaceManager() {
+    setProjectFormOpen(false);
+    setWorkspaceManagerOpen(true);
+    setWorkspaceName('');
+    setWorkspacePath('');
+    setNotice('');
+  }
+
+  async function registerWorkspace(event: FormEvent) {
+    event.preventDefault();
+    if (!workspaceName.trim() || !workspacePath.trim() || savingWorkspace) return;
+    setSavingWorkspace(true);
+    try {
+      await requestJson(
+        '/api/workspaces',
+        jsonInit('POST', { name: workspaceName.trim(), path: workspacePath.trim() })
+      );
+      const refreshed = await requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
+      setWorkspaces(refreshed.workspaces);
+      setWorkspaceName('');
+      setWorkspacePath('');
+      setNotice('Workspaceを追加しました');
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSavingWorkspace(false);
+    }
+  }
+
+  async function unregisterWorkspace() {
+    if (!workspaceToRemove || removingWorkspace) return;
+    setRemovingWorkspace(true);
+    try {
+      await requestJson(`/api/workspaces/${encodeURIComponent(workspaceToRemove.id)}`, {
+        method: 'DELETE',
+      });
+      const refreshed = await requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
+      setWorkspaces(refreshed.workspaces);
+      setWorkspaceToRemove(null);
+      setNotice('Workspaceの登録を解除しました。ディレクトリとファイルは残っています');
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+      setWorkspaceToRemove(null);
+    } finally {
+      setRemovingWorkspace(false);
     }
   }
 
@@ -2681,19 +2779,94 @@ export function Chat() {
                   onClick={() => {
                     setProjectViewOpen(false);
                     setProjectFormOpen(false);
+                    setWorkspaceManagerOpen(false);
                   }}
                 >
                   ← 会話
                 </button>
                 <h1>Projects</h1>
               </div>
-              {!projectFormOpen && (
-                <button type="button" className="project-view-new" onClick={openNewProjectForm}>
-                  ＋ 新規Project
-                </button>
+              {!projectFormOpen && !workspaceManagerOpen && (
+                <div className="project-view-header-actions">
+                  <button type="button" className="project-view-new" onClick={openWorkspaceManager}>
+                    Workspaceを追加
+                  </button>
+                  <button type="button" className="project-view-new" onClick={openNewProjectForm}>
+                    ＋ 新規Project
+                  </button>
+                </div>
               )}
             </header>
-            {projectFormOpen ? (
+            {notice && (
+              <div className="notice" role="status">
+                {notice}
+              </div>
+            )}
+            {workspaceManagerOpen ? (
+              <section className="workspace-manager" aria-labelledby="workspace-manager-title">
+                <div className="workspace-manager-heading">
+                  <div>
+                    <h2 id="workspace-manager-title">Workspaceを追加・管理</h2>
+                    <p>既存ディレクトリの絶対パスを登録します。</p>
+                  </div>
+                  <button type="button" onClick={() => setWorkspaceManagerOpen(false)}>
+                    閉じる
+                  </button>
+                </div>
+                <form
+                  className="workspace-register-form"
+                  onSubmit={(event) => void registerWorkspace(event)}
+                >
+                  <label>
+                    <span>名前</span>
+                    <input
+                      value={workspaceName}
+                      onChange={(event) => setWorkspaceName(event.target.value)}
+                      maxLength={80}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>絶対パス</span>
+                    <input
+                      value={workspacePath}
+                      onChange={(event) => setWorkspacePath(event.target.value)}
+                      placeholder="/path/to/workspace"
+                      required
+                    />
+                  </label>
+                  <div className="project-form-actions">
+                    <button type="submit" className="primary" disabled={savingWorkspace}>
+                      {savingWorkspace ? '追加中…' : '追加'}
+                    </button>
+                  </div>
+                </form>
+                <div className="workspace-manager-list">
+                  {workspaces.map((workspace) => (
+                    <div className="workspace-manager-row" key={workspace.id}>
+                      <span className="workspace-manager-copy">
+                        <strong>
+                          {workspace.name}
+                          {workspace.isDefault ? ' (default)' : ''}
+                        </strong>
+                        <small>{workspace.path}</small>
+                      </span>
+                      <button
+                        type="button"
+                        className="workspace-unregister"
+                        disabled={workspace.isDefault}
+                        title={
+                          workspace.isDefault ? 'default Workspaceは登録解除できません' : undefined
+                        }
+                        onClick={() => setWorkspaceToRemove(workspace)}
+                      >
+                        登録解除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : projectFormOpen ? (
               <form className="project-form" onSubmit={(event) => void saveProject(event)}>
                 <label>
                   <span>名前</span>
@@ -2713,6 +2886,20 @@ export function Chat() {
                     rows={5}
                     placeholder="このProjectの会話に追加する指示"
                   />
+                </label>
+                <label>
+                  <span>ワークスペース</span>
+                  <select
+                    value={projectWorkspaceId}
+                    onChange={(event) => setProjectWorkspaceId(event.target.value)}
+                  >
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                        {workspace.isDefault ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <fieldset className="project-model-settings">
                   <legend>既定のAI設定</legend>
@@ -2798,8 +2985,23 @@ export function Chat() {
                 <p>
                   このProjectの会話は既定のAI設定を継承します。会話個別の設定がある場合はそちらを優先します。
                 </p>
-                <p>Projectは会話をまとめる論理グループで、フォルダは作成しません。</p>
+                <p>ワークスペース変更は、このProjectで次に作る新規会話から反映されます。</p>
                 <div className="project-form-actions">
+                  {editingProjectId && (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={savingProject}
+                      onClick={() => {
+                        const project = projects.find(
+                          (candidate) => candidate.id === editingProjectId
+                        );
+                        if (project) setProjectToDelete(project);
+                      }}
+                    >
+                      Projectを削除
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={savingProject}
@@ -3058,6 +3260,32 @@ export function Chat() {
           setPaneToClose('');
           if (paneKey) closePaneNow(paneKey);
         }}
+      />
+      <ConfirmDialog
+        open={Boolean(projectToDelete)}
+        title="Projectを削除"
+        description={`「${projectToDelete?.name || ''}」を削除します。所属する会話は「Projectなし」へ移動し、会話履歴・Workspace・ディレクトリ・ファイルは削除しません。`}
+        confirmLabel="Projectを削除"
+        busyLabel="削除中…"
+        busy={deletingProject}
+        variant="danger"
+        onCancel={() => {
+          if (!deletingProject) setProjectToDelete(null);
+        }}
+        onConfirm={() => void deleteProject()}
+      />
+      <ConfirmDialog
+        open={Boolean(workspaceToRemove)}
+        title="Workspaceの登録を解除"
+        description={`「${workspaceToRemove?.name || ''}」の登録だけを解除します。ディレクトリとファイルは削除しません。`}
+        confirmLabel="登録解除"
+        busyLabel="解除中…"
+        busy={removingWorkspace}
+        variant="danger"
+        onCancel={() => {
+          if (!removingWorkspace) setWorkspaceToRemove(null);
+        }}
+        onConfirm={() => void unregisterWorkspace()}
       />
     </main>
   );

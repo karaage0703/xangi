@@ -10,6 +10,7 @@ AIコーディングツールをxangiとは独立してセットアップしま�
 使い方:
   setup-ai-tools.sh check
   setup-ai-tools.sh codex
+  setup-ai-tools.sh opencode
   setup-ai-tools.sh claude-code
   setup-ai-tools.sh cursor
   setup-ai-tools.sh grok
@@ -55,7 +56,7 @@ show_node_guide() {
 }
 
 refresh_path() {
-  export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH"
+  export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.cursor/bin:$PATH"
   hash -r 2>/dev/null || true
 }
 
@@ -70,13 +71,14 @@ auth_status() {
     codex) codex login status >/dev/null 2>&1 ;;
     claude-code) claude auth status >/dev/null 2>&1 ;;
     cursor) cursor-agent status >/dev/null 2>&1 ;;
-    grok|antigravity|github-copilot) return 2 ;;
+    opencode|grok|antigravity|github-copilot) return 2 ;;
   esac
 }
 
 command_for() {
   case "$1" in
     codex) echo codex ;;
+    opencode) echo opencode ;;
     claude-code) echo claude ;;
     cursor) echo cursor-agent ;;
     grok) echo grok ;;
@@ -133,6 +135,7 @@ install_tool() {
       command -v npm >/dev/null 2>&1 || show_node_guide 'Codex' 'codex'
       npm install -g @openai/codex
       ;;
+    opencode) download_and_run 'https://opencode.ai/install' ;;
     claude-code) download_and_run 'https://claude.ai/install.sh' ;;
     cursor) download_and_run 'https://cursor.com/install' ;;
     grok) download_and_run 'https://x.ai/cli/install.sh' ;;
@@ -147,6 +150,7 @@ install_tool() {
 login_tool() {
   case "$1" in
     codex) codex login ;;
+    opencode) opencode auth login ;;
     claude-code) claude auth login ;;
     cursor) cursor-agent login ;;
     grok) grok login ;;
@@ -182,11 +186,11 @@ setup_tool() {
 refresh_path
 case "${1:-}" in
   check)
-    for tool in codex claude-code cursor grok antigravity github-copilot; do
+    for tool in codex claude-code cursor grok antigravity github-copilot opencode; do
       check_tool "$tool"
     done
     ;;
-  codex|claude-code|cursor|grok|antigravity|github-copilot) setup_tool "$1" ;;
+  codex|claude-code|cursor|grok|antigravity|github-copilot|opencode) setup_tool "$1" ;;
   -h|--help|'') usage ;;
   *) usage >&2; fail "未対応のツールです: $1" ;;
 esac

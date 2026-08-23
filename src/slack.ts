@@ -14,7 +14,11 @@ import {
   loadSettings,
   formatSettings,
 } from './settings.js';
-import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
+import {
+  canSelfRestart,
+  getSelfLifecyclePermission,
+  type SelfLifecyclePermission,
+} from './self-lifecycle.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
@@ -24,6 +28,7 @@ import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
 import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
+import { requestProcessRestart } from './restart-process.js';
 import {
   addToolHistory,
   appendToolHistory,
@@ -632,6 +637,46 @@ export interface SlackChannelOptions {
   scheduler?: Scheduler;
 }
 
+type SlackRestartResponse = {
+  text: string;
+  response_type?: 'ephemeral';
+};
+
+export async function handleSlackRestartCommand(options: {
+  userId: string;
+  allowedUsers?: string[];
+  ack: () => Promise<unknown>;
+  respond: (response: SlackRestartResponse) => Promise<unknown>;
+  selfLifecycle?: SelfLifecyclePermission;
+  restart?: (delayMs: number) => void;
+}): Promise<void> {
+  const {
+    userId,
+    allowedUsers,
+    ack,
+    respond,
+    selfLifecycle = getSelfLifecyclePermission(),
+    restart = requestProcessRestart,
+  } = options;
+
+  await ack();
+
+  if (!allowedUsers?.includes('*') && !allowedUsers?.includes(userId)) {
+    await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
+    return;
+  }
+
+  if (!canSelfRestart(selfLifecycle)) {
+    await respond({
+      text: '⚠️ 自己再起動が無効です。管理者が `.env` の `XANGI_SELF_LIFECYCLE=restart-only` を設定し、xangi を再起動してください。',
+    });
+    return;
+  }
+
+  await respond({ text: '🔄 再起動します...' });
+  restart(1000);
+}
+
 export function registerSlackSchedulerBridge(deps: {
   scheduler: Scheduler;
   client: WebClient;
@@ -647,7 +692,7 @@ export function registerSlackSchedulerBridge(deps: {
     });
   });
 
-  scheduler.registerAgentRunner('slack', async (prompt, channelId) => {
+  scheduler.registerAgentRunner('slack', async (prompt, channelId, _schedule, runContext) => {
     const startedAt = Date.now();
     const initialText = '🤔 考え中...';
     const thinking = await client.chat.postMessage({
@@ -706,9 +751,14 @@ export function registerSlackSchedulerBridge(deps: {
         ),
         []
       );
+      runContext?.onDelivery?.({
+        platform: 'slack',
+        destinationId: channelId,
+        messageIds: [messageTs],
+      });
       return result;
     } catch (error) {
-      await client.chat
+      const errorDelivered = await client.chat
         .update({
           channel: channelId,
           ts: messageTs,
@@ -720,7 +770,15 @@ export function registerSlackSchedulerBridge(deps: {
           ),
           blocks: [],
         })
-        .catch(() => {});
+        .then(() => true)
+        .catch(() => false);
+      if (errorDelivered) {
+        runContext?.onDelivery?.({
+          platform: 'slack',
+          destinationId: channelId,
+          messageIds: [messageTs],
+        });
+      }
       throw error;
     } finally {
       const entry = slackProcessingMessages.get(channelId);
@@ -759,7 +817,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     ) {
       return;
     }
-    const stopped = processManager.stop(runKey) || agentRunner.cancel?.(runKey) || false;
+    const managedProcessStopped = await processManager.stopAndWait(runKey);
+    const stopped = managedProcessStopped || agentRunner.cancel?.(runKey) || false;
     if (!stopped) {
       console.log(`[slack] No running task to stop for runKey ${runKey}`);
     }
@@ -1053,8 +1112,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped =
-        processManager.stop(conversationKey) || agentRunner.cancel?.(conversationKey) || false;
+      const managedProcessStopped = await processManager.stopAndWait(conversationKey);
+      const stopped = managedProcessStopped || agentRunner.cancel?.(conversationKey) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),
@@ -1260,8 +1319,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
     // 停止コマンド
     if (['!stop', 'stop', '/stop'].includes(text)) {
-      const stopped =
-        processManager.stop(conversationKey) || agentRunner.cancel?.(conversationKey) || false;
+      const managedProcessStopped = await processManager.stopAndWait(conversationKey);
+      const stopped = managedProcessStopped || agentRunner.cancel?.(conversationKey) || false;
       await say({
         text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
         ...(threadTs && { thread_ts: threadTs }),
@@ -1439,25 +1498,12 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
 
   // /restart コマンド
   app.command('/restart', async ({ command, ack, respond }) => {
-    await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
-
-    const selfLifecycle = getSelfLifecyclePermission();
-    if (!canSelfRestart(selfLifecycle)) {
-      await respond({
-        text: '⚠️ 自己再起動が無効です。管理者が `.env` の `XANGI_SELF_LIFECYCLE=restart-only` を設定し、xangi を再起動してください。',
-      });
-      return;
-    }
-    await respond({ text: '🔄 再起動します...' });
-    setTimeout(() => process.exit(0), 1000);
+    await handleSlackRestartCommand({
+      userId: command.user_id,
+      allowedUsers: config.slack.allowedUsers,
+      ack,
+      respond,
+    });
   });
 
   await startPlatformWithRetry('Slack', () => app.start());
@@ -1598,12 +1644,19 @@ export async function processMessage(
   // transcript-logger / 編集・削除同期で必要。
   const appSessionId = ensureSession(conversationKey, { platform: 'slack' });
   const tWorkdir = config.agent.config.workdir || process.cwd();
+  let acquiredRunLock = false;
   try {
     if (busySlackConversations.has(runKey)) {
       console.log(`[slack] Skipping busy conversation: runKey=${runKey}`);
+      await client.chat.postMessage({
+        channel: channelId,
+        text: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+        ...(threadTs && { thread_ts: threadTs }),
+      });
       return;
     }
     busySlackConversations.add(runKey);
+    acquiredRunLock = true;
     console.log(`[slack] Processing message: channel=${channelId}, runKey=${runKey}`);
 
     const sessionId = getProviderSessionId(conversationKey) ?? sessions.get(conversationKey);
@@ -1940,7 +1993,9 @@ export async function processMessage(
       });
     }
   } finally {
-    busySlackConversations.delete(runKey);
+    if (acquiredRunLock) {
+      busySlackConversations.delete(runKey);
+    }
     // 正常完了・エラー処理後は shutdown finalizer の対象から外す
     unregisterStreamFinalizer?.();
     // 👀 リアクションを削除

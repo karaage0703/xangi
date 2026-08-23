@@ -8,12 +8,12 @@
 
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-xangi is an AI assistant that connects Claude Code, Codex, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
+xangi is an AI assistant that connects Claude Code, Codex, OpenCode, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
 
 ## Key features
 
 - Six AI backends and five chat surfaces
-- Per-channel backend, model, and effort settings with dynamic model discovery
+- Per-channel backend, model, effort, and Local LLM reasoning-effort settings with dynamic model discovery
 - Immediate, restart-free updates to allowed channel settings through natural language or native commands
 - Run workspace skills directly from chat
 - Persistent sessions and transcripts, timeout extension, and workspace hooks
@@ -53,7 +53,7 @@ The same flow works on macOS, Linux, and WSL2.
    bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
    ```
 
-   Replace `codex` with `claude-code`, `cursor`, `grok`, `antigravity`, or `github-copilot` if needed.
+   Replace `codex` with `claude-code`, `cursor`, `grok`, `antigravity`, `github-copilot`, or `opencode` if needed.
 
 2. Install xangi.
 

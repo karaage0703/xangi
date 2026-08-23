@@ -7,6 +7,7 @@ import {
   parseCodexModels,
   parseCursorModels,
   parseGrokModels,
+  parseOpenCodeModels,
   type ModelDiscoveryCommandRunner,
 } from '../src/backend-models.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
@@ -69,6 +70,13 @@ describe('backend model parsers', () => {
         'Available models:\ngemini-3.6-flash-high\nGemini 3.5 Flash (Medium)\n'
       )
     ).toEqual([{ id: 'gemini-3.6-flash-high' }, { id: 'Gemini 3.5 Flash (Medium)' }]);
+  });
+
+  it('parses OpenCode provider/model output', () => {
+    expect(parseOpenCodeModels('opencode/big-pickle\ndspark/qwen3.8-27b\n')).toEqual([
+      { id: 'opencode/big-pickle' },
+      { id: 'dspark/qwen3.8-27b' },
+    ]);
   });
 
   it('parses Antigravity 1.1.12 JSON and tab-delimited model output', () => {
@@ -149,6 +157,9 @@ describe('discoverBackendModels', () => {
       if (command === 'grok') {
         return { stdout: '  * grok-4.3 (default)\n  - grok-4.5\n', stderr: '' };
       }
+      if (command === 'opencode') {
+        return { stdout: 'opencode/big-pickle\ndspark/qwen3.8-27b\n', stderr: '' };
+      }
       return {
         stdout: JSON.stringify({
           status: 'SUCCESS',
@@ -179,6 +190,11 @@ describe('discoverBackendModels', () => {
         { id: 'grok-4.5', isDefault: false },
       ],
     });
+    await expect(discoverBackendModels('opencode', { runner })).resolves.toMatchObject({
+      status: 'available',
+      source: 'opencode models',
+      models: [{ id: 'opencode/big-pickle' }, { id: 'dspark/qwen3.8-27b' }],
+    });
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',
       source: 'agy --output-format json models',
@@ -188,6 +204,7 @@ describe('discoverBackendModels', () => {
       ['codex', ['app-server', '--stdio']],
       ['cursor-agent', ['models']],
       ['grok', ['models']],
+      ['opencode', ['models']],
       ['agy', ['--output-format', 'json', 'models']],
     ]);
   });

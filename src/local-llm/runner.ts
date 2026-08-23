@@ -9,6 +9,7 @@ import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../age
 import { TimeoutController } from '../timeout-controller.js';
 import type { LocalLlmMode } from '../backend-resolver.js';
 import type { AgentConfig } from '../config.js';
+import { LOCAL_LLM_REASONING_EFFORTS, type LocalLlmReasoningEffort } from './reasoning-effort.js';
 import type { LLMMessage, LLMImageContent } from './types.js';
 import { LLMClient } from './llm-client.js';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
@@ -690,6 +691,18 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       process.env.LOCAL_LLM_TEMPERATURE !== undefined
         ? parseFloat(process.env.LOCAL_LLM_TEMPERATURE)
         : undefined;
+    const reasoningEffortRaw = process.env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
+    const reasoningEffort = LOCAL_LLM_REASONING_EFFORTS.includes(
+      reasoningEffortRaw as LocalLlmReasoningEffort
+    )
+      ? (reasoningEffortRaw as LocalLlmReasoningEffort)
+      : undefined;
+    if (reasoningEffortRaw && !reasoningEffort) {
+      console.warn(
+        `[local-llm] Ignoring invalid LOCAL_LLM_REASONING_EFFORT='${reasoningEffortRaw}'. ` +
+          `Expected: ${LOCAL_LLM_REASONING_EFFORTS.join(', ')}`
+      );
+    }
 
     // 個別フラグ（環境変数で制御、未設定時はLOCAL_LLM_MODEから推定）
     const modeEnv = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
@@ -709,7 +722,16 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       process.env.LOCAL_LLM_XANGI_COMMANDS !== undefined
         ? process.env.LOCAL_LLM_XANGI_COMMANDS !== 'false'
         : defaults.xangiCommands;
-    this.llm = new LLMClient(baseUrl, model, apiKey, thinking, maxTokens, numCtx, temperature);
+    this.llm = new LLMClient(
+      baseUrl,
+      model,
+      apiKey,
+      thinking,
+      maxTokens,
+      numCtx,
+      temperature,
+      reasoningEffort
+    );
     this.workdir = config.workdir || process.cwd();
 
     // Stop hooks (ターン終了ゲート)。設定変更は再起動せず次のgateで反映
@@ -1257,6 +1279,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         response = await this.llm.chat(session.messages, {
           systemPrompt,
           signal: abortController.signal,
+          reasoningEffort: options?.localLlmReasoningEffort,
         });
       } catch (err) {
         const errorMsg = formatErrorDiagnostic(err);
@@ -1287,6 +1310,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           systemPrompt,
           tools: iterTools.length > 0 ? iterTools : undefined,
           signal: abortController.signal,
+          reasoningEffort: options?.localLlmReasoningEffort,
         });
       } catch (err) {
         const errorMsg = formatErrorDiagnostic(err);
@@ -1584,6 +1608,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             systemPrompt,
             tools: iterTools.length > 0 ? iterTools : undefined,
             signal: abortController.signal,
+            reasoningEffort: options?.localLlmReasoningEffort,
           });
         } catch (err) {
           const errorMsg = formatErrorDiagnostic(err);
@@ -1759,6 +1784,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           tools: finalIterTools.length > 0 ? finalIterTools : undefined,
           toolChoice: 'none',
           signal: abortController.signal,
+          reasoningEffort: options?.localLlmReasoningEffort,
         })) {
           const { release, dropped } = driftBuffer.feed(chunk);
           if (dropped) totalDroppedDuringStream = true;

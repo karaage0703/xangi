@@ -99,8 +99,15 @@ describe('runWithBubbleEvents', () => {
 
   it('passes through caller callbacks (onText / onToolUse / onComplete / onError)', async () => {
     const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
-    const seen = { texts: [] as string[], tools: [] as string[], complete: 0, error: 0 };
+    const seen = {
+      texts: [] as string[],
+      tools: [] as string[],
+      traces: [] as string[],
+      complete: 0,
+      error: 0,
+    };
     const runner = new FakeRunner(async (_p, cb) => {
+      cb.onTraceEvent?.({ type: 'turn_started' });
       cb.onText?.('x', 'x');
       cb.onToolUse?.('Bash', { cmd: 'ls' });
       const result = { result: 'x', sessionId: 's' };
@@ -114,6 +121,7 @@ describe('runWithBubbleEvents', () => {
       {
         onText: (_c, full) => seen.texts.push(full),
         onToolUse: (name) => seen.tools.push(name),
+        onTraceEvent: (event) => seen.traces.push(event.type),
         onComplete: () => {
           seen.complete++;
         },
@@ -124,6 +132,7 @@ describe('runWithBubbleEvents', () => {
     );
     expect(seen.texts).toEqual(['x']);
     expect(seen.tools).toEqual(['Bash']);
+    expect(seen.traces).toEqual(['turn_started']);
     expect(seen.complete).toBe(1);
     expect(seen.error).toBe(0);
   });

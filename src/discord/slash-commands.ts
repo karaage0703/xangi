@@ -12,6 +12,10 @@ import {
   type EffortLevel,
   type DiscordCompletionNotifyMode,
 } from '../config.js';
+import {
+  LOCAL_LLM_REASONING_EFFORTS,
+  type LocalLlmReasoningEffort,
+} from '../local-llm/reasoning-effort.js';
 import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
 import { getSupportedEffortLevels } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
@@ -19,10 +23,17 @@ import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
+import { requestProcessRestart } from '../restart-process.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
 import { loadReplySuggestionsEnabled, loadSettings, formatSettings } from '../settings.js';
 import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
-import { getSession, setSession, closeActiveSession, ensureSession } from '../sessions.js';
+import {
+  getSession,
+  setSession,
+  closeActiveSession,
+  getActiveSessionId,
+  getSessionEntry,
+} from '../sessions.js';
 import { splitMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
@@ -66,6 +77,8 @@ import { StreamSession } from '../stream-session.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { executeRuntimeSettingsCommand } from '../runtime-settings-command.js';
+import type { WorkspaceRegistry } from '../workspace-registry.js';
+import { ensureSessionWithWorkspace } from '../session-workspace.js';
 
 /** スキル一覧を保持する可変参照。`/skill` での再読込を呼び出し元と共有する */
 export interface SkillsRef {
@@ -135,6 +148,30 @@ export function buildSlashCommands(
 ): ReturnType<SlashCommandBuilder['toJSON']>[] {
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
+    new SlashCommandBuilder()
+      .setName('workspace')
+      .setDescription('このチャンネルのワークスペースを設定する')
+      .addSubcommand((sub) => sub.setName('show').setDescription('現在の設定を表示する'))
+      .addSubcommand((sub) => sub.setName('list').setDescription('登録済み一覧を表示する'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('use')
+          .setDescription('登録済みworkspaceへ切り替える')
+          .addStringOption((opt) =>
+            opt.setName('name').setDescription('登録済み表示名').setRequired(true)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('set')
+          .setDescription('任意の絶対パスを登録して設定する')
+          .addStringOption((opt) => opt.setName('name').setDescription('表示名').setRequired(true))
+          .addStringOption((opt) =>
+            opt.setName('path').setDescription('既存directoryの絶対パス').setRequired(true)
+          )
+      )
+      .addSubcommand((sub) => sub.setName('reset').setDescription('defaultへ戻す'))
+      .toJSON(),
     new SlashCommandBuilder().setName('stop').setDescription('実行中のタスクを停止する').toJSON(),
     new SlashCommandBuilder()
       .setName('skill')
@@ -330,6 +367,29 @@ export function buildSlashCommands(
               { name: 'chat (全機能OFF、純粋会話)', value: 'chat' },
               { name: 'default (チャンネル override 削除、起動時値に戻す)', value: 'default' },
               { name: 'show (現在の設定を表示)', value: 'show' }
+            )
+        )
+        .toJSON()
+    );
+  }
+
+  if (config.discord.allowLlmEffortCommand) {
+    commands.push(
+      new SlashCommandBuilder()
+        .setName('llmeffort')
+        .setDescription('このチャンネルの Local LLM reasoning effort を切替')
+        .addStringOption((option) =>
+          option
+            .setName('level')
+            .setDescription('reasoning effort')
+            .setRequired(true)
+            .addChoices(
+              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'default (チャンネル設定を削除)', value: 'default' },
+              ...LOCAL_LLM_REASONING_EFFORTS.map((effort) => ({
+                name: effort,
+                value: effort,
+              }))
             )
         )
         .toJSON()
@@ -552,7 +612,8 @@ export async function handleSkillCommand(
   config: Config,
   channelId: string,
   settingsChannelId: string,
-  skillName: string
+  skillName: string,
+  workspaceRegistry?: WorkspaceRegistry
 ) {
   const args = interaction.options.getString('args') || '';
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -576,7 +637,12 @@ export async function handleSkillCommand(
     }
 
     const sessionId = getSession(channelId);
-    const appSessionId = ensureSession(channelId, { platform: 'discord' });
+    const { appSessionId, workspace } = await ensureSessionWithWorkspace({
+      registry: workspaceRegistry,
+      platform: 'discord',
+      contextKey: channelId,
+      bindingKey: settingsChannelId,
+    });
     const eventCtx = {
       threadId: threadIdFor('discord', channelId),
       turnId: turnIdFor('discord', interaction.id),
@@ -646,6 +712,7 @@ export async function handleSkillCommand(
           channelId,
           settingsChannelId,
           appSessionId,
+          workdir: workspace?.path,
         }
       );
     } finally {
@@ -662,7 +729,11 @@ export async function handleSkillCommand(
     if (replySuggestionsEnabled && extracted.suggestions.length === 0) {
       extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
     }
-    const { filePaths, displayText } = buildAttachmentResult(extracted.text, runResult.attachments);
+    const { filePaths, displayText } = buildAttachmentResult(
+      extracted.text,
+      runResult.attachments,
+      workspace?.path
+    );
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
     const chunks = splitMessage(displayTextWithTools, DISCORD_SAFE_LENGTH);
@@ -811,6 +882,7 @@ export interface InteractionHandlerDeps {
   scheduler: Scheduler;
   workdir: string;
   skillsRef: SkillsRef;
+  workspaceRegistry: WorkspaceRegistry;
   discoverModels?: typeof discoverBackendModels;
   onReplySuggestion?: (interaction: ButtonInteraction, suggestion: string) => Promise<void>;
 }
@@ -846,6 +918,7 @@ export function createInteractionHandler(
     scheduler,
     workdir,
     skillsRef,
+    workspaceRegistry,
     discoverModels = discoverBackendModels,
     onReplySuggestion,
   } = deps;
@@ -882,7 +955,8 @@ export function createInteractionHandler(
       }
 
       if (interaction.customId === 'xangi_stop') {
-        const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+        const managedProcessStopped = await processManager.stopAndWait(channelId);
+        const stopped = managedProcessStopped || agentRunner.cancel?.(channelId) || false;
         await interaction.deferUpdate().catch(() => {});
         if (!stopped) {
           await interaction.followUp({
@@ -1043,6 +1117,76 @@ export function createInteractionHandler(
       }
     );
 
+    if (interaction.commandName === 'workspace') {
+      const subcommand = interaction.options.getSubcommand();
+      try {
+        if (subcommand === 'show') {
+          const selected = await workspaceRegistry.resolve('discord', settingsChannelId);
+          const activeId = getActiveSessionId(channelId);
+          const active = activeId ? getSessionEntry(activeId) : undefined;
+          const activeWorkspace = active?.workspaceId
+            ? workspaceRegistry.getById(active.workspaceId)
+            : undefined;
+          await interaction.reply({
+            content: [
+              `チャンネル設定: ${selected.name}`,
+              `パス: \`${selected.path}\``,
+              activeWorkspace
+                ? `現在のセッション: ${activeWorkspace.name}（変更は次の /new から反映）`
+                : '現在のセッション: 未固定',
+            ].join('\n'),
+            ephemeral: true,
+          });
+          return;
+        }
+        if (subcommand === 'list') {
+          const lines = workspaceRegistry
+            .list()
+            .map(
+              (workspace) =>
+                `- ${workspace.name}${workspace.isDefault ? ' (default)' : ''}: \`${workspace.path}\``
+            );
+          await interaction.reply({
+            content: ['登録済みワークスペース', ...lines].join('\n'),
+            ephemeral: true,
+          });
+          return;
+        }
+        if (subcommand === 'set') {
+          const workspace = await workspaceRegistry.register(
+            interaction.options.getString('name', true),
+            interaction.options.getString('path', true)
+          );
+          await workspaceRegistry.bind('discord', settingsChannelId, workspace.id);
+          await interaction.reply({
+            content: `${workspace.name} を登録・設定しました。次の /new から \`${workspace.path}\` を使います。`,
+            ephemeral: true,
+          });
+          return;
+        }
+        if (subcommand === 'use') {
+          const name = interaction.options.getString('name', true);
+          const workspace = workspaceRegistry.getByName(name);
+          if (!workspace) throw new Error(`Workspace not found: ${name}`);
+          await workspaceRegistry.bind('discord', settingsChannelId, workspace.id);
+          await interaction.reply({
+            content: `${workspace.name} を設定しました。次の /new から \`${workspace.path}\` を使います。`,
+            ephemeral: true,
+          });
+          return;
+        }
+        await workspaceRegistry.resetBinding('discord', settingsChannelId);
+        const workspace = await workspaceRegistry.resolve('discord', settingsChannelId);
+        await interaction.reply({
+          content: `defaultへ戻しました。次の /new から \`${workspace.path}\` を使います。`,
+          ephemeral: true,
+        });
+      } catch (error) {
+        await interaction.reply({ content: formatAgentErrorForUser(error), ephemeral: true });
+      }
+      return;
+    }
+
     if (interaction.commandName === 'new') {
       closeActiveSession(channelId, 'new');
       agentRunner.destroy?.(channelId);
@@ -1051,7 +1195,8 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'stop') {
-      const stopped = processManager.stop(channelId) || agentRunner.cancel?.(channelId) || false;
+      const managedProcessStopped = await processManager.stopAndWait(channelId);
+      const stopped = managedProcessStopped || agentRunner.cancel?.(channelId) || false;
       if (stopped) {
         await interaction.reply('🛑 タスクを停止しました');
       } else {
@@ -1126,16 +1271,25 @@ export function createInteractionHandler(
 
       try {
         const sessionId = getSession(channelId);
-        const appSessionId = ensureSession(channelId, { platform: 'discord' });
+        const { appSessionId, workspace } = await ensureSessionWithWorkspace({
+          registry: workspaceRegistry,
+          platform: 'discord',
+          contextKey: channelId,
+          bindingKey: settingsChannelId,
+        });
 
         // ワンショットのClaudeCodeRunnerを使用（skipPermissionsを確実に反映するため）
-        const skipRunner = new ClaudeCodeRunner(config.agent.config);
+        const skipRunner = new ClaudeCodeRunner({
+          ...config.agent.config,
+          workdir: workspace?.path ?? config.agent.config.workdir,
+        });
         const runResult = await skipRunner.run(skipMessage, {
           skipPermissions: true,
           sessionId,
           channelId,
           settingsChannelId,
           appSessionId,
+          workdir: workspace?.path,
         });
 
         setSession(channelId, runResult.sessionId);
@@ -1144,7 +1298,8 @@ export function createInteractionHandler(
         // 添付ゼロでも実在しない MEDIA マーカーが残る場合は生成失敗の注記に差し替える
         const { filePaths, displayText } = buildAttachmentResult(
           runResult.result,
-          runResult.attachments
+          runResult.attachments,
+          workspace?.path
         );
 
         const chunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
@@ -1285,6 +1440,46 @@ export function createInteractionHandler(
       return;
     }
 
+    if (interaction.commandName === 'llmeffort') {
+      if (!config.discord.allowLlmEffortCommand) {
+        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+        return;
+      }
+      const level = interaction.options.getString('level', true) as
+        LocalLlmReasoningEffort | 'default' | 'show';
+      const override = resolver.getChannelOverride(settingsChannelId);
+      const startupDefaultRaw = process.env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
+      const startupDefault = LOCAL_LLM_REASONING_EFFORTS.includes(
+        startupDefaultRaw as LocalLlmReasoningEffort
+      )
+        ? (startupDefaultRaw as LocalLlmReasoningEffort)
+        : undefined;
+
+      if (level === 'show') {
+        const current = override?.localLlmReasoningEffort ?? startupDefault;
+        const source = override?.localLlmReasoningEffort
+          ? 'チャンネル設定'
+          : startupDefault
+            ? '起動時デフォルト'
+            : 'providerデフォルト';
+        await interaction.reply(
+          `Local LLM reasoning effort: \`${current || '未指定'}\`（${source}）`
+        );
+        return;
+      }
+
+      resolver.setChannelLocalLlmReasoningEffort(
+        settingsChannelId,
+        level === 'default' ? null : level
+      );
+      await interaction.reply(
+        level === 'default'
+          ? `Local LLM reasoning effort のチャンネル設定を削除しました。次の送信から \`${startupDefault || 'providerデフォルト'}\` を使います。`
+          : `Local LLM reasoning effort を \`${level}\` に設定しました。次の送信から適用されます。`
+      );
+      return;
+    }
+
     if (interaction.commandName === 'restart') {
       const selfLifecycle = getSelfLifecyclePermission();
       if (!canSelfRestart(selfLifecycle)) {
@@ -1294,7 +1489,7 @@ export function createInteractionHandler(
         return;
       }
       await interaction.reply('🔄 再起動します...');
-      setTimeout(() => process.exit(0), 1000);
+      requestProcessRestart(1000);
       return;
     }
 
@@ -1316,7 +1511,8 @@ export function createInteractionHandler(
         config,
         channelId,
         settingsChannelId,
-        skillName
+        skillName,
+        workspaceRegistry
       );
       return;
     }
@@ -1333,7 +1529,8 @@ export function createInteractionHandler(
         config,
         channelId,
         settingsChannelId,
-        matchedSkill.name
+        matchedSkill.name,
+        workspaceRegistry
       );
       return;
     }

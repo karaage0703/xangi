@@ -29,6 +29,9 @@ interface CodexEvent {
     command?: string;
     arguments?: string | Record<string, unknown>;
     input?: string | Record<string, unknown>;
+    aggregated_output?: string;
+    exit_code?: number | null;
+    status?: string;
   };
   payload?: {
     type?: string;
@@ -364,6 +367,10 @@ export class CodexRunner extends CliRunnerBase {
           callbacks.onBackendReady?.();
         }
 
+        if (event.type === 'turn.started') {
+          callbacks.onTraceEvent?.({ type: 'turn_started' });
+        }
+
         // セッションID抽出
         const sid = this.extractSessionId(event);
         if (sid) sessionId = sid;
@@ -380,6 +387,27 @@ export class CodexRunner extends CliRunnerBase {
             emittedToolIds.add(eventKey);
             callbacks.onToolUse?.(toolUse.name, toolUse.input);
           }
+
+          const item = event.item ?? event.payload?.item;
+          if (event.type === 'item.started') {
+            callbacks.onTraceEvent?.({
+              type: 'tool_started',
+              toolId: itemId,
+              toolName: toolUse.name,
+            });
+          } else if (event.type === 'item.completed') {
+            callbacks.onTraceEvent?.({
+              type: 'tool_completed',
+              toolId: itemId,
+              toolName: toolUse.name,
+              status: item?.status,
+              exitCode: item?.exit_code,
+              outputBytes:
+                typeof item?.aggregated_output === 'string'
+                  ? Buffer.byteLength(item.aggregated_output, 'utf8')
+                  : undefined,
+            });
+          }
         }
 
         // テキスト抽出
@@ -389,6 +417,9 @@ export class CodexRunner extends CliRunnerBase {
           if (phase === 'stream') {
             callbacks.onText?.(extracted.text, fullText);
           }
+          if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+            callbacks.onTraceEvent?.({ type: 'message_completed' });
+          }
         }
 
         // トークン使用量ログ
@@ -396,6 +427,18 @@ export class CodexRunner extends CliRunnerBase {
           console.log(
             `[codex] Usage: input=${event.usage.input_tokens} (cached=${event.usage.cached_input_tokens ?? 0}), output=${event.usage.output_tokens}`
           );
+        }
+        if (event.type === 'turn.completed') {
+          callbacks.onTraceEvent?.({
+            type: 'turn_completed',
+            usage: event.usage
+              ? {
+                  inputTokens: event.usage.input_tokens,
+                  cachedInputTokens: event.usage.cached_input_tokens,
+                  outputTokens: event.usage.output_tokens,
+                }
+              : undefined,
+          });
         }
 
         return undefined;

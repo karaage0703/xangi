@@ -11,6 +11,7 @@ export const BUILTIN_AGENT_BACKENDS = [
   'grok',
   'antigravity',
   'github-copilot',
+  'opencode',
   'local-llm',
 ] as const;
 export type AgentBackend = string;
@@ -48,6 +49,7 @@ export interface AgentConfig {
 }
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type { LocalLlmReasoningEffort } from './local-llm/reasoning-effort.js';
 
 export interface Config {
   completion: {
@@ -107,6 +109,8 @@ export interface Config {
     allowThreadModeCommand?: boolean;
     /** /llmmode slash command を有効化するか (default: true)。Local LLM 動作モードを per-channel 切替 */
     allowLlmModeCommand?: boolean;
+    /** /llmeffort slash command を有効化するか (default: true)。Local LLM reasoning effort を per-channel 切替 */
+    allowLlmEffortCommand?: boolean;
   };
   slack: {
     enabled: boolean;
@@ -409,6 +413,7 @@ export function loadConfig(): Config {
       allowRespondToBotsCommand: process.env.ALLOW_RESPOND_TO_BOTS_COMMAND !== 'false', // デフォルトON
       allowThreadModeCommand: process.env.ALLOW_THREAD_MODE_COMMAND !== 'false', // デフォルトON
       allowLlmModeCommand: process.env.ALLOW_LLM_MODE_COMMAND !== 'false', // デフォルトON
+      allowLlmEffortCommand: process.env.ALLOW_LLM_EFFORT_COMMAND !== 'false', // デフォルトON
     },
     slack: {
       enabled: !!slackBotToken && !!slackAppToken,

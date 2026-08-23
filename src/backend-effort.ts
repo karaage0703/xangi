@@ -3,6 +3,7 @@ import type { AgentBackend, EffortLevel } from './config.js';
 const BACKEND_EFFORT_LEVELS: Record<string, readonly EffortLevel[]> = {
   'claude-code': ['low', 'medium', 'high', 'max'],
   codex: ['low', 'medium', 'high', 'max'],
+  opencode: ['low', 'medium', 'high', 'max'],
   cursor: ['low', 'medium', 'high', 'max'],
   grok: ['low', 'medium', 'high', 'max'],
   antigravity: ['low', 'medium', 'high'],

@@ -29,6 +29,8 @@ export interface WebProject {
   backend?: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  /** 新規sessionの既定workspace。既存session snapshotは変更しない。 */
+  workspaceId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,7 +69,9 @@ export class WebProjectStore {
     return project ? { ...project } : undefined;
   }
 
-  create(input: { name: string; prompt?: string } & WebProjectBackendInput): WebProject {
+  create(
+    input: { name: string; prompt?: string; workspaceId?: string } & WebProjectBackendInput
+  ): WebProject {
     const name = normalizeName(input.name);
     const prompt = normalizePrompt(input.prompt ?? '');
     const backendSettings = normalizeBackendSettings(input);
@@ -78,6 +82,7 @@ export class WebProjectStore {
       name,
       prompt,
       ...backendSettings,
+      workspaceId: normalizeWorkspaceId(input.workspaceId),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -88,7 +93,7 @@ export class WebProjectStore {
 
   update(
     id: string,
-    input: { name?: string; prompt?: string } & WebProjectBackendInput
+    input: { name?: string; prompt?: string; workspaceId?: string | null } & WebProjectBackendInput
   ): WebProject {
     const project = this.state.projects.find((candidate) => candidate.id === id);
     if (!project) throw new WebProjectError('Projectが見つかりません', 404);
@@ -104,6 +109,9 @@ export class WebProjectStore {
     project.backend = backendSettings.backend;
     project.model = backendSettings.model;
     project.effort = backendSettings.effort;
+    if (input.workspaceId !== undefined) {
+      project.workspaceId = normalizeWorkspaceId(input.workspaceId ?? undefined);
+    }
     project.updatedAt = new Date().toISOString();
     this.persist();
     return { ...project };
@@ -239,6 +247,7 @@ function parseProjects(
         name,
         prompt,
         ...backendSettings,
+        workspaceId: normalizeWorkspaceId(candidate.workspaceId),
         createdAt: candidate.createdAt,
         updatedAt: candidate.updatedAt,
       });
@@ -277,6 +286,17 @@ function normalizePrompt(value: string): string {
     throw new WebProjectError(`追加プロンプトは${MAX_PROMPT_LENGTH}文字以内にしてください`, 400);
   }
   return prompt;
+}
+
+function normalizeWorkspaceId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') throw new WebProjectError('workspaceIdが不正です', 400);
+  const normalized = value.trim();
+  // eslint-disable-next-line no-control-regex
+  if (!normalized || normalized.length > 200 || /[\0-\x1f\x7f]/.test(normalized)) {
+    throw new WebProjectError('workspaceIdが不正です', 400);
+  }
+  return normalized;
 }
 
 function normalizeBackendSettings(input: WebProjectBackendInput): WebProjectBackendSettings {

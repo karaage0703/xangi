@@ -5,6 +5,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessageContent, splitMedia } from '../web-ui/src/MessageContent.js';
 
 describe('MessageContent', () => {
+  it('renders HTML media as a sandboxed inline artifact', () => {
+    const markup = renderToStaticMarkup(
+      createElement(MessageContent, {
+        content: 'MEDIA:/workspace/output/demo/index.html',
+        markdown: true,
+      })
+    );
+
+    expect(markup).toContain('class="html-artifact"');
+    expect(markup).toContain('sandbox="allow-scripts allow-forms"');
+    expect(markup).toContain('/api/artifact-preview?path=');
+    expect(markup).toContain('/api/workspace-file?path=');
+    expect(markup).toContain('<button type="button">全画面で開く</button>');
+    expect(markup).not.toContain('target="_blank"');
+  });
+
   it('renders mixed text and media parts without missing-key warnings', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -150,6 +150,7 @@ describe('Discord streaming attachments', () => {
       channels: { fetch: vi.fn() },
     } as unknown as Client;
     const attachmentPath = join(tempDir!, 'generated-audio.mp3');
+    writeFileSync(attachmentPath, 'audio');
     const runStream = vi.fn().mockResolvedValue({
       result: '生成した音声を送ります',
       sessionId: 'provider-1',
@@ -197,6 +198,165 @@ describe('Discord streaming attachments', () => {
 });
 
 describe('Discord thread run lock', () => {
+  it('bot宛ての2件目と3件目へ処理中を返し、先行処理の完了後だけ次を実行する', async () => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': true },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+
+    let releaseFirst!: () => void;
+    const firstRun = new Promise<{ result: string; sessionId: string }>((resolve) => {
+      releaseFirst = () => resolve({ result: 'first ok', sessionId: 'provider-1' });
+    });
+    const runStream = vi
+      .fn()
+      .mockImplementationOnce(async () => firstRun)
+      .mockResolvedValue({ result: 'next ok', sessionId: 'provider-2' });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({ client, config, agentRunner, workdir: tempDir! });
+    const onMessageCreate = handlers.get(Events.MessageCreate)!;
+    const firstMessage = createExistingThreadMessage({
+      messageId: 'busy-1',
+      content: '最初の依頼',
+      threadId: 'busy-thread',
+      parentChannelId: '123',
+      starterContent: '排他テスト',
+      client,
+    });
+    const secondMessage = createExistingThreadMessage({
+      messageId: 'busy-2',
+      content: 'メンションなしの2件目',
+      threadId: 'busy-thread',
+      parentChannelId: '123',
+      starterContent: '排他テスト',
+      client,
+    });
+    const thirdMessage = createExistingThreadMessage({
+      messageId: 'busy-3',
+      content: '<@999> メンションありの3件目',
+      threadId: 'busy-thread',
+      parentChannelId: '123',
+      starterContent: '排他テスト',
+      mentioned: true,
+      client,
+    });
+    const afterCompletionMessage = createExistingThreadMessage({
+      messageId: 'busy-4',
+      content: '完了後の依頼',
+      threadId: 'busy-thread',
+      parentChannelId: '123',
+      starterContent: '排他テスト',
+      client,
+    });
+
+    const first = onMessageCreate(firstMessage);
+    await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(1));
+    await onMessageCreate(secondMessage);
+    await onMessageCreate(thirdMessage);
+
+    expect(runStream).toHaveBeenCalledTimes(1);
+    for (const busyMessage of [secondMessage, thirdMessage]) {
+      expect(busyMessage.reply).toHaveBeenCalledWith({
+        content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+    }
+
+    releaseFirst();
+    await first;
+    await onMessageCreate(afterCompletionMessage);
+    expect(runStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('autoreply無効かつメンションなしの投稿には処理中を表示しない', async () => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': false },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+
+    let releaseFirst!: () => void;
+    const firstRun = new Promise<{ result: string; sessionId: string }>((resolve) => {
+      releaseFirst = () => resolve({ result: 'first ok', sessionId: 'provider-1' });
+    });
+    const runStream = vi.fn().mockImplementationOnce(async () => firstRun);
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({ client, config, agentRunner, workdir: tempDir! });
+    const onMessageCreate = handlers.get(Events.MessageCreate)!;
+    const firstMessage = createExistingThreadMessage({
+      messageId: 'mention-1',
+      content: '<@999> 最初の依頼',
+      threadId: 'mention-thread',
+      parentChannelId: '123',
+      starterContent: '依頼判定テスト',
+      mentioned: true,
+      client,
+    });
+    const nonRequestMessage = createExistingThreadMessage({
+      messageId: 'mention-2',
+      content: 'メンションなしの会話',
+      threadId: 'mention-thread',
+      parentChannelId: '123',
+      starterContent: '依頼判定テスト',
+      client,
+    });
+
+    const first = onMessageCreate(firstMessage);
+    await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(1));
+    await onMessageCreate(nonRequestMessage);
+
+    expect(nonRequestMessage.reply).not.toHaveBeenCalled();
+    expect(runStream).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await first;
+  });
+
   it('親チャンネルのスレッドモードでは新規スレッドごとに同時実行できる', async () => {
     saveSettings({
       discordAutoReplyChannels: { '123': true },
@@ -662,6 +822,7 @@ function createExistingThreadMessage(params: {
   parentChannelId: string;
   parentTopic?: string;
   starterContent: string;
+  mentioned?: boolean;
   client: Client;
 }): Message {
   const replyMessage = {
@@ -706,7 +867,7 @@ function createExistingThreadMessage(params: {
       username: 'user',
       displayName: 'user',
     },
-    mentions: { has: vi.fn().mockReturnValue(false) },
+    mentions: { has: vi.fn().mockReturnValue(params.mentioned ?? false) },
     attachments: new Map(),
     reference: null,
     react: vi.fn().mockResolvedValue(undefined),

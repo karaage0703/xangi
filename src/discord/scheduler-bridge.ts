@@ -12,12 +12,15 @@ import { appendScheduleRunCompletion, createSchedulerRunId } from '../scheduler-
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import { createProcessingButtons, discordProcessingMessages } from './ui.js';
+import type { WorkspaceRegistry } from '../workspace-registry.js';
+import { resolveDiscordSettingsChannelId } from './thread-context.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
   client: Client;
   config: Config;
   agentRunner: AgentRunner;
+  workspaceRegistry?: WorkspaceRegistry;
 }
 
 function createChannelTurnQueue() {
@@ -45,7 +48,7 @@ function createChannelTurnQueue() {
  * Discord ログイン後に一度だけ呼ぶ。
  */
 export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void {
-  const { scheduler, client, config, agentRunner } = deps;
+  const { scheduler, client, config, agentRunner, workspaceRegistry } = deps;
   const enqueueChannelTurn = createChannelTurnQueue();
 
   // スケジューラにDiscord送信関数を登録
@@ -57,13 +60,20 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
   });
 
   // スケジューラにエージェント実行関数を登録
-  scheduler.registerAgentRunner('discord', (prompt, channelId) =>
+  scheduler.registerAgentRunner('discord', (prompt, channelId, _schedule, runContext) =>
     enqueueChannelTurn(channelId, async () => {
       const startedAt = Date.now();
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('send' in channel)) {
         throw new Error(`Channel not found: ${channelId}`);
       }
+      const settingsChannelId = resolveDiscordSettingsChannelId(
+        channelId,
+        channel as unknown as { isThread?: () => boolean; parentId?: string | null }
+      );
+      const workspace = workspaceRegistry
+        ? await workspaceRegistry.resolve('discord', settingsChannelId)
+        : undefined;
 
       // 処理中メッセージを送信
       const thinkingMsg = await (
@@ -119,12 +129,19 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
             skipPermissions: config.agent.config.skipPermissions ?? false,
             sessionId: undefined,
             channelId,
+            runnerKey: `schedule:${channelId}`,
+            settingsChannelId,
             appSessionId: freshAppSessionId,
+            workdir: workspace?.path,
           }
         );
 
         // 結果を送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-        const { filePaths, displayText } = buildAttachmentResult(result, attachments);
+        const { filePaths, displayText } = buildAttachmentResult(
+          result,
+          attachments,
+          workspace?.path
+        );
         if (!displayText.trim() && filePaths.length === 0) {
           if (!sessionId) {
             throw new Error('Agent process ended without a response or session ID');
@@ -174,9 +191,16 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           });
         }
 
+        runContext?.onDelivery?.({
+          platform: 'discord',
+          destinationId: channelId,
+          messageIds: [thinkingMsg.id],
+          sessionId,
+        });
+
         return result;
       } catch (error) {
-        await thinkingMsg
+        const errorDelivered = await thinkingMsg
           .edit({
             content: appendScheduleRunCompletion(
               formatAgentErrorForUser(error),
@@ -186,7 +210,15 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
             ),
             components: [],
           })
-          .catch(() => {});
+          .then(() => true)
+          .catch(() => false);
+        if (errorDelivered) {
+          runContext?.onDelivery?.({
+            platform: 'discord',
+            destinationId: channelId,
+            messageIds: [thinkingMsg.id],
+          });
+        }
         throw error;
       } finally {
         const entry = discordProcessingMessages.get(channelId);

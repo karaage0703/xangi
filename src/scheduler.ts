@@ -46,8 +46,27 @@ export type ScheduleInput = Omit<Schedule, 'id' | 'createdAt' | 'enabled'>;
 export interface SendMessageFn {
   (channelId: string, message: string): Promise<void>;
 }
+export interface PlatformDeliveryReceipt {
+  /** 配信先プラットフォーム */
+  platform: Platform;
+  /** channel / chat / Web session など、プラットフォーム上の配信先 */
+  destinationId: string;
+  /** プラットフォームが発行したメッセージ ID（複数投稿なら複数） */
+  messageIds?: string[];
+  /** Web などメッセージ ID を持たない配信先のセッション参照 */
+  sessionId?: string;
+}
+export interface AgentRunContext {
+  /** 最終結果がプラットフォームへ反映された時点で呼ぶ */
+  onDelivery?: (receipt: PlatformDeliveryReceipt) => void;
+}
 export interface AgentRunFn {
-  (prompt: string, channelId: string, schedule?: Schedule): Promise<string>;
+  (
+    prompt: string,
+    channelId: string,
+    schedule?: Schedule,
+    context?: AgentRunContext
+  ): Promise<string>;
 }
 
 export function validateScheduleInput(schedule: ScheduleInput): void {

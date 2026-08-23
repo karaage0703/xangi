@@ -42,11 +42,35 @@ function normalizeAngleBracketLinkDestinations(text: string): string {
 
 // フェンス付きコードブロックとインラインコードを退避する。
 function protectCode(text: string, vault: CodeVault): string {
-  // ```lang\n ... ``` （Slackはフェンス対応。中身は一切変換しない）
-  let out = text.replace(/```[\s\S]*?```/g, (m) => vault.stash(m));
+  // Slackはコードフェンスの言語指定に対応せず、言語名を本文として表示する。
+  // 情報文字列だけ外し、コード本文は一切変換せず退避する。
+  let out = text.replace(/```[\s\S]*?```/g, (m) => vault.stash(m.replace(/^```[^\n]*\n/, '```\n')));
   // `inline code`
   out = out.replace(/`[^`\n]+`/g, (m) => vault.stash(m));
   return out;
+}
+
+function addSlackBoldBoundaries(text: string): string {
+  const codeParts = text.split(/(```[\s\S]*?```|`[^`\n]*`)/);
+
+  for (let index = 0; index < codeParts.length; index += 2) {
+    // slackify-markdownが補うU+200Bでは日本語隣接時に装飾されない場合があるため、
+    // Slack実機で安定するWORD JOINERへ置き換える。
+    const part = codeParts[index].replace(/\u200B(?=\*[^*\n]+?\*)|(\*[^*\n]+?\*)\u200B/g, '$1');
+    codeParts[index] = part.replace(/(?<!\*)\*[^*\n]+?\*(?!\*)/g, (match, offset) => {
+      const before = offset > 0 ? part[offset - 1] : '';
+      const after = offset + match.length < part.length ? part[offset + match.length] : '';
+      const prefix =
+        before && !/\s/.test(before) && !'([{（［｛「『【〈《'.includes(before) ? '\u2060' : '';
+      const suffix =
+        after && !/\s/.test(after) && !'.,!?;:、。！？)]}）］｝」』】〉》'.includes(after)
+          ? '\u2060'
+          : '';
+      return `${prefix}${match}${suffix}`;
+    });
+  }
+
+  return codeParts.join('');
 }
 
 // エージェントがすでに出力した Slack 固有リンク・mention・日付記法を退避する。
@@ -157,5 +181,5 @@ export function markdownToSlackMrkdwn(markdown: string): string {
   // slackify-markdown は非空入力の末尾へ改行を1つ追加する。
   if (text.endsWith('\n')) text = text.slice(0, -1);
   text = vault.restore(text);
-  return text;
+  return addSlackBoldBoundaries(text);
 }

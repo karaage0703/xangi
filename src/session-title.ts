@@ -5,8 +5,8 @@
  * 先頭に付くため、UI に出すときはそれを剥がした最初の本文をタイトル候補として使う。
  */
 import { closeSync, existsSync, openSync, readSync } from 'fs';
-import { join } from 'path';
 import { stripReplySuggestionMarkup } from './reply-suggestions.js';
+import { getSessionLogPathForRead } from './transcript-logger.js';
 
 const SESSION_TITLE_MAX_UTF16_LENGTH = 50;
 
@@ -35,7 +35,7 @@ const USER_PROMPT_HOOK_CONTEXT =
 function readFirstUserContent(workdir: string, sessionId: string): string {
   let fd: number | undefined;
   try {
-    const filePath = join(workdir, 'logs', 'sessions', `${sessionId}.jsonl`);
+    const filePath = getSessionLogPathForRead(workdir, sessionId);
     if (!existsSync(filePath)) return '';
     fd = openSync(filePath, 'r');
     const chunks: Buffer[] = [];

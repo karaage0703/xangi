@@ -111,7 +111,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
   /** 子プロセス用の環境変数（runner 固有の追加があれば override） */
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
-    return buildCliEnv(channelId, this.platform);
+    return buildCliEnv(channelId, this.platform, this.workdir);
   }
 
   protected logExecution(kind: 'Executing' | 'Streaming', options?: RunOptions): void {

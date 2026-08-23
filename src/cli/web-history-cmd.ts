@@ -22,9 +22,10 @@ interface Entry {
   createdAt?: string;
 }
 
-function getSessionsDir(): string {
+function getSessionsDirs(): string[] {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  return join(workdir, 'logs', 'sessions');
+  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
+  return [...new Set([join(dataDir, 'logs', 'sessions'), join(workdir, 'logs', 'sessions')])];
 }
 
 function fmtContent(content: unknown, maxChars: number): string {
@@ -81,11 +82,12 @@ export function webHistoryCmd(flags: Record<string, string>): string {
     return '(no current Web pane; specify --session <appSessionId> or run from a Web Chat session)';
   }
 
-  const dir = getSessionsDir();
   const name = `${currentSession}.jsonl`;
-  const path = join(dir, name);
-  if (!existsSync(path)) {
-    return `(session ${name} not found in ${dir})`;
+  const path = getSessionsDirs()
+    .map((dir) => join(dir, name))
+    .find(existsSync);
+  if (!path) {
+    return `(session ${name} not found in ${getSessionsDirs().join(' or ')})`;
   }
 
   let raw: string;

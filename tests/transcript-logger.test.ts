@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -15,6 +15,10 @@ import {
   attachPlatformMessageIdToLast,
   ensureVisibleAssistantResponse,
   findEntryByPlatformMessageId,
+  initTranscriptStorage,
+  resetTranscriptStorageForTests,
+  deleteSessionTranscript,
+  getSessionLogPathForRead,
 } from '../src/transcript-logger.js';
 
 describe('transcript-logger edit/delete', () => {
@@ -26,6 +30,7 @@ describe('transcript-logger edit/delete', () => {
   });
 
   afterEach(() => {
+    resetTranscriptStorageForTests();
     rmSync(workdir, { recursive: true, force: true });
   });
 
@@ -251,5 +256,100 @@ describe('transcript-logger edit/delete', () => {
 
     const all = readSessionMessages(workdir, sessionId);
     expect(all).toHaveLength(0);
+  });
+
+  it('writes new transcripts under DATA_DIR instead of the selected workspace', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'transcript-data-'));
+    const selectedWorkspace = mkdtempSync(join(tmpdir(), 'transcript-workspace-'));
+    try {
+      initTranscriptStorage(dataDir, workdir);
+      logPrompt(selectedWorkspace, sessionId, 'central');
+
+      expect(existsSync(join(dataDir, 'logs', 'sessions', `${sessionId}.jsonl`))).toBe(true);
+      expect(existsSync(join(selectedWorkspace, 'logs', 'sessions', `${sessionId}.jsonl`))).toBe(
+        false
+      );
+      expect(readSessionMessages(selectedWorkspace, sessionId)[0]?.content).toBe('central');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(selectedWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects path separators in transcript session IDs', () => {
+    expect(() => getSessionLogPathForRead(workdir, '../../victim')).toThrow(
+      /Invalid transcript session ID/
+    );
+    expect(() => getSessionLogPathForRead(workdir, '..\\..\\victim')).toThrow(
+      /Invalid transcript session ID/
+    );
+  });
+
+  it('falls back to a legacy startup-workdir transcript when DATA_DIR has no copy', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'transcript-data-'));
+    const legacyDir = join(workdir, 'logs', 'sessions');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      join(legacyDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        id: 'legacy-message',
+        role: 'user',
+        content: 'legacy',
+        createdAt: '2026-07-30T00:00:00.000Z',
+      })}\n`
+    );
+    try {
+      initTranscriptStorage(dataDir, workdir);
+      expect(readSessionMessages('/another/workspace', sessionId)[0]?.content).toBe('legacy');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('copies legacy history before the first central append', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'transcript-data-'));
+    const legacyDir = join(workdir, 'logs', 'sessions');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      join(legacyDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        id: 'legacy-message',
+        role: 'user',
+        content: 'legacy',
+        createdAt: '2026-07-30T00:00:00.000Z',
+      })}\n`
+    );
+    try {
+      initTranscriptStorage(dataDir, workdir);
+      logPrompt('/selected/workspace', sessionId, 'new message');
+
+      const centralPath = join(dataDir, 'logs', 'sessions', `${sessionId}.jsonl`);
+      expect(existsSync(centralPath)).toBe(true);
+      expect(
+        readSessionMessages('/selected/workspace', sessionId).map((entry) => entry.content)
+      ).toEqual(['legacy', 'new message']);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes both central and legacy transcript copies', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'transcript-data-'));
+    const legacyDir = join(workdir, 'logs', 'sessions');
+    const centralDir = join(dataDir, 'logs', 'sessions');
+    mkdirSync(legacyDir, { recursive: true });
+    mkdirSync(centralDir, { recursive: true });
+    const legacyPath = join(legacyDir, `${sessionId}.jsonl`);
+    const centralPath = join(centralDir, `${sessionId}.jsonl`);
+    writeFileSync(legacyPath, 'legacy\n');
+    writeFileSync(centralPath, 'central\n');
+    try {
+      initTranscriptStorage(dataDir, workdir);
+      expect(deleteSessionTranscript('/selected/workspace', sessionId)).toBe(true);
+      expect(existsSync(legacyPath)).toBe(false);
+      expect(existsSync(centralPath)).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });

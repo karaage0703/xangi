@@ -77,6 +77,7 @@ export interface Schedule {
   enabled: boolean;
   label?: string;
   projectId?: string;
+  destinationLabel?: string;
 }
 
 export interface SchedulesResponse {

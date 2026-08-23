@@ -234,6 +234,21 @@ describe('config', () => {
     expect(config.agent.allowedBackends).toEqual([...ALL_AGENT_BACKENDS]);
   });
 
+  it('keeps OpenCode at the documented end of the hosted CLI list', async () => {
+    const { BUILTIN_AGENT_BACKENDS } = await import('../src/config.js');
+
+    expect(BUILTIN_AGENT_BACKENDS).toEqual([
+      'claude-code',
+      'codex',
+      'cursor',
+      'grok',
+      'antigravity',
+      'github-copilot',
+      'opencode',
+      'local-llm',
+    ]);
+  });
+
   it('should accept codex backend', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     process.env.AGENT_BACKEND = 'codex';

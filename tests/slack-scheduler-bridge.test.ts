@@ -58,7 +58,8 @@ describe('registerSlackSchedulerBridge', () => {
     const runner = scheduler.getAgentRunner('slack');
     expect(runner).toBeDefined();
 
-    const result = await runner?.('trigger payload', 'C123');
+    const onDelivery = vi.fn();
+    const result = await runner?.('trigger payload', 'C123', undefined, { onDelivery });
 
     expect(result).toBe('**done** [Docs](https://example.com)');
     expect(postMessage).toHaveBeenCalledWith({
@@ -93,6 +94,11 @@ describe('registerSlackSchedulerBridge', () => {
     expect(completedPayload.text.replaceAll('\u200B', '')).toMatch(
       /^\*done\* <https:\/\/example\.com\|Docs>\n\n✅ 完了（⏱ /
     );
+    expect(onDelivery).toHaveBeenCalledWith({
+      platform: 'slack',
+      destinationId: 'C123',
+      messageIds: ['1700000000.000100'],
+    });
 
     const activity = await import('../src/activity-store.js');
     const snapshot = activity.getActivity('slack-schedule:C123');

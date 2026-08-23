@@ -164,7 +164,11 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     summary: 'モデル一覧の取得または次turnのモデル選択',
     usage:
       'xangi tool models [--backend <backend>] [--use <model-id>] [--effort <level>] [--channel <id>]',
-    notes: ['--use はユーザーの明示依頼がある場合だけ使い、次のturnから適用される。'],
+    notes: [
+      '利用可能なモデルは--backendで取得し、返った正確なIDだけを案内する。取得失敗時に固定名で補わない。',
+      '--useはユーザーの明示依頼がある場合だけ使い、次のturnから適用される。',
+      'Discordスレッドでは親設定チャンネルIDを--channelへ指定する。',
+    ],
   },
   {
     name: 'runtime_settings',
@@ -184,13 +188,28 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     summary: 'イベント完了時に新しいturnを起動',
     usage:
       'xangi tool trigger --channel <id> --message <text> --source <source> [--platform <platform>]',
-    notes: ['終了状態とログを保存してから、成功・失敗の両方で呼ぶ。'],
+    notes: [
+      '終了状態とログを保存してから、成功・失敗の両方で呼ぶ。',
+      '同一sourceの即時再試行と実行中turnへの重複発火を避ける。',
+      '定刻確認はschedule、完了時通知はtriggerを使う。',
+      '返されたIDはtrigger_statusで実行・配信状態を確認できる。',
+    ],
+  },
+  {
+    name: 'trigger_status',
+    topic: 'trigger',
+    summary: 'triggerの実行・配信状態を取得',
+    usage: 'xangi tool trigger_status --id <trigger-id>',
   },
   {
     name: 'system_restart',
     topic: 'system',
     summary: '現在のxangiを再起動',
     usage: 'xangi tool system_restart',
+    notes: [
+      '現在のxangi自身からこのturnで直接呼び、遅延・子プロセス・スケジューラへ委譲しない。',
+      '受付を完了とみなさず、復帰後に状態・起動時刻・ログを確認する。',
+    ],
   },
   {
     name: 'system_settings',

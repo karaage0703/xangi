@@ -12,6 +12,7 @@ import {
 describe('managed backend executable', () => {
   it.each([
     ['codex', 'codex'],
+    ['opencode', 'opencode'],
     ['claude-code', 'claude'],
     ['cursor', 'cursor-agent'],
     ['grok', 'grok'],
@@ -41,5 +42,16 @@ describe('managed backend executable', () => {
     expect(configuredBackendCommand('claude', { XANGI_BACKEND_EXECUTABLE: executable })).toBe(
       'claude'
     );
+  });
+
+  it('resolves the official OpenCode install outside a service PATH', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'xangi-opencode-home-'));
+    const bin = join(home, '.opencode', 'bin');
+    const executable = join(bin, 'opencode');
+    await mkdir(bin, { recursive: true });
+    await writeFile(executable, '#!/bin/sh\nexit 0\n');
+
+    expect(configuredBackendCommand('opencode', { HOME: home, PATH: '/usr/bin' })).toBe(executable);
+    expect(configuredBackendCommand('codex', { HOME: home, PATH: '/usr/bin' })).toBe('codex');
   });
 });

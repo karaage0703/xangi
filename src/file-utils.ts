@@ -331,10 +331,13 @@ export function buildAttachmentResult(
   structuredAttachments?: string[],
   workspaceRootOverride?: string
 ): { filePaths: string[]; displayText: string } {
+  const validatedStructuredAttachments = (structuredAttachments ?? [])
+    .map((attachment) => resolveAttachmentPath(attachment, workspaceRootOverride))
+    .filter((attachment): attachment is string => attachment !== null);
   const filePaths = [
     ...new Set([
       ...extractFilePaths(result, workspaceRootOverride),
-      ...(structuredAttachments ?? []),
+      ...validatedStructuredAttachments,
     ]),
   ];
   if (filePaths.length > 0) {

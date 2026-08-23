@@ -28,6 +28,34 @@ function makeConfig(platform: Config['agent']['platform']): Config {
 }
 
 describe('DynamicRunnerManager platform routing', () => {
+  it('creates a dedicated runner keyed by a non-default canonical workdir', () => {
+    const defaultWorkdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-default-'));
+    const alternateWorkdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-alternate-'));
+    try {
+      const config = makeConfig('discord');
+      config.agent.config.workdir = defaultWorkdir;
+      const resolver = new BackendResolver(config);
+      const manager = new DynamicRunnerManager(config, resolver);
+      const resolved = resolver.resolve('channel-1');
+
+      const runner = (
+        manager as unknown as {
+          getRunner(
+            channelId: string,
+            resolved: typeof resolved,
+            platform: Config['agent']['platform'],
+            workdir: string
+          ): unknown;
+        }
+      ).getRunner('channel-1', resolved, 'discord', alternateWorkdir);
+
+      expect((runner as { workdir?: string }).workdir).toBe(alternateWorkdir);
+    } finally {
+      rmSync(defaultWorkdir, { recursive: true, force: true });
+      rmSync(alternateWorkdir, { recursive: true, force: true });
+    }
+  });
+
   it('creates a platform-specific runner when a Web/Even turn uses a Discord default runner', () => {
     const config = makeConfig('discord');
     const manager = new DynamicRunnerManager(config, new BackendResolver(config));
@@ -241,6 +269,31 @@ describe('DynamicRunnerManager platform routing', () => {
     await manager.run('prompt');
 
     expect(run).toHaveBeenCalledWith('prompt', { effort: 'max' });
+  });
+
+  it('passes the resolved Local LLM reasoning effort to the selected runner', async () => {
+    const config = makeConfig('discord');
+    const resolved = {
+      backend: 'local-llm' as const,
+      model: 'qwen3.8-27b',
+      localLlmReasoningEffort: 'low' as const,
+    };
+    const resolver = {
+      resolve: vi.fn().mockReturnValue(resolved),
+      getDefault: vi.fn().mockReturnValue(resolved),
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver);
+    const run = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'session-1' });
+
+    (
+      manager as unknown as {
+        defaultRunner: { run: typeof run };
+      }
+    ).defaultRunner = { run };
+
+    await manager.run('prompt');
+
+    expect(run).toHaveBeenCalledWith('prompt', { localLlmReasoningEffort: 'low' });
   });
 
   it('delegates hasRunner to a channel-specific runner', () => {

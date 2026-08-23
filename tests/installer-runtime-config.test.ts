@@ -60,6 +60,28 @@ describe('setup runtime config bridge', () => {
     expect(importer).toHaveBeenCalledOnce();
   });
 
+  it('maps the xangi-owned OpenCode config and model to runtime environment variables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-runtime-opencode-'));
+    const configPath = join(root, 'config', 'xangi.json');
+    const opencodeConfigPath = join(root, 'config', 'opencode.json');
+    await mkdir(join(root, 'config'));
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        backend: 'opencode',
+        model: 'xangi-local/qwen3.8-27b',
+        opencodeConfigPath,
+        workspacePath: root,
+        webChatEnabled: true,
+      })
+    );
+    await expect(loadSetupRuntimeEnv(configPath, join(root, 'state'))).resolves.toMatchObject({
+      AGENT_BACKEND: 'opencode',
+      AGENT_MODEL: 'xangi-local/qwen3.8-27b',
+      OPENCODE_CONFIG: opencodeConfigPath,
+    });
+  });
+
   it('binds all interfaces only for an explicit LAN setup choice', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-runtime-lan-'));
     const configPath = join(root, 'config', 'xangi.json');

@@ -358,6 +358,7 @@ describe('Discord Commands', () => {
           allowRespondToBotsCommand: true,
           allowThreadModeCommand: true,
           allowLlmModeCommand: true,
+          allowLlmEffortCommand: true,
         },
       } as Config;
       const skills: Skill[] = Array.from({ length: 120 }, (_, i) => ({
@@ -372,8 +373,69 @@ describe('Discord Commands', () => {
       expect(commands.length).toBeLessThanOrEqual(100);
       expect(names).toContain('threadmode');
       expect(names).toContain('notify');
+      expect(names).toContain('llmeffort');
       expect(names).toContain('skill');
       expect(names.filter((name) => name.startsWith('skill-')).length).toBeLessThan(120);
+    });
+  });
+
+  describe('/llmeffort command', () => {
+    it('registers the vLLM-supported reasoning effort choices', () => {
+      const commands = buildSlashCommands(
+        {
+          agent: { allowedBackends: ['local-llm'] },
+          discord: { allowLlmEffortCommand: true },
+        } as Config,
+        []
+      );
+      const command = commands.find((item) => item.name === 'llmeffort') as any;
+      expect(command.options[0].choices.map((choice: any) => choice.value)).toEqual([
+        'show',
+        'default',
+        'none',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
+    });
+
+    it('stores the setting under the parent channel for a Discord thread', async () => {
+      const reply = vi.fn().mockResolvedValue(undefined);
+      const setChannelLocalLlmReasoningEffort = vi.fn();
+      const handler = createInteractionHandler({
+        config: {
+          agent: {},
+          discord: { allowedUsers: ['user-123'], allowLlmEffortCommand: true },
+        } as Config,
+        resolver: {
+          getSelectableBackends: vi.fn().mockReturnValue([]),
+          getChannelOverride: vi.fn().mockReturnValue(undefined),
+          setChannelLocalLlmReasoningEffort,
+        } as unknown as BackendResolver,
+        agentRunner: {} as AgentRunner,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+      });
+      const interaction = {
+        isAutocomplete: () => false,
+        isButton: () => false,
+        isChatInputCommand: () => true,
+        commandName: 'llmeffort',
+        channelId: 'thread-456',
+        channel: { isThread: () => true, parentId: 'parent-123' },
+        user: { id: 'user-123' },
+        options: { getString: vi.fn().mockReturnValue('low') },
+        reply,
+      };
+
+      await handler(interaction as never);
+
+      expect(setChannelLocalLlmReasoningEffort).toHaveBeenCalledWith('parent-123', 'low');
+      expect(reply).toHaveBeenCalledWith(expect.stringContaining('`low`'));
     });
   });
 
@@ -474,6 +536,32 @@ describe('Discord Commands', () => {
 
       discordToolHistoryByMessageId.delete('skill-reply-1');
       discordReplySuggestionsByMessageId.delete('skill-reply-1');
+    });
+  });
+
+  describe('/workspace command registration', () => {
+    it('registers show/list/use/set/reset subcommands', () => {
+      const config = {
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {},
+      } as Config;
+
+      const commands = buildSlashCommands(config, []);
+      const workspace = commands.find((command) => command.name === 'workspace') as any;
+
+      expect(workspace).toBeTruthy();
+      expect(workspace.options.map((option: any) => option.name)).toEqual([
+        'show',
+        'list',
+        'use',
+        'set',
+        'reset',
+      ]);
+      expect(
+        workspace.options
+          .find((option: any) => option.name === 'set')
+          .options.map((option: any) => option.name)
+      ).toEqual(['name', 'path']);
     });
   });
 

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'fs';
-import type { AgentBackend, Config, EffortLevel } from './config.js';
+import type { AgentBackend, Config, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
 import { resolveEnvFilePath } from './env-persist.js';
 import { validateChannelOverrides } from './config-validate.js';
@@ -23,6 +23,8 @@ export interface ChannelOverride {
   effort?: EffortLevel;
   /** Local LLM のみ有効。バックエンドが local-llm の時に動作モードを切替 */
   localLlmMode?: LocalLlmMode;
+  /** Local LLM OpenAI互換APIへ送る reasoning_effort */
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
 }
 
 /**
@@ -36,6 +38,8 @@ export interface ResolvedBackend {
   sessionMode?: 'stateless';
   /** Local LLM mode override（local-llm backend の時のみ意味あり） */
   localLlmMode?: LocalLlmMode;
+  /** Local LLM reasoning_effort override */
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
 }
 
 /**
@@ -135,6 +139,7 @@ export class BackendResolver {
     const defaultBackend = requestDefault?.backend ?? this.defaultBackend;
     const defaultModel = requestDefault?.model ?? this.defaultModel;
     const defaultLocalLlmMode = requestDefault?.localLlmMode;
+    const defaultLocalLlmReasoningEffort = requestDefault?.localLlmReasoningEffort;
 
     if (!channelId) {
       return {
@@ -144,6 +149,7 @@ export class BackendResolver {
           ? { sessionMode: 'stateless' as const }
           : {}),
         localLlmMode: defaultLocalLlmMode,
+        localLlmReasoningEffort: defaultLocalLlmReasoningEffort,
       };
     }
 
@@ -156,6 +162,7 @@ export class BackendResolver {
           ? { sessionMode: 'stateless' as const }
           : {}),
         localLlmMode: defaultLocalLlmMode,
+        localLlmReasoningEffort: defaultLocalLlmReasoningEffort,
       };
     }
 
@@ -168,6 +175,7 @@ export class BackendResolver {
         ? { sessionMode: 'stateless' as const }
         : {}),
       localLlmMode: override.localLlmMode ?? defaultLocalLlmMode,
+      localLlmReasoningEffort: override.localLlmReasoningEffort ?? defaultLocalLlmReasoningEffort,
     };
   }
 
@@ -188,7 +196,10 @@ export class BackendResolver {
       `[backend-resolver] Set override for ${channelId}: ${getBackendDisplayName(override.backend ?? this.defaultBackend)}` +
         (override.model ? ` (${override.model})` : '') +
         (override.effort ? ` effort=${override.effort}` : '') +
-        (override.localLlmMode ? ` mode=${override.localLlmMode}` : '')
+        (override.localLlmMode ? ` mode=${override.localLlmMode}` : '') +
+        (override.localLlmReasoningEffort
+          ? ` local-llm-effort=${override.localLlmReasoningEffort}`
+          : '')
     );
   }
 
@@ -210,13 +221,45 @@ export class BackendResolver {
       existing.localLlmMode = mode;
     }
     // 全フィールドが空ならエントリ削除、そうでなければ更新
-    if (!existing.backend && !existing.model && !existing.effort && !existing.localLlmMode) {
+    if (
+      !existing.backend &&
+      !existing.model &&
+      !existing.effort &&
+      !existing.localLlmMode &&
+      !existing.localLlmReasoningEffort
+    ) {
       this.channelOverrides.delete(channelId);
     } else {
       this.channelOverrides.set(channelId, existing);
     }
     this.persistToEnv();
     console.log(`[backend-resolver] Set localLlmMode for ${channelId}: ${mode ?? '(cleared)'}`);
+  }
+
+  /** チャンネルの Local LLM reasoning_effort のみを更新する。 */
+  setChannelLocalLlmReasoningEffort(
+    channelId: string,
+    effort: LocalLlmReasoningEffort | null
+  ): void {
+    const existing = this.channelOverrides.get(channelId) ?? {};
+    if (effort === null) delete existing.localLlmReasoningEffort;
+    else existing.localLlmReasoningEffort = effort;
+
+    if (
+      !existing.backend &&
+      !existing.model &&
+      !existing.effort &&
+      !existing.localLlmMode &&
+      !existing.localLlmReasoningEffort
+    ) {
+      this.channelOverrides.delete(channelId);
+    } else {
+      this.channelOverrides.set(channelId, existing);
+    }
+    this.persistToEnv();
+    console.log(
+      `[backend-resolver] Set Local LLM reasoning effort for ${channelId}: ${effort ?? '(cleared)'}`
+    );
   }
 
   /**

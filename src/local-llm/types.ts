@@ -47,6 +47,8 @@ export interface LLMChatOptions {
   maxTokens?: number;
   systemPrompt?: string;
   signal?: AbortSignal;
+  /** OpenAI互換APIへ送るトップレベル reasoning_effort */
+  reasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort;
 }
 
 export interface LLMChatResponse {

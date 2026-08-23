@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import {
   appendFileSync,
   readFileSync,
@@ -9,6 +10,7 @@ import {
   chmodSync,
   writeFileSync,
   utimesSync,
+  realpathSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -268,6 +270,12 @@ describe('web-chat HTTP API', () => {
   let baseUrl = '';
   let runner: FakeRunner;
   let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
+  let destinationLabelResolverRef: {
+    current?: (
+      platform: 'discord' | 'slack' | 'telegram' | 'web',
+      destinationId: string
+    ) => string | undefined;
+  };
   let scheduler: Scheduler;
   let resolver: BackendResolver;
   const prevWorkspace = process.env.WORKSPACE_PATH;
@@ -307,7 +315,12 @@ describe('web-chat HTTP API', () => {
       setChannelLocalLlmMode: () => {},
     } as unknown as BackendResolver;
     scheduler = new Scheduler(process.env.DATA_DIR, { quiet: true });
+    const workspaceRegistry = await WorkspaceRegistry.open({
+      dataDir: process.env.DATA_DIR,
+      defaultWorkspacePath: testDir,
+    });
     discordRemoteInputRef = {};
+    destinationLabelResolverRef = {};
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
@@ -316,8 +329,10 @@ describe('web-chat HTTP API', () => {
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
+      destinationLabelResolverRef,
       scheduler,
       resolver,
+      workspaceRegistry,
       discoverModels: async (backend): Promise<BackendModelDiscovery> => ({
         backend,
         source: 'web-chat test discovery',
@@ -425,7 +440,9 @@ describe('web-chat HTTP API', () => {
       source: 'web-test',
       platform: 'web',
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let attempt = 0; attempt < 50 && runner.callOrder.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
 
     expect(result.status).toBe(202);
     expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`);
@@ -482,16 +499,23 @@ describe('web-chat HTTP API', () => {
 
     const sessionsBeforeRun = listAllSessions().length;
     runner.persistResults = true;
+    const onDelivery = vi.fn();
     await scheduler.getAgentRunner('web')?.(
       '朝の予定を確認して',
       '__new__',
-      scheduler.get(added.schedule.id)
+      scheduler.get(added.schedule.id),
+      { onDelivery }
     );
     const newSession = listAllSessions().find(
       (session) => session.platform === 'web' && session.projectId === project.id
     );
     expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
     expect(newSession).toBeDefined();
+    expect(onDelivery).toHaveBeenCalledWith({
+      platform: 'web',
+      destinationId: newSession!.id,
+      sessionId: expect.any(String),
+    });
     const sessionDetail = (await (
       await fetch(`${baseUrl}/api/sessions/${newSession!.id}`)
     ).json()) as {
@@ -544,6 +568,49 @@ describe('web-chat HTTP API', () => {
     });
     expect(removed.status).toBe(200);
     expect(scheduler.get(added.schedule.id)).toBeUndefined();
+  });
+
+  it('adds cached destination labels to schedule responses without replacing IDs', async () => {
+    scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'Discordへ送る',
+      platform: 'discord',
+      channelId: 'discord-channel-1',
+    });
+    destinationLabelResolverRef.current = (platform, destinationId) =>
+      platform === 'discord' && destinationId === 'discord-channel-1'
+        ? '#dev_xangi / 予定の表示改善'
+        : undefined;
+
+    const response = await fetch(`${baseUrl}/api/schedules`);
+    const body = (await response.json()) as {
+      schedules: Array<{ channelId: string; destinationLabel?: string }>;
+    };
+
+    expect(body.schedules[0]).toMatchObject({
+      channelId: 'discord-channel-1',
+      destinationLabel: '#dev_xangi / 予定の表示改善',
+    });
+
+    const createResponse = await fetch(`${baseUrl}/api/schedules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'cron',
+        expression: '0 10 * * *',
+        message: 'もう一件送る',
+        platform: 'discord',
+        channelId: 'discord-channel-1',
+      }),
+    });
+    const created = (await createResponse.json()) as {
+      schedule: { channelId: string; destinationLabel?: string };
+    };
+    expect(created.schedule).toMatchObject({
+      channelId: 'discord-channel-1',
+      destinationLabel: '#dev_xangi / 予定の表示改善',
+    });
   });
 
   it('stores elapsed time on failed Web schedule results', async () => {
@@ -629,6 +696,56 @@ describe('web-chat HTTP API', () => {
     expect(runner.prompts.at(-1)).toContain('調べて');
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
     await readSSEUntilDone((await send).body);
+  });
+
+  it('deletes a Project while keeping its conversations as ungrouped sessions', async () => {
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '削除対象' }),
+    });
+    const { project } = (await projectResponse.json()) as { project: { id: string } };
+    const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id }),
+    });
+    const { sessionId } = (await sessionResponse.json()) as { sessionId: string };
+
+    const removed = await fetch(`${baseUrl}/api/projects/${encodeURIComponent(project.id)}`, {
+      method: 'DELETE',
+    });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toMatchObject({ movedSessionCount: 1 });
+    expect(getSessionEntry(sessionId)?.projectId).toBeUndefined();
+
+    const projects = (await (await fetch(`${baseUrl}/api/projects`)).json()) as {
+      projects: Array<{ id: string }>;
+    };
+    expect(projects.projects.some((candidate) => candidate.id === project.id)).toBe(false);
+  });
+
+  it('refuses to delete a Project used by a schedule', async () => {
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '予定あり' }),
+    });
+    const { project } = (await projectResponse.json()) as { project: { id: string } };
+    scheduler.add({
+      platform: 'web',
+      projectId: project.id,
+      channelId: '__new__',
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: '確認',
+    });
+
+    const removed = await fetch(`${baseUrl}/api/projects/${encodeURIComponent(project.id)}`, {
+      method: 'DELETE',
+    });
+    expect(removed.status).toBe(409);
+    expect(await removed.json()).toEqual({ error: 'Projectはスケジュールで使用中です' });
   });
 
   it('moves an existing Web conversation and inherits the Project backend settings', async () => {
@@ -724,6 +841,143 @@ describe('web-chat HTTP API', () => {
     ).json()) as { content: string; version: string };
     expect(file.content).toBe('# Hello\n');
     expect(file.version).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('registers a workspace and snapshots it for Project sessions and editor requests', async () => {
+    const alternate = join(testDir, 'alternate-workspace');
+    mkdirSync(alternate);
+    writeFileSync(join(alternate, 'only-here.md'), '# Alternate\n');
+
+    const registeredResponse = await fetch(`${baseUrl}/api/workspaces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'alternate', path: alternate }),
+    });
+    expect(registeredResponse.status).toBe(201);
+    const registered = (await registeredResponse.json()) as {
+      workspace: { id: string; path: string };
+    };
+
+    const entries = (await (
+      await fetch(
+        `${baseUrl}/api/workspace/entries?path=&workspaceId=${encodeURIComponent(registered.workspace.id)}`
+      )
+    ).json()) as { entries: Array<{ name: string }> };
+    expect(entries.entries.map((entry) => entry.name)).toContain('only-here.md');
+
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Alternate Project', workspaceId: registered.workspace.id }),
+    });
+    const project = (await projectResponse.json()) as { project: { id: string } };
+    const created = (await (
+      await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: project.project.id }),
+      })
+    ).json()) as { sessionId: string };
+
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: created.sessionId, message: 'work here' }),
+    });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runner.options.at(-1)?.workdir).toBe(realpathSync(alternate));
+    expect(getSessionEntry(created.sessionId)).toMatchObject({
+      workspaceId: registered.workspace.id,
+      workspacePath: realpathSync(alternate),
+    });
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`);
+    await readSSEUntilDone((await send).body);
+  });
+
+  it('unregisters only unused workspaces and keeps their files', async () => {
+    const unusedPath = join(testDir, 'unused-workspace');
+    const projectPath = join(testDir, 'project-workspace');
+    mkdirSync(unusedPath);
+    mkdirSync(projectPath);
+    writeFileSync(join(unusedPath, 'keep.txt'), 'keep');
+
+    const register = async (name: string, path: string) => {
+      const response = await fetch(`${baseUrl}/api/workspaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, path }),
+      });
+      expect(response.status).toBe(201);
+      return (await response.json()) as { workspace: { id: string } };
+    };
+    const unused = await register('unused', unusedPath);
+    const used = await register('used', projectPath);
+
+    const defaultResponse = await fetch(`${baseUrl}/api/workspaces/default`, {
+      method: 'DELETE',
+    });
+    expect(defaultResponse.status).toBe(409);
+
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Uses Workspace', workspaceId: used.workspace.id }),
+    });
+    expect(projectResponse.status).toBe(201);
+    const usedResponse = await fetch(`${baseUrl}/api/workspaces/${used.workspace.id}`, {
+      method: 'DELETE',
+    });
+    expect(usedResponse.status).toBe(409);
+    expect(await usedResponse.json()).toEqual({
+      error: 'WorkspaceはProject「Uses Workspace」で使用中です',
+    });
+
+    const removedResponse = await fetch(`${baseUrl}/api/workspaces/${unused.workspace.id}`, {
+      method: 'DELETE',
+    });
+    expect(removedResponse.status).toBe(200);
+    expect(readFileSync(join(unusedPath, 'keep.txt'), 'utf8')).toBe('keep');
+    const listed = (await (await fetch(`${baseUrl}/api/workspaces`)).json()) as {
+      workspaces: Array<{ id: string }>;
+    };
+    expect(listed.workspaces.some((workspace) => workspace.id === unused.workspace.id)).toBe(false);
+  });
+
+  it('rejects unregistering a workspace referenced by an existing session', async () => {
+    const sessionPath = join(testDir, 'session-workspace');
+    mkdirSync(sessionPath);
+    const registeredResponse = await fetch(`${baseUrl}/api/workspaces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'session-used', path: sessionPath }),
+    });
+    const registered = (await registeredResponse.json()) as { workspace: { id: string } };
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Session Project', workspaceId: registered.workspace.id }),
+    });
+    const project = (await projectResponse.json()) as { project: { id: string } };
+    const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: project.project.id }),
+    });
+    expect(sessionResponse.status).toBe(200);
+    const moveProject = await fetch(`${baseUrl}/api/projects/${project.project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default' }),
+    });
+    expect(moveProject.status).toBe(200);
+
+    const response = await fetch(`${baseUrl}/api/workspaces/${registered.workspace.id}`, {
+      method: 'DELETE',
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Workspaceは既存の会話で使用中です' });
   });
 
   it('serves the Extensions app route with the official catalog in fresh state', async () => {
@@ -1593,6 +1847,9 @@ process.stdin.on('end', () => process.exit(0));
     expect(sourceStylesheet).toMatch(/\.session-project-tag\s*\{/);
     expect(sourceStylesheet).toMatch(/\.workspace\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
     expect(sourceStylesheet).toMatch(
+      /\.workspace-file-controls select,\s*\.workspace-file-controls button\s*\{[^}]*font-weight:\s*400/s
+    );
+    expect(sourceStylesheet).toMatch(
       /\.pane\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*overflow:\s*hidden/s
     );
     expect(sourceStylesheet).toMatch(
@@ -1647,6 +1904,10 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
     expect(chatSource).toContain('＋ 新規Project');
+    expect(chatSource).toContain('Workspaceを追加');
+    expect(chatSource).toContain('Workspaceを追加・管理');
+    expect(chatSource).toContain('ディレクトリとファイルは削除しません');
+    expect(chatSource.match(/className="notice" role="status"/g)).toHaveLength(2);
     expect(chatSource).toContain('Projectへ移動');
     expect(chatSource).toContain('既定のAI設定');
     expect(chatSource).toContain('project-context-chip');
@@ -2145,6 +2406,45 @@ process.stdin.on('end', () => process.exit(0));
         `${baseUrl}/api/workspace-file?path=${encodeURIComponent(sibling)}`
       );
       expect(denied.status).toBe(403);
+    } finally {
+      rmSync(siblingDir, { recursive: true });
+    }
+  });
+
+  it('GET /api/artifact-preview serves only workspace HTML with a restrictive sandbox', async () => {
+    const inside = join(testDir, 'artifact.html');
+    const textFile = join(testDir, 'artifact.txt');
+    const siblingDir = `${testDir}-artifact-sibling`;
+    const sibling = join(siblingDir, 'outside.html');
+    writeFileSync(inside, '<!doctype html><button>safe preview</button>');
+    writeFileSync(textFile, 'not html');
+    mkdirSync(siblingDir, { recursive: true });
+    writeFileSync(sibling, '<!doctype html><p>outside</p>');
+    try {
+      const allowed = await fetch(
+        `${baseUrl}/api/artifact-preview?path=${encodeURIComponent(inside)}`
+      );
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get('content-type')).toBe('text/html; charset=utf-8');
+      expect(allowed.headers.get('content-disposition')).toBeNull();
+      expect(allowed.headers.get('cache-control')).toBe('no-store');
+      expect(allowed.headers.get('referrer-policy')).toBe('no-referrer');
+      expect(allowed.headers.get('content-security-policy')).toContain(
+        'sandbox allow-scripts allow-forms'
+      );
+      expect(allowed.headers.get('content-security-policy')).toContain("connect-src 'none'");
+      expect(allowed.headers.get('content-security-policy')).toContain("form-action 'none'");
+      expect(await allowed.text()).toContain('safe preview');
+
+      const wrongType = await fetch(
+        `${baseUrl}/api/artifact-preview?path=${encodeURIComponent(textFile)}`
+      );
+      expect(wrongType.status).toBe(404);
+
+      const outside = await fetch(
+        `${baseUrl}/api/artifact-preview?path=${encodeURIComponent(sibling)}`
+      );
+      expect(outside.status).toBe(404);
     } finally {
       rmSync(siblingDir, { recursive: true });
     }
