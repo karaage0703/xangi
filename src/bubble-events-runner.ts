@@ -90,6 +90,7 @@ export async function runWithBubbleEvents(
           updateActivityTool(ctx, toolName, toolInput);
           callbacks.onToolUse?.(toolName, toolInput);
         },
+        onTraceEvent: (event) => callbacks.onTraceEvent?.(event),
         onComplete: (result) => {
           const publicResult = eventTextSanitizer
             ? eventTextSanitizer(result.result)

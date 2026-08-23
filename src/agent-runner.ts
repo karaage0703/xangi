@@ -1,8 +1,9 @@
-import type { AgentBackend, AgentConfig, EffortLevel } from './config.js';
+import type { AgentBackend, AgentConfig, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import type { LocalLlmMode } from './backend-resolver.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
+import { OpenCodeRunner } from './opencode-cli.js';
 import { CursorRunner } from './cursor-cli.js';
 import { GrokRunner } from './grok-cli.js';
 import { AntigravityRunner } from './antigravity-cli.js';
@@ -17,6 +18,10 @@ export interface RunOptions {
   skipPermissions?: boolean;
   sessionId?: string;
   channelId?: string; // プロセス管理用
+  /** DynamicRunnerManager の runner pool 分離用。実際の channelId は変えない。 */
+  runnerKey?: string;
+  /** セッション作成時に確定した canonical workspace path。runner の cwd として使う。 */
+  workdir?: string;
   settingsChannelId?: string; // per-channel 設定解決用。Discord スレッドでは親チャンネルIDを入れる。
   appSessionId?: string; // xangi側セッションID（ログ用）
   platform?: ChatPlatform; // 実行元プラットフォーム（Web/EvenとDiscordのprompt分離用）
@@ -24,9 +29,12 @@ export interface RunOptions {
   defaultModel?: string; // 実行経路ごとの model default
   defaultEffort?: EffortLevel; // 実行経路ごとの effort default
   defaultLocalLlmMode?: LocalLlmMode; // 実行経路ごとの Local LLM mode default
+  defaultLocalLlmReasoningEffort?: LocalLlmReasoningEffort;
   effort?: EffortLevel; // Claude Code / Codex のreasoning effort
   /** Local LLM の動作モード override（per-channel override 由来）。Local LLM 以外では無視される */
   localLlmMode?: LocalLlmMode;
+  /** Local LLM OpenAI互換APIへ送る reasoning_effort */
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
   /** Platform adapter's unexpanded user text, used by deterministic backends. */
   userText?: string;
 }
@@ -43,6 +51,37 @@ export interface RunResult {
    */
   attachments?: string[];
 }
+
+/**
+ * Backend-native trace events used for latency decomposition.
+ *
+ * Tool inputs and outputs are intentionally excluded. Platform adapters may persist these
+ * events, so the contract only carries timing-safe metadata.
+ */
+export type AgentTraceEvent =
+  | { type: 'turn_started' }
+  | {
+      type: 'tool_started';
+      toolId?: string;
+      toolName: string;
+    }
+  | {
+      type: 'tool_completed';
+      toolId?: string;
+      toolName: string;
+      status?: string;
+      exitCode?: number | null;
+      outputBytes?: number;
+    }
+  | { type: 'message_completed' }
+  | {
+      type: 'turn_completed';
+      usage?: {
+        inputTokens?: number;
+        cachedInputTokens?: number;
+        outputTokens?: number;
+      };
+    };
 
 /** 現在処理中リクエストのタイムアウト状態 */
 export interface TimeoutState {
@@ -77,6 +116,8 @@ export interface StreamCallbacks {
   onBackendReady?: () => void;
   onText?: (text: string, fullText: string) => void;
   onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  /** Backend-native timing metadata. Never contains tool input or output text. */
+  onTraceEvent?: (event: AgentTraceEvent) => void;
   onComplete?: (result: RunResult) => void;
   onError?: (error: Error) => void;
 }
@@ -131,6 +172,8 @@ export function createAgentRunner(
       return new ClaudeCodeRunner({ ...config, platform: options?.platform });
     case 'codex':
       return new CodexRunner({ ...config, platform: options?.platform });
+    case 'opencode':
+      return new OpenCodeRunner({ ...config, platform: options?.platform });
     case 'cursor':
       return new CursorRunner({ ...config, platform: options?.platform });
     case 'grok':
@@ -190,6 +233,8 @@ export function getBackendDisplayName(backend: AgentBackend): string {
       return 'Claude Code';
     case 'codex':
       return 'Codex';
+    case 'opencode':
+      return 'OpenCode';
     case 'cursor':
       return 'Cursor';
     case 'grok':

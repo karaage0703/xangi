@@ -8,12 +8,12 @@
 
 > **A**GENTIC **N**EON **G**ENESIS **I**NTELLIGENCE
 
-Claude Code、Codex、Cursor CLI、Grok CLI、Antigravity CLI、GitHub Copilot CLI、Local LLMを、Discord、Slack、Telegram、Web Chat、LINEから使えるAIアシスタントです。Discordを推奨しますが、ブラウザだけでも利用できます。
+Claude Code、Codex、OpenCode、Cursor CLI、Grok CLI、Antigravity CLI、GitHub Copilot CLI、Local LLMを、Discord、Slack、Telegram、Web Chat、LINEから使えるAIアシスタントです。Discordを推奨しますが、ブラウザだけでも利用できます。
 
 ## 主な機能
 
 - 6種類のAIバックエンドと5種類のチャット画面に対応
-- チャンネルごとのbackend・model・effort切り替えと、利用可能なモデルの動的取得
+- チャンネルごとのbackend・model・effort・Local LLM reasoning effort切り替えと、利用可能なモデルの動的取得
 - 自然言語またはネイティブコマンドから、許可されたチャンネル設定を再起動なしで即時変更
 - ワークスペースのskillsをチャットから実行
 - セッション・会話履歴の永続化、タイムアウト延長、ワークスペースhooks
@@ -53,7 +53,7 @@ macOS、Linux、WSL2で共通です。
    bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
    ```
 
-   `codex`の代わりに`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`も選べます。
+   `codex`の代わりに`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`も選べます。
 
 2. xangiをインストールします。
 

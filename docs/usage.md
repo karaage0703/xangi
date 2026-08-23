@@ -294,7 +294,7 @@ xangi uninstall --purge --yes
 
 ```
 
-`xangi setup` は最初にPATH上のCodex、Claude Code、Cursor Agent、Grok CLI、Antigravityをルールベースで検出し、`--version`が成功した候補だけを表示します。候補が複数なら利用するAIを選び、0件なら独立したAIツールセットアップを案内して終了します。Local LLMは通常利用できますが、ファイル操作を伴う初回オンボーディング役には選びません。
+`xangi setup` は最初にPATH上のCodex、OpenCode、Claude Code、Cursor Agent、Grok CLI、Antigravityをルールベースで検出し、`--version`が成功した候補だけを表示します。候補が複数なら利用するAIを選び、0件なら独立したAIツールセットアップを案内して終了します。Local LLMは通常利用できますが、ファイル操作を伴う初回オンボーディング役には選びません。
 
 AIコーディングツールだけをセットアップする場合は、xangiをインストールせずに次のワンライナーを実行できます。
 
@@ -302,7 +302,9 @@ AIコーディングツールだけをセットアップする場合は、xangi�
 bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
 ```
 
-最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`から選びます。状態確認だけなら`check`を指定します。Codexに必要なNode.jsとnpmが無い場合は、nvmを導入したあとTerminalをいったん閉じ、新しいTerminalで`command -v nvm`、`nvm install --lts`の順に実行するガイドを表示します。
+最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`から選びます。状態確認だけなら`check`を指定します。Codexに必要なNode.jsとnpmが無い場合は、nvmを導入したあとTerminalをいったん閉じ、新しいTerminalで`command -v nvm`、`nvm install --lts`の順に実行するガイドを表示します。
+
+OpenCodeは`setup-ai-tools.sh opencode`で公式installerから導入し、OpenCode自身の認証画面を開きます。その後の`xangi setup`で、既存のOpenCode設定・認証を使うか、OpenAI互換ローカルLLMを使うかを選べます。ローカルLLMを選ぶとbase URL、model ID、context/output上限を確認し、xangiのconfig directoryへ専用`opencode.json`をmode 0600で保存します。通常のOpenCode設定は上書きせず、xangi実行時だけ`OPENCODE_CONFIG`と`AGENT_MODEL`を適用します。
 
 選択したAIは日本語の対話モードで起動し、workspaceを一問ずつ確認します。初回はWeb Chatを`local`（loopbackのみ）に固定し、workspaceの最低限の準備、service起動、`doctor`によるconfig・workspace・backend・service・health・runtime-workspaceの確認までTailscaleを調べたり変更したりしません。localの基本セットアップが動作した後だけ、希望者へ`tailscale`（同一portのTailscale Serve TCP転送でTailnet内へ公開）または`lan`（`0.0.0.0`、認証なしの警告付き）を追加設定として案内します。`setup --access <local|tailscale|lan>`は完了済みのオンボーディング状態を戻さず、Web Chatの公開範囲だけを変更します。Tailscaleを選んだ時だけ`tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>`を設定し、転送確認に成功してから`setup --access tailscale`を適用します。Tailscaleの追加設定に失敗してもlocalの基本セットアップは成功したままです。agent UIへ表示する初回メッセージは短い開始案内だけで、詳細手順はmode 0600の一時ファイルからAIが読み、終了時に削除します。既知workspaceが無い場合は`ai-assistant-workspace`を最初に推奨します。利用者が選ぶと、GitHub repositoryの`main`最新commitを解決し、そのcommitのarchiveをGitなしで取得します。別の空workspaceや別の絶対pathにある既存workspaceも選べます。AIは回答後に`xangi setup --apply`をlocal指定で呼びますが、絶対path・backend・workspace mode・Web Chat accessの検証、mode 0600のatomic config保存、repository template適用、空workspace用BOOTSTRAP.md生成はxangi側が行います。最低限のBOOTSTRAPが終わるまでは`xangi setup --complete`を拒否します。基本セットアップ後は、そのまま使い始めるか、Web Chatの追加アクセス、Discord、他platform、schedule、skillの追加設定へ進むかをAIが確認します。これらxangi自体の設定はworkspace内の手順を探さず、xangi本体に同梱したREADME、`docs/usage.md`、各platformの公式documentを正本として案内します。checkout版は`service start`の後に`doctor`を実行し、Gitなし配布版はinstallerがOS serviceを起動して`doctor`で確認します。template適用時はrepository・commit SHA・archive SHA-256・適用時刻をstateへ保存し、その後の更新でworkspaceを上書きしません。
 
@@ -467,12 +469,20 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 
 成功すると `202 { "ok": true, "triggerId": "trg_..." }` が即座に返ります（ターンの完了は待ちません）。Discord / Slack / Telegramではチャンネルに `⚡ trigger: <source>` のラベルが投稿され、続けてエージェントの応答が流れます。Webでは `web-chat:<sessionId>` と生の`sessionId`のどちらも受け付け、同じWeb会話へ新しいターンが追加されます。
 
+返されたIDから、プラットフォーム共通の実行・配信状態を照会できます。`status` は `accepted`、`running`、`completed`（ターン完了・配信参照なし）、`delivered`、`failed`、`interrupted`（完了前にxangiが再起動）のいずれかです。配信済みの場合はDiscord / Slack / TelegramのメッセージID、またはWebのセッションIDが`delivery`に入ります。直近1000件は`${DATA_DIR}/trigger-receipts.json`へ保存され、再起動後も照会できます。
+
+```bash
+curl "$XANGI_TOOL_SERVER/api/trigger/<triggerId>" \
+  -H "Authorization: Bearer $XANGI_TRIGGER_TOKEN"
+```
+
 ### xangi tool で発火する
 
 ローカルのスクリプトからは `xangi tool` でも発火できます（トークン不要、`TRIGGER_ENABLED=true` は必要）:
 
 ```bash
 xangi tool trigger --channel <チャンネルID> --message "ビルドが終わった。結果を報告して" --source build
+xangi tool trigger_status --id <triggerId>
 ```
 
 `TRIGGER_ENABLED=true` の場合、AIのシステムプロンプトには成功・失敗の両方で終了状態とログを保存してからtriggerする、という安全契約だけを注入します。詳細な引数は `xangi tool help trigger`、具体的な起動・確認方法は各ワークスペースの指示を正本にします。
@@ -536,6 +546,7 @@ docker build -t myapp . && \
 | `/respondtobots`                                 | bot メッセージへの応答を ON/OFF トグル（反応対象は `RESPOND_TO_BOTS` 環境変数で事前指定）            |
 | `/threadmode <on\|off\|default\|show>`           | このチャンネルの Discord 発言ごとスレッド返信モードを切替（再起動不要、`settings.json` に永続化）    |
 | `/llmmode <agent\|chat\|default\|show>`         | このチャンネルの Local LLM 動作モードを per-channel で切替（`.env` の `CHANNEL_OVERRIDES` に永続化） |
+| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|show>` | このチャンネルの Local LLM `reasoning_effort` を切替（`.env` に永続化） |
 
 ### バックエンド動的切り替え
 
@@ -564,7 +575,7 @@ Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>]|reset` 
 
 `/models [backend]` は Discord、Slack、Web、Telegram、LINE で共通です。引数を省略すると `ALLOWED_BACKENDS` に含まれる全バックエンド、指定するとそのバックエンドだけを表示します。閲覧専用で、現在のバックエンドやモデル設定は変更しません。
 
-`/models` は、各CLIが提供する公式の一覧取得機能から現在のアカウントで利用可能なモデルを動的取得します。Codexは`app-server model/list`、Cursorは`cursor-agent models`、Grokは`grok models`、AntigravityはAgy 1.1.12以降の`agy --output-format json models`を使用します。旧Agyが`--output-format`を明示的に拒否する場合は`agy models`へフォールバックし、タブ区切り形式と従来の1列形式を受理します。Local LLMはOllamaの`/api/tags`またはOpenAI互換の`/v1/models`を使用します。Claude CodeやGitHub Copilot CLIのように独立した機械可読の一覧取得コマンドがないバックエンドは「取得非対応」と表示し、モデル名をハードコードで補いません。
+`/models` は、各CLIが提供する公式の一覧取得機能から現在のアカウントで利用可能なモデルを動的取得します。Codexは`app-server model/list`、Cursorは`cursor-agent models`、Grokは`grok models`、OpenCodeは`opencode models`、AntigravityはAgy 1.1.12以降の`agy --output-format json models`を使用します。旧Agyが`--output-format`を明示的に拒否する場合は`agy models`へフォールバックし、タブ区切り形式と従来の1列形式を受理します。Local LLMはOllamaの`/api/tags`またはOpenAI互換の`/v1/models`を使用します。Claude CodeやGitHub Copilot CLIのように独立した機械可読の一覧取得コマンドがないバックエンドは「取得非対応」と表示し、モデル名をハードコードで補いません。
 
 Webのスラッシュコマンドパレットでは、`/backend set`でbackendを選ぶと同じ動的取得結果からmodel候補を表示し、modelを選ぶとその組み合わせで利用可能なeffort候補を表示します。Web Project設定のmodel / effort候補も同じ取得結果を使用します。
 
@@ -593,7 +604,7 @@ xangi tool runtime_settings --name llmmode --action set --value chat
 
 ```bash
 # 切り替え許可バックエンド（未設定=全バックエンド許可）
-ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,github-copilot,local-llm
+ALLOWED_BACKENDS=claude-code,codex,cursor,grok,antigravity,github-copilot,opencode,local-llm
 
 # 切り替え許可モデル（未設定=制限なし）
 ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
@@ -605,13 +616,29 @@ CHANNEL_OVERRIDES={"チャンネルID":{"backend":"local-llm","model":"nemotron-
 #### 永続化
 
 `/backend set` で変更した設定は `.env` の `CHANNEL_OVERRIDES` に自動保存されます。再起動後も設定が維持されます。
-Discord スレッド内では、`/backend` と `/llmmode` は親チャンネルの `CHANNEL_OVERRIDES` を読み書きします。通常の会話セッションや実行ロックはスレッドIDで分離したまま、モデル・バックエンド設定だけ親チャンネルから継承します。
+Discord スレッド内では、`/backend`、`/llmmode`、`/llmeffort` は親チャンネルの `CHANNEL_OVERRIDES` を読み書きします。通常の会話セッションや実行ロックはスレッドIDで分離したまま、モデル・バックエンド設定だけ親チャンネルから継承します。
 
 Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code等）から変更されることはありません。
 
+### チャンネル別ワークスペース
+
+DiscordとSlackではチャンネルごとに作業ディレクトリを選べます。スレッドは親チャンネルの設定を継承します。設定変更は進行中・既存セッションへ遡って適用されず、`/new`後の新規セッションから反映されます。
+
+| コマンド                                | 説明                                         |
+| --------------------------------------- | -------------------------------------------- |
+| `/workspace show`                       | チャンネル設定と現在のセッション設定を表示   |
+| `/workspace list`                       | 登録済みワークスペースを表示                 |
+| `/workspace set <name> <absolute-path>` | 絶対パスを登録し、チャンネルへ設定         |
+| `/workspace use <name>`                 | 登録済みワークスペースをチャンネルへ設定     |
+| `/workspace reset`                      | 起動時の`WORKSPACE_PATH`へ戻す               |
+
+Discordでは各引数をスラッシュコマンドの入力欄へ指定します。Slack App側にも `/workspace` Slash Commandを追加してください。未設定時はxangi processがアクセスできる既存の任意の絶対パスを登録できます。登録先を限定したい場合だけ`XANGI_WORKSPACE_ALLOWED_ROOTS`へ許可rootを列挙します。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
+
+Web UIではProject画面の「Workspaceを追加」から、xangi processがアクセスできる既存の絶対パスを登録できます。登録解除はregistryから項目だけを外し、ディレクトリとファイルを削除しません。default Workspace、Projectまたは既存会話が参照しているWorkspace、Discord / Slack等のチャンネルへ設定済みのWorkspaceは登録解除できません。
+
 #### effort オプション
 
-Claude Code、Codex、Grok、GitHub Copilot CLIでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMは段階的なeffortに対応していません。Local LLMでeffortを指定した場合と、Antigravityで`max`を指定した場合は、設定を保存せずエラーを返します。Claude Codeのpersistentモードではプロセス再起動が必要なため、切り替え時にセッションがリセットされます。`--effort デフォルト`で未指定状態に戻せます。
+Claude Code、Codex、OpenCode、Grok、GitHub Copilot CLIでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMの段階指定はCLI backendの`effort`とは別に`/llmeffort`で設定し、OpenAI互換APIのトップレベル`reasoning_effort`へ送ります。対応値は`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`で、接続先が値を実装している必要があります。`default`はチャンネル設定を削除し、`LOCAL_LLM_REASONING_EFFORT`またはprovider既定へ戻します。Antigravityで`max`を指定した場合は設定を保存せずエラーを返します。Claude Codeのpersistentモードでは切り替え時にセッションがリセットされます。
 
 ## AIによる自律操作
 
@@ -1242,7 +1269,7 @@ OSS 公開前提のため log の中身が後で公開されても問題ない�
 
 AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `src/safe-env.ts` で管理。ホワイトリストに記載された変数のみ渡され、`DISCORD_TOKEN` 等のシークレットはAIからアクセス不可。
 
-**許可される変数:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`, `XANGI_TOOL_SERVER`, `XANGI_CHANNEL_ID`
+**許可される変数:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `OPENCODE_CONFIG`, `DATA_DIR`, `XANGI_TOOL_SERVER`, `XANGI_CHANNEL_ID`
 
 `ANTHROPIC_API_KEY`、`CURSOR_API_KEY`、`XAI_API_KEY` は通常のホワイトリストには含めず、それぞれ Claude Code / Cursor CLI / Grok CLI の子プロセスにだけ渡されます。
 
@@ -1343,6 +1370,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `COPILOT_PERMISSION_MODE`       | `SKIP_PERMISSIONS=false`時のCopilot tool範囲（`read-only` / `workspace-write`）                                         | `read-only`                  |
 | `COPILOT_MAX_AI_CREDITS`        | Copilot CLIへ渡す1 sessionのAI credit上限（任意、最小30）                                                               | -                            |
 | `CLAUDE_CODE_MAX_BUDGET_USD`    | Claude Code に `--max-budget-usd` を渡し、API呼び出しの上限額を設定                                                     | -                            |
+| `OPENCODE_CONFIG`               | OpenCodeへ渡すcustom provider設定ファイルの絶対path                                                                    | -                            |
 | `CURSOR_API_KEY`                | Cursor CLI backend に渡す API key（Cursor CLI利用時のみ）                                                               | -                            |
 | `CURSOR_FORCE`                  | Cursor CLI に `--force` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
 | `CURSOR_TRUST_WORKSPACE`        | Cursor CLI に `--trust` を渡す（明示的に `false` で無効化）                                                             | `true`                       |
@@ -1362,6 +1390,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 ### WebチャットUI
 
+応答に添付された自己完結HTMLは、外部通信とform送信を止めたsandbox内でインラインプレビューし、元ファイルは別に保存できる。
+
 添付の転送中はPC・スマートフォンともファイル名、複数選択時の順番、進捗率を入力欄の直上に表示する。音声・動画はbyte Range配信に対応し、スマートフォンでもmetadata取得・seek・再生を行える。
 
 | 変数               | 説明                                                                                                                                                                                     | デフォルト |
@@ -1372,7 +1402,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
 
-Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプトと既定のbackend / model / effortを設定できる。modelとeffortの候補は、選択したbackendから動的取得される。サイドバーの`Projects`リンクから専用一覧を開き、Projectの作成・設定・会話の絞り込みを行う。既存のWeb会話はセッション行の`Projectへ移動`から所属先を変更でき、`Projectなし`へ戻すこともできる。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。`/backend reset`で会話固有設定を消すとProject設定へ戻る。サイドバー自体にはProject名の一覧を展開しない。すべてのProjectは同じ`WORKSPACE_PATH`を使い、Projectの作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`を生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連はセッション情報へ保存する。
+Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプト、ワークスペース、既定のbackend / model / effortを設定できる。新規会話は作成時のProjectワークスペースを固定し、後からProject設定を変えても既存会話の作業ディレクトリは変わらない。既存のWeb会話を別Projectへ移しても、ワークスペースは安全のため元のスナップショットを維持する。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。Project作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`は生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連とワークスペースのスナップショットはセッション情報へ保存する。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/JSONL/YAML/TOML、C/C++・Rust・Go、Astro・Vue・Svelte・Sass系を含む主要コード形式、ログ・diff・patch・TSV・CFGを開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
@@ -1476,6 +1506,14 @@ curl -i "$XANGI_TOOL_SERVER/github-token"
 - トークン生成はtool-serverのHTTPエンドポイント（`/github-token`）経由で行われ、AIエージェントが取得できるのは短寿命のインストールトークン（1時間有効）のみです
 - トークン生成に失敗した場合、PATへのフォールバックは行わずエラーになります
 
+### OpenCode（`AGENT_BACKEND=opencode` 時）
+
+OpenCode backend は `opencode run --format json --agent build` を使用し、JSONイベントをxangiのストリーミング応答とtool履歴へ変換します。`SKIP_PERMISSIONS=true`（既定）では非対話実行用の`--auto`を渡します。信頼できないworkspaceでは`SKIP_PERMISSIONS=false`を指定してください。
+
+`AGENT_MODEL` はOpenCodeの`provider/model`形式で`--model`へ渡します。チャンネルのeffortは`--variant low|medium|high|max`へ、provider sessionは`--session`へ渡すため、xangiの同一セッションで会話をresumeできます。custom providerでは、使用するeffort名と同じmodel variantをOpenCode設定に定義してください。OpenCodeが終了コード0と同時にJSONの`error`イベントを返す場合も、xangiは成功扱いにせずエラーを通知します。
+
+workspaceの`AGENTS.md`と`.agents/skills`の読み込みはOpenCode自身へ委譲します。custom providerやOpenAI互換endpointを使う場合は、設定ファイルの絶対pathを`OPENCODE_CONFIG`に指定できます。`xangi setup`でOpenAI互換ローカルLLMを選ぶと、この設定ファイルと`low` / `medium` / `high` / `max` variantを自動生成します。
+
 ### Cursor CLI（`AGENT_BACKEND=cursor` 時）
 
 Cursor CLI backend は `cursor-agent` コマンドを使用します。非対話実行は `cursor-agent -p ... --output-format json`、ストリーミングは `--output-format stream-json --stream-partial-output` です。
@@ -1530,6 +1568,7 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_MODEL`                       | 使用するモデル名                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | APIキー（vLLM等で必要な場合）                                                | -                                                                |
 | `LOCAL_LLM_THINKING`                    | Thinkingモデルの推論を有効にするか                                           | `true`                                                           |
+| `LOCAL_LLM_REASONING_EFFORT`            | OpenAI互換APIへ送る既定`reasoning_effort`（チャンネル設定が優先）             | 未指定（provider既定）                                           |
 | `LOCAL_LLM_MAX_TOKENS`                  | 最大トークン数（API 呼び出しの max_tokens）                                  | `8192`                                                           |
 | `LOCAL_LLM_NUM_CTX`                     | コンテキストウィンドウサイズ（Ollama用、context budget 逆算の基準）          | モデルのデフォルト                                               |
 | `LOCAL_LLM_TEMPERATURE`                 | サンプリング温度（0 で決定的、agent モードの format drift を抑える時に有効） | モデルのデフォルト                                               |

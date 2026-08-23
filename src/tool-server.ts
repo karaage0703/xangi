@@ -187,6 +187,17 @@ async function executeCommand(
       throw new ValidationError(String(result.body.error ?? 'Trigger failed'));
     }
     return `✅ トリガーを発火しました (id: ${result.body.triggerId}, source: ${result.body.source})`;
+  } else if (command === 'trigger_status') {
+    if (!eventTrigger) {
+      throw new ValidationError('Trigger is not available on this instance');
+    }
+    const triggerId = flags.id?.trim();
+    if (!triggerId) throw new ValidationError('--id is required');
+    const result = eventTrigger.getReceipt(triggerId);
+    if (result.status >= 400) {
+      throw new ValidationError(String(result.body.error ?? 'Trigger status failed'));
+    }
+    return JSON.stringify(result.body.receipt, null, 2);
   } else if (command === 'web_history') {
     // 現ペイン解決のために context.channelId を env で渡す
     // (`web-chat:<appSessionId>` 形式)
@@ -343,6 +354,27 @@ export function startToolServer(options?: {
         res.writeHead(400);
         res.end(JSON.stringify({ ok: false, error: message }));
       }
+      return;
+    }
+
+    const triggerStatusMatch = req.url?.match(/^\/api\/trigger\/([^/?]+)$/);
+    if (triggerStatusMatch && req.method === 'GET') {
+      if (!eventTrigger) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ ok: false, error: 'Trigger is not available' }));
+        return;
+      }
+      let triggerId: string;
+      try {
+        triggerId = decodeURIComponent(triggerStatusMatch[1]);
+      } catch {
+        res.writeHead(400);
+        res.end(JSON.stringify({ ok: false, error: 'Invalid trigger ID encoding' }));
+        return;
+      }
+      const result = eventTrigger.handleStatusHttp(triggerId, req.headers.authorization);
+      res.writeHead(result.status);
+      res.end(JSON.stringify(result.body));
       return;
     }
 

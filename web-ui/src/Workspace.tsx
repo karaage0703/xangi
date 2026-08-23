@@ -44,6 +44,13 @@ interface WorkspaceFile {
   mtimeMs: number;
 }
 
+interface RegisteredWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  isDefault: boolean;
+}
+
 type EditorMode = 'edit' | 'preview';
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'conflict' | 'error';
 type SortKey = 'name' | 'mtime';
@@ -91,6 +98,10 @@ function markdownBody(content: string): string {
 }
 
 export function Workspace() {
+  const initialWorkspaceId =
+    new URLSearchParams(window.location.search).get('workspaceId') || 'default';
+  const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
+  const [workspaceId, setWorkspaceId] = useState(initialWorkspaceId);
   const [directory, setDirectory] = useState<WorkspaceDirectory>({
     path: '',
     parent: null,
@@ -111,50 +122,64 @@ export function Workspace() {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const pendingLocation = useRef<{ line: number; column?: number } | undefined>(undefined);
   const initialLocationHandled = useRef(false);
+  const previousWorkspaceId = useRef(workspaceId);
 
   const dirty = selected !== undefined && draft !== selected.content;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const markdown = selected?.path.toLowerCase().endsWith('.md') === true;
 
-  const loadDirectory = useCallback(async (path: string) => {
-    if (dirtyRef.current) {
-      setMessage('ファイルを移動する前に、変更を保存するか再読込してください。');
-      return;
-    }
-    setDirectoryLoading(true);
-    setMessage('');
-    try {
-      const result = await getJson<WorkspaceDirectory>(
-        `/api/workspace/entries?path=${encodePath(path)}`
-      );
-      setDirectory(result);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setDirectoryLoading(false);
-    }
-  }, []);
+  const loadDirectory = useCallback(
+    async (path: string) => {
+      if (dirtyRef.current) {
+        setMessage('ファイルを移動する前に、変更を保存するか再読込してください。');
+        return;
+      }
+      setDirectoryLoading(true);
+      setMessage('');
+      try {
+        const result = await getJson<WorkspaceDirectory>(
+          `/api/workspace/entries?path=${encodePath(path)}&workspaceId=${encodeURIComponent(workspaceId)}`
+        );
+        setDirectory(result);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setDirectoryLoading(false);
+      }
+    },
+    [workspaceId]
+  );
 
-  const openFile = useCallback(async (path: string, line?: number, column?: number) => {
-    if (dirtyRef.current) {
-      setMessage('別のファイルを開く前に、変更を保存するか再読込してください。');
-      return;
-    }
-    setMessage('');
-    setSaveState('idle');
-    try {
-      const file = await getJson<WorkspaceFile>(`/api/workspace/file?path=${encodePath(path)}`);
-      setSelected(file);
-      setDraft(file.content);
-      setMode(line ? 'edit' : file.path.toLowerCase().endsWith('.md') ? 'preview' : 'edit');
-      pendingLocation.current = line ? { line, column } : undefined;
-      setMobilePane('editor');
-      window.history.replaceState({}, '', workspaceViewerUrl({ path: file.path, line, column }));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    }
-  }, []);
+  const openFile = useCallback(
+    async (path: string, line?: number, column?: number) => {
+      if (dirtyRef.current) {
+        setMessage('別のファイルを開く前に、変更を保存するか再読込してください。');
+        return;
+      }
+      setMessage('');
+      setSaveState('idle');
+      try {
+        const file = await getJson<WorkspaceFile>(
+          `/api/workspace/file?path=${encodePath(path)}&workspaceId=${encodeURIComponent(workspaceId)}`
+        );
+        setSelected(file);
+        setDraft(file.content);
+        setMode(line ? 'edit' : file.path.toLowerCase().endsWith('.md') ? 'preview' : 'edit');
+        pendingLocation.current = line ? { line, column } : undefined;
+        setMobilePane('editor');
+        const viewer = workspaceViewerUrl({ path: file.path, line, column });
+        window.history.replaceState(
+          {},
+          '',
+          `${viewer}${viewer.includes('?') ? '&' : '?'}workspaceId=${encodeURIComponent(workspaceId)}`
+        );
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [workspaceId]
+  );
 
   useLayoutEffect(() => {
     const location = pendingLocation.current;
@@ -173,7 +198,7 @@ export function Workspace() {
     setMessage('');
     try {
       const file = await getJson<WorkspaceFile>(
-        `/api/workspace/file?path=${encodePath(selected.path)}`
+        `/api/workspace/file?path=${encodePath(selected.path)}&workspaceId=${encodeURIComponent(workspaceId)}`
       );
       setSelected(file);
       setDraft(file.content);
@@ -182,7 +207,7 @@ export function Workspace() {
       setSaveState('error');
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [selected]);
+  }, [selected, workspaceId]);
 
   const saveFile = useCallback(async () => {
     if (!selected || !dirty || saveState === 'saving') return;
@@ -195,6 +220,7 @@ export function Workspace() {
           path: selected.path,
           content: draft,
           version: selected.version,
+          workspaceId,
         }),
       });
       setSelected(file);
@@ -213,7 +239,13 @@ export function Workspace() {
         setMessage(error instanceof Error ? error.message : String(error));
       }
     }
-  }, [draft, dirty, saveState, selected]);
+  }, [draft, dirty, saveState, selected, workspaceId]);
+
+  useEffect(() => {
+    void getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces')
+      .then((result) => setWorkspaces(result.workspaces))
+      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+  }, []);
 
   useEffect(() => {
     if (initialLocationHandled.current) return;
@@ -226,6 +258,12 @@ export function Workspace() {
     void loadDirectory(workspaceParentPath(target.path));
     void openFile(target.path, target.line, target.column);
   }, [loadDirectory, openFile]);
+
+  useEffect(() => {
+    if (previousWorkspaceId.current === workspaceId) return;
+    previousWorkspaceId.current = workspaceId;
+    void loadDirectory('');
+  }, [loadDirectory, workspaceId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -282,6 +320,33 @@ export function Workspace() {
         style={{ '--workspace-sidebar-width': `${sidebarWidth}px` } as CSSProperties}
       >
         <aside className="workspace-file-panel" aria-label="Workspace files">
+          <div className="workspace-file-controls">
+            <select
+              aria-label="ワークスペース"
+              value={workspaceId}
+              onChange={(event) => {
+                if (dirtyRef.current) {
+                  setMessage(
+                    'ワークスペースを切り替える前に、変更を保存するか再読込してください。'
+                  );
+                  return;
+                }
+                setWorkspaceId(event.target.value);
+                setSelected(undefined);
+                setDraft('');
+                setDirectory({ path: '', parent: null, entries: [] });
+                setMobilePane('files');
+                setSaveState('idle');
+              }}
+            >
+              {workspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                  {workspace.isDefault ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           <nav className="workspace-breadcrumbs" aria-label="パンくず">
             {breadcrumbs.map((crumb, index) => (
               <span key={crumb.path || 'root'}>
@@ -467,7 +532,7 @@ export function Workspace() {
                   </button>
                   <a
                     className="button"
-                    href={workspaceFileUrl(selected.path)}
+                    href={workspaceFileUrl(selected.path, workspaceId)}
                     target="_blank"
                     rel="noopener noreferrer"
                   >

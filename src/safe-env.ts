@@ -30,6 +30,8 @@ export const ALLOWED_ENV_KEYS = [
   'XANGI_CHANNEL_ID',
   'XANGI_PLATFORM',
   'XANGI_BACKEND_EXECUTABLE',
+  // OpenCode provider/model config file path (the file may reference provider credentials).
+  'OPENCODE_CONFIG',
 ];
 
 /**

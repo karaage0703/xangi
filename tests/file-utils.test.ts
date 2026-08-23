@@ -357,6 +357,12 @@ describe('buildAttachmentResult', () => {
     expect(filePaths).toEqual([imageAbs]);
   });
 
+  it('rejects structured attachments outside the selected workspace roots', () => {
+    const { filePaths, displayText } = buildAttachmentResult('生成した', ['/etc/hosts'], workspace);
+    expect(filePaths).toEqual([]);
+    expect(displayText).toBe('生成した');
+  });
+
   it('appends the failure notice when a phantom MEDIA path resolves to nothing', () => {
     const { filePaths, displayText } = buildAttachmentResult(
       `描いたよ！\nMEDIA:outputs/phantom.png`,

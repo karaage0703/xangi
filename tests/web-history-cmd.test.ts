@@ -22,6 +22,7 @@ describe('web-history-cmd', () => {
     mkdirSync(sessionsDir, { recursive: true });
     originalEnv = { ...process.env };
     process.env.WORKSPACE_PATH = tmpDir;
+    process.env.DATA_DIR = join(tmpDir, '.xangi');
     delete process.env.XANGI_CHANNEL_ID;
   });
 
@@ -74,9 +75,7 @@ describe('web-history-cmd', () => {
   });
 
   it('resolves current pane from XANGI_CHANNEL_ID env (web-chat:<id>)', () => {
-    writeSession('pane123.jsonl', [
-      { role: 'user', content: '[プラットフォーム: Web]\npane-msg' },
-    ]);
+    writeSession('pane123.jsonl', [{ role: 'user', content: '[プラットフォーム: Web]\npane-msg' }]);
     writeSession('other.jsonl', [{ role: 'user', content: '[プラットフォーム: Web]\nother-msg' }]);
     process.env.XANGI_CHANNEL_ID = 'web-chat:pane123';
     const result = webHistoryCmd({});
@@ -122,9 +121,7 @@ describe('web-history-cmd', () => {
 
   it('truncates long content with --max-chars', () => {
     const longText = 'x'.repeat(2000);
-    writeSession('long.jsonl', [
-      { role: 'user', content: '[プラットフォーム: Web]\n' + longText },
-    ]);
+    writeSession('long.jsonl', [{ role: 'user', content: '[プラットフォーム: Web]\n' + longText }]);
     const result = webHistoryCmd({ session: 'long', 'max-chars': '100' });
     expect(result).toContain('…');
     const userLine = result.split('\n').find((l) => l.includes('[user]'));

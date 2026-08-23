@@ -266,7 +266,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   }
 
   private buildEnv(): NodeJS.ProcessEnv {
-    const env = buildCliEnv(this.channelId, this.platform);
+    const env = buildCliEnv(this.channelId, this.platform, this.workdir);
     if (process.env.ANTHROPIC_API_KEY) {
       env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
     }

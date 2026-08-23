@@ -96,6 +96,12 @@ describe('LLMClient chatStream payload', () => {
     expect(capturedBody!.tool_choice).toBe('auto');
   });
 
+  it('per-call reasoning_effort をstream payloadへ送る', async () => {
+    const client = buildClient();
+    await drain(client.chatStream(messages, { reasoningEffort: 'low' }));
+    expect(capturedBody!.reasoning_effort).toBe('low');
+  });
+
   it('toolChoice (function 指定): 特定 tool 強制も正しく載る', async () => {
     const client = buildClient();
     await drain(
@@ -127,6 +133,32 @@ describe('LLMClient chatStream payload', () => {
     await client.chat(messages, { tools: sampleTools, toolChoice: 'none' });
     expect(capturedBody!.tools).toBeUndefined();
     expect(capturedBody!.tool_choice).toBeUndefined();
+  });
+
+  it('既定reasoning_effortをnon-stream payloadへ送り、per-call値を優先する', async () => {
+    fetchSpy.mockImplementation(async (_input, init) => {
+      if (init?.body && typeof init.body === 'string') {
+        capturedBody = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    const client = new LLMClient(
+      'http://localhost:8001',
+      'qwen3.8-27b',
+      '',
+      false,
+      1024,
+      undefined,
+      0,
+      'xhigh'
+    );
+    await client.chat(messages, { reasoningEffort: 'medium' });
+    expect(capturedBody!.reasoning_effort).toBe('medium');
   });
 
   it('OpenAI 互換応答の Step XML tool call を構造化 call へ復元する', async () => {

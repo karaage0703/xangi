@@ -20,9 +20,10 @@ interface SlackHistoryFlags {
   'max-chars'?: string;
 }
 
-function getSessionsDir(): string {
+function getSessionsDirs(): string[] {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  return join(workdir, 'logs', 'sessions');
+  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
+  return [...new Set([join(dataDir, 'logs', 'sessions'), join(workdir, 'logs', 'sessions')])];
 }
 
 function fmtContent(content: unknown, maxChars: number): string {
@@ -57,24 +58,25 @@ function fmtContent(content: unknown, maxChars: number): string {
  * `[チャンネル: <id>]` ヘッダが一致するものを mtime 最新で 1 個拾う。
  */
 function resolveSlackSession(channelId: string): string | undefined {
-  const dir = getSessionsDir();
-  if (!existsSync(dir)) return undefined;
   let best: { name: string; mtime: number } | undefined;
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith('.jsonl')) continue;
-    const path = join(dir, file);
-    let raw: string;
-    try {
-      raw = readFileSync(path, 'utf-8');
-    } catch {
-      continue;
-    }
-    // 最初の有効な行で contextKey / channelId を判定 (1 ファイル全行スキャンは重い)
-    const head = raw.split('\n').slice(0, 50).join('\n');
-    if (isSlackSessionHead(head, channelId)) {
-      const m = statSync(path).mtimeMs;
-      if (!best || m > best.mtime) {
-        best = { name: file.replace(/\.jsonl$/, ''), mtime: m };
+  for (const dir of getSessionsDirs()) {
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const path = join(dir, file);
+      let raw: string;
+      try {
+        raw = readFileSync(path, 'utf-8');
+      } catch {
+        continue;
+      }
+      // 最初の有効な行で contextKey / channelId を判定 (1 ファイル全行スキャンは重い)
+      const head = raw.split('\n').slice(0, 50).join('\n');
+      if (isSlackSessionHead(head, channelId)) {
+        const m = statSync(path).mtimeMs;
+        if (!best || m > best.mtime) {
+          best = { name: file.replace(/\.jsonl$/, ''), mtime: m };
+        }
       }
     }
   }
@@ -102,10 +104,15 @@ export function slackHistoryCmd(flags: Record<string, string>): string {
 
   const session = resolveSlackSession(channel);
   if (!session) {
-    return `(no slack session found for channel ${channel} in ${getSessionsDir()})`;
+    return `(no slack session found for channel ${channel} in ${getSessionsDirs().join(' or ')})`;
   }
 
-  const path = join(getSessionsDir(), `${session}.jsonl`);
+  const path = getSessionsDirs()
+    .map((dir) => join(dir, `${session}.jsonl`))
+    .find(existsSync);
+  if (!path) {
+    return `(failed to read ${session}.jsonl)`;
+  }
   let raw: string;
   try {
     raw = readFileSync(path, 'utf-8');

@@ -7,7 +7,7 @@ import {
   ButtonInteraction,
 } from 'discord.js';
 import type { Config } from '../config.js';
-import type { AgentRunner, RunResult } from '../agent-runner.js';
+import type { AgentRunner, AgentTraceEvent, RunResult } from '../agent-runner.js';
 import { formatAgentErrorForUser, shouldSendErrorFollowUp } from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
@@ -33,7 +33,6 @@ import { TurnLatencyRecorder } from '../turn-latency.js';
 import {
   getSession,
   setSession,
-  ensureSession,
   incrementMessageCount,
   getActiveSessionId,
   getSessionEntry,
@@ -81,6 +80,8 @@ import {
   prefetchDiscordHistory,
 } from './message-utils.js';
 import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
+import type { WorkspaceRegistry } from '../workspace-registry.js';
+import { ensureSessionWithWorkspace } from '../session-workspace.js';
 
 export function shouldProcessDiscordMessage(input: { system?: boolean }): boolean {
   return !input.system;
@@ -219,7 +220,8 @@ export async function processPrompt(
     react?: boolean;
     userText?: string;
     completionUserId?: string | null;
-  }
+  },
+  workspaceRegistry?: WorkspaceRegistry
 ): Promise<string | null> {
   const startedAt = Date.now();
   let replyMessage: Message | null = null;
@@ -237,6 +239,20 @@ export async function processPrompt(
   const conversationChannelId = target.conversationChannelId;
   const settingsChannelId = target.settingsChannelId;
   const existingProviderSessionId = getSession(conversationChannelId);
+  let resolvedSessionWorkspace: Awaited<ReturnType<typeof ensureSessionWithWorkspace>>;
+  try {
+    resolvedSessionWorkspace = await ensureSessionWithWorkspace({
+      registry: workspaceRegistry,
+      platform: 'discord',
+      contextKey: conversationChannelId,
+      bindingKey: settingsChannelId,
+    });
+  } catch (error) {
+    await target.sendInitial({ content: formatAgentErrorForUser(error) }).catch(() => undefined);
+    return null;
+  }
+  const { appSessionId, workspace } = resolvedSessionWorkspace;
+  const sessionWorkdir = workspace?.path ?? config.agent.config.workdir ?? process.cwd();
   const latency = new TurnLatencyRecorder({
     platform: 'discord',
     turnId,
@@ -245,7 +261,7 @@ export async function processPrompt(
     configuredModel: config.agent.config.model,
     firstTurn: !existingProviderSessionId,
     receivedAt: message.createdTimestamp,
-    workdir: config.agent.config.workdir,
+    workdir: sessionWorkdir,
   });
   try {
     console.log(
@@ -265,7 +281,7 @@ export async function processPrompt(
     const defaultSkip = config.agent.config.skipPermissions ?? false;
     const needsSkipRunner = skipPermissions && !defaultSkip;
     const runner: AgentRunner = needsSkipRunner
-      ? new ClaudeCodeRunner(config.agent.config)
+      ? new ClaudeCodeRunner({ ...config.agent.config, workdir: sessionWorkdir })
       : agentRunner;
 
     if (needsSkipRunner) {
@@ -317,7 +333,7 @@ export async function processPrompt(
       prompt = `${prefetchedHistory}\n\n${prompt}`;
     }
 
-    prompt = prependReferencedMessages(prompt, config.agent.config.workdir || process.cwd());
+    prompt = prependReferencedMessages(prompt, sessionWorkdir);
 
     // チャンネル・ユーザー情報をプロンプトに付与
     const actorName = actor?.name ?? message.author.displayName ?? message.author.username;
@@ -347,8 +363,6 @@ export async function processPrompt(
     };
 
     const sessionId = existingProviderSessionId;
-    const appSessionId = ensureSession(conversationChannelId, { platform: 'discord' });
-
     // 再起動直後の resume では、直前の未完了 tool 呼び出しが 'rejected' として
     // 記録されている（ユーザー拒否ではない）。誤解釈防止の注記を一度だけ注入する
     const restartNote = consumeRestartNote(conversationChannelId, !!sessionId);
@@ -396,7 +410,7 @@ export async function processPrompt(
         .then(() => true)
         .catch(() => false);
       if (!updated) return;
-      const tWorkdir = config.agent.config.workdir || process.cwd();
+      const tWorkdir = sessionWorkdir;
       attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', sourceMessageId);
       ensureVisibleAssistantResponse(
         tWorkdir,
@@ -419,6 +433,7 @@ export async function processPrompt(
         if (captureToolUse) addToolHistory(toolHistory, toolName, toolInput);
       },
       onText: () => latency.markText(),
+      onTraceEvent: (event: AgentTraceEvent) => latency.markTraceEvent(event),
     };
 
     if (useStreaming && showThinking && !needsSkipRunner) {
@@ -438,6 +453,7 @@ export async function processPrompt(
             channelId: conversationChannelId,
             settingsChannelId,
             appSessionId,
+            workdir: sessionWorkdir,
           }
         );
       } finally {
@@ -459,13 +475,17 @@ export async function processPrompt(
           runner,
           prompt,
           eventCtx,
-          { onToolUse: sessionCallbacks.onToolUse },
+          {
+            onToolUse: sessionCallbacks.onToolUse,
+            onTraceEvent: sessionCallbacks.onTraceEvent,
+          },
           {
             skipPermissions,
             sessionId,
             channelId: conversationChannelId,
             settingsChannelId,
             appSessionId,
+            workdir: sessionWorkdir,
           }
         );
         result = runResult.result;
@@ -483,7 +503,7 @@ export async function processPrompt(
     // 紐付ける。これがあれば後で messageUpdate / messageDelete から jsonl を
     // 逆引きできる。runner 側を触らず post-hoc で attach する戦略。
     try {
-      const tWorkdir = config.agent.config.workdir || process.cwd();
+      const tWorkdir = sessionWorkdir;
       attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', sourceMessageId);
       if (replyMessage) {
         attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'assistant', replyMessage.id);
@@ -512,7 +532,11 @@ export async function processPrompt(
     if (replySuggestionsEnabled && extracted.suggestions.length === 0) {
       extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
     }
-    const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
+    const { filePaths, displayText } = buildAttachmentResult(
+      extracted.text,
+      structuredAttachments,
+      sessionWorkdir
+    );
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
     const turnHistory = withoutFinalResponse(
@@ -699,7 +723,8 @@ export async function processReplySuggestion(
   interaction: ButtonInteraction,
   agentRunner: AgentRunner,
   config: Config,
-  suggestion: string
+  suggestion: string,
+  workspaceRegistry?: WorkspaceRegistry
 ): Promise<void> {
   const channel = interaction.channel;
   if (!channel || !('send' in channel)) throw new Error('返信先チャンネルを取得できません');
@@ -738,7 +763,8 @@ export async function processReplySuggestion(
       name: interaction.user.displayName ?? interaction.user.username,
       messageId: selectedMessage.id,
       react: false,
-    }
+    },
+    workspaceRegistry
   );
 }
 
@@ -747,6 +773,7 @@ export interface MessageHandlerDeps {
   config: Config;
   agentRunner: AgentRunner;
   workdir: string;
+  workspaceRegistry: WorkspaceRegistry;
 }
 
 export interface DiscordRemoteInput {
@@ -764,7 +791,7 @@ export interface DiscordRemoteInputBridge {
  * - MessageUpdate / MessageDelete: ユーザ操作を transcript jsonl に同期する
  */
 export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): DiscordRemoteInputBridge {
-  const { client, config, agentRunner, workdir } = deps;
+  const { client, config, agentRunner, workdir, workspaceRegistry } = deps;
 
   // 実行キー単位の処理中ロック。Discord のスレッド返信モードでは、親チャンネルに
   // 届いた発言から先に thread を作って runKey を確定し、Slack の conversationKey と
@@ -981,17 +1008,36 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     const target = await resolveDiscordMessageTarget(message, channelId, config, settings);
     const runKey = target.conversationChannelId;
 
-    // 同じ実行キーで処理中なら無視（メンション時は除く）
-    if (!isMentioned && processingRuns.has(runKey)) {
-      console.log(`[xangi] Skipping message in busy run: ${runKey}`);
-      return;
-    }
-
-    processingRuns.add(runKey);
+    let acquiredRunLock = false;
     try {
-      await processPrompt(message, agentRunner, prompt, skipPermissions, channelId, config, target);
+      // ここへ到達するのは、メンション / DM / autoreply のいずれかで bot 宛てと
+      // 判定済みのメッセージだけ。同じ実行キーが処理中なら runner を起動せず通知する。
+      if (processingRuns.has(runKey)) {
+        console.log(`[xangi] Rejecting message in busy run: ${runKey}`);
+        await target.sendInitial({
+          content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+          allowedMentions: { parse: [], repliedUser: false },
+        });
+        return;
+      }
+
+      processingRuns.add(runKey);
+      acquiredRunLock = true;
+      await processPrompt(
+        message,
+        agentRunner,
+        prompt,
+        skipPermissions,
+        channelId,
+        config,
+        target,
+        undefined,
+        workspaceRegistry
+      );
     } finally {
-      processingRuns.delete(runKey);
+      if (acquiredRunLock) {
+        processingRuns.delete(runKey);
+      }
     }
   });
 
@@ -1072,7 +1118,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
             react: false,
             userText: text,
             completionUserId: null,
-          }
+          },
+          workspaceRegistry
         );
         return { response };
       } finally {

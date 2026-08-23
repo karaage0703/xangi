@@ -75,4 +75,117 @@ describe('TurnLatencyRecorder', () => {
     expect(recorder.finish('error')?.agent_start_to_first_text_ms).toBe(10);
     expect(recorder.finish('complete')).toBeUndefined();
   });
+
+  it('decomposes overlapping Codex tools from non-tool backend time', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-latency-'));
+    let now = 1_000;
+    const recorder = new TurnLatencyRecorder(
+      {
+        platform: 'discord',
+        turnId: 'turn-trace',
+        threadId: 'thread',
+        firstTurn: false,
+        receivedAt: 900,
+        workdir,
+      },
+      () => now
+    );
+
+    recorder.markAgentStart();
+    now = 1_050;
+    recorder.markTraceEvent({ type: 'turn_started' });
+    now = 1_200;
+    recorder.markTraceEvent({ type: 'tool_started', toolId: 'a', toolName: 'Bash' });
+    now = 1_250;
+    recorder.markTraceEvent({ type: 'tool_started', toolId: 'b', toolName: 'view' });
+    now = 1_400;
+    recorder.markTraceEvent({
+      type: 'tool_completed',
+      toolId: 'a',
+      toolName: 'Bash',
+      status: 'completed',
+      exitCode: 0,
+      outputBytes: 24,
+    });
+    now = 1_500;
+    recorder.markTraceEvent({
+      type: 'tool_completed',
+      toolId: 'b',
+      toolName: 'view',
+      status: 'completed',
+    });
+    now = 1_800;
+    recorder.markTraceEvent({ type: 'message_completed' });
+    now = 1_900;
+    recorder.markTraceEvent({
+      type: 'turn_completed',
+      usage: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 20 },
+    });
+    now = 1_950;
+    recorder.markAgentComplete();
+    now = 2_000;
+
+    const trace = recorder.finish('complete')?.backend_trace;
+    expect(trace).toMatchObject({
+      trace_duration_ms: 850,
+      tool_count: 2,
+      tool_batch_count: 1,
+      tool_wall_ms: 300,
+      non_tool_backend_ms: 550,
+      first_output_wait_ms: 150,
+      input_tokens: 100,
+      cached_input_tokens: 80,
+      output_tokens: 20,
+    });
+    expect(trace?.tools).toEqual([
+      expect.objectContaining({
+        tool_id: 'a',
+        tool_name: 'Bash',
+        start_ms: 200,
+        end_ms: 400,
+        duration_ms: 200,
+        exit_code: 0,
+        output_bytes: 24,
+      }),
+      expect.objectContaining({
+        tool_id: 'b',
+        tool_name: 'view',
+        start_ms: 250,
+        end_ms: 500,
+        duration_ms: 250,
+      }),
+    ]);
+  });
+
+  it('closes an in-flight tool at agent completion on error', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-latency-'));
+    let now = 100;
+    const recorder = new TurnLatencyRecorder(
+      {
+        platform: 'web',
+        turnId: 'turn-error',
+        threadId: 'thread',
+        firstTurn: true,
+        receivedAt: 0,
+        workdir,
+      },
+      () => now
+    );
+    recorder.markAgentStart();
+    recorder.markTraceEvent({ type: 'turn_started' });
+    now = 130;
+    recorder.markTraceEvent({ type: 'tool_started', toolId: 'a', toolName: 'Bash' });
+    now = 180;
+    recorder.markAgentComplete();
+
+    const trace = recorder.finish('error')?.backend_trace;
+    expect(trace).toMatchObject({
+      trace_duration_ms: 80,
+      tool_count: 1,
+      tool_batch_count: 1,
+      tool_wall_ms: 50,
+      non_tool_backend_ms: 30,
+    });
+    expect(trace?.tools[0]).toMatchObject({ start_ms: 30, end_ms: 80, duration_ms: 50 });
+  });
 });

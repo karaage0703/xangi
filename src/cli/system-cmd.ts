@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
+import { requestProcessRestart } from '../restart-process.js';
 import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
 
 interface Settings {
@@ -56,9 +57,7 @@ async function systemRestart(): Promise<string> {
 
   assertRuntimeStateCanStart();
 
-  setTimeout(() => {
-    process.kill(process.pid, 'SIGTERM');
-  }, 100);
+  requestProcessRestart(100);
 
   return '🔄 再起動をリクエストしました';
 }

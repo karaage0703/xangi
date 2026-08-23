@@ -573,7 +573,7 @@ export function Schedules() {
                                 ? `新しい会話 / ${projectNames.get(schedule.projectId) || schedule.projectId}`
                                 : '新しい会話'
                               : `既存会話 / ${schedule.channelId}`
-                            : schedule.channelId}
+                            : schedule.destinationLabel || schedule.channelId}
                         </span>
                       </div>
                     </div>

@@ -52,6 +52,10 @@ export interface SessionEntry {
   resumedFromSessionId?: string;
   /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
   autoTalk?: boolean;
+  /** セッション作成時に選択されたworkspace ID。 */
+  workspaceId?: string;
+  /** セッション作成時のcanonical path snapshot。resume時に再解決しない。 */
+  workspacePath?: string;
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
 }
@@ -59,6 +63,12 @@ export interface SessionEntry {
 interface SessionsFile {
   activeByContext: Record<string, string>;
   sessions: Record<string, SessionEntry>;
+}
+
+interface SessionSnapshotOptions {
+  workspaceId?: string;
+  workspacePath?: string;
+  projectId?: string;
 }
 
 let sessionsPath: string | null = null;
@@ -305,13 +315,15 @@ export function createWebSession(
     title?: string;
     backend?: string;
     resumedFromSessionId?: string;
-    projectId?: string;
-  } = {}
+  } & SessionSnapshotOptions = {}
 ): string {
   const appId = generateAppSessionId();
   const ctxKey = `${WEB_CHAT_CONTEXT_PREFIX}${appId}`;
   const now = new Date().toISOString();
 
+  const resumedFrom = opts.resumedFromSessionId
+    ? data.sessions[opts.resumedFromSessionId]
+    : undefined;
   data.sessions[appId] = {
     id: appId,
     title: sanitizeSessionTitle(opts.title || ''),
@@ -326,7 +338,9 @@ export function createWebSession(
     archived: false,
     lifecycle: 'open',
     resumedFromSessionId: opts.resumedFromSessionId,
-    projectId: opts.projectId,
+    workspaceId: opts.workspaceId ?? resumedFrom?.workspaceId,
+    workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
+    projectId: opts.projectId ?? resumedFrom?.projectId,
   };
   data.activeByContext[ctxKey] = appId;
   saveSessionsToFile();
@@ -353,7 +367,7 @@ export function createSession(
     scope?: SessionScope;
     title?: string;
     backend?: string;
-  } = {}
+  } & SessionSnapshotOptions = {}
 ): string {
   const appId = generateAppSessionId();
   const now = new Date().toISOString();
@@ -371,6 +385,9 @@ export function createSession(
     agent: opts.backend ? { backend: opts.backend } : undefined,
     archived: false,
     lifecycle: 'open',
+    workspaceId: opts.workspaceId,
+    workspacePath: opts.workspacePath,
+    projectId: opts.projectId,
   };
   data.activeByContext[contextKey] = appId;
   saveSessionsToFile();
@@ -590,7 +607,7 @@ export function deleteSession(channelId: string): boolean {
  */
 export function ensureSession(
   contextKey: string,
-  opts?: { platform?: string; scope?: SessionScope; backend?: string }
+  opts?: { platform?: string; scope?: SessionScope; backend?: string } & SessionSnapshotOptions
 ): string {
   const existing = data.activeByContext[contextKey];
   if (existing && data.sessions[existing]) {

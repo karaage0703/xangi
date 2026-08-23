@@ -5,7 +5,11 @@ import { getGitHubEnv } from './github-auth.js';
 import type { TimeoutController } from './timeout-controller.js';
 import type { ChatPlatform } from './prompts/index.js';
 
-export function buildCliEnv(channelId?: string, platform?: ChatPlatform): NodeJS.ProcessEnv {
+export function buildCliEnv(
+  channelId?: string,
+  platform?: ChatPlatform,
+  workdir?: string
+): NodeJS.ProcessEnv {
   const safeEnv = getSafeEnv();
   const env: NodeJS.ProcessEnv = { ...safeEnv, ...getGitHubEnv(safeEnv) };
   if (channelId) {
@@ -22,6 +26,9 @@ export function buildCliEnv(channelId?: string, platform?: ChatPlatform): NodeJS
     env.XANGI_PLATFORM = platform;
   } else {
     delete env.XANGI_PLATFORM;
+  }
+  if (workdir) {
+    env.WORKSPACE_PATH = workdir;
   }
   return env;
 }

@@ -32,6 +32,7 @@ import { resolveAppLayout } from '../installer/layout.js';
 import { installConfiguredWorkspaceTemplate } from '../installer/workspace-template.js';
 import { runToolCommand } from './tool-command.js';
 import { extensionCmd } from './extension-cmd.js';
+import { configureOpenCodeSetup } from '../setup/opencode-config.js';
 
 type ProviderLabel = 'claude' | 'codex';
 
@@ -571,6 +572,9 @@ export async function run(argv = process.argv): Promise<void> {
           {
             backend,
             backendExecutable,
+            model: onboarding.backend === backend ? onboarding.model : undefined,
+            opencodeConfigPath:
+              onboarding.backend === backend ? onboarding.opencodeConfigPath : undefined,
             workspacePath,
             workspaceMode,
             webChatAccess,
@@ -615,14 +619,20 @@ export async function run(argv = process.argv): Promise<void> {
         documentationRoot,
         installationKind: managedInstallation ? 'managed' : 'checkout',
         webChatPort: configuredWebChatPort(),
-        onSelected: (backend) =>
-          writeOnboardingState(layout, {
+        onSelected: async (backend) => {
+          const opencode =
+            backend.id === 'opencode' ? await configureOpenCodeSetup({ layout }) : {};
+          if (opencode.configPath) process.env.OPENCODE_CONFIG = opencode.configPath;
+          if (opencode.model) process.env.AGENT_MODEL = opencode.model;
+          await writeOnboardingState(layout, {
             schemaVersion: 1,
             phase: 'preflight',
             backend: backend.id,
             backendExecutable: backend.executable,
+            ...opencode,
             updatedAt: new Date().toISOString(),
-          }),
+          });
+        },
       })
     );
     return;

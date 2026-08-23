@@ -7,6 +7,7 @@ import { slackHistoryCmd } from '../src/cli/slack-history-cmd.js';
 const DUMMY_RUNTIME_CWD = '/workspace/xangi-dev';
 
 const originalWorkspacePath = process.env.WORKSPACE_PATH;
+const originalDataDir = process.env.DATA_DIR;
 const originalChannelId = process.env.XANGI_CHANNEL_ID;
 let tempDir: string | undefined;
 
@@ -24,6 +25,7 @@ function withSessionFile(name: string, lines: unknown[]): void {
 function setupWorkspace(): string {
   tempDir = mkdtempSync(join(tmpdir(), 'xangi-slack-history-'));
   process.env.WORKSPACE_PATH = tempDir;
+  process.env.DATA_DIR = join(tempDir, '.xangi');
   delete process.env.XANGI_CHANNEL_ID;
   return tempDir;
 }
@@ -38,6 +40,11 @@ afterEach(() => {
   } else {
     process.env.WORKSPACE_PATH = originalWorkspacePath;
   }
+  if (originalDataDir === undefined) {
+    delete process.env.DATA_DIR;
+  } else {
+    process.env.DATA_DIR = originalDataDir;
+  }
   if (originalChannelId === undefined) {
     delete process.env.XANGI_CHANNEL_ID;
   } else {
@@ -51,8 +58,7 @@ describe('slackHistoryCmd', () => {
     withSessionFile('session-a', [
       {
         role: 'user',
-        content:
-          `[runtime] cwd=${DUMMY_RUNTIME_CWD}\n\n[プラットフォーム: Slack]\n[チャンネル: C123]\nこんばんは`,
+        content: `[runtime] cwd=${DUMMY_RUNTIME_CWD}\n\n[プラットフォーム: Slack]\n[チャンネル: C123]\nこんばんは`,
         createdAt: '2026-07-01T00:00:00.000Z',
       },
       {
@@ -91,6 +97,8 @@ describe('slackHistoryCmd', () => {
 
     const result = slackHistoryCmd({ channel: 'C000' });
 
-    expect(result).toBe(`(no slack session found for channel C000 in ${workspace}/logs/sessions)`);
+    expect(result).toBe(
+      `(no slack session found for channel C000 in ${workspace}/.xangi/logs/sessions or ${workspace}/logs/sessions)`
+    );
   });
 });

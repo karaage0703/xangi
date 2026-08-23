@@ -990,7 +990,7 @@ export async function startTelegramBot(opts: {
 
   // スケジューラーの生成結果も、通常メッセージと同様に「考え中」を編集して投稿する。
   // チャット単位のキューを経由し、メッセージハンドラとの並行実行を防ぐ。
-  scheduler.registerAgentRunner('telegram', (prompt, channelId) => {
+  scheduler.registerAgentRunner('telegram', (prompt, channelId, _schedule, runContext) => {
     const target = parseTelegramScheduleTarget(channelId);
     const { chatId, contextKey, messageThreadId } = target;
     const sendOptions =
@@ -1062,6 +1062,12 @@ export async function startTelegramBot(opts: {
               '[xangi-telegram] Failed to edit scheduled error response: ' +
                 formatTelegramError(editResult.error)
             );
+          } else {
+            runContext?.onDelivery?.({
+              platform: 'telegram',
+              destinationId: channelId,
+              messageIds: [String(thinkingMessage.message_id)],
+            });
           }
           throw error;
         }
@@ -1132,6 +1138,12 @@ export async function startTelegramBot(opts: {
         }
 
         throwTelegramTextDeliveryFailure('Scheduled', delivery.textFailure);
+        runContext?.onDelivery?.({
+          platform: 'telegram',
+          destinationId: channelId,
+          messageIds: [String(thinkingMessage.message_id)],
+          sessionId: runResult.sessionId,
+        });
         return runResult.result || '';
       } finally {
         unregisterFinalizer();

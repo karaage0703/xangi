@@ -292,7 +292,7 @@ xangi uninstall --purge --yes
 
 ```
 
-`xangi setup` first detects Codex, Claude Code, Cursor Agent, Grok CLI, and Antigravity on `PATH` using deterministic executable and `--version` checks. It asks which detected agent to use, or points to the independent AI tool setup and exits when none are available. Local LLM remains available for normal xangi use, but is not selected to perform the file-editing first-run onboarding.
+`xangi setup` first detects Codex, OpenCode, Claude Code, Cursor Agent, Grok CLI, and Antigravity on `PATH` using deterministic executable and `--version` checks. It asks which detected agent to use, or points to the independent AI tool setup and exits when none are available. Local LLM remains available for normal xangi use, but is not selected to perform the file-editing first-run onboarding.
 
 To set up only an AI coding tool without installing xangi, run this one-liner:
 
@@ -300,7 +300,9 @@ To set up only an AI coding tool without installing xangi, run this one-liner:
 bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
 ```
 
-Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, or `antigravity`. Use `check` for a read-only status check. If Codex's Node.js and npm prerequisites are missing, the script guides you to install nvm, close and reopen the terminal, and then run `command -v nvm` followed by `nvm install --lts`.
+Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, `antigravity`, `github-copilot`, or `opencode`. Use `check` for a read-only status check. If Codex's Node.js and npm prerequisites are missing, the script guides you to install nvm, close and reopen the terminal, and then run `command -v nvm` followed by `nvm install --lts`.
+
+For OpenCode, `setup-ai-tools.sh opencode` installs the official CLI and opens OpenCode's authentication flow. The subsequent `xangi setup` lets you keep the existing OpenCode configuration and credentials or configure a local OpenAI-compatible endpoint. The local option stores a private, xangi-owned `opencode.json` without overwriting the normal OpenCode configuration, then applies it through `OPENCODE_CONFIG` and `AGENT_MODEL` only when xangi runs.
 
 The selected agent starts interactively in Japanese and asks one question at a time. Initial setup fixes Web Chat to `local` (loopback only) and does not inspect or modify Tailscale until the minimum workspace setup, service start, and `doctor` checks for config, workspace, backend, service, health, and runtime workspace all succeed. Only after the local setup works does the agent offer `tailscale` (a same-port Tailscale Serve TCP forward inside the tailnet) or `lan` (`0.0.0.0`, after warning that Web Chat has no application-level authentication) as optional settings. `setup --access <local|tailscale|lan>` changes only the Web Chat scope without returning completed onboarding to the bootstrap phase. The Tailscale path configures `tailscale serve --bg --tcp=<PORT> tcp://127.0.0.1:<PORT>` and applies `setup --access tailscale` only after the forward is verified. A failure in this optional step leaves the working local setup intact. Only a short start message appears in the agent UI; the agent reads detailed instructions from a temporary mode-0600 file that is removed when it exits. When no known workspace exists, xangi recommends `ai-assistant-workspace` first. If selected, xangi resolves the GitHub repository's latest `main` commit and downloads that commit's archive without Git. Other blank workspaces and existing workspaces at absolute paths remain available. The agent invokes `xangi setup --apply` with local access after the user decides, but xangi itself validates the absolute path, backend, workspace mode, and Web Chat access; atomically writes the mode-0600 configuration; applies the repository template; and creates a starter BOOTSTRAP.md for a blank workspace. `xangi setup --complete` refuses completion while BOOTSTRAP.md remains. After basic setup, the agent asks whether to start using xangi or continue with optional Web Chat access, Discord, other platforms, schedules, and skills. For these xangi settings it does not search the workspace; it uses xangi's bundled README, `docs/usage.md`, and platform documentation as the source of truth. A checkout runs `service start` and then `doctor`; a managed distribution relies on the installer to activate the OS service and uses `doctor` for verification. Template state records repository, commit SHA, archive SHA-256, and application time; later updates never overwrite the workspace.
 
@@ -465,12 +467,20 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 
 On success it returns `202 { "ok": true, "triggerId": "trg_..." }` immediately (it does not wait for the turn to finish). Discord, Slack, and Telegram receive a `⚡ trigger: <source>` label followed by the agent response. Web accepts either `web-chat:<sessionId>` or the raw `sessionId` and appends a new turn to that Web conversation.
 
+The returned ID can be used to query a platform-neutral execution and delivery receipt. `status` is one of `accepted`, `running`, `completed` (turn completed without a delivery reference), `delivered`, `failed`, or `interrupted` (xangi restarted before completion). Delivered receipts contain Discord / Slack / Telegram message IDs or a Web session ID in `delivery`. The latest 1,000 receipts are stored in `${DATA_DIR}/trigger-receipts.json` and remain queryable after restart.
+
+```bash
+curl "$XANGI_TOOL_SERVER/api/trigger/<triggerId>" \
+  -H "Authorization: Bearer $XANGI_TRIGGER_TOKEN"
+```
+
 ### Firing via xangi tool
 
 Local scripts can also fire a trigger via `xangi tool` (no token needed; `TRIGGER_ENABLED=true` is still required):
 
 ```bash
 xangi tool trigger --channel <channel ID> --message "Build finished. Report the result." --source build
+xangi tool trigger_status --id <triggerId>
 ```
 
 When `TRIGGER_ENABLED=true`, the system prompt injects only the safety contract: persist the exit status and log, then fire the trigger on both success and failure. Detailed arguments come from `xangi tool help trigger`, while each workspace remains the source of truth for its launch and verification method.
@@ -520,6 +530,7 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | `/respondtobots`                                 | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env)                                              |
 | `/threadmode <on\|off\|default\|show>`           | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
 | `/llmmode <agent\|chat\|default\|show>`         | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
+| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|show>` | Switch this channel's Local LLM `reasoning_effort` (persisted to `.env`) |
 
 ### Backend Dynamic Switching
 
@@ -547,7 +558,7 @@ channel from the next message without restarting xangi.
 
 `/models [backend]` is shared by Discord, Slack, Web, Telegram, and LINE. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
 
-`/models` dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without an independent machine-readable discovery command, such as Claude Code or GitHub Copilot CLI, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
+`/models` dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, `opencode models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without an independent machine-readable discovery command, such as Claude Code or GitHub Copilot CLI, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
 
 In the Web slash-command palette, selecting a backend for `/backend set` loads model choices from the same dynamic discovery result. Selecting a model then shows the effort choices supported by that backend/model combination. Web Project settings use the same model and effort discovery.
 
@@ -576,7 +587,7 @@ When `ALLOWED_MODELS` is configured, the dynamically discovered output is filter
 
 ```bash
 # Allowed backends for switching (if unset, all backends are allowed)
-ALLOWED_BACKENDS=claude-code,cursor,grok,antigravity,github-copilot,local-llm
+ALLOWED_BACKENDS=claude-code,codex,cursor,grok,antigravity,github-copilot,opencode,local-llm
 
 # Allowed models for switching (if unset, no restriction)
 ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
@@ -588,13 +599,31 @@ CHANNEL_OVERRIDES={"channelId":{"backend":"local-llm","model":"nemotron-3-nano"}
 #### Persistence
 
 Settings changed with `/backend set` are automatically saved to `CHANNEL_OVERRIDES` in `.env` and persist across restarts.
-Inside Discord threads, `/backend` and `/llmmode` read and write the parent channel's `CHANNEL_OVERRIDES`. Conversation sessions and run locks remain isolated by thread ID; only backend/model settings inherit from the parent channel.
+Inside Discord threads, `/backend`, `/llmmode`, and `/llmeffort` read and write the parent channel's `CHANNEL_OVERRIDES`. Conversation sessions and run locks remain isolated by thread ID; only backend/model settings inherit from the parent channel.
 
 In a Docker environment, `.env` lives outside the container and cannot be modified by the AI (Claude Code, etc.).
 
+### Per-channel workspaces
+
+Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A binding change never rewrites an existing session; it takes effect for the next session after `/new`.
+
+| Command                                 | Description                                            |
+| --------------------------------------- | ------------------------------------------------------ |
+| `/workspace show`                       | Show the channel binding and current session workspace |
+| `/workspace list`                       | List registered workspaces                             |
+| `/workspace set <name> <absolute-path>` | Register an absolute path and bind it to the channel   |
+| `/workspace use <name>`                 | Bind an existing workspace to the channel              |
+| `/workspace reset`                      | Return to the startup `WORKSPACE_PATH`                  |
+
+Discord exposes the arguments as slash-command fields. Add a `/workspace` Slash Command to the Slack App configuration as well. By default, any existing absolute path accessible to the xangi process can be registered. Set `XANGI_WORKSPACE_ALLOWED_ROOTS` only when registration must be restricted to explicit roots. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
+
+In the Web UI, use `Add Workspace` on the Projects screen to register an existing absolute path accessible to the xangi process. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
+
+Web Projects also select a registered workspace. A new Web session snapshots the Project workspace when the session is created, so changing a Project or channel binding never moves an existing conversation to another directory. The Workspace editor provides the same registered-workspace selector.
+
 #### effort Option
 
-Claude Code, Codex, Grok, and GitHub Copilot CLI support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM does not support graded effort. xangi rejects effort for Local LLM and rejects `max` for Antigravity without saving the setting. Because Claude Code persistent mode requires a process restart, switching resets the session. Use `--effort default` to clear the effort setting.
+Claude Code, Codex, OpenCode, Grok, and GitHub Copilot CLI support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM reasoning effort is separate from CLI backend effort and is configured with `/llmeffort`; xangi sends it as the top-level OpenAI-compatible `reasoning_effort` field. Supported values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, and the selected endpoint must implement the value. `default` removes the channel override and falls back to `LOCAL_LLM_REASONING_EFFORT` or the provider default. xangi rejects `max` for Antigravity without saving it. Because Claude Code persistent mode requires a process restart, switching resets the session.
 
 ## Autonomous AI Operations
 
@@ -1225,7 +1254,7 @@ Writes that fail are reported via `console.warn` only — the logger never throw
 
 Environment variables passed to the AI agent (CLI spawn / Local LLM exec) are managed in `src/safe-env.ts`. Only variables listed in the whitelist are passed; secrets like `DISCORD_TOKEN` are not accessible to the AI.
 
-**Allowed variables:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `DATA_DIR`, `XANGI_TOOL_SERVER`, `XANGI_CHANNEL_ID`
+**Allowed variables:** `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `WORKSPACE_PATH`, `AGENT_BACKEND`, `AGENT_MODEL`, `SKIP_PERMISSIONS`, `OPENCODE_CONFIG`, `DATA_DIR`, `XANGI_TOOL_SERVER`, `XANGI_CHANNEL_ID`
 
 `ANTHROPIC_API_KEY`, `CURSOR_API_KEY`, and `XAI_API_KEY` are not part of the general whitelist. They are passed only to Claude Code, Cursor CLI, and Grok CLI child processes respectively.
 
@@ -1317,6 +1346,7 @@ Shared completion-display settings:
 | `COPILOT_PERMISSION_MODE`       | Copilot tool scope (`read-only` / `workspace-write`) when `SKIP_PERMISSIONS=false`                                             | `read-only`               |
 | `COPILOT_MAX_AI_CREDITS`        | Optional per-session AI credit limit passed to Copilot CLI (minimum 30)                                                        | -                         |
 | `CLAUDE_CODE_MAX_BUDGET_USD`    | Pass `--max-budget-usd` to Claude Code to cap API spend                                                                        | -                         |
+| `OPENCODE_CONFIG`               | Absolute custom-provider configuration path passed to OpenCode                                                                 | -                         |
 | `CURSOR_API_KEY`                | API key passed only to the Cursor CLI backend                                                                                  | -                         |
 | `CURSOR_FORCE`                  | Pass `--force` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
 | `CURSOR_TRUST_WORKSPACE`        | Pass `--trust` to Cursor CLI unless explicitly set to `false`                                                                  | `true`                    |
@@ -1335,6 +1365,8 @@ Shared completion-display settings:
 | `XANGI_HOOKS_FILE`    | Path to the hooks config file                                                                            | `<workspace>/hooks/hooks.json` |
 
 ### Web Chat UI
+
+Self-contained HTML attached to a response is previewed inline in a sandbox that blocks network and form submissions, while the original file remains available to save.
 
 While an attachment is transferring, desktop and mobile show its name, position in a multi-file selection, and upload percentage above the composer. Audio and video use byte-range delivery so mobile browsers can load metadata, seek, and play.
 
@@ -1447,6 +1479,14 @@ curl -i "$XANGI_TOOL_SERVER/github-token"
 - Token generation is performed via the tool-server's HTTP endpoint (`/github-token`), and the AI agent can only obtain short-lived installation tokens (valid for 1 hour)
 - If token generation fails, it does NOT fall back to PAT — it errors out
 
+### OpenCode (when `AGENT_BACKEND=opencode`)
+
+The OpenCode backend runs `opencode run --format json --agent build` and translates its JSON events into xangi streaming output and tool history. With the default `SKIP_PERMISSIONS=true`, xangi passes `--auto` for unattended execution. Set `SKIP_PERMISSIONS=false` for untrusted workspaces.
+
+`AGENT_MODEL` is passed to `--model` in OpenCode's `provider/model` form. Per-channel effort is passed as `--variant low|medium|high|max`, and the provider session is passed through `--session`, so later turns in the same xangi session resume the OpenCode conversation. For a custom provider, define model variants whose names match the effort values you intend to use. xangi also treats an OpenCode JSON `error` event as failure even when the process exits with status 0.
+
+OpenCode itself loads workspace `AGENTS.md` files and `.agents/skills`. For a custom provider or OpenAI-compatible endpoint, set `OPENCODE_CONFIG` to the absolute path of its configuration file. When you select a local OpenAI-compatible endpoint in `xangi setup`, xangi generates this config together with `low`, `medium`, `high`, and `max` variants.
+
 ### Cursor CLI (when `AGENT_BACKEND=cursor`)
 
 The Cursor CLI backend uses the `cursor-agent` command. Non-interactive runs use `cursor-agent -p ... --output-format json`; streaming uses `--output-format stream-json --stream-partial-output`.
@@ -1501,6 +1541,7 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_MODEL`                       | Model name                                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | API key (if required by vLLM, etc.)                                                    | -                                                                |
 | `LOCAL_LLM_THINKING`                    | Enable thinking model reasoning                                                        | `true`                                                           |
+| `LOCAL_LLM_REASONING_EFFORT`            | Default OpenAI-compatible `reasoning_effort` (overridden per channel)                   | unset (provider default)                                         |
 | `LOCAL_LLM_MAX_TOKENS`                  | Maximum tokens (per-request `max_tokens`)                                              | `8192`                                                           |
 | `LOCAL_LLM_NUM_CTX`                     | Context window size (Ollama; also used as the basis for context budget calculation)    | Model default                                                    |
 | `LOCAL_LLM_TEMPERATURE`                 | Sampling temperature (0 for deterministic; useful to suppress agent-mode format drift) | Model default                                                    |

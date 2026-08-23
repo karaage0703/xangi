@@ -6,7 +6,7 @@ This document explains the architecture and design philosophy of xangi.
 
 ## Overview
 
-xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
+xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -53,7 +53,8 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 - Startup branching for the enabled clients (Discord / Slack / Web Chat / LINE / Telegram; a Web-only setup does not create a Discord Client)
 - Discord, Slack, LINE, and Telegram begin startup concurrently. Discord and Slack use `platform-startup-retry.ts` to retry only transient DNS, timeout, and reset failures in the same process with exponential backoff capped at 60 seconds. Telegram uses its existing Bot API, webhook registration, and polling retries. LINE and Telegram webhook startup waits for the HTTP server's actual `listening` event, while Telegram polling waits for its first `onStart`. Web Chat and the other chat clients remain available while one connection is waiting. Permanent errors such as invalid credentials, a webhook port conflict, or a permanent polling stop terminate the process with a non-zero exit code
 - Starting the scheduler and the various HTTP servers (tool-server / events-stream / event-trigger, etc.)
-- SIGTERM/SIGINT handling (graceful shutdown, including the finalization pass in `stream-finalizer.ts`)
+- SIGTERM/SIGINT handling. After finalizing active streaming displays, xangi sends SIGTERM to managed agent CLI processes, waits for their actual exit, and only then stops extensions and releases the data-directory lock. Child processes that miss the deadline are escalated to SIGKILL
+- Restart requests from Slack, Discord, Web, and the agent tool all signal the xangi process with SIGTERM so they always pass through the same graceful-shutdown path
 
 ### Discord Integration (src/discord/)
 
@@ -105,6 +106,7 @@ Lightweight server based on `http.createServer` (no Express dependency).
 - Workspace and uploaded files honor byte `Range` requests with `206 Content-Range`, allowing media elements including iPhone Safari to load metadata, seek, and play. Unsatisfiable ranges return `416`
 - A transient session-detail read failure appears only after the safe GET retries are exhausted. A later successful read clears that read error without hiding a newer send or upload error
 - Web Projects are logical namespaces equivalent to Discord channels. Names, extra prompts, and optional backend/model/effort defaults are stored in `DATA_DIR/web-projects.json`, and sessions refer to them through `projectId`. An existing Web session can change or clear its `projectId` while it is idle. Creating a Project never creates a directory, Git repository, or instruction file. An invalid Project entry is skipped in isolation, while unavailable backend/model/effort settings are disabled for that Project so the rest of xangi can keep starting
+- The Web Projects screen registers existing absolute paths in the central workspace registry and can unregister unused workspaces. Unregistering never changes the directory or its files and is rejected for the default workspace, Project or existing-session references, and platform channel bindings
 - `xangi service restart` and `xangi tool system_restart` use the new CLI to validate the production Web Project state read-only before requesting a restart. An incompatible state blocks the restart without modifying the state file
 - Web backend resolution uses conversation override (`/backend set`) first, then the Project default, then the runtime default. `/backend reset` removes only the conversation override. If moving a conversation changes provider backend, xangi does not reuse the old provider session ID and preloads the saved transcript into the next turn to preserve context
 - `GET /api/sessions` returns the latest 100 sessions plus `activity` and a `sessionMode` that describes whether provider context can continue, and supports server-side `lifecycle=open|closed` and `updatedSince` filters. `GET /api/sessions/:id` also returns `isActive` and `activity`, allowing Web Chat to recover from a broken send SSE by observing the same server turn or loading its persisted transcript. The POST is never retried automatically. Title derivation reads the first JSONL line in chunks instead of each complete log
@@ -307,6 +309,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | ----------- | ------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Claude Code | `CLAUDE.md`              | `--append-system-prompt` (one-time)                                                                      |
 | Codex CLI   | `AGENTS.md`              | Embedded via `<system-context>` tag                                                                      |
+| OpenCode    | `AGENTS.md`              | Loaded natively by the CLI; `.agents/skills` is delegated to OpenCode                                    |
 | Cursor CLI  | `AGENTS.md`              | Auto-loaded by CLI (no xangi-side injection)                                                             |
 | Local LLM   | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded) |
 
@@ -317,6 +320,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 | claude-code.ts        | Claude Code              | Streaming support, session management                                                  |
 | persistent-runner.ts  | Claude Code (persistent) | Persistent process via `--input-format=stream-json`, queue management, circuit breaker |
 | codex-cli.ts          | Codex CLI                | Made by OpenAI, 0.98.0 compatible, cancel support                                      |
+| opencode-cli.ts       | OpenCode                 | JSON event streaming, session resume, `--auto` permissions, variant support            |
 | cursor-cli.ts         | Cursor CLI               | `cursor-agent` command, JSON/stream-json, tool call display support                    |
 | grok-cli.ts           | Grok CLI                 | xAI `grok` command, json/streaming-json, tool call display support                     |
 | antigravity-cli.ts    | Antigravity CLI          | Google `agy`, Agy 1.1.8+ JSON/stream-json, slash-expansion probing, legacy fallback    |
@@ -329,7 +333,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
-The six adapters (claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli) are built on the
+The seven adapters (claude-code / codex-cli / opencode-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli) are built on the
 abstract base class `CliRunnerBase`. The base class owns the shared scaffolding, so each
 adapter only implements "command argument building" and "JSONL event interpretation
 (`CliStreamParser`)":
@@ -448,16 +452,17 @@ Example: with `NUM_CTX=32768` → `(32768 - 8000 - 4096 - 1000) * 3 = 59016 char
 
 The `ContextBudget` value includes derivation details (`source: 'explicit' | 'derived'`, per-token budgets) and is logged at startup for tuning/debugging traceability.
 
-**Per-channel LocalLlmMode Override (backend-resolver.ts):**
+**Per-channel Local LLM Overrides (backend-resolver.ts):**
 
-`ChannelOverride.localLlmMode?: 'agent' | 'chat'` sits alongside `backend / model / effort`, allowing per-channel Local LLM mode via `CHANNEL_OVERRIDES` JSON.
+`ChannelOverride.localLlmMode?: 'agent' | 'chat'` and `localLlmReasoningEffort` sit alongside `backend / model / effort`, allowing `CHANNEL_OVERRIDES` JSON to switch both the Local LLM mode and the OpenAI-compatible `reasoning_effort` per channel. Without a channel override, xangi uses `LOCAL_LLM_REASONING_EFFORT`, then the provider default when that is also unset.
 
 ```json
 {
   "ch_id": {
     "backend": "local-llm",
     "model": "gemma4-26b-a4b-nvfp4",
-    "localLlmMode": "agent"
+    "localLlmMode": "agent",
+    "localLlmReasoningEffort": "low"
   }
 }
 ```
@@ -485,6 +490,10 @@ Note: individual env vars at startup (e.g. `LOCAL_LLM_TOOLS=false`) are **ignore
 **`/llmmode` slash command (index.ts):**
 
 `/llmmode <agent|chat|default|show>` flips the per-channel mode interactively. `agent/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `show` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
+
+**`/llmeffort` slash command:**
+
+`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|show>` persists the parent channel's `localLlmReasoningEffort` in memory and `.env`. The Local LLM runner injects it into each chat and streaming request, and `LLMClient` emits the top-level OpenAI-compatible `reasoning_effort` field. `default` removes the channel override.
 
 **Tool Deferred Loading (`tool_search`, Codex / Claude Code style):**
 
@@ -712,8 +721,8 @@ A mechanism to start an agent turn from an external event (build finished, CI re
 External process (build script / CI / watcher cron)
   → HTTP POST /api/trigger (Bearer token auth)
   → EventTrigger (validation, rate limiting)
-  → agentRunner(prompt, channelId) registered on the scheduler
-  → agent turn runs → result posted to the channel
+  → agentRunner(prompt, channelId, ..., delivery callback) registered on the scheduler
+  → agent turn runs → result posted to the platform → delivery receipt persisted
 ```
 
 **Design decisions:**
@@ -721,6 +730,8 @@ External process (build script / CI / watcher cron)
 - Turn execution reuses the scheduler's `agentRunner` path. The per-platform run functions (thinking message, splitting, attachments, Stop / extend / remaining-time controls) are already registered on the scheduler, so the trigger only needs `Scheduler.getAgentRunner(platform)`
 - Web accepts both `web-chat:<sessionId>` and the raw `sessionId`, normalizing either form to the raw appSessionId before invoking the runner. Triggered turns therefore append to the existing Web conversation transcript
 - The HTTP response (`202` + `triggerId`) is fire-and-forget and does not wait for the turn, so callers (build scripts etc.) are never blocked
+- `GET /api/trigger/:id` and `xangi tool trigger_status` return `accepted`, `running`, `completed`, `delivered`, `failed`, or `interrupted` through one platform-neutral schema. Delivery references use `platform`, `destinationId`, and optional `messageIds` / `sessionId`, keeping Discord-specific types out of the core
+- Receipts are atomically persisted to `${DATA_DIR}/trigger-receipts.json`; the latest 1,000 remain queryable after restart
 - A `⚡ trigger: <source>` label is posted to the channel first, making it visible what woke the agent
 
 **Security:**
@@ -798,6 +809,8 @@ skills/
 ```
 
 Prefetched history is wrapped as quoted data so instructions inside it are not treated as system instructions. `HISTORY_PREFETCH_ENABLED` and `HISTORY_PREFETCH_COUNT` are shared across all three platforms. Per-stage latency is recorded in `logs/turn-latency/<platform>.jsonl`.
+
+For the Codex backend, CLI `turn.started`, tool `item.started` / `item.completed`, and `turn.completed` events are stored in the same record under `backend_trace`. `tool_wall_ms` is the union wall time of overlapping tool intervals. `non_tool_backend_ms` is the backend turn duration minus tool intervals, so it includes both model inference and CLI orchestration. Tool inputs and output text are not persisted; the trace only stores the tool name, relative timestamps, completion status, exit code, and output byte count. `backend_trace` is omitted when a backend does not provide the required events.
 
 ### Schedule Execution Flow
 
@@ -1011,6 +1024,7 @@ src/
 ├── claude-code.ts      # Claude Code adapter (per-request)
 ├── persistent-runner.ts # Claude Code adapter (persistent process)
 ├── codex-cli.ts        # Codex CLI adapter
+├── opencode-cli.ts     # OpenCode adapter
 ├── cursor-cli.ts       # Cursor CLI adapter
 ├── grok-cli.ts         # Grok CLI adapter
 ├── antigravity-cli.ts  # Antigravity CLI adapter

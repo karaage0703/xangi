@@ -165,6 +165,32 @@ describe('BackendResolver localLlmMode', () => {
     expect(envContent).toContain('"localLlmMode":"agent"');
   });
 
+  it('Local LLM reasoning effortをチャンネル別に設定・解除・永続化できる', () => {
+    const resolver = new BackendResolver(makeConfig());
+    resolver.setChannelLocalLlmReasoningEffort('ch1', 'low');
+
+    expect(resolver.resolve('ch1').localLlmReasoningEffort).toBe('low');
+    expect(readFileSync(envFile, 'utf-8')).toContain('"localLlmReasoningEffort":"low"');
+
+    resolver.setChannelLocalLlmReasoningEffort('ch1', null);
+    expect(resolver.resolve('ch1').localLlmReasoningEffort).toBeUndefined();
+    expect(resolver.getChannelOverride('ch1')).toBeUndefined();
+  });
+
+  it('request defaultよりチャンネルのLocal LLM reasoning effortを優先する', () => {
+    process.env.CHANNEL_OVERRIDES = JSON.stringify({
+      ch1: { localLlmReasoningEffort: 'xhigh' },
+    });
+    const resolver = new BackendResolver(makeConfig());
+
+    expect(
+      resolver.resolve('ch1', { localLlmReasoningEffort: 'medium' }).localLlmReasoningEffort
+    ).toBe('xhigh');
+    expect(
+      resolver.resolve('ch2', { localLlmReasoningEffort: 'medium' }).localLlmReasoningEffort
+    ).toBe('medium');
+  });
+
   it('resolve() の戻り値に localLlmMode が含まれる', () => {
     process.env.CHANNEL_OVERRIDES = JSON.stringify({
       ch1: { localLlmMode: 'chat' },

@@ -90,9 +90,11 @@ import {
   requiresExplicitModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
-import type { Platform, ScheduleInput, Scheduler } from './scheduler.js';
+import type { Platform, Schedule, ScheduleInput, Scheduler } from './scheduler.js';
 import type { Skill } from './skills.js';
 import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
+import { processManager } from './process-manager.js';
+import { requestProcessRestart } from './restart-process.js';
 import { executeWebCommand, getWebCommandDefinitions } from './web-slash-commands.js';
 import { WorkspaceBrowser, WorkspaceBrowserError } from './workspace-browser.js';
 import { prependWebProjectPrompt, WebProjectError, WebProjectStore } from './web-projects.js';
@@ -112,6 +114,7 @@ import {
 } from './extension-repository.js';
 import { loadExtensionManifest, resolveExtensionAgentBackend } from './extensions.js';
 import { createExtensionUpdateRequest } from './extension-update.js';
+import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -224,7 +227,8 @@ function serveFile(
   res: ServerResponse,
   filePath: string,
   mime: string,
-  disposition?: string
+  disposition?: string,
+  extraHeaders: Record<string, string> = {}
 ): void {
   const size = statSync(filePath).size;
   const baseHeaders: Record<string, string | number> = {
@@ -232,6 +236,7 @@ function serveFile(
     'Content-Length': size,
     'Accept-Ranges': 'bytes',
     'X-Content-Type-Options': 'nosniff',
+    ...extraHeaders,
   };
   if (disposition) baseHeaders['Content-Disposition'] = disposition;
 
@@ -320,11 +325,15 @@ interface WebChatOptions {
   config?: Config;
   resolver?: BackendResolver;
   scheduler?: Scheduler;
+  destinationLabelResolverRef?: {
+    current?: (platform: Platform, destinationId: string) => string | undefined;
+  };
   skillsRef?: { current: Skill[] };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
   discoverModels?: typeof discoverBackendModels;
   extensionUpdateRequest?: typeof createExtensionUpdateRequest;
+  workspaceRegistry?: WorkspaceRegistry;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -338,7 +347,26 @@ export function startWebChat(options: WebChatOptions): void {
   const host = resolveWebChatHost(options.host);
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
-  const workspaceBrowser = new WorkspaceBrowser(workdir);
+  const workspaceRegistry = options.workspaceRegistry;
+  const workspaceBrowsers = new Map<string, WorkspaceBrowser>();
+  const resolveWorkspace = async (workspaceId?: unknown): Promise<WorkspaceEntry> => {
+    const id =
+      typeof workspaceId === 'string' && workspaceId.trim() ? workspaceId.trim() : 'default';
+    if (!workspaceRegistry) {
+      if (id !== 'default') throw new WebProjectError('Workspaceが見つかりません', 404);
+      return { id: 'default', name: 'default', path: realpathSync(workdir), isDefault: true };
+    }
+    return workspaceRegistry.resolveById(id);
+  };
+  const resolveWorkspaceBrowser = async (workspaceId?: unknown) => {
+    const workspace = await resolveWorkspace(workspaceId);
+    let browser = workspaceBrowsers.get(workspace.id);
+    if (!browser) {
+      browser = new WorkspaceBrowser(workspace.path);
+      workspaceBrowsers.set(workspace.id, browser);
+    }
+    return { workspace, browser };
+  };
   const webProjects = WebProjectStore.fromDataDir(dataDir);
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
 
@@ -347,6 +375,18 @@ export function startWebChat(options: WebChatOptions): void {
     const project = webProjects.get(projectId.trim());
     if (!project) throw new WebProjectError('Projectが見つかりません', 404);
     return project;
+  };
+
+  const snapshotForProject = async (project: ReturnType<typeof resolveProject>) => {
+    const workspace = await resolveWorkspace(project?.workspaceId);
+    return { workspaceId: workspace.id, workspacePath: workspace.path };
+  };
+
+  const resolveSessionWorkspace = async (appSessionId: string) => {
+    const entry = getSessionEntry(appSessionId);
+    if (!entry?.workspaceId || !entry.workspacePath) return resolveWorkspace();
+    if (!workspaceRegistry) return resolveWorkspace();
+    return workspaceRegistry.resolveSnapshot(entry.workspaceId, entry.workspacePath);
   };
 
   const projectBackendDefault = (
@@ -409,15 +449,18 @@ export function startWebChat(options: WebChatOptions): void {
     return { ...resolved, source };
   };
 
-  options.scheduler?.registerAgentRunner('web', async (prompt, requestedSessionId, schedule) => {
+  options.scheduler?.registerAgentRunner('web', async (prompt, requestedId, job, ctx) => {
     const startedAt = Date.now();
+    const scheduledProject = resolveProject(job?.projectId);
+    const scheduledSnapshot = await snapshotForProject(scheduledProject);
     const appSessionId =
-      requestedSessionId === WEB_SCHEDULE_NEW_SESSION_ID
+      requestedId === WEB_SCHEDULE_NEW_SESSION_ID
         ? createWebSession({
-            projectId: resolveProject(schedule?.projectId)?.id,
-            title: schedule?.label,
+            projectId: scheduledProject?.id,
+            title: job?.label,
+            ...scheduledSnapshot,
           })
-        : requestedSessionId;
+        : requestedId;
     const entry = getSessionEntry(appSessionId);
     if (!entry || entry.platform !== 'web') {
       throw new Error(`Web session ${appSessionId} not found`);
@@ -425,6 +468,7 @@ export function startWebChat(options: WebChatOptions): void {
     const contextKey = webContextKey(appSessionId);
     const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
     const backendDefault = projectBackendDefault(project);
+    const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
     let result: Awaited<ReturnType<AgentRunner['run']>>;
     try {
       result = await agentRunner.run(
@@ -438,6 +482,7 @@ export function startWebChat(options: WebChatOptions): void {
           defaultBackend: backendDefault?.backend,
           defaultModel: backendDefault?.model,
           defaultEffort: backendDefault?.effort,
+          workdir: sessionWorkspace.path,
         }
       );
       updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
@@ -447,11 +492,21 @@ export function startWebChat(options: WebChatOptions): void {
       updateLatestMessageUsage(workdir, appSessionId, ['error'], {
         duration_ms: Math.max(1, Date.now() - startedAt),
       });
+      ctx?.onDelivery?.({
+        platform: 'web',
+        destinationId: appSessionId,
+        sessionId: getSession(contextKey),
+      });
       throw error;
     }
     setSession(contextKey, result.sessionId);
     setProviderSessionId(appSessionId, result.sessionId);
     incrementMessageCount(appSessionId);
+    ctx?.onDelivery?.({
+      platform: 'web',
+      destinationId: appSessionId,
+      sessionId: result.sessionId,
+    });
     return result.result;
   });
 
@@ -488,6 +543,14 @@ export function startWebChat(options: WebChatOptions): void {
       projectId,
     };
   };
+
+  const scheduleForResponse = (schedule: Schedule) => ({
+    ...schedule,
+    destinationLabel: options.destinationLabelResolverRef?.current?.(
+      schedule.platform,
+      schedule.channelId
+    ),
+  });
 
   // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
   // バックエンドでも .ext 部分を抽出して拡張子検証する。MIME パターン (image/* など) は
@@ -942,7 +1005,7 @@ export function startWebChat(options: WebChatOptions): void {
       });
       res.end(
         JSON.stringify({
-          schedules: options.scheduler.list(),
+          schedules: options.scheduler.list().map(scheduleForResponse),
           enabled: options.config?.scheduler.enabled ?? process.env.SCHEDULER_ENABLED !== 'false',
           startupEnabled:
             options.config?.scheduler.startupEnabled ?? process.env.STARTUP_ENABLED !== 'false',
@@ -961,7 +1024,7 @@ export function startWebChat(options: WebChatOptions): void {
         const body = await readBody(req);
         const schedule = options.scheduler.add(scheduleInputFromBody(body));
         res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ schedule }));
+        res.end(JSON.stringify({ schedule: scheduleForResponse(schedule) }));
       } catch (error) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
@@ -995,7 +1058,7 @@ export function startWebChat(options: WebChatOptions): void {
           schedule = options.scheduler.toggle(id);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ schedule }));
+        res.end(JSON.stringify({ schedule: schedule ? scheduleForResponse(schedule) : schedule }));
       } catch (error) {
         const status = error instanceof WebProjectError ? error.status : 400;
         res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -1276,9 +1339,12 @@ export function startWebChat(options: WebChatOptions): void {
     // by WorkspaceBrowser before filesystem access.
     if (url === '/api/workspace/entries' && req.method === 'GET') {
       try {
-        const directory =
-          new URL(rawUrl, 'http://localhost').searchParams.get('path')?.trim() || '';
-        const result = await workspaceBrowser.list(directory);
+        const requestUrl = new URL(rawUrl, 'http://localhost');
+        const directory = requestUrl.searchParams.get('path')?.trim() || '';
+        const { browser } = await resolveWorkspaceBrowser(
+          requestUrl.searchParams.get('workspaceId')
+        );
+        const result = await browser.list(directory);
         res.writeHead(200, {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-store',
@@ -1294,8 +1360,12 @@ export function startWebChat(options: WebChatOptions): void {
 
     if (url === '/api/workspace/file' && req.method === 'GET') {
       try {
-        const filePath = new URL(rawUrl, 'http://localhost').searchParams.get('path')?.trim() || '';
-        const result = await workspaceBrowser.read(filePath);
+        const requestUrl = new URL(rawUrl, 'http://localhost');
+        const filePath = requestUrl.searchParams.get('path')?.trim() || '';
+        const { browser } = await resolveWorkspaceBrowser(
+          requestUrl.searchParams.get('workspaceId')
+        );
+        const result = await browser.read(filePath);
         res.writeHead(200, {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-store',
@@ -1312,7 +1382,8 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/api/workspace/file' && req.method === 'PUT') {
       try {
         const body = await readBody(req);
-        const result = await workspaceBrowser.write(
+        const { browser } = await resolveWorkspaceBrowser(body.workspaceId);
+        const result = await browser.write(
           typeof body.path === 'string' ? body.path : '',
           body.content,
           body.version
@@ -1405,7 +1476,7 @@ export function startWebChat(options: WebChatOptions): void {
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ...result, confirmationRequired: false }));
-          setTimeout(() => process.exit(0), 250);
+          requestProcessRestart(250);
           return;
         }
 
@@ -1419,6 +1490,78 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     // Web Projectは会話を束ねる論理単位。workspaceやディレクトリは作成しない。
+    if (url === '/api/workspaces' && req.method === 'GET') {
+      const workspaces = workspaceRegistry
+        ? await Promise.all(
+            workspaceRegistry.list().map((workspace) => workspaceRegistry.resolveById(workspace.id))
+          )
+        : [await resolveWorkspace()];
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ workspaces }));
+      return;
+    }
+
+    if (url === '/api/workspaces' && req.method === 'POST') {
+      try {
+        if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
+        const body = await readBody(req);
+        const workspace = await workspaceRegistry.register(
+          String(body.name || ''),
+          String(body.path || '')
+        );
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ workspace }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const workspaceMatch = url.match(/^\/api\/workspaces\/([^/]+)$/);
+    if (workspaceMatch && req.method === 'DELETE') {
+      try {
+        if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
+        const workspaceId = decodeURIComponent(workspaceMatch[1]);
+        const workspace = workspaceRegistry.getById(workspaceId);
+        if (!workspace) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Workspaceが見つかりません' }));
+          return;
+        }
+        if (workspace.isDefault) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'default Workspaceは登録解除できません' }));
+          return;
+        }
+        const project = webProjects
+          .list()
+          .find((candidate) => candidate.workspaceId === workspace.id);
+        if (project) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `WorkspaceはProject「${project.name}」で使用中です` }));
+          return;
+        }
+        const session = listAllSessions().find(
+          (candidate) => candidate.workspaceId === workspace.id
+        );
+        if (session) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Workspaceは既存の会話で使用中です' }));
+          return;
+        }
+
+        const removed = await workspaceRegistry.unregister(workspace.id);
+        workspaceBrowsers.delete(workspace.id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ workspace: removed }));
+      } catch (error) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
     if (url === '/api/projects' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -1431,10 +1574,12 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/api/projects' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        const workspace = await resolveWorkspace(body.workspaceId);
         const project = webProjects.create({
           name: String(body.name || ''),
           prompt: String(body.prompt || ''),
           ...parseProjectBackendSettings(body),
+          workspaceId: workspace.id,
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ project }));
@@ -1447,10 +1592,42 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     const projectMatch = url.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectMatch && req.method === 'DELETE') {
+      try {
+        const projectId = decodeURIComponent(projectMatch[1]);
+        const project = webProjects.get(projectId);
+        if (!project) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Projectが見つかりません' }));
+          return;
+        }
+        const schedule = options.scheduler
+          ?.list()
+          .find((candidate) => candidate.projectId === projectId);
+        if (schedule) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Projectはスケジュールで使用中です' }));
+          return;
+        }
+        const movedSessions = listAllSessions().filter(
+          (candidate) => candidate.platform === 'web' && candidate.projectId === projectId
+        );
+        for (const session of movedSessions) updateSessionProject(session.id, undefined);
+        webProjects.remove(projectId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ project, movedSessionCount: movedSessions.length }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
     if (projectMatch && req.method === 'PATCH') {
       try {
         const projectId = decodeURIComponent(projectMatch[1]);
         const body = await readBody(req);
+        const hasWorkspaceUpdate = body.workspaceId !== undefined;
+        if (hasWorkspaceUpdate) await resolveWorkspace(body.workspaceId);
         const hasBackendUpdate = ['backend', 'model', 'effort'].some(
           (key) => body[key] !== undefined
         );
@@ -1458,6 +1635,7 @@ export function startWebChat(options: WebChatOptions): void {
           name: body.name === undefined ? undefined : String(body.name),
           prompt: body.prompt === undefined ? undefined : String(body.prompt),
           ...(hasBackendUpdate ? parseProjectBackendSettings(body) : {}),
+          ...(hasWorkspaceUpdate ? { workspaceId: String(body.workspaceId || 'default') } : {}),
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ project }));
@@ -1844,7 +2022,8 @@ export function startWebChat(options: WebChatOptions): void {
       try {
         const body = await readBody(req);
         const project = resolveProject(body.projectId);
-        const newAppId = createWebSession({ projectId: project?.id });
+        const snapshot = await snapshotForProject(project);
+        const newAppId = createWebSession({ projectId: project?.id, ...snapshot });
         console.log(
           `[web-chat] Created new web session ${newAppId}${project ? ` in Project ${project.id}` : ''}`
         );
@@ -1869,6 +2048,8 @@ export function startWebChat(options: WebChatOptions): void {
         title: sourceEntry?.title ? `${sourceEntry.title} (resumed)` : '',
         resumedFromSessionId: sourceId,
         projectId: sourceEntry?.projectId,
+        workspaceId: sourceEntry?.workspaceId,
+        workspacePath: sourceEntry?.workspacePath,
       });
       if (providerSid) {
         setSession(webContextKey(newAppId), providerSid);
@@ -2021,8 +2202,10 @@ export function startWebChat(options: WebChatOptions): void {
       let stopped = false;
       if (entry?.contextKey) {
         // 進行中の処理があれば cancel、その上で runner プロセスを破棄
-        agentRunner.cancel?.(entry.contextKey);
+        const managedProcessStopped = await processManager.stopAndWait(entry.contextKey);
+        if (!managedProcessStopped) agentRunner.cancel?.(entry.contextKey);
         stopped = Boolean(agentRunner.destroy?.(entry.contextKey));
+        stopped = managedProcessStopped || stopped;
       }
       busySessions.delete(targetId);
       console.log(
@@ -2276,24 +2459,98 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    if (url.startsWith('/api/workspace-file') && (req.method === 'GET' || req.method === 'HEAD')) {
+    if (
+      url.startsWith('/api/artifact-preview') &&
+      (req.method === 'GET' || req.method === 'HEAD')
+    ) {
       const urlObj = new URL(rawUrl, 'http://localhost');
       const requestedPath = urlObj.searchParams.get('path') || '';
+      const requestedWorkspaceId = urlObj.searchParams.get('workspaceId') || undefined;
       if (!requestedPath) {
         res.writeHead(403);
         res.end('Forbidden');
         return;
       }
+      let selectedWorkspace: WorkspaceEntry;
+      try {
+        selectedWorkspace = await resolveWorkspace(requestedWorkspaceId);
+      } catch (error) {
+        res.writeHead(error instanceof WebProjectError ? error.status : 404);
+        res.end('Workspace not found');
+        return;
+      }
       const filePath = isAbsolute(requestedPath)
         ? resolve(requestedPath)
-        : resolve(workdir, requestedPath);
+        : resolve(selectedWorkspace.path, requestedPath);
+      const extension = extname(filePath).toLowerCase();
+      if (
+        !existsSync(filePath) ||
+        (extension !== '.html' && extension !== '.htm') ||
+        (!isRealFileWithin(selectedWorkspace.path, filePath) &&
+          !isRealFileWithin(join(dataDir, 'media', 'attachments'), filePath))
+      ) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+      if (downloadAllowedExts.length > 0 && !downloadAllowedExts.includes(extension)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'Forbidden',
+            reason: `Extension ${extension} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
+          })
+        );
+        return;
+      }
+      serveFile(req, res, filePath, 'text/html; charset=utf-8', undefined, {
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': [
+          'sandbox allow-scripts allow-forms',
+          "default-src 'none'",
+          "script-src 'unsafe-inline'",
+          "style-src 'unsafe-inline'",
+          'img-src data: blob:',
+          'font-src data:',
+          'media-src data: blob:',
+          "connect-src 'none'",
+          "form-action 'none'",
+          "base-uri 'none'",
+          "frame-ancestors 'self'",
+        ].join('; '),
+        'Cross-Origin-Resource-Policy': 'same-origin',
+        'Referrer-Policy': 'no-referrer',
+      });
+      return;
+    }
+
+    if (url.startsWith('/api/workspace-file') && (req.method === 'GET' || req.method === 'HEAD')) {
+      const urlObj = new URL(rawUrl, 'http://localhost');
+      const requestedPath = urlObj.searchParams.get('path') || '';
+      const requestedWorkspaceId = urlObj.searchParams.get('workspaceId') || undefined;
+      if (!requestedPath) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
+      let selectedWorkspace: WorkspaceEntry;
+      try {
+        selectedWorkspace = await resolveWorkspace(requestedWorkspaceId);
+      } catch (error) {
+        res.writeHead(error instanceof WebProjectError ? error.status : 404);
+        res.end('Workspace not found');
+        return;
+      }
+      const filePath = isAbsolute(requestedPath)
+        ? resolve(requestedPath)
+        : resolve(selectedWorkspace.path, requestedPath);
       if (!existsSync(filePath)) {
         res.writeHead(404);
         res.end('Not found');
         return;
       }
       if (
-        !isRealFileWithin(workdir, filePath) &&
+        !isRealFileWithin(selectedWorkspace.path, filePath) &&
         !isRealFileWithin(join(dataDir, 'media', 'attachments'), filePath)
       ) {
         res.writeHead(403);
@@ -2373,7 +2630,12 @@ export function startWebChat(options: WebChatOptions): void {
         if (!appSessionId) {
           // 後方互換: 最後に更新された web セッションを使う、なければ新規作成
           const latestWeb = listAllSessions().find((s) => s.platform === 'web');
-          appSessionId = latestWeb?.id || createWebSession({});
+          if (latestWeb?.id) {
+            appSessionId = latestWeb.id;
+          } else {
+            const snapshot = await snapshotForProject(undefined);
+            appSessionId = createWebSession(snapshot);
+          }
         }
 
         // entry 確認 / web 以外への送信は弾く
@@ -2412,6 +2674,7 @@ export function startWebChat(options: WebChatOptions): void {
           ensureSession(ctxKey, { platform: 'web' });
           const sessionId = getSession(ctxKey);
           const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+          const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
           const backendDefault = projectBackendDefault(project);
           const resolvedBackend = options.resolver?.resolve(ctxKey, backendDefault);
           const providerBackendChanged = Boolean(
@@ -2491,9 +2754,11 @@ export function startWebChat(options: WebChatOptions): void {
             platform: 'web',
             turnId,
             threadId,
+            configuredBackend: resolvedBackend?.backend,
+            configuredModel: resolvedBackend?.model,
             firstTurn: !sessionId,
             receivedAt: requestReceivedAt,
-            workdir,
+            workdir: sessionWorkspace.path,
           });
 
           res.writeHead(200, {
@@ -2606,6 +2871,7 @@ export function startWebChat(options: WebChatOptions): void {
                       : '';
                   sendSSE('tool', { toolName, inputSummary });
                 },
+                onTraceEvent: (event) => latency.markTraceEvent(event),
                 onComplete: (completedResult) => {
                   latency.markAgentComplete();
                   if (resumeSourceId) {
@@ -2636,6 +2902,7 @@ export function startWebChat(options: WebChatOptions): void {
                 defaultBackend: backendDefault?.backend,
                 defaultModel: backendDefault?.model,
                 defaultEffort: backendDefault?.effort,
+                workdir: sessionWorkspace.path,
                 skipPermissions: body.skipPermissions === true ? true : undefined,
               }
             );

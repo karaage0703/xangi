@@ -1012,7 +1012,7 @@ describe('processMessage', () => {
     ).toBe(true);
   });
 
-  it('skips a second run while the same conversationKey is busy', async () => {
+  it('keeps the conversation busy after rejecting a second run', async () => {
     let release!: () => void;
     const firstRun = new Promise<{ result: string; sessionId: string }>((resolve) => {
       release = () => resolve({ result: 'ok', sessionId: 'provider-1' });
@@ -1059,11 +1059,55 @@ describe('processMessage', () => {
       agentRunner,
       config
     );
+    await processMessage(
+      AUTO_REPLY_CHANNEL,
+      runKey,
+      THREAD_TS,
+      '三重',
+      '1783402633.500000',
+      client,
+      agentRunner,
+      config
+    );
+
+    expect(runStream).toHaveBeenCalledTimes(1);
+    expect(
+      postMessage.mock.calls.filter(
+        ([payload]) => payload.text === '⏳ 現在処理中です。完了後にもう一度送ってください。'
+      )
+    ).toEqual([
+      [
+        {
+          channel: AUTO_REPLY_CHANNEL,
+          text: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+          thread_ts: THREAD_TS,
+        },
+      ],
+      [
+        {
+          channel: AUTO_REPLY_CHANNEL,
+          text: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+          thread_ts: THREAD_TS,
+        },
+      ],
+    ]);
+
     await withoutMinimumDisplayDelay(() => {
       release();
       return first;
     });
 
-    expect(runStream).toHaveBeenCalledTimes(1);
+    await processMessage(
+      AUTO_REPLY_CHANNEL,
+      runKey,
+      THREAD_TS,
+      '完了後',
+      '1783402634.000000',
+      client,
+      agentRunner,
+      config
+    );
+
+    expect(runStream).toHaveBeenCalledTimes(2);
   });
 });

@@ -126,14 +126,24 @@ describe('validateChannelOverrides', () => {
   it('有効な設定はそのまま通す', async () => {
     await installExtensionBackendFixture();
     const raw = JSON.stringify({
-      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'chat' },
+      '123456789012345678': {
+        backend: 'local-llm',
+        model: 'qwen3.8-27b',
+        localLlmMode: 'chat',
+        localLlmReasoningEffort: 'low',
+      },
       '234567890123456789': { backend: 'claude-code', effort: 'high' },
       '345678901234567890': { backend: 'example-backend' },
     });
     const { overrides, issues } = validateChannelOverrides(raw);
     expect(issues).toHaveLength(0);
     expect(overrides).toEqual({
-      '123456789012345678': { backend: 'local-llm', model: 'gemma', localLlmMode: 'chat' },
+      '123456789012345678': {
+        backend: 'local-llm',
+        model: 'qwen3.8-27b',
+        localLlmMode: 'chat',
+        localLlmReasoningEffort: 'low',
+      },
       '234567890123456789': { backend: 'claude-code', effort: 'high' },
       '345678901234567890': { backend: 'example-backend' },
     });
@@ -161,15 +171,16 @@ describe('validateChannelOverrides', () => {
     expect(issues[0].channelId).toBe('111');
   });
 
-  it('effort / localLlmMode の不正値はエントリ除外', () => {
+  it('effort / Local LLM設定の不正値はエントリ除外', () => {
     const raw = JSON.stringify({
       '111': { backend: 'codex', effort: 'ultra' },
       '222': { backend: 'local-llm', localLlmMode: 'lite' },
+      '223': { backend: 'local-llm', localLlmReasoningEffort: 'instant' },
       '333': { backend: 'grok' },
     });
     const { overrides, issues } = validateChannelOverrides(raw);
     expect(Object.keys(overrides!)).toEqual(['333']);
-    expect(issues).toHaveLength(2);
+    expect(issues).toHaveLength(3);
   });
 
   it('backend が対応しない effort はエントリ除外', () => {

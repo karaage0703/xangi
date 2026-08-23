@@ -23,6 +23,13 @@ describe('agent-runner', () => {
       expect(runner.runStream).toBeDefined();
     });
 
+    it('should create OpenCodeRunner for opencode backend', () => {
+      const runner = createAgentRunner('opencode', {});
+      expect(runner).toBeDefined();
+      expect(runner.run).toBeDefined();
+      expect(runner.runStream).toBeDefined();
+    });
+
     it('should create CursorRunner for cursor backend', () => {
       const runner = createAgentRunner('cursor', {});
       expect(runner).toBeDefined();
@@ -163,6 +170,10 @@ describe('agent-runner', () => {
 
     it('should return "Codex" for codex', () => {
       expect(getBackendDisplayName('codex')).toBe('Codex');
+    });
+
+    it('should return "OpenCode" for opencode', () => {
+      expect(getBackendDisplayName('opencode')).toBe('OpenCode');
     });
 
     it('should return "Cursor" for cursor', () => {

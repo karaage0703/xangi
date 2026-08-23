@@ -5,6 +5,8 @@ import {
 } from './antigravity-output.js';
 import type { AgentBackend } from './config.js';
 import { resolveExtensionAgentBackend } from './extensions.js';
+import { getSafeEnv } from './safe-env.js';
+import { configuredBackendCommand } from './setup/backend-executable.js';
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 
@@ -43,9 +45,10 @@ function hasAuthenticationError(result: CommandResult): boolean {
 
 function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const env = getSafeEnv();
+    const child = spawn(configuredBackendCommand(command, env), args, {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env,
     });
     let stdout = '';
     let stderr = '';
@@ -159,6 +162,14 @@ export function parseGrokModels(output: string): BackendModel[] {
     models.push({ id: match[1], isDefault: /\(default\)$/i.test(line.trim()) });
   }
   return models;
+}
+
+export function parseOpenCodeModels(output: string): BackendModel[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((id) => ({ id }));
 }
 
 interface AntigravityModelsCommand {
@@ -331,6 +342,12 @@ export async function discoverBackendModels(
       if (models.length === 0) throw new Error('grok models returned no models');
       return { backend, source: 'grok models', status: 'available', models };
     }
+    if (backend === 'opencode') {
+      const { stdout } = await runner('opencode', ['models']);
+      const models = parseOpenCodeModels(stdout);
+      if (models.length === 0) throw new Error('opencode models returned no models');
+      return { backend, source: 'opencode models', status: 'available', models };
+    }
     let result: CommandResult;
     try {
       result = await runner('agy', ['--output-format', 'json', 'models']);
@@ -356,7 +373,9 @@ export async function discoverBackendModels(
             ? 'cursor-agent models'
             : backend === 'grok'
               ? 'grok models'
-              : antigravitySource,
+              : backend === 'opencode'
+                ? 'opencode models'
+                : antigravitySource,
       status: 'unavailable',
       models: [],
       message: error instanceof Error ? error.message : String(error),

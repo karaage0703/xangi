@@ -15,6 +15,8 @@ export async function loadSetupRuntimeEnv(
   return {
     AGENT_BACKEND: config.backend,
     ...(config.backendExecutable ? { XANGI_BACKEND_EXECUTABLE: config.backendExecutable } : {}),
+    ...(config.model ? { AGENT_MODEL: config.model } : {}),
+    ...(config.opencodeConfigPath ? { OPENCODE_CONFIG: config.opencodeConfigPath } : {}),
     WORKSPACE_PATH: config.workspacePath,
     DATA_DIR: stateDir,
     WEB_CHAT_ENABLED: String(config.webChatEnabled),

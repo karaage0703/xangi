@@ -4,6 +4,7 @@ import { isValidBackendExecutablePath } from './backend-executable.js';
 export const SETUP_BACKENDS = [
   'claude-code',
   'codex',
+  'opencode',
   'cursor',
   'grok',
   'antigravity',
@@ -19,6 +20,8 @@ export type SetupWebChatAccess = (typeof SETUP_WEB_CHAT_ACCESS)[number];
 export interface SetupConfig {
   backend: SetupBackend;
   backendExecutable?: string;
+  model?: string;
+  opencodeConfigPath?: string;
   workspacePath: string;
   webChatEnabled: boolean;
   webChatAccess: SetupWebChatAccess;
@@ -27,6 +30,8 @@ export interface SetupConfig {
 const ALLOWED_KEYS = new Set<string>([
   'backend',
   'backendExecutable',
+  'model',
+  'opencodeConfigPath',
   'workspacePath',
   'webChatEnabled',
   'webChatAccess',
@@ -58,6 +63,8 @@ export function parseSetupConfig(value: unknown): SetupConfig {
   const {
     backend,
     backendExecutable,
+    model,
+    opencodeConfigPath,
     workspacePath,
     webChatEnabled,
     webChatAccess = 'local',
@@ -79,6 +86,24 @@ export function parseSetupConfig(value: unknown): SetupConfig {
   }
 
   if (
+    (model !== undefined &&
+      (typeof model !== 'string' ||
+        model.length === 0 ||
+        model.length > 400 ||
+        model.includes('\0'))) ||
+    (opencodeConfigPath !== undefined &&
+      (backend !== 'opencode' ||
+        typeof opencodeConfigPath !== 'string' ||
+        opencodeConfigPath.length === 0 ||
+        opencodeConfigPath.length > 4096 ||
+        opencodeConfigPath.includes('\0') ||
+        !isAbsolute(opencodeConfigPath))) ||
+    (opencodeConfigPath !== undefined && model === undefined)
+  ) {
+    throw new SetupValidationError();
+  }
+
+  if (
     backendExecutable !== undefined &&
     (typeof backendExecutable !== 'string' ||
       !isValidBackendExecutablePath(backend as SetupBackend, backendExecutable))
@@ -89,6 +114,8 @@ export function parseSetupConfig(value: unknown): SetupConfig {
   return {
     backend: backend as SetupBackend,
     ...(backendExecutable === undefined ? {} : { backendExecutable }),
+    ...(model === undefined ? {} : { model }),
+    ...(opencodeConfigPath === undefined ? {} : { opencodeConfigPath }),
     workspacePath,
     webChatEnabled,
     webChatAccess: webChatAccess as SetupWebChatAccess,

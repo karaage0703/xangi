@@ -6,7 +6,7 @@ xangiのアーキテクチャと設計思想について説明します。
 
 ## 概要
 
-xangiは「AI CLI（Claude Code / Codex CLI / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
+xangiは「AI CLI（Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
 
 ```
 User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
@@ -53,7 +53,8 @@ flowchart LR
 - 有効化されたクライアントの起動分岐（Discord / Slack / Web Chat / LINE / Telegram。Web オンリー構成では Discord Client を生成しない）
 - Discord / Slack / LINE / Telegram は起動処理を並行開始する。Discord / Slack は `platform-startup-retry.ts` がDNS・timeout・reset等の一時障害だけを指数バックオフ（最大60秒）で同一process内再試行し、Telegram は Bot API・webhook登録・pollingの既存retryを使う。LINE / Telegram のwebhook待受は実際の `listening` まで、Telegram pollingは最初の`onStart`まで待機する。一方の待機中も他chatとWeb Chatは利用可能。認証失敗・待受port競合・恒久的なpolling停止は非0終了する
 - スケジューラー・各種 HTTP サーバー（tool-server / events-stream / event-trigger 等）の起動
-- SIGTERM/SIGINT ハンドリング（`stream-finalizer.ts` の確定処理を含む graceful shutdown）
+- SIGTERM/SIGINT ハンドリング。実行中表示の確定後、管理中のAgent CLIへSIGTERMを送り、実際の終了を待ってからextension・dataDir lockを解放する。期限内に終了しない子processはSIGKILLへ昇格する
+- Slack / Discord / Web / agent toolの再起動要求は自プロセスへのSIGTERMに統一し、上記のgraceful shutdownを必ず通す
 
 ### Discord 統合（src/discord/）
 
@@ -105,6 +106,7 @@ flowchart LR
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
 - session詳細の一時的な読込失敗は安全なGET retry後に表示するが、後続の正常読込でその読込エラーだけを消す。より新しい送信・upload等の操作エラーは消さない
 - Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない。不正なProject項目はその項目だけを読み飛ばし、利用できないbackend/model/effortはそのProjectで無効化して、他の機能を起動し続ける
+- Web Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
@@ -305,6 +307,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
 | Claude Code | `CLAUDE.md`              | `--append-system-prompt`（一回限り）                                                              |
 | Codex CLI   | `AGENTS.md`              | `<system-context>` タグで埋め込み                                                                 |
+| OpenCode    | `AGENTS.md`              | CLI側で自動読み込み。`.agents/skills`もOpenCodeへ委譲                                             |
 | Cursor CLI  | `AGENTS.md`              | CLI側で自動読み込み（xangi側の注入なし）                                                          |
 | Local LLM   | `AGENTS.md`, `MEMORY.md` | システムプロンプトに直接埋め込み（`CLAUDE.md` は通常 `AGENTS.md` のシンボリックリンクのため除外） |
 
@@ -315,6 +318,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | claude-code.ts        | Claude Code         | ストリーミング対応、セッション管理                                                              |
 | persistent-runner.ts  | Claude Code（常駐） | `--input-format=stream-json` で常駐プロセス化、キュー管理、サーキットブレーカー                 |
 | codex-cli.ts          | Codex CLI           | OpenAI製、0.98.0対応、cancel対応                                                                |
+| opencode-cli.ts       | OpenCode            | JSON event streaming、session再開、`--auto`権限制御、variant対応                                |
 | cursor-cli.ts         | Cursor CLI          | `cursor-agent` コマンド、JSON/stream-json、tool call表示対応                                    |
 | grok-cli.ts           | Grok CLI            | xAI `grok` コマンド、json/streaming-json、tool call表示対応                                     |
 | antigravity-cli.ts    | Antigravity CLI     | Google `agy` コマンド、Agy 1.1.8以降のJSON/stream-json、slash展開の能力判定、旧版フォールバック |
@@ -327,7 +331,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
-claude-code / codex-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli の 6 アダプターは、抽象基底クラス
+claude-code / codex-cli / opencode-cli / cursor-cli / grok-cli / antigravity-cli / github-copilot-cli の 7 アダプターは、抽象基底クラス
 `CliRunnerBase` の上に実装されている。基底クラスが以下を一手に引き受け、各アダプターは
 「コマンド引数の構築」と「JSONL イベントの解釈（`CliStreamParser`）」だけを実装する：
 
@@ -445,16 +449,17 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 
 `ContextBudget` には計算根拠 (`source: 'explicit' | 'derived'`、各バジェット token 数) を含み、起動時にログ出力する。テスト・チューニング時の根拠追跡用。
 
-**チャンネル毎 LocalLlmMode override（backend-resolver.ts）:**
+**チャンネル毎 Local LLM override（backend-resolver.ts）:**
 
-`ChannelOverride.localLlmMode?: 'agent' | 'chat'` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で per-channel に Local LLM 動作モードを切替可能。
+`ChannelOverride.localLlmMode?: 'agent' | 'chat'` と `localLlmReasoningEffort` を `backend / model / effort` と同列に並べ、`CHANNEL_OVERRIDES` JSON で Local LLMの動作モードとOpenAI互換`reasoning_effort`をper-channelに切替可能。チャンネル指定がなければ`LOCAL_LLM_REASONING_EFFORT`、さらに未指定ならprovider既定を使う。
 
 ```json
 {
   "ch_id": {
     "backend": "local-llm",
     "model": "gemma4-26b-a4b-nvfp4",
-    "localLlmMode": "agent"
+    "localLlmMode": "agent",
+    "localLlmReasoningEffort": "low"
   }
 }
 ```
@@ -482,6 +487,10 @@ buildSystemPrompt(flags) と llmTools = callFlags.tools ? getAllTools() : []
 **`/llmmode` slash コマンド（index.ts）:**
 
 `/llmmode <agent|chat|default|show>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
+
+**`/llmeffort` slash コマンド:**
+
+`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|show>` は、親チャンネル単位の`localLlmReasoningEffort`をin-memoryと`.env`へ保存する。Local LLM runnerは各chat / streamリクエストへこの値を注入し、`LLMClient`がOpenAI互換bodyのトップレベル`reasoning_effort`へ変換する。`default`はチャンネルoverrideを削除する。
 
 **Tool 遅延ロード（tool_search、Codex / Claude Code 流）:**
 
@@ -709,8 +718,8 @@ AI CLI（Claude Code等）
 外部プロセス（ビルドスクリプト / CI / 監視 cron）
   → HTTP POST /api/trigger（Bearer トークン認証）
   → EventTrigger（検証・レート制限）
-  → scheduler に登録済みの agentRunner(prompt, channelId)
-  → エージェントターン実行 → チャンネルに結果投稿
+  → scheduler に登録済みの agentRunner(prompt, channelId, ..., delivery callback)
+  → エージェントターン実行 → プラットフォームに結果投稿 → 配信receipt永続化
 ```
 
 **設計判断:**
@@ -718,6 +727,8 @@ AI CLI（Claude Code等）
 - ターン実行は scheduler の `agentRunner` 経路を再利用する。プラットフォームごとの投稿処理（thinking メッセージ・分割・添付・Stop / 延長 / 残り時間表示）を持つ実行関数が既に scheduler に登録されているため、トリガー側は `Scheduler.getAgentRunner(platform)` で取得して呼ぶだけでよい
 - Webは`web-chat:<sessionId>`と生の`sessionId`の両方を受け付け、runner呼び出し前に生のappSessionIdへ正規化する。これによりtrigger起点のターンも既存Web会話のtranscriptへ追加される
 - HTTP 応答（`202` + `triggerId`）はターン完了を待たない fire-and-forget。呼び出し側（ビルドスクリプト等）をブロックしない
+- `GET /api/trigger/:id`と`xangi tool trigger_status`は、`accepted` / `running` / `completed` / `delivered` / `failed` / `interrupted`を共通形式で返す。配信参照は`platform`、`destinationId`、任意の`messageIds` / `sessionId`で表し、Discord固有型を中核へ持ち込まない
+- receiptは`${DATA_DIR}/trigger-receipts.json`へアトミック保存し、直近1000件を再起動後も照会できる
 - 発火時に `⚡ trigger: <source>` ラベルをチャンネルへ先行投稿し、何が起動したか可視化する
 
 **セキュリティ:**
@@ -795,6 +806,8 @@ skills/
 ```
 
 先読み結果は引用データ境界でpromptに含め、履歴内の命令文をsystem指示として扱わない。`HISTORY_PREFETCH_ENABLED` と `HISTORY_PREFETCH_COUNT` は3プラットフォーム共通。区間別レイテンシは `logs/turn-latency/<platform>.jsonl` に記録する。
+
+Codex backendでは、CLIの`turn.started`、toolの`item.started` / `item.completed`、`turn.completed`を同じレコードの`backend_trace`へ保存する。`tool_wall_ms`はtool実行区間の重複をまとめた実時間、`non_tool_backend_ms`はbackend turn全体からtool区間を引いた時間で、モデル推論とCLI orchestrationの両方を含む。toolの入力と出力本文は保存せず、tool名、経過時刻、終了状態、exit code、出力byte数だけを記録する。backendが対応イベントを提供しない場合、`backend_trace`は省略する。
 
 ### スケジュール実行フロー
 
@@ -1008,6 +1021,7 @@ src/
 ├── claude-code.ts      # Claude Codeアダプター（per-request）
 ├── persistent-runner.ts # Claude Codeアダプター（常駐プロセス）
 ├── codex-cli.ts        # Codex CLIアダプター
+├── opencode-cli.ts     # OpenCodeアダプター
 ├── cursor-cli.ts       # Cursor CLIアダプター
 ├── grok-cli.ts         # Grok CLIアダプター
 ├── antigravity-cli.ts  # Antigravity CLIアダプター

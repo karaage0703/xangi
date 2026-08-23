@@ -27,6 +27,8 @@ export interface OnboardingStatus {
   phase: 'preflight' | 'bootstrap_in_progress' | 'minimum_ready';
   backend?: string;
   backendExecutable?: string;
+  model?: string;
+  opencodeConfigPath?: string;
   workspacePath?: string;
   workspaceMode?: string;
   webChatAccess?: string;
@@ -48,6 +50,12 @@ export const GUIDED_BACKENDS: readonly GuidedBackend[] = [
     command: 'codex',
     authCheck: ['login', 'status'],
     authGuide: 'codex login',
+  },
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    command: 'opencode',
+    authGuide: 'opencode auth login（またはOpenAI互換providerを設定）',
   },
   {
     id: 'claude-code',
@@ -194,7 +202,7 @@ export function missingBackendGuide(): string {
     '対応しているAIエージェントCLIがPATH上に見つかりませんでした。',
     'xangiとは独立したAIコーディングツール用スクリプトで、いずれかをセットアップしてください:',
     aiToolSetupGuide(),
-    '利用可能な引数: codex / claude-code / cursor / grok / antigravity / github-copilot',
+    '利用可能な引数: codex / claude-code / cursor / grok / antigravity / github-copilot / opencode',
     '完了後、もう一度 `xangi setup` を実行してください。',
     '- ローカルLLMはセットアップ後に利用できますが、この対話型オンボーディング自体は実行できません。',
   ].join('\n');
@@ -367,6 +375,22 @@ export async function prepareOnboardingLaunch(initialPrompt: string): Promise<{
   };
 }
 
+export function buildGuidedLaunchArgs(
+  selected: DetectedBackend,
+  prompt: string,
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  if (selected.id !== 'opencode') return [prompt];
+  return [
+    'run',
+    '--auto',
+    '--agent',
+    'build',
+    ...(env.AGENT_MODEL ? ['--model', env.AGENT_MODEL] : []),
+    prompt,
+  ];
+}
+
 async function defaultLaunchGuidedBackend(
   selected: DetectedBackend,
   initialPrompt: string,
@@ -375,11 +399,15 @@ async function defaultLaunchGuidedBackend(
   const prepared = await prepareOnboardingLaunch(initialPrompt);
   try {
     return await new Promise<number>((resolve, reject) => {
-      const child = spawn(selected.executable, [prepared.visiblePrompt], {
-        cwd,
-        env: process.env,
-        stdio: 'inherit',
-      });
+      const child = spawn(
+        selected.executable,
+        buildGuidedLaunchArgs(selected, prepared.visiblePrompt),
+        {
+          cwd,
+          env: process.env,
+          stdio: 'inherit',
+        }
+      );
       child.once('error', reject);
       child.once('close', (code) => resolve(code ?? 1));
     });
@@ -432,6 +460,8 @@ export type WorkspaceMode = 'existing' | 'template' | 'blank';
 export interface ApplySetupOptions {
   backend: string;
   backendExecutable?: string;
+  model?: string;
+  opencodeConfigPath?: string;
   workspacePath: string;
   workspaceMode: string;
   webChatEnabled?: boolean;
@@ -499,6 +529,9 @@ export async function readOnboardingStatus(layout: AppLayout): Promise<Onboardin
       backend: typeof value.backend === 'string' ? value.backend : undefined,
       backendExecutable:
         typeof value.backendExecutable === 'string' ? value.backendExecutable : undefined,
+      model: typeof value.model === 'string' ? value.model : undefined,
+      opencodeConfigPath:
+        typeof value.opencodeConfigPath === 'string' ? value.opencodeConfigPath : undefined,
       workspacePath: typeof value.workspacePath === 'string' ? value.workspacePath : undefined,
       workspaceMode: typeof value.workspaceMode === 'string' ? value.workspaceMode : undefined,
       webChatAccess: typeof value.webChatAccess === 'string' ? value.webChatAccess : undefined,
@@ -556,6 +589,8 @@ export async function applyGuidedSetup(
     await new SetupStore(dependencies.layout.configFile).save({
       backend,
       ...(backendExecutable ? { backendExecutable } : {}),
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.opencodeConfigPath ? { opencodeConfigPath: options.opencodeConfigPath } : {}),
       workspacePath: options.workspacePath,
       webChatEnabled: options.webChatEnabled ?? true,
       webChatAccess: options.webChatAccess ?? 'local',
@@ -574,6 +609,9 @@ export async function applyGuidedSetup(
       schemaVersion: 1,
       phase: 'bootstrap_in_progress',
       backend,
+      ...(backendExecutable ? { backendExecutable } : {}),
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.opencodeConfigPath ? { opencodeConfigPath: options.opencodeConfigPath } : {}),
       workspacePath: options.workspacePath,
       workspaceMode: mode,
       webChatAccess: options.webChatAccess ?? 'local',
@@ -611,6 +649,9 @@ export async function completeGuidedSetup(layout: AppLayout): Promise<string> {
     schemaVersion: 1,
     phase: 'minimum_ready',
     backend: setup.backend,
+    ...(setup.backendExecutable ? { backendExecutable: setup.backendExecutable } : {}),
+    ...(setup.model ? { model: setup.model } : {}),
+    ...(setup.opencodeConfigPath ? { opencodeConfigPath: setup.opencodeConfigPath } : {}),
     workspacePath: setup.workspacePath,
     webChatAccess: setup.webChatAccess,
     updatedAt: new Date().toISOString(),

@@ -87,8 +87,14 @@ export async function requestJson<T>(
   return getJson<T>(url, { ...init, headers });
 }
 
-export function workspaceFileUrl(path: string): string {
-  return `/api/workspace-file?path=${encodeURIComponent(path)}`;
+export function workspaceFileUrl(path: string, workspaceId?: string): string {
+  const workspace = workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : '';
+  return `/api/workspace-file?path=${encodeURIComponent(path)}${workspace}`;
+}
+
+export function artifactPreviewUrl(path: string, workspaceId?: string): string {
+  const workspace = workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : '';
+  return `/api/artifact-preview?path=${encodeURIComponent(path)}${workspace}`;
 }
 
 export function relativeTime(value: string | number | Date, now = Date.now()): string {
