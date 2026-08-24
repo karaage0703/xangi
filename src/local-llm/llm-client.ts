@@ -2,6 +2,7 @@
  * OpenAI互換 + Ollama ネイティブAPI 対応 LLMクライアント
  */
 import type { LLMMessage, LLMToolCall, LLMChatOptions, LLMChatResponse } from './types.js';
+import { Agent } from 'undici';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { parsePseudoToolCall } from './pseudo-toolcall.js';
 
@@ -121,6 +122,11 @@ interface OpenAIChatResponse {
     };
     finish_reason: string;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }
 
 function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMessage[] {
@@ -159,6 +165,8 @@ function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMess
 
 export class LLMClient {
   private readonly timeoutMs: number;
+  private readonly dispatcher: Agent;
+  private static readonly MAX_IMMEDIATE_TRANSPORT_RETRY_MS = 30_000;
 
   constructor(
     private readonly baseUrl: string,
@@ -171,6 +179,10 @@ export class LLMClient {
     private readonly defaultReasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort
   ) {
     this.timeoutMs = parseInt(process.env.TIMEOUT_MS || '300000', 10);
+    this.dispatcher = new Agent({
+      headersTimeout: this.timeoutMs,
+      bodyTimeout: this.timeoutMs,
+    });
   }
 
   /** options.temperature が明示なら優先、なければ defaultTemperature を返す */
@@ -187,15 +199,24 @@ export class LLMClient {
     init: RequestInit,
     operation: string
   ): Promise<Response> {
+    const requestInit = { ...init, dispatcher: this.dispatcher } as RequestInit;
+    const startedAt = Date.now();
     try {
-      return await fetch(url, init);
+      return await fetch(url, requestInit);
     } catch (error) {
-      if (init.signal?.aborted || !isTransientNetworkError(error)) throw error;
+      const elapsedMs = Date.now() - startedAt;
+      if (
+        init.signal?.aborted ||
+        !isTransientNetworkError(error) ||
+        elapsedMs > LLMClient.MAX_IMMEDIATE_TRANSPORT_RETRY_MS
+      ) {
+        throw error;
+      }
 
       console.warn(
         `[local-llm] Transient ${operation} transport error; retrying once: ${formatErrorDiagnostic(error)}`
       );
-      return await fetch(url, init);
+      return await fetch(url, requestInit);
     }
   }
 
@@ -273,6 +294,8 @@ export class LLMClient {
         }>;
       };
       done_reason?: string;
+      prompt_eval_count?: number;
+      eval_count?: number;
     };
 
     const toolCalls: LLMToolCall[] = [];
@@ -294,6 +317,10 @@ export class LLMClient {
       content: data.message.content ?? '',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason,
+      usage: {
+        inputTokens: data.prompt_eval_count,
+        outputTokens: data.eval_count,
+      },
     };
   }
 
@@ -404,6 +431,13 @@ export class LLMClient {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason,
+      usage: data.usage
+        ? {
+            inputTokens: data.usage.prompt_tokens,
+            cachedInputTokens: data.usage.prompt_tokens_details?.cached_tokens,
+            outputTokens: data.usage.completion_tokens,
+          }
+        : undefined,
     };
   }
 

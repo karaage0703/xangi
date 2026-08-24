@@ -15,7 +15,7 @@ import { runWithBubbleEvents } from '../bubble-events-runner.js';
 import { getTurnHistory } from '../activity-store.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from '../file-utils.js';
-import { splitMessage } from '../message-split.js';
+import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
@@ -106,7 +106,9 @@ export async function sendDiscordCompletedResult(options: {
   messageParts: string[];
   completedButtons?: ActionRowBuilder<ButtonBuilder>;
 }): Promise<Message> {
-  const chunks = options.messageParts.flatMap((part) => splitMessage(part, DISCORD_SAFE_LENGTH));
+  const chunks = options.messageParts.flatMap((part) =>
+    splitDiscordMessage(part, DISCORD_SAFE_LENGTH)
+  );
   if (chunks.length === 0) chunks.push('✅');
 
   const completedComponents = options.completedButtons ? [options.completedButtons] : [];

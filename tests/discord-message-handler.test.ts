@@ -26,6 +26,31 @@ describe('shouldProcessDiscordMessage', () => {
 });
 
 describe('sendDiscordCompletedResult', () => {
+  it('keeps a split fenced code block valid in every Discord message', async () => {
+    process.env.DISCORD_SPLIT_SEND_DELAY_MS = '0';
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({ id: 'followup' });
+    const code = ['```text', ...Array.from({ length: 120 }, () => 'x'.repeat(30)), '```'].join(
+      '\n'
+    );
+
+    await sendDiscordCompletedResult({
+      replyMessage: { id: 'initial-message', edit } as never,
+      outputChannel: { send } as never,
+      messageParts: [code],
+    });
+
+    const firstContent = edit.mock.calls[0][0].content as string;
+    expect(firstContent).toMatch(/^```text\n/);
+    expect(firstContent).toMatch(/\n```$/);
+    expect(firstContent.length).toBeLessThanOrEqual(1900);
+    expect(send).toHaveBeenCalled();
+    for (const [content] of send.mock.calls) {
+      expect(content).toMatch(/^```text\n/);
+      expect(content.length).toBeLessThanOrEqual(1900);
+    }
+  });
+
   it('puts completed buttons only on the final split message', async () => {
     process.env.DISCORD_SPLIT_SEND_DELAY_MS = '0';
     const edit = vi.fn().mockResolvedValue(undefined);

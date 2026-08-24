@@ -56,6 +56,9 @@ describe('LLMClient transient transport retry', () => {
 
     expect(result.content).toBe('recovered');
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ dispatcher: expect.anything() })
+    );
     expect(warnSpy.mock.calls[0]?.[0]).toContain('code=UND_ERR_SOCKET');
   });
 
@@ -67,6 +70,16 @@ describe('LLMClient transient transport retry', () => {
 
     await expect(client.chat(messages)).rejects.toBe(error);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not duplicate a generation after a late transport failure', async () => {
+    const error = fetchFailure('UND_ERR_SOCKET');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(error);
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(31_001);
+    const client = new LLMClient('http://localhost:8001', 'test-model');
+
+    await expect(client.chat(messages)).rejects.toBe(error);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('retries a stream request only before the HTTP response starts', async () => {

@@ -50,6 +50,11 @@ export interface RunResult {
    * MEDIA: 抽出（extractFilePaths）とは別経路で、両者は呼び出し側で合算・重複排除される。
    */
   attachments?: string[];
+  usage?: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+  };
 }
 
 /**

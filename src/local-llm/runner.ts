@@ -53,8 +53,21 @@ import {
   type TrajectoryCommon,
 } from '../tool-trajectory/index.js';
 
-const MAX_TOOL_ROUNDS = 10;
 const MAX_TOOL_OUTPUT_CHARS = 8000;
+
+const STEP_LIMIT_PROMPT = `You have reached the configured agent step limit. Do not call tools. Give the user a concise status summary that clearly states what you completed, what remains, and the safest next action.`;
+
+/**
+ * 1ターン内のagentic iteration上限。
+ * 未指定 / 0 は無制限で、timeout・abort・tool loop detector を安全弁にする。
+ */
+export function loadAgentStepLimit(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env.LOCAL_LLM_AGENT_STEPS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return undefined;
+  return parsed === 0 ? undefined : parsed;
+}
 
 /** 1 token あたりの文字数概算（日本語混じり保守側） */
 const CHARS_PER_TOKEN = 3;
@@ -463,6 +476,17 @@ export function recordToolCallAndDetectLoop(
 }
 
 /**
+ * A successful file mutation changes the state that a later verification command observes.
+ * Start a fresh loop-detection window so "edit -> rerun the same test" is not mistaken for
+ * repeating an ineffective call. Idempotent result caching remains session-wide.
+ */
+export function resetToolLoopHistoryAfterMutation(session: Session, toolName: string): void {
+  if (toolName !== 'write' && toolName !== 'edit') return;
+  session.recentToolCallSigs.length = 0;
+  session.recentNormSigs.length = 0;
+}
+
+/**
  * 冪等な (副作用なし・args 同じなら結果同一) tool_call を検出する。
  * 主に exec / bash / shell 系の `command` / `script` / `code` 文字列を見て、
  * 計算・エンコード・ハッシュ系のコマンドを正規表現で判定。
@@ -636,12 +660,19 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * activeAbortControllers と同じく per-channel 直列実行を前提に channelId でキーする。
    */
   private readonly pendingAttachments = new Map<string, Set<string>>();
+  /** channelごとの当該turn累積usage。Local LLMの複数agentic callを合算する。 */
+  private readonly pendingUsage = new Map<
+    string,
+    { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+  >();
   /** 個別機能フラグ */
   readonly enableTools: boolean;
   readonly enableSkills: boolean;
   readonly enableXangiCommands: boolean;
   /** Context budget（env から動的計算） */
   readonly contextBudget: ContextBudget;
+  /** agentic iteration 上限。undefined はモデルが終了を選ぶまで継続 */
+  readonly agentStepLimit: number | undefined;
   /** 起動時に解決された LocalLlmMode（per-call override がなければこれを使う） */
   readonly startupMode: LocalLlmMode;
   /** 起動時 flags（per-call override がない時のフォールバック） */
@@ -739,6 +770,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
     // Context budget を env から計算（明示優先、未指定なら NUM_CTX から逆算）
     this.contextBudget = loadContextBudget(process.env);
+    this.agentStepLimit = loadAgentStepLimit(process.env);
 
     // tool_search 機能の制御
     this.toolSearchEnabled = process.env.LOCAL_LLM_TOOL_SEARCH_ENABLED !== 'false';
@@ -890,6 +922,30 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.pendingAttachments.set(channelId, new Set());
   }
 
+  private resetUsage(channelId: string): void {
+    this.pendingUsage.set(channelId, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+  }
+
+  private addUsage(
+    channelId: string,
+    response: { usage?: import('./types.js').LLMChatResponse['usage'] }
+  ): void {
+    if (!response.usage) return;
+    const total = this.pendingUsage.get(channelId) ?? {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    };
+    total.inputTokens += response.usage.inputTokens ?? 0;
+    total.cachedInputTokens += response.usage.cachedInputTokens ?? 0;
+    total.outputTokens += response.usage.outputTokens ?? 0;
+    this.pendingUsage.set(channelId, total);
+  }
+
+  private currentUsage(channelId: string) {
+    return this.pendingUsage.get(channelId);
+  }
+
   /** この channel に積まれた構造化添付（realpath）を配列で返す。 */
   private drainAttachments(channelId: string): string[] {
     return [...(this.pendingAttachments.get(channelId) ?? [])];
@@ -907,6 +963,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const session = this.getOrCreateSession(sessionId, appSid);
     session.lastTurnToolNames = [];
     this.resetAttachments(channelId);
+    this.resetUsage(channelId);
     this.maybeEmitSessionStart(appSid, channelId);
     this.bumpTurnIndex(appSid);
     const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
@@ -977,7 +1034,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       logResponse(this.workdir, appSid, { result, sessionId });
 
       this.timeoutController.clear(channelId, 'completed');
-      return { result, sessionId, attachments: this.drainAttachments(channelId) };
+      return {
+        result,
+        sessionId,
+        attachments: this.drainAttachments(channelId),
+        usage: this.currentUsage(channelId),
+      };
     } catch (err) {
       // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
       if (session.messages.length > 1 && isSessionRelatedError(err)) {
@@ -1039,6 +1101,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     } finally {
       this.activeAbortControllers.delete(channelId);
       this.pendingAttachments.delete(channelId);
+      this.pendingUsage.delete(channelId);
       // 'completed' 経路で既に clear 済みなら no-op。エラー or タイムアウトで未 clear なら 'error'。
       this.timeoutController.clear(channelId, 'error');
     }
@@ -1060,6 +1123,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const session = this.getOrCreateSession(sessionId, appSid);
     session.lastTurnToolNames = [];
     this.resetAttachments(channelId);
+    this.resetUsage(channelId);
     this.maybeEmitSessionStart(appSid, channelId);
     this.bumpTurnIndex(appSid);
     const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
@@ -1138,7 +1202,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         result: fullText,
         sessionId,
         attachments: this.drainAttachments(channelId),
+        usage: this.currentUsage(channelId),
       };
+      callbacks.onTraceEvent?.({ type: 'turn_completed', usage: result.usage });
       callbacks.onComplete?.(result);
       return result;
     } catch (err) {
@@ -1203,6 +1269,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     } finally {
       this.activeAbortControllers.delete(channelId);
       this.pendingAttachments.delete(channelId);
+      this.pendingUsage.delete(channelId);
       this.timeoutController.clear(channelId, 'error');
     }
   }
@@ -1287,6 +1354,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
+      this.addUsage(channelId, response);
       session.messages.push({ role: 'assistant', content: response.content });
 
       // 非ストリーミング経路でも drift strip を適用する（executeStreamLoop と対称）。
@@ -1298,7 +1366,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     let finalContent = '';
     const pendingMediaPaths: string[] = [];
 
-    while (toolRounds <= MAX_TOOL_ROUNDS) {
+    while (true) {
       // 各 iteration の頭で active tools を再計算（tool_search で拡張された分を反映）
       const iterTools = this.toolSearchEnabled
         ? toLLMTools(getActiveTools(session.activeToolNames))
@@ -1318,6 +1386,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
+      this.addUsage(channelId, response);
 
       if (
         response.finishReason === 'stop' ||
@@ -1408,6 +1477,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             result = { success: true, output: cached };
           } else {
             result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
+            if (result.success) resetToolLoopHistoryAfterMutation(session, toolCall.name);
             // 冪等パターンなら結果をキャッシュ (次回以降 HIT させる)
             if (result.success && isIdempotentToolCall(toolCall.name, toolCall.arguments)) {
               cacheIdempotentResult(session, sig, result.output);
@@ -1460,8 +1530,19 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       }
 
       toolRounds++;
-      if (toolRounds >= MAX_TOOL_ROUNDS) {
-        finalContent = 'Maximum tool rounds reached.';
+      if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
+        console.warn(`[local-llm] Agent step limit reached (${this.agentStepLimit})`);
+        session.messages.push({ role: 'system', content: STEP_LIMIT_PROMPT });
+        const summary = await this.llm.chat(session.messages, {
+          systemPrompt,
+          tools: iterTools.length > 0 ? iterTools : undefined,
+          toolChoice: 'none',
+          signal: abortController.signal,
+          reasoningEffort: options?.localLlmReasoningEffort,
+        });
+        this.addUsage(channelId, summary);
+        finalContent = summary.content;
+        session.messages.push({ role: 'assistant', content: finalContent });
         break;
       }
     }
@@ -1590,12 +1671,16 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
     // 最終応答 chatStream に渡すため、最後の iteration の active tools を保持
     let finalIterTools: ReturnType<typeof toLLMTools> = llmTools;
+    // tool loop の chat() が既に返した最終本文。これを再利用できれば、同じ履歴を
+    // tool-free chatStream() へ再送する余分な model call を避けられる。
+    let terminalResponseContent: string | undefined;
 
     // ツール有効時のみツールループ実行
     if (this.enableTools) {
       // ツールループ: non-streaming の chat() でツール呼び出しを処理
       let toolRounds = 0;
-      while (toolRounds < MAX_TOOL_ROUNDS) {
+      let stepLimitReached = false;
+      while (true) {
         // 各 iteration の頭で active tools を再計算（tool_search で拡張された分を反映）
         const iterTools = this.toolSearchEnabled
           ? toLLMTools(getActiveTools(session.activeToolNames))
@@ -1616,8 +1701,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           logError(this.workdir, logId, `LLM chat call failed (stream tool loop): ${errorMsg}`);
           throw err;
         }
+        this.addUsage(channelId, response);
 
         if (!response.toolCalls || response.toolCalls.length === 0) {
+          terminalResponseContent = response.content;
           break;
         }
 
@@ -1702,6 +1789,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
               result = { success: true, output: cached };
             } else {
               result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
+              if (result.success) resetToolLoopHistoryAfterMutation(session, toolCall.name);
               // 冪等パターンなら結果をキャッシュ (次回以降 HIT させる)
               if (result.success && isIdempotentToolCall(toolCall.name, toolCall.arguments)) {
                 cacheIdempotentResult(session, sig, result.output);
@@ -1752,6 +1840,16 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           }
         }
         toolRounds++;
+        if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
+          console.warn(`[local-llm] Agent step limit reached (${this.agentStepLimit})`);
+          session.messages.push({ role: 'system', content: STEP_LIMIT_PROMPT });
+          stepLimitReached = true;
+          break;
+        }
+      }
+
+      if (stepLimitReached) {
+        finalSystemPrompt = `${finalSystemPrompt}\n\n${STEP_LIMIT_PROMPT}`;
       }
     }
 
@@ -1822,7 +1920,23 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       return acc;
     };
 
-    let fullText = await finalChatStreamOnce();
+    let fullText: string;
+    if (terminalResponseContent?.trim()) {
+      // chat() の最終本文もstream経路と同じbufferへ通し、擬似tool callをDiscordへ
+      // 漏らさない。clean textならそのまま1回通知し、追加LLM callは行わない。
+      const driftBuffer = new StreamingDriftBuffer();
+      const { release, dropped } = driftBuffer.feed(terminalResponseContent);
+      const { release: tail, droppedAny } = driftBuffer.flush();
+      fullText = release + tail;
+      lastStreamDroppedDrift = dropped || droppedAny;
+      if (fullText) callbacks.onText?.(fullText, fullText);
+      this.trajectoryLogger.logRunnerEvent(this.trajectoryCommon(logId, options?.channelId), {
+        event: 'terminal_response_reused',
+        details: { chars: terminalResponseContent.length },
+      });
+    } else {
+      fullText = await finalChatStreamOnce();
+    }
 
     // Step C: strict drift 検出 → parse-and-execute rescue または
     // structured feedback で bounded retry (Kmax=2)
@@ -1967,6 +2081,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             const rescueStart = Date.now();
             (session.lastTurnToolNames ??= []).push(parsed.name);
             const result = await executeTool(parsed.name, parsed.args, rescueToolContext);
+            if (result.success) resetToolLoopHistoryAfterMutation(session, parsed.name);
             const rescueDuration = Date.now() - rescueStart;
             const rawOutput = result.success
               ? result.output

@@ -2909,6 +2909,9 @@ export function startWebChat(options: WebChatOptions): void {
 
             updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
               duration_ms: Math.max(1, Date.now() - startedAt),
+              input_tokens: result.usage?.inputTokens,
+              cached_input_tokens: result.usage?.cachedInputTokens,
+              output_tokens: result.usage?.outputTokens,
             });
 
             const msgs = readSessionMessages(workdir, appSessionId);
@@ -2923,6 +2926,10 @@ export function startWebChat(options: WebChatOptions): void {
               num_turns: lastAssistant?.usage?.num_turns ?? usageObj.num_turns,
               duration_ms: lastAssistant?.usage?.duration_ms ?? usageObj.duration_ms,
               total_cost_usd: lastAssistant?.usage?.total_cost_usd ?? usageObj.total_cost_usd,
+              input_tokens: lastAssistant?.usage?.input_tokens ?? usageObj.input_tokens,
+              cached_input_tokens:
+                lastAssistant?.usage?.cached_input_tokens ?? usageObj.cached_input_tokens,
+              output_tokens: lastAssistant?.usage?.output_tokens ?? usageObj.output_tokens,
             };
 
             const extracted = sanitizeReplySuggestionOutput(

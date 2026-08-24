@@ -34,7 +34,7 @@ import {
   getActiveSessionId,
   getSessionEntry,
 } from '../sessions.js';
-import { splitMessage } from '../message-split.js';
+import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
 import {
@@ -94,7 +94,10 @@ export async function respondWithDiscordTurnHistory(
   // Discord requires an initial interaction acknowledgement within about 3 seconds.
   // Acknowledge before formatting or reading persisted history.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const chunks = splitMessage(formatTurnHistoryDisclosure(loadHistory()), DISCORD_SAFE_LENGTH);
+  const chunks = splitDiscordMessage(
+    formatTurnHistoryDisclosure(loadHistory()),
+    DISCORD_SAFE_LENGTH
+  );
   await interaction.editReply({ content: chunks[0] || '履歴はありません' });
   for (let i = 1; i < chunks.length; i++) {
     await interaction.followUp({ content: chunks[i], flags: MessageFlags.Ephemeral });
@@ -117,7 +120,7 @@ function skillCommandName(skillName: string): string {
 /** スケジュール一覧をDiscord向けに分割する */
 function splitScheduleContent(content: string, maxLength: number): string[] {
   const sep = '\n' + SCHEDULE_SEPARATOR + '\n';
-  const chunks = splitMessage(content, maxLength, sep);
+  const chunks = splitDiscordMessage(content, maxLength, sep);
   return chunks.map((c) => c.replaceAll(SCHEDULE_SEPARATOR, ''));
 }
 
@@ -736,7 +739,7 @@ export async function handleSkillCommand(
     );
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
-    const chunks = splitMessage(displayTextWithTools, DISCORD_SAFE_LENGTH);
+    const chunks = splitDiscordMessage(displayTextWithTools, DISCORD_SAFE_LENGTH);
     const turnHistory = withoutFinalResponse(
       getTurnHistory(eventCtx.threadId, eventCtx.turnId),
       runResult.result
@@ -1259,7 +1262,7 @@ export function createInteractionHandler(
       await interaction.deferReply();
       const backend = interaction.options.getString('backend') ?? undefined;
       const content = await executeModelsCommand(backend, resolver);
-      const chunks = splitMessage(content, DISCORD_SAFE_LENGTH);
+      const chunks = splitDiscordMessage(content, DISCORD_SAFE_LENGTH);
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
       return;
@@ -1302,7 +1305,7 @@ export function createInteractionHandler(
           workspace?.path
         );
 
-        const chunks = splitMessage(displayText, DISCORD_SAFE_LENGTH);
+        const chunks = splitDiscordMessage(displayText, DISCORD_SAFE_LENGTH);
         await interaction.editReply(chunks[0] || '✅');
         if (chunks.length > 1 && 'send' in interaction.channel!) {
           const channel = interaction.channel as unknown as {
