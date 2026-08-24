@@ -167,6 +167,93 @@ describe('LocalLlmRunner mode', () => {
   });
 });
 
+describe('Local LLM agent step limit', () => {
+  const saved = process.env.LOCAL_LLM_AGENT_STEPS;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.LOCAL_LLM_AGENT_STEPS;
+    else process.env.LOCAL_LLM_AGENT_STEPS = saved;
+  });
+
+  it('is unlimited by default and accepts a positive steps limit', async () => {
+    const { loadAgentStepLimit } = await import('../src/local-llm/runner.js');
+    expect(loadAgentStepLimit({})).toBeUndefined();
+    expect(loadAgentStepLimit({ LOCAL_LLM_AGENT_STEPS: '0' })).toBeUndefined();
+    expect(loadAgentStepLimit({ LOCAL_LLM_AGENT_STEPS: '24' })).toBe(24);
+    expect(loadAgentStepLimit({ LOCAL_LLM_AGENT_STEPS: '-1' })).toBeUndefined();
+    expect(loadAgentStepLimit({ LOCAL_LLM_AGENT_STEPS: '1.5' })).toBeUndefined();
+  });
+
+  it('does not stop after the former fixed 10 tool rounds when no limit is configured', async () => {
+    delete process.env.LOCAL_LLM_AGENT_STEPS;
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-agent-steps-'));
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    let calls = 0;
+    (runner as unknown as { llm: { chat: () => Promise<unknown> } }).llm = {
+      chat: async () => {
+        calls++;
+        if (calls <= 12) {
+          return {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: `call-${calls}`, name: 'glob', arguments: { pattern: '*.none' } }],
+          };
+        }
+        return { content: '12 rounds completed', finishReason: 'stop', toolCalls: [] };
+      },
+    };
+
+    try {
+      const { result } = await runner.run('keep working', {
+        sessionId: 'agent-steps-unlimited',
+        channelId: 'agent-steps-unlimited',
+      });
+      expect(result).toBe('12 rounds completed');
+      expect(calls).toBe(13);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('forces a tool-free status summary when the configured limit is reached', async () => {
+    process.env.LOCAL_LLM_AGENT_STEPS = '2';
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-agent-steps-limit-'));
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const optionsSeen: Array<{ toolChoice?: string }> = [];
+    let calls = 0;
+    (
+      runner as unknown as {
+        llm: { chat: (_messages: unknown, options?: { toolChoice?: string }) => Promise<unknown> };
+      }
+    ).llm = {
+      chat: async (_messages, options) => {
+        optionsSeen.push(options ?? {});
+        calls++;
+        if (calls <= 2) {
+          return {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: `call-${calls}`, name: 'glob', arguments: { pattern: '*.none' } }],
+          };
+        }
+        return { content: 'completed: inspection; remaining: implementation', finishReason: 'stop' };
+      },
+    };
+
+    try {
+      const { result } = await runner.run('limited work', {
+        sessionId: 'agent-steps-limited',
+        channelId: 'agent-steps-limited',
+      });
+      expect(result).toContain('remaining: implementation');
+      expect(calls).toBe(3);
+      expect(optionsSeen.at(-1)?.toolChoice).toBe('none');
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('loadMessagesFromTranscript', () => {
   let workdir: string;
 
@@ -584,7 +671,7 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
       const s2 = toolCallSignature('tool_search', { query: 'arxiv recent papers!' });
       const s3 = toolCallSignature('tool_search', { query: 'arxiv recent paper' });
       const r1 = recordToolCallAndDetectLoop(session, s1);
-      const r2 = recordToolCallAndDetectLoop(session, s2);
+      recordToolCallAndDetectLoop(session, s2);
       const r3 = recordToolCallAndDetectLoop(session, s3);
       expect(r1.kind).toBe('none');
       // r2 may or may not fire similar (depends on threshold). 3rd should fire.
@@ -628,6 +715,40 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
       recordToolCallAndCheckLoop(session, sig);
       recordToolCallAndCheckLoop(session, sig);
       expect(recordToolCallAndCheckLoop(session, sig)).toBe(true);
+    });
+
+    it('starts a fresh loop window after a successful file mutation', async () => {
+      const {
+        recordToolCallAndDetectLoop,
+        resetToolLoopHistoryAfterMutation,
+        toolCallSignature,
+      } = await import('../src/local-llm/runner.js');
+      const session = makeSession();
+      const testSig = toolCallSignature('exec', { command: 'npm test' });
+
+      recordToolCallAndDetectLoop(session, testSig);
+      recordToolCallAndDetectLoop(session, testSig);
+      resetToolLoopHistoryAfterMutation(session, 'edit');
+
+      expect(recordToolCallAndDetectLoop(session, testSig).kind).toBe('none');
+      expect(session.recentToolCallSigs).toEqual([testSig]);
+      expect(session.recentNormSigs).toHaveLength(1);
+    });
+
+    it('does not reset the loop window after a read-only tool', async () => {
+      const {
+        recordToolCallAndDetectLoop,
+        resetToolLoopHistoryAfterMutation,
+        toolCallSignature,
+      } = await import('../src/local-llm/runner.js');
+      const session = makeSession();
+      const sig = toolCallSignature('exec', { command: 'npm test' });
+
+      recordToolCallAndDetectLoop(session, sig);
+      recordToolCallAndDetectLoop(session, sig);
+      resetToolLoopHistoryAfterMutation(session, 'read');
+
+      expect(recordToolCallAndDetectLoop(session, sig).kind).toBe('exact');
     });
   });
 });
@@ -863,6 +984,40 @@ describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStre
     };
     return runner;
   }
+
+  it('reuses a clean terminal chat response without an extra final model call', async () => {
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    let streamCalls = 0;
+    (
+      runner as unknown as {
+        llm: {
+          chat: () => Promise<unknown>;
+          chatStream: () => AsyncGenerator<string>;
+        };
+      }
+    ).llm = {
+      chat: async () => ({
+        content: '実装とテストが完了しました。',
+        toolCalls: [],
+        finishReason: 'stop',
+      }),
+      chatStream: async function* () {
+        streamCalls++;
+        yield 'この再生成は不要';
+      },
+    };
+    let streamed = '';
+
+    const { result } = await runner.runStream(
+      '実装して',
+      { onText: (chunk) => (streamed += chunk) },
+      { sessionId: 'terminal-reuse', channelId: 'terminal-reuse' }
+    );
+
+    expect(result).toBe('実装とテストが完了しました。');
+    expect(streamed).toBe(result);
+    expect(streamCalls).toBe(0);
+  });
 
   it('falls back to a friendly message (not empty → no ✅) when every stream is drift-only', async () => {
     // 毎回 strict drift だけを吐く → hold buffer が drop → 空 → retry 上限 → 友好的 fallback

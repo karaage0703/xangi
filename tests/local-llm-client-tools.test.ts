@@ -125,14 +125,20 @@ describe('LLMClient chatStream payload', () => {
       return new Response(
         JSON.stringify({
           choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 7,
+            prompt_tokens_details: { cached_tokens: 80 },
+          },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     });
     const client = buildClient();
-    await client.chat(messages, { tools: sampleTools, toolChoice: 'none' });
+    const result = await client.chat(messages, { tools: sampleTools, toolChoice: 'none' });
     expect(capturedBody!.tools).toBeUndefined();
     expect(capturedBody!.tool_choice).toBeUndefined();
+    expect(result.usage).toEqual({ inputTokens: 120, cachedInputTokens: 80, outputTokens: 7 });
   });
 
   it('既定reasoning_effortをnon-stream payloadへ送り、per-call値を優先する', async () => {

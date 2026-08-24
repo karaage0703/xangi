@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitMessage } from '../src/message-split.js';
+import { splitDiscordMessage, splitMessage } from '../src/message-split.js';
 
 describe('splitMessage', () => {
   const MAX = 1900; // DISCORD_SAFE_LENGTH 相当
@@ -72,5 +72,46 @@ describe('splitMessage', () => {
   it('サロゲートペアを保持できない maxLength は拒否する', () => {
     expect(() => splitMessage('😀', 1)).toThrow(RangeError);
     expect(() => splitMessage('abc', 0)).toThrow(RangeError);
+  });
+
+  it('言語指定付きコードブロックを跨いで分割しても各チャンクで閉じる', () => {
+    const text = [
+      '導入',
+      '```text',
+      ...Array.from({ length: 120 }, (_, i) => `line ${i} ${'x'.repeat(20)}`),
+      '```',
+      '結論',
+    ].join('\n');
+    const chunks = splitDiscordMessage(text, 300);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(300);
+      expect((chunk.match(/^```/gm) ?? []).length % 2).toBe(0);
+    }
+    expect(chunks[0]).toContain('```text');
+    expect(chunks[0]).toMatch(/\n```$/);
+    expect(chunks[1]).toMatch(/^```text\n/);
+    expect(chunks.at(-1)).toContain('結論');
+  });
+
+  it('コードブロック外のインラインコードはフェンスとして扱わない', () => {
+    const text = Array.from({ length: 80 }, (_, i) => `line ${i}: \`value\``).join('\n');
+    const chunks = splitDiscordMessage(text, 160);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.length <= 160)).toBe(true);
+    expect(chunks.every((chunk) => !chunk.startsWith('```'))).toBe(true);
+  });
+
+  it('複数のコードブロックをそれぞれ独立して補正する', () => {
+    const block = (language: string, fill: string) =>
+      [`\`\`\`${language}`, ...Array.from({ length: 20 }, () => fill.repeat(15)), '```'].join('\n');
+    const chunks = splitDiscordMessage(`${block('js', 'a')}\n間\n${block('json', 'b')}`, 140);
+
+    expect(chunks.length).toBeGreaterThan(2);
+    expect(chunks.every((chunk) => chunk.length <= 140)).toBe(true);
+    expect(chunks.some((chunk) => chunk.startsWith('```js\n'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.startsWith('```json\n'))).toBe(true);
   });
 });

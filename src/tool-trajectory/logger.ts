@@ -106,6 +106,7 @@ export interface RunnerEventPayload {
     | 'context_prune'
     | 'session_retry'
     | 'idempotent_cache_store'
+    | 'terminal_response_reused'
     | 'stop_hook_block';
   details?: Record<string, unknown>;
 }

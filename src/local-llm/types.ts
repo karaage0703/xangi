@@ -55,6 +55,11 @@ export interface LLMChatResponse {
   content: string;
   toolCalls?: LLMToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length';
+  usage?: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+  };
 }
 
 export interface ToolContext {

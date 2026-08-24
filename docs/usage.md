@@ -1570,6 +1570,7 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_THINKING`                    | Thinkingモデルの推論を有効にするか                                           | `true`                                                           |
 | `LOCAL_LLM_REASONING_EFFORT`            | OpenAI互換APIへ送る既定`reasoning_effort`（チャンネル設定が優先）             | 未指定（provider既定）                                           |
 | `LOCAL_LLM_MAX_TOKENS`                  | 最大トークン数（API 呼び出しの max_tokens）                                  | `8192`                                                           |
+| `LOCAL_LLM_AGENT_STEPS`                 | 1ターンのagentic iteration上限。未指定/`0`ならモデル終了またはtimeoutまで継続 | 無制限                                                           |
 | `LOCAL_LLM_NUM_CTX`                     | コンテキストウィンドウサイズ（Ollama用、context budget 逆算の基準）          | モデルのデフォルト                                               |
 | `LOCAL_LLM_TEMPERATURE`                 | サンプリング温度（0 で決定的、agent モードの format drift を抑える時に有効） | モデルのデフォルト                                               |
 | `LOCAL_LLM_CONTEXT_MAX_CHARS`           | 履歴の最大文字数（明示優先、未指定なら `LOCAL_LLM_NUM_CTX` から逆算）        | 自動計算                                                         |

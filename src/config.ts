@@ -331,6 +331,9 @@ export function loadConfig(): Config {
 
   // LOCAL_LLM_MODE は local-llm/runner 等で直接参照されるが、typo 検出のためここで検証する
   v.enumOf('LOCAL_LLM_MODE', ['agent', 'chat'] as const, 'agent');
+  if (process.env.LOCAL_LLM_AGENT_STEPS !== undefined) {
+    v.int('LOCAL_LLM_AGENT_STEPS', 0, { min: 0 });
+  }
 
   // XANGI_HOOKS_ENABLED / XANGI_HOOKS_FILE は hooks.ts で直接参照されるが、typo 検出のためここで検証する
   v.enumOf('XANGI_HOOKS_ENABLED', ['true', 'false'] as const, 'true');

@@ -3,7 +3,7 @@ import type { Config } from '../config.js';
 import type { AgentRunner } from '../agent-runner.js';
 import type { Scheduler } from '../scheduler.js';
 import { buildAttachmentResult } from '../file-utils.js';
-import { splitMessage } from '../message-split.js';
+import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_SAFE_LENGTH } from '../constants.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
@@ -14,6 +14,7 @@ import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import { createProcessingButtons, discordProcessingMessages } from './ui.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
+import { TurnLatencyRecorder } from '../turn-latency.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
@@ -74,6 +75,17 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
       const workspace = workspaceRegistry
         ? await workspaceRegistry.resolve('discord', settingsChannelId)
         : undefined;
+      const freshAppSessionId = createSchedulerRunId('discord');
+      const latency = new TurnLatencyRecorder({
+        platform: 'discord',
+        turnId: `discord-schedule:${freshAppSessionId}`,
+        threadId: `discord-schedule:${channelId}`,
+        configuredBackend: config.agent.backend,
+        configuredModel: config.agent.config.model,
+        firstTurn: true,
+        receivedAt: startedAt,
+        workdir: workspace?.path ?? config.agent.config.workdir,
+      });
 
       // 処理中メッセージを送信
       const thinkingMsg = await (
@@ -86,6 +98,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
       });
 
       discordProcessingMessages.set(channelId, { message: thinkingMsg });
+      latency.markInitialReply();
 
       // プロセス再起動 (SIGTERM) で turn が中断されたとき、「考え中」表示を
       // 放置せず「中断」表示で確定させる (issue #293)。スケジューラ起点ターンは
@@ -112,7 +125,6 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         //   transcript jsonl からの restore を回避する（jsonl resume が
         //   cron 文脈で stateful 化してしまう構造バグの修正）。
         // - 通常セッションの activeByContext / updatedAt は触らない。
-        const freshAppSessionId = createSchedulerRunId('discord');
         const eventCtx = {
           threadId: `discord-schedule:${channelId}`,
           turnId: `discord-schedule:${freshAppSessionId}`,
@@ -120,11 +132,17 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           platform: 'discord' as const,
           userText: prompt,
         };
+        latency.markAgentStart();
         const { result, sessionId, attachments } = await runWithBubbleEvents(
           agentRunner,
           agentPrompt,
           eventCtx,
-          {},
+          {
+            onBackendReady: () => latency.markBackendReady(),
+            onText: () => latency.markText(),
+            onToolUse: () => latency.markActivity(),
+            onTraceEvent: (event) => latency.markTraceEvent(event),
+          },
           {
             skipPermissions: config.agent.config.skipPermissions ?? false,
             sessionId: undefined,
@@ -135,6 +153,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
             workdir: workspace?.path,
           }
         );
+        latency.markAgentComplete();
 
         // 結果を送信（テキスト由来 + 構造化 attachments を合算・重複排除）
         const { filePaths, displayText } = buildAttachmentResult(
@@ -147,6 +166,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
             throw new Error('Agent process ended without a response or session ID');
           }
           await thinkingMsg.delete().catch(() => {});
+          latency.finish('complete');
           return result;
         }
 
@@ -166,7 +186,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           : [timedDisplayText];
 
         // 最初のパートは既存のthinkingMsgを編集して送信
-        const firstChunks = splitMessage(messageParts[0], DISCORD_SAFE_LENGTH);
+        const firstChunks = splitDiscordMessage(messageParts[0], DISCORD_SAFE_LENGTH);
         await thinkingMsg.edit({ content: firstChunks[0] || '✅', components: [] });
         const ch = channel as { send: (content: string) => Promise<unknown> };
         // 最初のパートの残りチャンク
@@ -176,7 +196,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         }
         // 2つ目以降のパートは新規メッセージとして送信
         for (let p = 1; p < messageParts.length; p++) {
-          const chunks = splitMessage(messageParts[p], DISCORD_SAFE_LENGTH);
+          const chunks = splitDiscordMessage(messageParts[p], DISCORD_SAFE_LENGTH);
           for (const chunk of chunks) {
             await waitBeforeFollowupDiscordSend();
             await ch.send(chunk);
@@ -198,8 +218,10 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           sessionId,
         });
 
+        latency.finish('complete');
         return result;
       } catch (error) {
+        latency.markAgentComplete();
         const errorDelivered = await thinkingMsg
           .edit({
             content: appendScheduleRunCompletion(
@@ -219,6 +241,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
             messageIds: [thinkingMsg.id],
           });
         }
+        latency.finish('error');
         throw error;
       } finally {
         const entry = discordProcessingMessages.get(channelId);
