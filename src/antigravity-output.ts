@@ -57,3 +57,12 @@ export function reportsUnsupportedOutputFormat(detail: string): boolean {
     /(?:option|flag|argument)s?\s+(?:is|are)\s+not\s+defined/i.test(detail);
   return mentionsOutputFormat && reportsUnsupported;
 }
+
+export function isAntigravityWorkspaceArtifactPathError(error: unknown): boolean {
+  const detail = error instanceof Error ? error.message : String(error);
+  return (
+    /write_to_file/i.test(detail) &&
+    /is not a valid artifact path/i.test(detail) &&
+    /artifacts must be in/i.test(detail)
+  );
+}

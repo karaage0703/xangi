@@ -43,6 +43,11 @@ vi.mock('fs', async () => {
   };
 });
 
+vi.mock('../src/transcript-logger.js', () => ({
+  logPrompt: vi.fn(),
+  logResponse: vi.fn(),
+}));
+
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 describe('AntigravityRunner', () => {
@@ -307,6 +312,15 @@ describe('AntigravityRunner', () => {
     expect(args[args.indexOf('--output-format') + 1]).toBe('json');
   });
 
+  it('instructs Agy to omit ArtifactMetadata for ordinary workspace writes', async () => {
+    const runner = new AntigravityRunner({});
+    const { args } = await getSpawnArgs(runner, 'run');
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('omit ArtifactMetadata entirely');
+    expect(prompt).toContain('not workspace files');
+  });
+
   it('allows overriding the Antigravity print timeout', async () => {
     process.env.ANTIGRAVITY_PRINT_TIMEOUT = '30s';
     const runner = new AntigravityRunner({});
@@ -490,6 +504,118 @@ describe('AntigravityRunner', () => {
 
     await expect(promise).rejects.toThrow('auth failed');
     expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues a failed workspace write once in the same JSON conversation', async () => {
+    const { spawn } = await import('child_process');
+    const { logPrompt, logResponse } = await import('../src/transcript-logger.js');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({ workdir: '/tmp/project' });
+    const promise = runner.run('write the daily memory', { appSessionId: 'app-session' });
+    let mockProcess = await waitForProcess();
+    const artifactError =
+      'declaring permissions: cortex tool write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /home/user/.gemini/antigravity-cli/brain/conv-write/';
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'ERROR',
+          conversation_id: 'conv-write',
+          error: artifactError,
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(2);
+    const recoveryArgs = (spawn as ReturnType<typeof vi.fn>).mock.calls[1][1] as string[];
+    expect(recoveryArgs[recoveryArgs.indexOf('--conversation') + 1]).toBe('conv-write');
+    const recoveryPrompt = recoveryArgs[recoveryArgs.indexOf('-p') + 1];
+    expect(recoveryPrompt).toContain('Retry that write without the ArtifactMetadata field');
+    expect(recoveryPrompt).not.toContain('write the daily memory');
+
+    mockProcess.stdout.emit('data', Buffer.from(success('memory written', 'conv-write')));
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toEqual({ result: 'memory written', sessionId: 'conv-write' });
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(logPrompt).toHaveBeenCalledTimes(1);
+    expect(logPrompt).toHaveBeenCalledWith(
+      '/tmp/project',
+      'app-session',
+      expect.stringContaining('write the daily memory')
+    );
+    expect(logResponse).toHaveBeenCalledOnce();
+  });
+
+  it('continues artifact-path ERROR JSON after a non-zero process exit', async () => {
+    const { spawn } = await import('child_process');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('write the daily memory');
+    const artifactError =
+      'write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /brain/conv-write/';
+
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'ERROR',
+          conversation_id: 'conv-write',
+          error: artifactError,
+        })
+      )
+    );
+    mockProcess.emit('close', 1);
+
+    mockProcess = await waitForProcess(2);
+    const recoveryArgs = (spawn as ReturnType<typeof vi.fn>).mock.calls[1][1] as string[];
+    expect(recoveryArgs[recoveryArgs.indexOf('--conversation') + 1]).toBe('conv-write');
+    mockProcess.stdout.emit('data', Buffer.from(success('memory written', 'conv-write')));
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toEqual({ result: 'memory written', sessionId: 'conv-write' });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not repeat workspace write recovery after the continuation fails', async () => {
+    const { spawn } = await import('child_process');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('write the daily memory');
+    const artifactError =
+      'write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /brain/conv-write/';
+
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'ERROR',
+          conversation_id: 'conv-write',
+          error: artifactError,
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(2);
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'ERROR',
+          conversation_id: 'conv-write',
+          error: artifactError,
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).rejects.toThrow('is not a valid artifact path');
+    expect(spawn).toHaveBeenCalledTimes(2);
   });
 
   it('fails safely for an unknown JSON status', async () => {
@@ -791,6 +917,89 @@ describe('AntigravityRunner', () => {
 
     await expect(promise).rejects.toThrow('invalid model');
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues a failed streamed workspace write in the same conversation', async () => {
+    const { spawn } = await import('child_process');
+    const { logPrompt, logResponse } = await import('../src/transcript-logger.js');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({ workdir: '/tmp/project' });
+    const onBackendReady = vi.fn();
+    const onText = vi.fn();
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+    const promise = runner.runStream(
+      'write the daily memory',
+      {
+        onBackendReady,
+        onText,
+        onComplete,
+        onError,
+      },
+      { appSessionId: 'app-session' }
+    );
+    const artifactError =
+      'declaring permissions: cortex tool write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /brain/conv-stream-write/';
+
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          event: 'init',
+          conversation_id: 'conv-stream-write',
+          init: {},
+        })}\n${JSON.stringify({
+          event: 'result',
+          result: {
+            conversation_id: 'conv-stream-write',
+            status: 'ERROR',
+            response: '',
+            error: artifactError,
+          },
+        })}\n`
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    mockProcess = await waitForProcess(2);
+    const recoveryArgs = (spawn as ReturnType<typeof vi.fn>).mock.calls[1][1] as string[];
+    expect(recoveryArgs[recoveryArgs.indexOf('--conversation') + 1]).toBe('conv-stream-write');
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          event: 'init',
+          conversation_id: 'conv-stream-write',
+          init: {},
+        })}\n${JSON.stringify({
+          event: 'result',
+          result: {
+            conversation_id: 'conv-stream-write',
+            status: 'SUCCESS',
+            response: 'memory written',
+          },
+        })}\n`
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toEqual({
+      result: 'memory written',
+      sessionId: 'conv-stream-write',
+    });
+    expect(onBackendReady).toHaveBeenCalledTimes(1);
+    expect(onText).toHaveBeenCalledWith('memory written', 'memory written');
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(logPrompt).toHaveBeenCalledTimes(1);
+    expect(logPrompt).toHaveBeenCalledWith(
+      '/tmp/project',
+      'app-session',
+      expect.stringContaining('write the daily memory')
+    );
+    expect(logResponse).toHaveBeenCalledOnce();
   });
 
   it('recovers a new sessionId from Agy 1.1.2 plain output without re-running', async () => {

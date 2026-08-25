@@ -1,6 +1,7 @@
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
   extractAntigravityErrorMessage,
+  isAntigravityWorkspaceArtifactPathError,
   reportsUnsupportedOutputFormat,
 } from './antigravity-output.js';
 import { buildSystemPrompt } from './base-runner.js';
@@ -88,10 +89,28 @@ type StreamOutputCapability = 'unknown' | 'stream-json' | 'legacy';
 type SlashCommandCapabilityProbeResult = 'supported' | 'unsupported' | 'unknown';
 
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
+const WORKSPACE_WRITE_SYSTEM_GUIDANCE = `## Antigravity workspace file writes
+When calling write_to_file for a normal file in the current workspace, omit ArtifactMetadata entirely. ArtifactMetadata is reserved for Antigravity's internal artifact directory, not workspace files.`;
+const WORKSPACE_WRITE_RECOVERY_PROMPT = `The preceding write_to_file call failed because ArtifactMetadata was attached to a normal workspace path. Continue the same task from that failed write only. Retry that write without the ArtifactMetadata field and preserve the requested workspace path. Do not repeat completed tool calls or external side effects. Then finish the task normally.`;
 
 interface AntigravityOutputError extends Error {
   antigravityStdout?: string;
   antigravityStderr?: string;
+}
+
+interface AntigravityAttemptOptions {
+  recordPrompt?: boolean;
+}
+
+class AntigravityConversationError extends Error {
+  constructor(
+    message: string,
+    readonly conversationId?: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'AntigravityConversationError';
+  }
 }
 
 export class AntigravityRunner extends CliRunnerBase {
@@ -113,7 +132,9 @@ export class AntigravityRunner extends CliRunnerBase {
 
   constructor(options?: AntigravityOptions) {
     super(options);
-    this.systemPrompt = buildSystemPrompt(options?.platform);
+    this.systemPrompt = [buildSystemPrompt(options?.platform), WORKSPACE_WRITE_SYSTEM_GUIDANCE]
+      .filter(Boolean)
+      .join('\n\n');
     this.printTimeout =
       process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${Math.ceil(this.timeoutMs / 1000)}s`;
     this.disableSlashCommands = process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS !== 'false';
@@ -336,11 +357,36 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    try {
+      return await this.runOnce(prompt, options);
+    } catch (error) {
+      const conversationId = this.getWorkspaceWriteRecoveryConversationId(error, options);
+      if (!conversationId) throw error;
+
+      console.warn(
+        `[antigravity] Retrying failed workspace write without ArtifactMetadata in conversation ${conversationId.slice(0, 8)}...`
+      );
+      return this.runOnce(
+        WORKSPACE_WRITE_RECOVERY_PROMPT,
+        {
+          ...options,
+          sessionId: conversationId,
+        },
+        { recordPrompt: false }
+      );
+    }
+  }
+
+  private async runOnce(
+    prompt: string,
+    options?: RunOptions,
+    attemptOptions: AntigravityAttemptOptions = {}
+  ): Promise<RunResult> {
     const fullPrompt = this.buildFullPrompt(prompt);
 
     this.logExecution('Executing', options);
 
-    if (options?.appSessionId && this.workdir) {
+    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
       logPrompt(this.workdir, options.appSessionId, fullPrompt);
     }
 
@@ -360,8 +406,18 @@ export class AntigravityRunner extends CliRunnerBase {
     } catch (error) {
       const outputError = error as AntigravityOutputError;
       const errorJson = this.parseResponse(outputError.antigravityStdout ?? '');
-      if (this.isErrorStatus(errorJson)) {
+      if (errorJson?.status === 'ERROR') {
         this.outputCapability = 'json';
+        const detail =
+          this.extractErrorMessage(errorJson) ??
+          (error instanceof Error ? error.message : String(error));
+        if (isAntigravityWorkspaceArtifactPathError(detail)) {
+          throw new AntigravityConversationError(
+            detail,
+            errorJson?.conversation_id ?? options?.sessionId,
+            { cause: error }
+          );
+        }
         throw error;
       }
 
@@ -398,14 +454,57 @@ export class AntigravityRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    try {
+      return await this.runStreamOnce(prompt, callbacks, options);
+    } catch (error) {
+      const conversationId = this.getWorkspaceWriteRecoveryConversationId(error, options);
+      if (conversationId) {
+        console.warn(
+          `[antigravity] Continuing failed workspace write without ArtifactMetadata in conversation ${conversationId.slice(0, 8)}...`
+        );
+        const recoveryCallbacks: StreamCallbacks = {
+          ...callbacks,
+          // The first stream already announced readiness before returning its result error.
+          onBackendReady: undefined,
+        };
+        try {
+          return await this.runStreamOnce(
+            WORKSPACE_WRITE_RECOVERY_PROMPT,
+            recoveryCallbacks,
+            {
+              ...options,
+              sessionId: conversationId,
+            },
+            { recordPrompt: false }
+          );
+        } catch (recoveryError) {
+          const err =
+            recoveryError instanceof Error ? recoveryError : new Error(String(recoveryError));
+          callbacks.onError?.(err);
+          throw recoveryError;
+        }
+      }
+
+      const err = error instanceof Error ? error : new Error(String(error));
+      callbacks.onError?.(err);
+      throw error;
+    }
+  }
+
+  private async runStreamOnce(
+    prompt: string,
+    callbacks: StreamCallbacks,
+    options?: RunOptions,
+    attemptOptions: AntigravityAttemptOptions = {}
+  ): Promise<RunResult> {
     if (this.streamOutputCapability === 'legacy') {
-      return this.runPseudoStream(prompt, callbacks, options);
+      return this.runPseudoStream(prompt, callbacks, options, attemptOptions);
     }
 
     const fullPrompt = this.buildFullPrompt(prompt);
     this.logExecution('Streaming', options);
 
-    if (options?.appSessionId && this.workdir) {
+    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
       logPrompt(this.workdir, options.appSessionId, fullPrompt);
     }
 
@@ -447,13 +546,16 @@ export class AntigravityRunner extends CliRunnerBase {
         const fallbackOptions = options?.appSessionId
           ? { ...options, appSessionId: undefined }
           : options;
-        const result = await this.runPseudoStream(prompt, callbacks, fallbackOptions);
+        const result = await this.runPseudoStream(
+          prompt,
+          callbacks,
+          fallbackOptions,
+          attemptOptions
+        );
         onComplete(result);
         return result;
       }
 
-      const err = error instanceof Error ? error : new Error(String(error));
-      callbacks.onError?.(err);
       throw error;
     }
   }
@@ -535,7 +637,13 @@ export class AntigravityRunner extends CliRunnerBase {
 
           if (result.status === 'ERROR') {
             errorDetail = this.extractErrorMessage(result) ?? 'Antigravity CLI returned ERROR';
-            return phase === 'stream' ? new Error(errorDetail) : undefined;
+            // Wait for Agy to close before starting the recovery process for this known error.
+            // Starting it directly from the data event would overlap two managed processes for
+            // the same channel and could corrupt cancellation/timeout ownership.
+            if (isAntigravityWorkspaceArtifactPathError(errorDetail)) return undefined;
+            return phase === 'stream'
+              ? new AntigravityConversationError(errorDetail, sessionId)
+              : undefined;
           }
           if (result.status !== 'SUCCESS') {
             errorDetail = `Antigravity CLI returned unknown stream status${
@@ -548,6 +656,7 @@ export class AntigravityRunner extends CliRunnerBase {
           if (!response) {
             errorDetail =
               lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response';
+            if (isAntigravityWorkspaceArtifactPathError(errorDetail)) return undefined;
             return phase === 'stream' ? new Error(errorDetail) : undefined;
           }
 
@@ -577,7 +686,7 @@ export class AntigravityRunner extends CliRunnerBase {
           throw new Error('Antigravity CLI stream ended without a result event');
         }
         if (errorDetail) {
-          throw new Error(errorDetail);
+          throw new AntigravityConversationError(errorDetail, sessionId);
         }
         return { result: fullText, sessionId };
       },
@@ -588,18 +697,13 @@ export class AntigravityRunner extends CliRunnerBase {
   private async runPseudoStream(
     prompt: string,
     callbacks: StreamCallbacks,
-    options?: RunOptions
+    options?: RunOptions,
+    attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
-    try {
-      const result = await this.run(prompt, options);
-      callbacks.onText?.(result.result, result.result);
-      callbacks.onComplete?.(result);
-      return result;
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      callbacks.onError?.(err);
-      throw error;
-    }
+    const result = await this.runOnce(prompt, options, attemptOptions);
+    callbacks.onText?.(result.result, result.result);
+    callbacks.onComplete?.(result);
+    return result;
   }
 
   private interpretOutput(
@@ -637,7 +741,10 @@ export class AntigravityRunner extends CliRunnerBase {
         return { result, sessionId: response.conversation_id ?? priorSessionId ?? '' };
       }
       if (response.status === 'ERROR') {
-        throw new Error(this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR');
+        throw new AntigravityConversationError(
+          this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR',
+          response.conversation_id ?? priorSessionId
+        );
       }
       throw new Error(
         `Antigravity CLI returned unknown JSON status${response.status ? `: ${response.status}` : ''}`
@@ -697,10 +804,6 @@ export class AntigravityRunner extends CliRunnerBase {
     return this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR';
   }
 
-  private isErrorStatus(response: AntigravityJsonResponse | null): boolean {
-    return response?.status === 'ERROR';
-  }
-
   private isUnsupportedOutputFormat(error: unknown): boolean {
     const outputError = error as AntigravityOutputError;
     const detail = [
@@ -711,6 +814,17 @@ export class AntigravityRunner extends CliRunnerBase {
       .filter(Boolean)
       .join('\n');
     return reportsUnsupportedOutputFormat(detail);
+  }
+
+  private getWorkspaceWriteRecoveryConversationId(
+    error: unknown,
+    options?: RunOptions
+  ): string | undefined {
+    if (!isAntigravityWorkspaceArtifactPathError(error)) return undefined;
+    if (error instanceof AntigravityConversationError && error.conversationId) {
+      return error.conversationId;
+    }
+    return options?.sessionId;
   }
 
   private looksLikeNativeJsonEnvelope(output: string): boolean {
