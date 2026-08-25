@@ -15,6 +15,10 @@ describe('classifyAgentError', () => {
     ['Circuit breaker OPEN. Rejecting all queued requests.', 'circuit-breaker'],
     ["Codex CLI exited with code 1: You've hit your usage limit. Upgrade to Pro", 'usage-limit'],
     ["Error: You've hit your limit · resets 1pm (Asia/Tokyo)", 'usage-limit'],
+    [
+      'declaring permissions: cortex tool write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /home/user/.gemini/antigravity-cli/brain/conv/',
+      'antigravity-artifact-path',
+    ],
     ['Something completely different', 'unknown'],
   ])('%s → %s', (message, expected) => {
     expect(classifyAgentError(new Error(message))).toBe(expected);
@@ -49,6 +53,16 @@ describe('formatAgentErrorForUser', () => {
     expect(msg.length).toBeLessThan(250);
     expect(msg).toContain('❌');
   });
+
+  it('Agyのartifact誤判定は再試行を促す専用メッセージ', () => {
+    const msg = formatAgentErrorForUser(
+      new Error(
+        'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/'
+      )
+    );
+    expect(msg).toContain('Agy');
+    expect(msg).toContain('自動回復');
+  });
 });
 
 describe('shouldSendErrorFollowUp', () => {
@@ -57,6 +71,10 @@ describe('shouldSendErrorFollowUp', () => {
     ['Circuit breaker OPEN', false],
     ["You've hit your usage limit", false],
     ['Request cancelled by user', false],
+    [
+      'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/',
+      false,
+    ],
     ['Process exited unexpectedly with code 143', true],
     ['Some random error', true],
   ])('%s → %s', (message, expected) => {

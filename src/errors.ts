@@ -1,3 +1,5 @@
+import { isAntigravityWorkspaceArtifactPathError } from './antigravity-output.js';
+
 /**
  * クライアント入力に起因するエラー（パラメータ不足・バリデーション失敗など）。
  * tool-server側でこの型を投げると HTTP 400 で返る。それ以外は 500（サーバー内部エラー）。
@@ -42,6 +44,7 @@ export type AgentErrorKind =
   | 'crash' // AI プロセスの予期しない終了
   | 'circuit-breaker' // 連続クラッシュによる一時停止
   | 'usage-limit' // バックエンドの利用上限到達（時間経過で回復）
+  | 'antigravity-artifact-path' // Agy が通常ファイルを内部 artifact と誤分類
   | 'unknown';
 
 const CANCEL_MESSAGE = 'Request cancelled by user';
@@ -50,6 +53,7 @@ const CANCEL_MESSAGE = 'Request cancelled by user';
 export function classifyAgentError(error: unknown): AgentErrorKind {
   const msg = error instanceof Error ? error.message : String(error);
   if (msg === CANCEL_MESSAGE) return 'cancelled';
+  if (isAntigravityWorkspaceArtifactPathError(error)) return 'antigravity-artifact-path';
   if (msg.includes('timed out')) return 'timeout';
   if (msg.includes('Process exited unexpectedly')) return 'crash';
   if (msg.includes('Circuit breaker')) return 'circuit-breaker';
@@ -77,6 +81,8 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
       return '🔌 AIプロセスが連続でクラッシュしたため一時停止中です。しばらくしてから再試行してください';
     case 'usage-limit':
       return `💳 バックエンドの利用上限に達しています: ${detail}`;
+    case 'antigravity-artifact-path':
+      return '❌ Agyがワークスペースへの書き込みを内部artifactと誤判定しました。自動回復にも失敗したため、もう一度お試しください';
     case 'unknown':
     default:
       return `❌ エラーが発生しました: ${detail}`;
