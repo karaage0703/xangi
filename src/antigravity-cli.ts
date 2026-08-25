@@ -691,6 +691,10 @@ export class AntigravityRunner extends CliRunnerBase {
         return { result: fullText, sessionId };
       },
       exitErrorDetail: () => errorDetail,
+      wrapExitError: (error) =>
+        sessionId && isAntigravityWorkspaceArtifactPathError(error)
+          ? new AntigravityConversationError(error.message, sessionId, { cause: error })
+          : error,
     };
   }
 

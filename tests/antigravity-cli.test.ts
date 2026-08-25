@@ -1002,6 +1002,66 @@ describe('AntigravityRunner', () => {
     expect(logResponse).toHaveBeenCalledOnce();
   });
 
+  it('continues a streamed workspace write after a non-zero process exit', async () => {
+    const { spawn } = await import('child_process');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({});
+    const onError = vi.fn();
+    const promise = runner.runStream('write the daily memory', { onError });
+    const artifactError =
+      'write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /brain/conv-stream-write/';
+
+    let mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          event: 'init',
+          conversation_id: 'conv-stream-write',
+          init: {},
+        })}\n${JSON.stringify({
+          event: 'result',
+          result: {
+            conversation_id: 'conv-stream-write',
+            status: 'ERROR',
+            response: '',
+            error: artifactError,
+          },
+        })}\n`
+      )
+    );
+    mockProcess.emit('close', 1);
+
+    mockProcess = await waitForProcess(2);
+    const recoveryArgs = (spawn as ReturnType<typeof vi.fn>).mock.calls[1][1] as string[];
+    expect(recoveryArgs[recoveryArgs.indexOf('--conversation') + 1]).toBe('conv-stream-write');
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          event: 'init',
+          conversation_id: 'conv-stream-write',
+          init: {},
+        })}\n${JSON.stringify({
+          event: 'result',
+          result: {
+            conversation_id: 'conv-stream-write',
+            status: 'SUCCESS',
+            response: 'memory written',
+          },
+        })}\n`
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toEqual({
+      result: 'memory written',
+      sessionId: 'conv-stream-write',
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
   it('recovers a new sessionId from Agy 1.1.2 plain output without re-running', async () => {
     const { spawn } = await import('child_process');
     const home = mkdtempSync(join(tmpdir(), 'agy-home-'));
