@@ -83,6 +83,7 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
         'node_modules/prod-pkg': { version: '1.0.0' },
         'node_modules/prod-pkg/node_modules/transitive-prod': { version: '1.0.0' },
         'node_modules/prod-pkg/node_modules/transitive-dev': { version: '1.0.0', dev: true },
+        'node_modules/optional-other-platform': { version: '1.0.0', optional: true },
         'node_modules/dev-pkg': { version: '1.0.0', dev: true },
       },
     })
@@ -254,6 +255,37 @@ describe('packaging/build-bundle.sh', () => {
         nodeBinary,
       ])
     ).rejects.toMatchObject({ code: 2, stderr: expect.stringMatching(/does not match/) });
+  });
+
+  it('必須production依存の欠落は拒否する', async () => {
+    const { project, output, nodeBinary } = await createFixture();
+    const lockPath = join(project, 'package-lock.json');
+    const lock = JSON.parse(await readFile(lockPath, 'utf8')) as {
+      packages: Record<string, Record<string, unknown>>;
+    };
+    lock.packages['node_modules/missing-required'] = { version: '1.0.0' };
+    await writeFile(lockPath, JSON.stringify(lock));
+
+    await expect(
+      exec('bash', [
+        'packaging/build-bundle.sh',
+        '--project-root',
+        project,
+        '--output-dir',
+        output,
+        '--version',
+        '1.2.3',
+        '--platform',
+        'darwin',
+        '--arch',
+        'arm64',
+        '--node-binary',
+        nodeBinary,
+      ])
+    ).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining('Missing production package: node_modules/missing-required'),
+    });
   });
 
   it('引数と環境変数のbuildが同一byte列になりforbidden入力の変更に影響されない', async () => {

@@ -153,16 +153,22 @@ cp -- "$node_binary" "$bundle_root/runtime/bin/node"
 chmod 0755 "$bundle_root/runtime/bin/node"
 
 production_paths="$work_dir/production-paths.txt"
-node - "$project_root/package-lock.json" >"$production_paths" <<'NODE'
+node - "$project_root/package-lock.json" "$project_root" >"$production_paths" <<'NODE'
 const fs = require('node:fs');
+const path = require('node:path');
 const lock = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const projectRoot = process.argv[3];
 if (!lock.packages || typeof lock.packages !== 'object') {
   throw new Error('package-lock.json must contain a packages map');
 }
-for (const [path, metadata] of Object.entries(lock.packages).sort(([a], [b]) => a.localeCompare(b))) {
-  if (!path.startsWith('node_modules/')) continue;
-  if (/[\r\n\\]/.test(path) || path.split('/').includes('..')) throw new Error(`Unsafe package path: ${path}`);
-  if (metadata && metadata.dev !== true && metadata.link !== true) process.stdout.write(`${path}\n`);
+for (const [packagePath, metadata] of Object.entries(lock.packages).sort(([a], [b]) => a.localeCompare(b))) {
+  if (!packagePath.startsWith('node_modules/')) continue;
+  if (/[\r\n\\]/.test(packagePath) || packagePath.split('/').includes('..')) {
+    throw new Error(`Unsafe package path: ${packagePath}`);
+  }
+  if (!metadata || metadata.dev === true || metadata.link === true) continue;
+  if (metadata.optional === true && !fs.existsSync(path.join(projectRoot, packagePath))) continue;
+  process.stdout.write(`${packagePath}\n`);
 }
 NODE
 
