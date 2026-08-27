@@ -34,6 +34,32 @@ interface MonitorOrigin {
   threadName?: string;
 }
 
+interface MonitorContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  updatedAt: string;
+}
+
+export interface UsageWindow {
+  label: string;
+  usedPercent: number;
+  resetsAt?: number;
+  windowDurationMins?: number;
+}
+
+interface UsageGroup {
+  id: string;
+  label: string;
+  planType?: string;
+  windows: UsageWindow[];
+}
+
+interface UsageProvider {
+  id: string;
+  label: string;
+  groups: UsageGroup[];
+}
+
 export interface MonitorSession {
   id: string;
   title?: string;
@@ -51,6 +77,7 @@ export interface MonitorSession {
   activity?: MonitorActivity;
   backend?: MonitorBackend;
   origin?: MonitorOrigin;
+  contextUsage?: MonitorContextUsage;
 }
 
 export interface MonitorSessionsResponse {
@@ -63,6 +90,12 @@ export interface MonitorSessionsResponse {
     processCwd?: string;
     workdir?: string;
   };
+}
+
+interface AccountUsageResponse {
+  providers?: UsageProvider[];
+  updatedAt?: string;
+  stale?: boolean;
 }
 
 interface MonitorActivityEvent {
@@ -81,6 +114,7 @@ export type MonitorLane = 'running' | 'waiting' | 'completed';
 
 const PAGE_SIZE = 200;
 const RECENT_MS = 24 * 60 * 60 * 1000;
+const USAGE_VISIBILITY_KEY = 'xangi.monitor.hidden-usage-providers';
 
 const FILTERS: Array<{ value: MonitorFilter; label: string }> = [
   { value: 'all', label: 'All' },
@@ -93,6 +127,42 @@ const LANES: Array<{ value: MonitorLane; label: string; description: string }> =
   { value: 'waiting', label: '入力待ち', description: '次の入力を待機・継続可能' },
   { value: 'completed', label: '完了', description: '24時間以内に完了・再開可能' },
 ];
+
+export function usagePacePercent(
+  window: Pick<UsageWindow, 'resetsAt' | 'windowDurationMins'>,
+  now = Date.now()
+): number | undefined {
+  if (!window.resetsAt || !window.windowDurationMins || window.windowDurationMins <= 0) {
+    return undefined;
+  }
+  const durationMs = window.windowDurationMins * 60_000;
+  const startMs = window.resetsAt * 1000 - durationMs;
+  return Math.min(100, Math.max(0, ((now - startMs) / durationMs) * 100));
+}
+
+export function usageGroupPresentation(group: Pick<UsageGroup, 'id' | 'label' | 'planType'>): {
+  title: string;
+  description: string;
+} {
+  const plan = group.planType ? ` · ${group.planType}` : '';
+  if (group.id === 'codex') {
+    return { title: 'Codex共通枠', description: `${group.label}${plan}` };
+  }
+  return { title: group.label, description: group.planType || '' };
+}
+
+export function visibleUsageGroups(groups: UsageGroup[]): UsageGroup[] {
+  return groups.filter((group) => group.id !== 'codex_bengalfox');
+}
+
+export function displayUsageProviders(providers: UsageProvider[]): UsageProvider[] {
+  return providers
+    .map((provider) => ({
+      ...provider,
+      groups: visibleUsageGroups(provider.groups),
+    }))
+    .filter((provider) => provider.groups.length > 0);
+}
 
 function isRunning(session: MonitorSession): boolean {
   return session.isActive === true;
@@ -164,13 +234,11 @@ function sessionLine(session: MonitorSession): string {
   );
 }
 
-function conversationLabel(session: MonitorSession): string {
+export function conversationLabel(session: MonitorSession): string {
   if (session.platform === 'web') return 'Web Chat';
   const channelName = session.origin?.channelName || session.activity?.threadLabel;
   const channel = channelName ? `#${channelName.replace(/^#/, '')}` : session.origin?.channelId;
-  const thread = session.origin?.threadName || session.origin?.threadId;
-  const target = channel && thread ? `${channel} / ${thread}` : channel || thread || '-';
-  return `${platformName(session.platform)} · ${target}`;
+  return `${platformName(session.platform)} · ${channel || '-'}`;
 }
 
 function shortId(id?: string): string {
@@ -305,6 +373,14 @@ export function Monitor() {
   const [closingId, setClosingId] = useState('');
   const [sessionToClose, setSessionToClose] = useState<MonitorSession | null>(null);
   const [actionError, setActionError] = useState('');
+  const [accountUsage, setAccountUsage] = useState<AccountUsageResponse>();
+  const [hiddenUsageProviders, setHiddenUsageProviders] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(USAGE_VISIBILITY_KEY) || '[]') as string[];
+    } catch {
+      return [];
+    }
+  });
   const sessionsRef = useRef<MonitorSession[]>([]);
   const loadSequenceRef = useRef(0);
   const detailRef = useRef<HTMLElement>(null);
@@ -322,6 +398,26 @@ export function Monitor() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [selectedId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch('/api/usage', { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = (await response.json()) as AccountUsageResponse;
+        if (!cancelled) setAccountUsage(data);
+      } catch {
+        // Session monitoring remains useful when a provider usage probe is unavailable.
+      }
+    };
+    void load();
+    const timer = window.setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const applySnapshot = useCallback((data: MonitorSessionsResponse) => {
     const nextSessions = (data.sessions || []).filter(isMonitorVisible);
@@ -502,6 +598,19 @@ export function Monitor() {
   const runningCount = sessionsByLane.running.length;
   const waitingCount = sessionsByLane.waiting.length;
   const completedCount = sessionsByLane.completed.length;
+  const usageProviders = displayUsageProviders(accountUsage?.providers || []);
+  const visibleUsageProviders = usageProviders.filter(
+    (provider) => !hiddenUsageProviders.includes(provider.id)
+  );
+  const setProviderHidden = (providerId: string, hidden: boolean) => {
+    setHiddenUsageProviders((current) => {
+      const next = hidden
+        ? [...new Set([...current, providerId])]
+        : current.filter((id) => id !== providerId);
+      localStorage.setItem(USAGE_VISIBILITY_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
 
   return (
     <main className="monitor-page">
@@ -543,6 +652,107 @@ export function Monitor() {
       </nav>
 
       <section className="monitor-content">
+        {usageProviders.length > 0 && (
+          <section className="monitor-usage" aria-label="AI利用量">
+            <header className="monitor-usage-header">
+              <div>
+                <h2>AI利用量</h2>
+                <p>アカウント枠は60秒ごと、コンテキストはturn完了時に更新</p>
+              </div>
+              {hiddenUsageProviders
+                .filter((providerId) =>
+                  usageProviders.some((provider) => provider.id === providerId)
+                )
+                .map((providerId) => (
+                  <button
+                    key={providerId}
+                    type="button"
+                    onClick={() => setProviderHidden(providerId, false)}
+                  >
+                    {usageProviders.find((provider) => provider.id === providerId)?.label ||
+                      providerId}
+                    を表示
+                  </button>
+                ))}
+            </header>
+            <div className="monitor-usage-providers">
+              {visibleUsageProviders.map((provider) => (
+                <details className="monitor-usage-provider" open key={provider.id}>
+                  <summary>
+                    <strong>{provider.label}</strong>
+                    <span>{accountUsage?.stale ? '前回値' : '最新'}</span>
+                  </summary>
+                  <button
+                    className="monitor-usage-hide"
+                    type="button"
+                    onClick={() => setProviderHidden(provider.id, true)}
+                  >
+                    非表示
+                  </button>
+                  {provider.groups.map((group) => {
+                    const presentation = usageGroupPresentation(group);
+                    return (
+                      <section className="monitor-usage-group" key={group.id}>
+                        <h3>{presentation.title}</h3>
+                        {presentation.description && <p>{presentation.description}</p>}
+                        {group.windows.map((window) => {
+                          const pace = usagePacePercent(window, clock);
+                          return (
+                            <div
+                              className="monitor-usage-window"
+                              key={`${group.id}-${window.label}`}
+                            >
+                              <div>
+                                <span>{window.label}</span>
+                                <strong>
+                                  {Math.round(window.usedPercent)}%
+                                  {pace !== undefined && (
+                                    <span className="monitor-usage-pace">
+                                      {' '}
+                                      / 目安 {Math.round(pace)}%
+                                    </span>
+                                  )}
+                                </strong>
+                              </div>
+                              <div
+                                className="monitor-usage-chart"
+                                role="progressbar"
+                                aria-label={`${window.label}の使用率 ${Math.round(window.usedPercent)}%${pace === undefined ? '' : `、時間経過の目安 ${Math.round(pace)}%`}`}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(window.usedPercent)}
+                              >
+                                <span
+                                  className="monitor-usage-actual"
+                                  style={{
+                                    width: `${Math.min(100, Math.max(0, window.usedPercent))}%`,
+                                  }}
+                                />
+                                {pace !== undefined && (
+                                  <span
+                                    className="monitor-usage-target"
+                                    style={{ left: `${pace}%` }}
+                                    title={`時間経過の目安 ${Math.round(pace)}%`}
+                                  />
+                                )}
+                              </div>
+                              <small>
+                                {window.resetsAt
+                                  ? `${new Date(window.resetsAt * 1000).toLocaleString()} リセット`
+                                  : 'リセット時刻不明'}
+                              </small>
+                            </div>
+                          );
+                        })}
+                      </section>
+                    );
+                  })}
+                </details>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section className="monitor-summary" aria-label="summary">
           <div className="monitor-metric">
             <div className="monitor-metric-value">{runningCount}</div>
@@ -606,12 +816,19 @@ export function Monitor() {
 
               <dl className="monitor-detail-grid">
                 {[
-                  ['状態', stateLabel(selected)],
-                  ['会話先', conversationLabel(selected)],
-                  ['更新', formatAge(selected.updatedAt || selected.createdAt, clock)],
-                  ['完了ターン数', String(selected.messageCount || 0)],
-                ].map(([label, value]) => (
-                  <div className="monitor-detail-kv" key={label}>
+                  ['state', '状態', stateLabel(selected)],
+                  ['destination', '会話先', conversationLabel(selected)],
+                  ['updated', '更新', formatAge(selected.updatedAt || selected.createdAt, clock)],
+                  ['turns', '完了ターン数', String(selected.messageCount || 0)],
+                  [
+                    'context',
+                    'コンテキスト',
+                    selected.contextUsage
+                      ? `${selected.contextUsage.usedTokens.toLocaleString()} / ${selected.contextUsage.contextWindow.toLocaleString()} (${Math.round((selected.contextUsage.usedTokens / selected.contextUsage.contextWindow) * 100)}%)`
+                      : '未取得',
+                  ],
+                ].map(([key, label, value]) => (
+                  <div className={`monitor-detail-kv monitor-detail-kv-${key}`} key={key}>
                     <dt>{label}</dt>
                     <dd className="monitor-detail-value">{value}</dd>
                   </div>
@@ -619,7 +836,7 @@ export function Monitor() {
               </dl>
 
               <section className="monitor-runtime" aria-label="実行設定">
-                <h3>実行設定</h3>
+                <h3>このセッションの実行設定</h3>
                 <dl>
                   <div>
                     <dt>バックエンド</dt>

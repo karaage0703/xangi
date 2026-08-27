@@ -40,9 +40,9 @@ xangi を LINE Bot として動かすための設定手順。1:1 chat 想定。
 xangi settings
 ```
 
-開いたローカル設定画面のLINE欄へChannel access tokenとChannel secretを貼り付けて保存する。
+開いたローカル設定画面のLINE欄へChannel access token、Channel secret、許可ユーザーIDを入力して保存する。
 
-source checkoutで詳細設定を行う場合、許可ユーザーIDなど機密ではない値は`.env`へ設定できる。
+source checkoutで詳細設定を行う場合は、同じ許可ユーザーIDや他の詳細値を`.env`へ設定できる。
 
 ```bash
 LINE_ALLOWED_USER=<反応したい LINE userId、カンマ区切り、"*" で全許可>

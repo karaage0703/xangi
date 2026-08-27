@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { systemCmd } from '../src/cli/system-cmd.js';
@@ -8,7 +8,7 @@ import { systemCmd } from '../src/cli/system-cmd.js';
  * src/cli/system-cmd.ts のリグレッションテスト。
  *
  * - system_restart: 自プロセスに SIGTERM を送る (PID ファイル経路は廃止、tool-server 経由で本体内実行が前提)
- * - PR #189 (WORKSPACE_PATH): DATA_DIR 未設定時に WORKSPACE_PATH/.xangi を使う
+ * - generic system_settings is intentionally unavailable
  */
 describe('system-cmd', () => {
   let tmpDir: string;
@@ -27,41 +27,11 @@ describe('system-cmd', () => {
     vi.restoreAllMocks();
   });
 
-  describe('system_settings (PR #189)', () => {
-    it('writes settings.json under WORKSPACE_PATH/.xangi when DATA_DIR is unset', async () => {
-      const result = await systemCmd('system_settings', { key: 'foo', value: 'bar' });
-      expect(result).toContain('foo');
-
-      const expectedPath = join(tmpDir, '.xangi', 'settings.json');
-      expect(existsSync(expectedPath)).toBe(true);
-      const data = JSON.parse(readFileSync(expectedPath, 'utf-8'));
-      expect(data.foo).toBe('bar');
-    });
-
-    it('respects DATA_DIR over WORKSPACE_PATH', async () => {
-      const dataDir = join(tmpDir, 'custom-data');
-      mkdirSync(dataDir, { recursive: true });
-      process.env.DATA_DIR = dataDir;
-
-      await systemCmd('system_settings', { key: 'foo', value: 'bar' });
-
-      expect(existsSync(join(dataDir, 'settings.json'))).toBe(true);
-      // WORKSPACE_PATH/.xangi 側には書かれない
-      expect(existsSync(join(tmpDir, '.xangi', 'settings.json'))).toBe(false);
-    });
-
-    it('returns empty settings by default when settings.json does not exist', async () => {
-      const result = await systemCmd('system_settings', {});
-      expect(result).toContain('(なし)');
-    });
-
-    it('rejects self lifecycle runtime setting writes', async () => {
-      await expect(
-        systemCmd('system_settings', { key: 'selfLifecycle', value: 'restart-only' })
-      ).rejects.toThrow('selfLifecycle');
-      await expect(
-        systemCmd('system_settings', { key: 'XANGI_SELF_LIFECYCLE', value: 'restart-only' })
-      ).rejects.toThrow('XANGI_SELF_LIFECYCLE');
+  describe('system_settings', () => {
+    it('is unavailable and cannot write arbitrary runtime settings', async () => {
+      await expect(systemCmd('system_settings', { key: 'foo', value: 'bar' })).rejects.toThrow(
+        'Unknown system command: system_settings'
+      );
     });
   });
 

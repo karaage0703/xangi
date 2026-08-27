@@ -7,6 +7,7 @@
 import { join } from 'path';
 import type { ToolHandler, ToolResult } from './types.js';
 import type { ChatPlatform } from '../prompts/index.js';
+import { featureControlsFromEnv } from '../feature-controls.js';
 
 const CMD_TIMEOUT_MS = 30_000;
 
@@ -392,26 +393,6 @@ const webStatusHandler: ToolHandler = {
   },
 };
 
-const systemSettingsHandler: ToolHandler = {
-  name: 'system_settings',
-  description: 'xangiの設定を変更または表示する。',
-  parameters: {
-    type: 'object',
-    properties: {
-      key: { type: 'string', description: '設定キー（省略で一覧表示）' },
-      value: { type: 'string', description: '設定値' },
-    },
-  },
-  async execute(args): Promise<ToolResult> {
-    const cliArgs = ['system_settings'];
-    if (args.key) {
-      cliArgs.push('--key', String(args.key));
-      if (args.value !== undefined) cliArgs.push('--value', String(args.value));
-    }
-    return runXangiCmd(cliArgs);
-  },
-};
-
 const extensionUninstallHandler: ToolHandler = {
   name: 'extension_uninstall',
   description:
@@ -682,6 +663,7 @@ export function getSlackTools(): ToolHandler[] {
 
 /** スケジュール関連ツール */
 export function getScheduleTools(platform?: ChatPlatform): ToolHandler[] {
+  if (process.env.SCHEDULER_ENABLED === 'false') return [];
   return [
     scheduleListHandler,
     createScheduleAddHandler(platform),
@@ -693,12 +675,13 @@ export function getScheduleTools(platform?: ChatPlatform): ToolHandler[] {
 
 /** システム関連ツール */
 export function getSystemTools(platform?: ChatPlatform): ToolHandler[] {
-  return [
-    webStatusHandler,
-    systemRestartHandler,
-    systemSettingsHandler,
-    createRuntimeSettingsHandler(platform),
-  ];
+  const features = featureControlsFromEnv();
+  const tools = [webStatusHandler];
+  if (features.lifecycle) tools.push(systemRestartHandler);
+  if (features.runtimeSettings || features.backendSwitching) {
+    tools.push(createRuntimeSettingsHandler(platform));
+  }
+  return tools;
 }
 
 /** Extension lifecycle関連ツール */

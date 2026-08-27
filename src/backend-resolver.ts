@@ -60,7 +60,6 @@ export class BackendResolver {
   private defaultModel?: string;
   private allowedBackends: AgentBackend[];
   private allowAllAvailableBackends: boolean;
-  private allowedModels?: string[];
   private backendAvailable: (backend: AgentBackend) => boolean;
 
   /** メモリ上のチャンネルオーバーライド */
@@ -76,7 +75,6 @@ export class BackendResolver {
     this.defaultModel = config.agent.config.model;
     this.allowedBackends = config.agent.allowedBackends;
     this.allowAllAvailableBackends = !process.env.ALLOWED_BACKENDS?.trim();
-    this.allowedModels = config.agent.allowedModels;
     this.backendAvailable =
       options.backendAvailable ??
       ((backend) =>
@@ -332,15 +330,6 @@ export class BackendResolver {
   }
 
   /**
-   * モデルが許可リストに含まれるか
-   * ALLOWED_MODELS 未設定時は true（制限なし）
-   */
-  isModelAllowed(model: string): boolean {
-    if (!this.allowedModels) return true;
-    return this.allowedModels.includes(model);
-  }
-
-  /**
    * デフォルトバックエンドを取得
    */
   getDefault(): ResolvedBackend {
@@ -360,13 +349,6 @@ export class BackendResolver {
   /** UIやコマンドで新しく選択できるバックエンド一覧。 */
   getSelectableBackends(): AgentBackend[] {
     return this.getAllowedBackends().filter((backend) => this.backendAvailable(backend));
-  }
-
-  /**
-   * 許可されているモデル一覧（undefined = 制限なし）
-   */
-  getAllowedModels(): string[] | undefined {
-    return this.allowedModels;
   }
 
   /**

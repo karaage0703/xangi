@@ -383,28 +383,19 @@ export async function discoverBackendModels(
   }
 }
 
-export function formatBackendModels(
-  discovery: BackendModelDiscovery,
-  allowedModels?: string[]
-): string {
+export function formatBackendModels(discovery: BackendModelDiscovery): string {
   const title = discovery.backend;
   if (discovery.status !== 'available') {
     const label = discovery.status === 'unsupported' ? '取得非対応' : '取得失敗';
     return `### ${title}\n- ${label}: ${discovery.message ?? discovery.source}`;
   }
 
-  const visibleModels = allowedModels
-    ? discovery.models.filter((model) => allowedModels.includes(model.id))
-    : discovery.models;
   const lines = [`### ${title}`, `- 取得元: ${discovery.source}`];
-  if (allowedModels && visibleModels.length !== discovery.models.length) {
-    lines.push('- ALLOWED_MODELSで表示を絞り込み');
-  }
-  if (visibleModels.length === 0) {
-    lines.push('- 利用許可されたモデルなし');
+  if (discovery.models.length === 0) {
+    lines.push('- 利用可能なモデルなし');
     return lines.join('\n');
   }
-  for (const model of visibleModels) {
+  for (const model of discovery.models) {
     const name =
       model.displayName && model.displayName !== model.id ? ` — ${model.displayName}` : '';
     const defaultLabel = model.isDefault ? ' (default)' : '';
@@ -414,16 +405,4 @@ export function formatBackendModels(
     lines.push(`- \`${model.id}\`${name}${defaultLabel}${efforts}`);
   }
   return lines.join('\n');
-}
-
-export function configuredAllowedModels(
-  env: NodeJS.ProcessEnv = process.env
-): string[] | undefined {
-  const raw = env.ALLOWED_MODELS;
-  if (!raw) return undefined;
-  const models = raw
-    .split(',')
-    .map((model) => model.trim())
-    .filter(Boolean);
-  return models.length > 0 ? models : undefined;
 }

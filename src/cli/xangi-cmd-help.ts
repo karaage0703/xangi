@@ -212,12 +212,6 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     ],
   },
   {
-    name: 'system_settings',
-    topic: 'system',
-    summary: '設定一覧の表示または設定変更',
-    usage: 'xangi tool system_settings [--key <key> --value <value>]',
-  },
-  {
     name: 'extension_request',
     topic: 'extension',
     summary: '認証情報を公開せずmanaged extension APIを呼び出す',

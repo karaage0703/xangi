@@ -20,7 +20,6 @@ import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agen
 import { getSupportedEffortLevels } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
-import { ClaudeCodeRunner } from '../claude-code.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
 import { requestProcessRestart } from '../restart-process.js';
@@ -231,13 +230,6 @@ export function buildSlashCommands(
       .toJSON(),
     new SlashCommandBuilder().setName('restart').setDescription('ボットを再起動する').toJSON(),
     new SlashCommandBuilder()
-      .setName('skip')
-      .setDescription('許可確認をスキップしてメッセージを実行')
-      .addStringOption((option) =>
-        option.setName('message').setDescription('実行するメッセージ').setRequired(true)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
       .setName('schedule')
       .setDescription('スケジュール管理')
       .addSubcommand((sub) =>
@@ -428,7 +420,30 @@ export function buildSlashCommands(
     );
   }
 
-  return commands;
+  const disabledCommands = new Set<string>(['skip']);
+  if (config.features?.workspaceSwitching === false) disabledCommands.add('workspace');
+  if (config.features?.runtimeSettings === false) {
+    for (const name of [
+      'settings',
+      'replysuggestions',
+      'notify',
+      'autoreply',
+      'respondtobots',
+      'threadmode',
+      'llmmode',
+      'llmeffort',
+    ]) {
+      disabledCommands.add(name);
+    }
+  }
+  if (config.features?.backendSwitching === false) {
+    disabledCommands.add('backend');
+    disabledCommands.add('models');
+  }
+  if (config.features?.lifecycle === false) disabledCommands.add('restart');
+  if (config.scheduler?.enabled === false) disabledCommands.add('schedule');
+
+  return commands.filter((command) => !disabledCommands.has(command.name));
 }
 
 interface DiscordAutocompleteChoice {
@@ -548,17 +563,14 @@ export async function getDiscordAutocompleteChoices(
   if (input.focusedName === 'model') {
     const discovery = await discoverModels(input.backend);
     if (discovery.status !== 'available') return [];
-    const allowedModels = resolver.getAllowedModels();
     return filterAutocompleteChoices(
-      discovery.models
-        .filter((model) => !allowedModels || allowedModels.includes(model.id))
-        .map((model) => ({
-          name:
-            model.displayName && model.displayName !== model.id
-              ? `${model.displayName} (${model.id})`.slice(0, 100)
-              : model.id.slice(0, 100),
-          value: model.id,
-        })),
+      discovery.models.map((model) => ({
+        name:
+          model.displayName && model.displayName !== model.id
+            ? `${model.displayName} (${model.id})`.slice(0, 100)
+            : model.id.slice(0, 100),
+        value: model.id,
+      })),
       input.focusedValue
     );
   }
@@ -790,6 +802,13 @@ async function handleScheduleCommand(
   scheduler: Scheduler,
   schedulerConfig?: { enabled: boolean; startupEnabled: boolean }
 ): Promise<void> {
+  if (schedulerConfig?.enabled === false) {
+    await interaction.reply({
+      content: 'この機能は管理者により無効化されています',
+      ephemeral: true,
+    });
+    return;
+  }
   const subcommand = interaction.options.getSubcommand();
   const channelId = interaction.channelId;
 
@@ -927,15 +946,24 @@ export function createInteractionHandler(
   } = deps;
 
   const autocompleteDiscoverModels = createDiscordModelDiscoveryCache(discoverModels);
-  for (const backend of resolver.getSelectableBackends()) {
-    void autocompleteDiscoverModels(backend).catch((error) => {
-      console.warn(`[xangi] Failed to prewarm ${backend} model autocomplete:`, error);
-    });
+  if (config.features?.backendSwitching !== false) {
+    for (const backend of resolver.getSelectableBackends()) {
+      void autocompleteDiscoverModels(backend).catch((error) => {
+        console.warn(`[xangi] Failed to prewarm ${backend} model autocomplete:`, error);
+      });
+    }
   }
 
   return async (interaction: Interaction) => {
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
+      if (
+        ['backend', 'models'].includes(interaction.commandName) &&
+        config.features?.backendSwitching === false
+      ) {
+        await interaction.respond([]);
+        return;
+      }
       await handleAutocomplete(
         interaction,
         skillsRef.current,
@@ -1102,6 +1130,42 @@ export function createInteractionHandler(
 
     if (!interaction.isChatInputCommand()) return;
 
+    const commandFeatureEnabled =
+      !['workspace'].includes(interaction.commandName) ||
+      config.features?.workspaceSwitching !== false;
+    const runtimeCommandEnabled =
+      ![
+        'settings',
+        'replysuggestions',
+        'notify',
+        'autoreply',
+        'respondtobots',
+        'threadmode',
+        'llmmode',
+        'llmeffort',
+      ].includes(interaction.commandName) || config.features?.runtimeSettings !== false;
+    const backendCommandEnabled =
+      !['backend', 'models'].includes(interaction.commandName) ||
+      config.features?.backendSwitching !== false;
+    const lifecycleCommandEnabled =
+      interaction.commandName !== 'restart' || config.features?.lifecycle !== false;
+    const schedulerCommandEnabled =
+      interaction.commandName !== 'schedule' || config.scheduler.enabled;
+    if (
+      interaction.commandName === 'skip' ||
+      !commandFeatureEnabled ||
+      !runtimeCommandEnabled ||
+      !backendCommandEnabled ||
+      !lifecycleCommandEnabled ||
+      !schedulerCommandEnabled
+    ) {
+      await interaction.reply({
+        content: 'この機能は管理者により無効化されています',
+        ephemeral: true,
+      });
+      return;
+    }
+
     // 許可リストチェック（"*" で全員許可）
     if (
       !config.discord.allowedUsers?.includes('*') &&
@@ -1233,28 +1297,33 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'backend') {
-      const sub = interaction.options.getSubcommand();
-      const backendValue =
-        sub === 'set' ? (interaction.options.getString('type', true) as AgentBackend) : undefined;
-      const modelValue =
-        sub === 'set' ? (interaction.options.getString('model') ?? undefined) : undefined;
-      const rawEffort = sub === 'set' ? interaction.options.getString('effort') : undefined;
-      const effortValue =
-        rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
-      const result = await executeRuntimeSettingsCommand(
-        {
-          name: 'backend',
-          action: sub,
-          backend: backendValue,
-          model: modelValue,
-          effort: effortValue,
-          channelId: settingsChannelId,
-          platform: 'discord',
-        },
-        { config, resolver, modelDiscovery: discoverBackendModels }
-      );
-      if (sub !== 'show') agentRunner.switchBackend(settingsChannelId);
-      await interaction.reply(result);
+      await interaction.deferReply();
+      try {
+        const sub = interaction.options.getSubcommand();
+        const backendValue =
+          sub === 'set' ? (interaction.options.getString('type', true) as AgentBackend) : undefined;
+        const modelValue =
+          sub === 'set' ? (interaction.options.getString('model') ?? undefined) : undefined;
+        const rawEffort = sub === 'set' ? interaction.options.getString('effort') : undefined;
+        const effortValue =
+          rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
+        const result = await executeRuntimeSettingsCommand(
+          {
+            name: 'backend',
+            action: sub,
+            backend: backendValue,
+            model: modelValue,
+            effort: effortValue,
+            channelId: settingsChannelId,
+            platform: 'discord',
+          },
+          { config, resolver, modelDiscovery: discoverModels }
+        );
+        if (sub !== 'show') agentRunner.switchBackend(settingsChannelId);
+        await interaction.editReply(result);
+      } catch (error) {
+        await interaction.editReply(formatAgentErrorForUser(error));
+      }
       return;
     }
 
@@ -1265,76 +1334,6 @@ export function createInteractionHandler(
       const chunks = splitDiscordMessage(content, DISCORD_SAFE_LENGTH);
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
-      return;
-    }
-
-    if (interaction.commandName === 'skip') {
-      const skipMessage = interaction.options.getString('message', true);
-      await interaction.deferReply();
-
-      try {
-        const sessionId = getSession(channelId);
-        const { appSessionId, workspace } = await ensureSessionWithWorkspace({
-          registry: workspaceRegistry,
-          platform: 'discord',
-          contextKey: channelId,
-          bindingKey: settingsChannelId,
-        });
-
-        // ワンショットのClaudeCodeRunnerを使用（skipPermissionsを確実に反映するため）
-        const skipRunner = new ClaudeCodeRunner({
-          ...config.agent.config,
-          workdir: workspace?.path ?? config.agent.config.workdir,
-        });
-        const runResult = await skipRunner.run(skipMessage, {
-          skipPermissions: true,
-          sessionId,
-          channelId,
-          settingsChannelId,
-          appSessionId,
-          workdir: workspace?.path,
-        });
-
-        setSession(channelId, runResult.sessionId);
-
-        // ファイルパスを抽出して添付送信（テキスト由来 + 構造化 attachments を合算・重複排除）
-        // 添付ゼロでも実在しない MEDIA マーカーが残る場合は生成失敗の注記に差し替える
-        const { filePaths, displayText } = buildAttachmentResult(
-          runResult.result,
-          runResult.attachments,
-          workspace?.path
-        );
-
-        const chunks = splitDiscordMessage(displayText, DISCORD_SAFE_LENGTH);
-        await interaction.editReply(chunks[0] || '✅');
-        if (chunks.length > 1 && 'send' in interaction.channel!) {
-          const channel = interaction.channel as unknown as {
-            send: (content: string) => Promise<unknown>;
-          };
-          for (let i = 1; i < chunks.length; i++) {
-            await waitBeforeFollowupDiscordSend();
-            await channel.send(chunks[i]);
-          }
-        }
-
-        // ファイル添付送信
-        if (filePaths.length > 0 && interaction.channel && 'send' in interaction.channel) {
-          try {
-            await (
-              interaction.channel as unknown as {
-                send: (options: { files: { attachment: string }[] }) => Promise<unknown>;
-              }
-            ).send({
-              files: filePaths.map((fp) => ({ attachment: fp })),
-            });
-            console.log(`[xangi] Sent ${filePaths.length} file(s) via /skip`);
-          } catch (err) {
-            console.error('[xangi] Failed to send files via /skip:', err);
-          }
-        }
-      } catch (error) {
-        await interaction.editReply(formatAgentErrorForUser(error)).catch(() => {});
-      }
       return;
     }
 

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Receives Antigravity's official statusline JSON payload on stdin and stores
+# the latest snapshot for xangi Monitor. Configure this command with /statusline.
+
+set -euo pipefail
+
+state_dir="${DATA_DIR:-${WORKSPACE_PATH:-$(pwd)}/.xangi}"
+target="$state_dir/antigravity-status.json"
+mkdir -p "$state_dir"
+
+node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => (input += chunk));
+process.stdin.on("end", () => {
+  const value = JSON.parse(input);
+  const target = process.argv[1];
+  let previous;
+  try {
+    previous = JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch {}
+  const hasQuota =
+    value &&
+    typeof value.quota === "object" &&
+    value.quota !== null &&
+    Object.keys(value.quota).length > 0;
+  const previousHasQuota =
+    previous &&
+    typeof previous.quota === "object" &&
+    previous.quota !== null &&
+    Object.keys(previous.quota).length > 0;
+  const snapshot =
+    !hasQuota && previousHasQuota
+      ? {
+          ...value,
+          quota: previous.quota,
+          plan_tier: value.plan_tier ?? previous.plan_tier,
+        }
+      : value;
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, target);
+});
+' "$target"
+
+# Keep Antigravity's custom status line visually empty; Monitor owns rendering.
+printf '\n'

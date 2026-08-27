@@ -124,6 +124,28 @@ Programmatic API:
 
 Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running and leaves Monitor after the response completes; its conversation log remains available in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
 
+### Agent Run API
+
+Use the Agent Run API to create an isolated Web session when comparing the same task across backends and models. Omitting `workspaceId` selects the default workspace. POST returns HTTP 202 immediately after accepting the run; poll the individual resource until it reaches a terminal state.
+
+```http
+POST /api/agent-runs
+Content-Type: application/json
+
+{
+  "task": "Implement the change and pass the targeted tests",
+  "backend": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "workspaceId": "default"
+}
+```
+
+- `GET /api/agent-runs` — list runs
+- `GET /api/agent-runs/:id` — retrieve a manifest with status, task hash, session IDs, duration, and usage. `trajectoryPath` is included only when the log file was actually created
+- Status values are `queued`, `running`, `succeeded`, and `failed`
+- The first version does not run acceptance gates, automatic repairs, or aggregate multiple runs
+
 ## Scheduler
 
 Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi tool schedule_add` etc. on your behalf.
@@ -562,7 +584,7 @@ channel from the next message without restarting xangi.
 
 In the Web slash-command palette, selecting a backend for `/backend set` loads model choices from the same dynamic discovery result. Selecting a model then shows the effort choices supported by that backend/model combination. Web Project settings use the same model and effort discovery.
 
-Discord `/backend set` also displays model and effort as autocomplete choices. Model choices are filtered by the selected backend's dynamic discovery result and `ALLOWED_MODELS`; effort choices include only values supported by both the selected backend and model.
+Discord `/backend set` also displays model and effort as autocomplete choices. Model choices use the selected backend's dynamic discovery result; effort choices include only values supported by both the selected backend and model.
 
 When a user asks about model availability in natural language, the system prompt also instructs the agent to measure it first through this read-only command:
 
@@ -581,16 +603,11 @@ xangi tool runtime_settings --name llmmode --action set --value chat
 
 Lifecycle and arbitrary-execution commands such as `/restart`, `/stop`, `/new`, `/schedule`, and `/skill` are intentionally excluded. After changing the backend, model, or effort, the next turn does not reuse a provider session created under the previous configuration.
 
-When `ALLOWED_MODELS` is configured, the dynamically discovered output is filtered to those allowed models.
-
 #### Restricting via Environment Variables
 
 ```bash
 # Allowed backends for switching (if unset, all backends are allowed)
 ALLOWED_BACKENDS=claude-code,codex,cursor,grok,antigravity,github-copilot,opencode,local-llm
-
-# Allowed models for switching (if unset, no restriction)
-ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
 
 # Per-channel backend overrides (JSON)
 CHANNEL_OVERRIDES={"channelId":{"backend":"local-llm","model":"nemotron-3-nano"}}
@@ -1195,6 +1212,8 @@ Structured observability log of Local LLM tool usage (drift / loop / tool_search
 logs/tool-trajectory/<appSessionId>.jsonl
 ```
 
+For CLI backends, the shared recorder stores only tool name, status, and duration. It does not persist command arguments or output text. Local LLM continues to write its more detailed runner-owned trajectory.
+
 One line per event. Lives alongside but separate from `logs/sessions/<appSessionId>.jsonl` (transcript), so the two never interfere.
 
 ### Event Kinds
@@ -1304,6 +1323,9 @@ Prefetch runs only when no provider session ID exists. Continuing turns use the 
 | `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | Minimum elapsed time before sending a completion notification (ms)                               | `10000`      |
 | `ALLOW_AUTOREPLY_COMMAND`            | Enable `/autoreply` command                                                                      | `true`       |
 | `XANGI_SELF_LIFECYCLE`               | Allow xangi to request its own restart (`off` / `restart-only`)                                  | `off`        |
+| `BACKEND_SWITCHING_ENABLED`           | Enable backend/model listing and switching                                                       | `true`       |
+| `RUNTIME_SETTINGS_ENABLED`            | Enable runtime settings display and mutation                                                     | `true`       |
+| `WORKSPACE_SWITCHING_ENABLED`          | Enable workspace display, switching, and Web workspace APIs                                      | `true`       |
 | `RESPOND_TO_BOTS`                    | Whitelist of bot IDs to respond to (`*` for all bots)                                            | -            |
 | `RESPOND_TO_BOTS_ENABLED`            | Toggle bot-to-bot reply ON/OFF (`/respondtobots` switches at runtime)                            | `false`      |
 | `RESPOND_TO_BOTS_MAX_CONSECUTIVE`    | Max consecutive replies to the same bot (0 = unlimited)                                          | `3`          |
@@ -1335,7 +1357,6 @@ Shared completion-display settings:
 | `TIMEOUT_MAX_MS`                | Absolute upper limit for timeout extension (milliseconds)                                                                      | `36000000`                |
 | `TIMEOUT_EXTEND_ENABLED`        | Enable / disable the `延長` button                                                                                             | `true`                    |
 | `ALLOWED_BACKENDS`              | Allowed backends for `/backend` switching (comma-separated). If unset, all backends are allowed                                | all backends              |
-| `ALLOWED_MODELS`                | Allowed models for `/backend` switching (comma-separated)                                                                      | -                         |
 | `CHANNEL_OVERRIDES`             | Per-channel backend settings (JSON). Discord threads inherit the parent channel's entry                                        | -                         |
 | `EXTENSION_BACKEND_TIMEOUT_MS`  | HTTP timeout for extension-backed agent requests                                                                               | `5000`                    |
 | `XANGI_PUBLIC_WEB_URL`          | Externally reachable Web Chat base URL passed to extensions                                                                    | unset                     |
@@ -1398,9 +1419,11 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`; returns 409 on conflict
 
-The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It automatically groups Sessions into Running, Waiting for input (can continue), and Completed columns, with All / Chat / Web filters. Errors and aborted turns remain in Waiting and use the card's status label and colored dot. Selecting a card first opens its details. Backend, model, and effort share one Runtime settings panel; state, Discord or Slack destination, completed turn count, update time, and event history remain visible. Channel, thread, session, and other internal IDs stay collapsed until requested. The Open conversation action then navigates to `/chat/<appSessionId>`. Completed Sessions remain visible for 24 hours and can be resumed or branched from history. After the initial fetch, it receives turn start, progress, and completion updates from `GET /api/sessions/stream` over SSE instead of polling the session list.
+The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It automatically groups Sessions into Running, Waiting for input (can continue), and Completed columns, with All / Chat / Web filters. Errors and aborted turns remain in Waiting and use the card's status label and colored dot. The AI usage area includes every provider whose quota was retrieved from an official structured source, even when that provider has no current Session. Supported sources are Codex app-server, the GitHub Copilot SDK, and Antigravity statusline JSON. Account windows refresh every 60 seconds and provider cards can be collapsed or hidden with the preference saved in the browser. Selecting a card first opens its details. Backend, model, effort, and the last confirmed context usage are shown in the detail panel; unavailable values are not estimated. State, Discord or Slack destination, completed turn count, update time, and event history remain visible. Channel, thread, session, and other internal IDs stay collapsed until requested. The Open conversation action then navigates to `/chat/<appSessionId>`. Completed Sessions remain visible for 24 hours and can be resumed or branched from history. Claude Code context comes from its CLI result event, but its account-usage TUI is not scraped. After the initial fetch, `GET /api/sessions/stream` carries turn start, progress, completion, and context-update snapshots instead of polling the Session list.
 
 The same server exposes schedule management at `http://localhost:<WEB_CHAT_PORT>/schedules`. `GET /api/schedules` returns every platform's schedules and scheduler state, while `POST /api/schedules` creates Web, Discord, Slack, or Telegram jobs. Web jobs may include an optional `projectId` and create a fresh Web conversation when they run. `PATCH /api/schedules/:id` changes the job contents or enabled state, and `DELETE /api/schedules/:id` removes a schedule.
+
+AI usage note: Each account window uses a filled bar for actual usage. When an official source also supplies the window duration, as Codex does, a dashed marker shows expected pace calculated from elapsed time. Antigravity does not supply a duration, and an unused bucket may report a moving reset time, so xangi does not estimate pace for Antigravity. Configure Antigravity once with `/statusline /path/to/xangi/bin/xangi-antigravity-statusline`; the helper atomically stores the official JSON payload in `DATA_DIR/antigravity-status.json` and retains the last official quota when an update omits quota.
 
 ### External Event Stream and Device Input
 
@@ -1444,6 +1467,8 @@ xangi tool g2_session --base-url http://127.0.0.1:18888 --title "Even G2 Termina
 | ------------------- | -------------------- | ------- |
 | `SCHEDULER_ENABLED` | Enable scheduler     | `true`  |
 | `STARTUP_ENABLED`   | Enable startup tasks | `true`  |
+
+`SCHEDULER_ENABLED=false` disables execution and all list/add/update/remove entry points without deleting `schedules.json`. Setting it back to `true` and restarting resumes saved enabled schedules.
 
 ### GitHub App Authentication (Optional)
 
@@ -1630,22 +1655,11 @@ Note: conversation transcripts (`logs/sessions/`) and tool trajectory logs (`log
 
 ## Options
 
-### Per-message AI CLI Permission Skip
+### AI CLI Permissions
 
 xangi **skips permission confirmations by default** (`SKIP_PERMISSIONS=true`). Because Discord/Slack/Web chat invocations are non-interactive, there's no human to answer permission prompts; tasks would hang otherwise.
 
-If you explicitly set `SKIP_PERMISSIONS=false` to re-enable permission prompts, you can still skip per-message via:
-
-| Entry point       | Description                          |
-| ----------------- | ------------------------------------ |
-| `!skip <message>` | Run that single message in skip mode |
-| `/skip <message>` | Slash command equivalent of `!skip`  |
-
-```
-@xangi !skip gh pr list
-!skip build it                       # No mention needed in dedicated channels
-/skip build it                       # Slash command version
-```
+`SKIP_PERMISSIONS` is controlled by the administrator in `.env`. Chat users cannot override it per message; `!skip` and `/skip` are not available.
 
 > **⚠️ Security note:** In untrusted workspaces or multi-user environments, set `SKIP_PERMISSIONS=false` and review the sandbox and permission controls provided by the selected AI CLI.
 

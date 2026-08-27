@@ -111,9 +111,10 @@ flowchart LR
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
-- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は入力待ち・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。`GET /api/sessions/stream`でターン境界のsnapshotを受け取り、定期ポーリングしない
+- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は入力待ち・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量はturn完了時に保存してSSE snapshotへ反映する。`GET /api/sessions/stream`でターン境界とcontext更新のsnapshotを受け取り、セッション一覧を定期ポーリングしない
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
 - `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除をHTTP API経由で行う。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
+- `agent-runs.ts`は比較・委譲向けの独立実行台帳を`DATA_DIR/agent-runs.json`へmode 0600でatomic保存する。`POST /api/agent-runs`はbackend・model・effort・登録済みworkspaceを固定した新規Web sessionを作り、既存Dynamic Runnerで非同期実行する。台帳にはtask SHA-256、session ID、状態、所要時間、backend別usageを保存し、trajectory pathは実ファイルが生成された場合だけ保存する。`GET /api/agent-runs`と`GET /api/agent-runs/:id`で取得できる。初版はgate、自動修復、並列benchmark orchestrationを持たない
 - Chat / Files / Schedules / Monitor / Extensionsは共通navigation shellを使う。desktopでは左のactivity rail、768px以下またはtouch端末の低い横画面では下部navigationへ切り替え、Monitor・Extensions・theme selectorを`その他`sheetへ収める。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
 - Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
@@ -591,7 +592,7 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 | カテゴリ                       | 対象                                                                                                                                                                                                                                        |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | read-only tool 直接            | `read` / `glob` / `grep` / `tool_search` / `discord_history` / `discord_message` / `web_history` / `slack_history` / `discord_channels` / `discord_search` / `slack_channels` / `slack_search` / `schedule_list`                            |
-| `exec` / `bash` のサブコマンド | `xangi tool {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,system_settings,models}` のいずれかで始まる場合のみ（`models --use` は変更操作なので除外） |
+| `exec` / `bash` のサブコマンド | `xangi tool {discord_history,discord_message,web_history,slack_history,discord_channels,discord_search,slack_channels,slack_search,schedule_list,models}` のいずれかで始まる場合のみ（`models --use` は変更操作なので除外） |
 | shell metacharacter            | `\|` / `&` / `;` / `` ` `` / `$` / `<` / `>` / `$(...)` / `&&` / `\|\|` / `>` リダイレクトが含まれていたら即 reject                                                                                                                         |
 
 それ以外は `{safe: false, reason}` を返し、`unsafe_tool_in_pseudo_format` 構造化エラーで LLM に proper function_calling 構造への切替を促す。
@@ -628,6 +629,8 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 #### Observability: tool trajectory
 
 多段防御の発火タイミング・tool_search 採用結果・drift 救済の安全判定を後で分析できるよう、`src/tool-trajectory/` で観測ロガーを別経路で構造化記録する。既存 `transcript-logger` (`logs/sessions/`) には触らず、`logs/tool-trajectory/<appSessionId>.jsonl` に 1 line = 1 event の jsonl を append する。
+
+CLI backendのストリーミング実行はDynamic Runner境界の共通recorderで、`AgentTraceEvent`のtool名・状態・所要時間だけを記録する。command引数やoutput本文は保存しない。Local LLMはrunner内蔵loggerを継続利用し、共通recorderの対象外として重複イベントとseq衝突を防ぐ。
 
 設計の要点:
 

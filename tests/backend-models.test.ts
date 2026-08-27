@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  configuredAllowedModels,
   discoverBackendModels,
   formatBackendModels,
   parseAntigravityModels,
@@ -331,27 +330,15 @@ describe('discoverBackendModels', () => {
 });
 
 describe('backend model formatting', () => {
-  it('filters provider output with ALLOWED_MODELS', () => {
-    const output = formatBackendModels(
-      {
-        backend: 'codex',
-        source: 'codex app-server model/list',
-        status: 'available',
-        models: [{ id: 'gpt-5.6-sol', isDefault: true }, { id: 'gpt-5.6-terra' }],
-      },
-      ['gpt-5.6-terra']
-    );
+  it('formats every model returned by provider discovery', () => {
+    const output = formatBackendModels({
+      backend: 'codex',
+      source: 'codex app-server model/list',
+      status: 'available',
+      models: [{ id: 'gpt-5.6-sol', isDefault: true }, { id: 'gpt-5.6-terra' }],
+    });
 
     expect(output).toContain('gpt-5.6-terra');
-    expect(output).not.toContain('gpt-5.6-sol');
-    expect(output).toContain('ALLOWED_MODELS');
-  });
-
-  it('parses configured allowed models without inventing defaults', () => {
-    expect(configuredAllowedModels({ ALLOWED_MODELS: ' model-a,model-b ' })).toEqual([
-      'model-a',
-      'model-b',
-    ]);
-    expect(configuredAllowedModels({})).toBeUndefined();
+    expect(output).toContain('gpt-5.6-sol');
   });
 });

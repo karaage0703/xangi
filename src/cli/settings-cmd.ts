@@ -24,10 +24,28 @@ export const SECRET_FIELDS: readonly SecretField[] = [
   },
   { name: 'SLACK_BOT_TOKEN', label: 'Botトークン (xoxb-…)', group: 'Slack' },
   { name: 'SLACK_APP_TOKEN', label: 'Appトークン (xapp-…)', group: 'Slack' },
+  {
+    name: 'SLACK_ALLOWED_USER',
+    label: '許可ユーザーID（カンマ区切り、全員許可は *）',
+    group: 'Slack',
+    type: 'text',
+  },
   { name: 'LINE_CHANNEL_ACCESS_TOKEN', label: 'Channel access token', group: 'LINE' },
   { name: 'LINE_CHANNEL_SECRET', label: 'Channel secret', group: 'LINE' },
+  {
+    name: 'LINE_ALLOWED_USER',
+    label: '許可ユーザーID（カンマ区切り、全員許可は *）',
+    group: 'LINE',
+    type: 'text',
+  },
   { name: 'TELEGRAM_BOT_TOKEN', label: 'Botトークン', group: 'Telegram' },
   { name: 'TELEGRAM_WEBHOOK_SECRET_TOKEN', label: 'Webhook secret（任意）', group: 'Telegram' },
+  {
+    name: 'TELEGRAM_ALLOWED_USER',
+    label: '許可ユーザーID（カンマ区切り、全員許可は *）',
+    group: 'Telegram',
+    type: 'text',
+  },
 ];
 
 export interface SecretSettingsServer {
@@ -234,10 +252,18 @@ function renderSavedPage(count: number): string {
 }
 
 function validateSettingValue(name: string, value: string): string {
-  if (name !== 'DISCORD_ALLOWED_USER') return value;
+  const allowedUserPatterns: Partial<Record<string, RegExp>> = {
+    DISCORD_ALLOWED_USER: /^\d{1,20}$/,
+    SLACK_ALLOWED_USER: /^[UW][A-Z0-9]+$/,
+    LINE_ALLOWED_USER: /^U[0-9a-f]{32}$/i,
+    TELEGRAM_ALLOWED_USER: /^\d{1,20}$/,
+  };
+  const pattern = allowedUserPatterns[name];
+  if (!pattern) return value;
   const users = value.split(',').map((user) => user.trim());
-  if (users.some((user) => !/^\d{1,20}$/.test(user)) && !(users.length === 1 && users[0] === '*')) {
-    throw new Error('Discord許可ユーザーIDは数字をカンマ区切りで入力してください');
+  if (users.length === 1 && users[0] === '*') return '*';
+  if (users.some((user) => !pattern.test(user))) {
+    throw new Error(`${name}の値が正しくありません`);
   }
   return users.join(',');
 }

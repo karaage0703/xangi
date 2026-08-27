@@ -6,6 +6,7 @@ import type { BaseRunnerOptions } from './base-runner.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import { updateSessionContextUsage } from './sessions.js';
 
 export interface ClaudeCodeOptions extends BaseRunnerOptions {
   platform?: ChatPlatform;
@@ -20,6 +21,25 @@ interface ClaudeCodeResponse {
   session_id: string;
   total_cost_usd: number;
   duration_ms: number;
+  usage?: ClaudeStreamEvent['usage'];
+  modelUsage?: ClaudeStreamEvent['modelUsage'];
+}
+
+export function extractClaudeContextUsage(
+  event: ClaudeStreamEvent
+): { contextTokens: number; contextWindow: number } | undefined {
+  const last = event.usage?.iterations?.at(-1);
+  const contextWindow = Object.values(event.modelUsage ?? {}).find(
+    (model) => typeof model.contextWindow === 'number'
+  )?.contextWindow;
+  if (!last || !contextWindow) return undefined;
+  return {
+    contextTokens:
+      (last.input_tokens ?? 0) +
+      (last.cache_read_input_tokens ?? 0) +
+      (last.cache_creation_input_tokens ?? 0),
+    contextWindow,
+  };
 }
 
 interface ClaudeStreamEvent {
@@ -28,6 +48,14 @@ interface ClaudeStreamEvent {
   session_id?: string;
   is_error?: boolean;
   result?: string;
+  usage?: {
+    iterations?: Array<{
+      input_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    }>;
+  };
+  modelUsage?: Record<string, { contextWindow?: number }>;
 }
 
 /**
@@ -141,11 +169,14 @@ export class ClaudeCodeRunner extends CliRunnerBase {
       });
     }
 
-    return {
+    const result: RunResult = {
       // 非ストリーミング経路でも tool-call 構文の除去 + 空→正直な fallback を適用
       result: finalizeDisplayText(response.result),
       sessionId: response.session_id,
+      usage: extractClaudeContextUsage(response),
     };
+    this.persistContextUsage(options?.appSessionId, result);
+    return result;
   }
 
   /**
@@ -190,10 +221,12 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     this.logExecution('Streaming', options);
 
     try {
-      return await this.executeStreamCore(args, callbacks, {
+      const result = await this.executeStreamCore(args, callbacks, {
         channelId: options?.channelId,
         notifyOnError: false,
       });
+      this.persistContextUsage(options?.appSessionId, result);
+      return result;
     } catch (error) {
       if (!options?.sessionId || !this.isStaleResumeError(error)) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -204,13 +237,18 @@ export class ClaudeCodeRunner extends CliRunnerBase {
         `[claude-code] Resume failed for stale session ${options.sessionId.slice(0, 8)}..., retrying with a new session`
       );
       const retryArgs = this.buildArgs(prompt, 'stream-json', { ...options, sessionId: undefined });
-      return this.executeStreamCore(retryArgs, callbacks, { channelId: options?.channelId });
+      const result = await this.executeStreamCore(retryArgs, callbacks, {
+        channelId: options?.channelId,
+      });
+      this.persistContextUsage(options?.appSessionId, result);
+      return result;
     }
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
     let fullText = '';
     let sessionId = '';
+    let usage: RunResult['usage'];
 
     return {
       handleEvent: (json, phase) => {
@@ -241,11 +279,23 @@ export class ClaudeCodeRunner extends CliRunnerBase {
           if (event.result) {
             fullText = mergeTexts(fullText, stripToolCallArtifacts(event.result));
           }
+          const context = extractClaudeContextUsage(event);
+          if (context) usage = context;
         }
 
         return undefined;
       },
-      finalize: () => ({ result: finalizeDisplayText(fullText), sessionId }),
+      finalize: () => ({ result: finalizeDisplayText(fullText), sessionId, usage }),
     };
+  }
+
+  private persistContextUsage(appSessionId: string | undefined, result: RunResult): void {
+    if (!appSessionId || result.usage?.contextTokens === undefined || !result.usage.contextWindow)
+      return;
+    updateSessionContextUsage(appSessionId, {
+      usedTokens: result.usage.contextTokens,
+      contextWindow: result.usage.contextWindow,
+      source: 'claude-result',
+    });
   }
 }

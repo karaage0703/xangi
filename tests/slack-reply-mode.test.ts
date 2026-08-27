@@ -184,7 +184,6 @@ function createBackendResolverStub(defaultBackend = 'claude-code') {
     ),
     getAllowedBackends: vi.fn(() => ['claude-code', 'codex', 'cursor']),
     getSelectableBackends: vi.fn(() => ['claude-code', 'codex', 'cursor']),
-    isModelAllowed: vi.fn(() => true),
   } as unknown as BackendResolver;
   return { resolver, overrides };
 }

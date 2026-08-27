@@ -327,6 +327,23 @@ describe('Scheduler', () => {
     scheduler2.stopAll();
   });
 
+  it('keeps persisted schedules unchanged when the scheduler is disabled', () => {
+    scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'keep while disabled',
+      channelId: 'ch1',
+      platform: 'discord',
+    });
+    const filePath = join(tmpDir, 'schedules.json');
+    const before = readFileSync(filePath, 'utf-8');
+
+    scheduler.startAll({ enabled: false, startupEnabled: true });
+
+    expect(readFileSync(filePath, 'utf-8')).toBe(before);
+    expect(scheduler.list()).toHaveLength(1);
+  });
+
   it('should add a startup schedule', () => {
     const schedule = scheduler.add({
       type: 'startup',

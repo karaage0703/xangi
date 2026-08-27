@@ -145,9 +145,9 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 xangi settings
 ```
 
-開いたローカル設定画面のSlack欄へBot Token（xoxb-...）とApp Token（xapp-...）を貼り付けて保存する。
+開いたローカル設定画面のSlack欄へBot Token（xoxb-...）、App Token（xapp-...）、許可ユーザーIDを入力して保存する。複数ユーザーはカンマ区切り、全員を許可する場合は`*`を指定する。
 
-source checkoutで詳細設定を行う場合、許可ユーザーIDなど機密ではない値は`.env`へ設定できる。
+source checkoutで詳細設定を行う場合は、同じ許可ユーザーIDや他の詳細値を`.env`へ設定できる。
 
 ```bash
 # 許可するユーザー ID（Slack の User ID）

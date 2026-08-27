@@ -88,7 +88,9 @@ function DestinationLink({
 }
 
 export function AppNavigation({ current, moreOpen, onMore }: AppNavigationProps) {
-  const secondaryActive = current === 'monitor' || current === 'extensions';
+  const secondaryActive = DESTINATIONS.some(
+    (destination) => destination.placement === 'secondary' && destination.id === current
+  );
 
   return (
     <nav className="app-navigation" aria-label="xangiの主要機能">

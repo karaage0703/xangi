@@ -5,6 +5,7 @@ import { prependRuntimeContext } from './runtime-context.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
 import type { ChatPlatform } from './prompts/index.js';
+import { updateSessionContextUsage } from './sessions.js';
 
 export type CopilotPermissionMode = 'read-only' | 'workspace-write';
 
@@ -28,6 +29,8 @@ interface CopilotStreamEvent {
     content?: string;
     message?: string;
     toolRequests?: CopilotToolRequest[];
+    tokenLimit?: number;
+    currentTokens?: number;
   };
   sessionId?: string;
   exitCode?: number;
@@ -140,6 +143,17 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     }
 
     const onComplete = (result: RunResult) => {
+      if (
+        options?.appSessionId &&
+        result.usage?.contextTokens !== undefined &&
+        result.usage.contextWindow
+      ) {
+        updateSessionContextUsage(options.appSessionId, {
+          usedTokens: result.usage.contextTokens,
+          contextWindow: result.usage.contextWindow,
+          source: 'copilot-sdk',
+        });
+      }
       if (options?.appSessionId && this.workdir) {
         logResponse(this.workdir, options.appSessionId, {
           result: result.result,
@@ -175,6 +189,7 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     let fullText = '';
     let sessionId = '';
     let errorDetail: string | undefined;
+    let contextUsage: RunResult['usage'];
     let backendReady = false;
     const streamedMessages = new Map<string, { text: string; start: number }>();
     const emittedToolIds = new Set<string>();
@@ -182,6 +197,16 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     return {
       handleEvent: (json) => {
         const event = json as CopilotStreamEvent;
+        if (
+          event.type === 'session.usage_info' &&
+          typeof event.data?.currentTokens === 'number' &&
+          typeof event.data?.tokenLimit === 'number'
+        ) {
+          contextUsage = {
+            contextTokens: event.data.currentTokens,
+            contextWindow: event.data.tokenLimit,
+          };
+        }
         if (!backendReady && event.type === 'assistant.turn_start') {
           backendReady = true;
           callbacks.onBackendReady?.();
@@ -252,7 +277,7 @@ export class GitHubCopilotRunner extends CliRunnerBase {
       finalize: () => {
         if (errorDetail) throw new Error(errorDetail);
         if (!sessionId) throw new Error('GitHub Copilot CLI stream ended without a result event');
-        return { result: fullText, sessionId };
+        return { result: fullText, sessionId, usage: contextUsage };
       },
       exitErrorDetail: () => errorDetail,
     };

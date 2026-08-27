@@ -29,6 +29,9 @@ describe('secret settings UI', () => {
     expect(page.headers.get('content-security-policy')).toContain("default-src 'none'");
     expect(html).toContain('Discord');
     expect(html).toContain('DISCORD_ALLOWED_USER');
+    expect(html).toContain('SLACK_ALLOWED_USER');
+    expect(html).toContain('LINE_ALLOWED_USER');
+    expect(html).toContain('TELEGRAM_ALLOWED_USER');
     expect(html).toContain('許可ユーザーID');
     expect(html).not.toContain('Notion');
     expect(html).toContain('設定済み');
@@ -46,19 +49,30 @@ describe('secret settings UI', () => {
         DISCORD_ALLOWED_USER: '123456789012345678, 987654321098765432',
         SLACK_BOT_TOKEN: 'xoxb-new-secret',
         SLACK_APP_TOKEN: 'xapp-new-secret',
+        SLACK_ALLOWED_USER: 'U01234567, W01234567',
+        LINE_ALLOWED_USER: 'U0123456789abcdef0123456789abcdef',
+        TELEGRAM_ALLOWED_USER: '123456789, 987654321',
       }),
     });
     expect(response.status).toBe(200);
-    expect(await server.completion).toBe(3);
+    expect(await server.completion).toBe(6);
     expect(await store.get('DISCORD_TOKEN')).toBe('existing-discord-secret');
     expect(await store.get('DISCORD_ALLOWED_USER')).toBe(
       '123456789012345678,987654321098765432'
     );
     expect(await store.get('SLACK_BOT_TOKEN')).toBe('xoxb-new-secret');
     expect(await store.get('SLACK_APP_TOKEN')).toBe('xapp-new-secret');
+    expect(await store.get('SLACK_ALLOWED_USER')).toBe('U01234567,W01234567');
+    expect(await store.get('LINE_ALLOWED_USER')).toBe('U0123456789abcdef0123456789abcdef');
+    expect(await store.get('TELEGRAM_ALLOWED_USER')).toBe('123456789,987654321');
   });
 
-  it('rejects an invalid Discord allowed-user value without saving it', async () => {
+  it.each([
+    ['DISCORD_ALLOWED_USER', 'not-a-user'],
+    ['SLACK_ALLOWED_USER', 'C01234567'],
+    ['LINE_ALLOWED_USER', 'not-a-line-user'],
+    ['TELEGRAM_ALLOWED_USER', '-1001234567890'],
+  ])('rejects an invalid %s value without saving it', async (name, value) => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-settings-ui-'));
     roots.push(root);
     const store = new SecretStore(join(root, 'secrets.json'));
@@ -68,11 +82,33 @@ describe('secret settings UI', () => {
     const response = await fetch(server.url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ DISCORD_ALLOWED_USER: 'not-a-user' }),
+      body: new URLSearchParams({ [name]: value }),
     });
 
     expect(response.status).toBe(400);
-    expect(await store.get('DISCORD_ALLOWED_USER')).toBeUndefined();
+    expect(await store.get(name)).toBeUndefined();
+  });
+
+  it.each([
+    'DISCORD_ALLOWED_USER',
+    'SLACK_ALLOWED_USER',
+    'LINE_ALLOWED_USER',
+    'TELEGRAM_ALLOWED_USER',
+  ])('accepts * for %s', async (name) => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-settings-ui-'));
+    roots.push(root);
+    const store = new SecretStore(join(root, 'secrets.json'));
+    const server = await startSecretSettingsServer({ store, timeoutMs: 5_000 });
+    servers.push(server);
+
+    const response = await fetch(server.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ [name]: '*' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await store.get(name)).toBe('*');
   });
 
   it('rejects requests without the one-time URL token', async () => {

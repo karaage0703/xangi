@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getXangiTools } from '../src/local-llm/xangi-tools.js';
 
 function names(platform?: Parameters<typeof getXangiTools>[0]): string[] {
@@ -6,6 +6,19 @@ function names(platform?: Parameters<typeof getXangiTools>[0]): string[] {
 }
 
 describe('Local LLM xangi tools by platform', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, XANGI_SELF_LIFECYCLE: 'restart-only' };
+    delete process.env.SCHEDULER_ENABLED;
+    delete process.env.BACKEND_SWITCHING_ENABLED;
+    delete process.env.RUNTIME_SETTINGS_ENABLED;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
   it('web sessions expose web_history but not Discord tools', () => {
     const toolNames = names('web');
 
@@ -69,6 +82,19 @@ describe('Local LLM xangi tools by platform', () => {
       channel: { type: 'string' },
       platform: { enum: ['discord', 'slack', 'telegram', 'web'] },
     });
+  });
+
+  it('omits disabled scheduler, lifecycle, and runtime settings tools', () => {
+    process.env.SCHEDULER_ENABLED = 'false';
+    process.env.XANGI_SELF_LIFECYCLE = 'off';
+    process.env.BACKEND_SWITCHING_ENABLED = 'false';
+    process.env.RUNTIME_SETTINGS_ENABLED = 'false';
+
+    const toolNames = names('telegram');
+    expect(toolNames).not.toContain('schedule_list');
+    expect(toolNames).not.toContain('schedule_add');
+    expect(toolNames).not.toContain('system_restart');
+    expect(toolNames).not.toContain('runtime_settings');
   });
 
   it('exposes parent-owned extension_uninstall on every platform', () => {

@@ -16,12 +16,10 @@ describe('tool-server HTTP status codes', () => {
   const resolver = {
     getAllowedBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
     getSelectableBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
-    getAllowedModels: () => undefined,
     isBackendAllowed: (backend: AgentBackend) =>
       backend === 'codex' || backend === 'claude-code' || backend === 'workspace-search',
     isBackendSelectable: (backend: AgentBackend) =>
       backend === 'codex' || backend === 'claude-code' || backend === 'workspace-search',
-    isModelAllowed: () => true,
     setChannelOverride: (channelId: string, override: { backend: AgentBackend; model?: string }) =>
       overrides.set(channelId, override),
     deleteChannelOverride: (channelId: string) => overrides.delete(channelId),
@@ -267,6 +265,40 @@ describe('tool-server HTTP status codes', () => {
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body.ok).toBe(false);
     expect(body.error).toContain('--id is required');
+  });
+
+  it('rejects disabled scheduler and backend operations at the tool-server boundary', async () => {
+    config.scheduler = { enabled: false, startupEnabled: true };
+    config.features = {
+      backendSwitching: false,
+      runtimeSettings: true,
+      workspaceSwitching: true,
+      lifecycle: false,
+    };
+    try {
+      const scheduleResponse = await fetch(`${serverUrl}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'schedule_remove', flags: { id: 'saved-id' } }),
+      });
+      expect(scheduleResponse.status).toBe(400);
+      expect(((await scheduleResponse.json()) as { error: string }).error).toContain(
+        'SCHEDULER_ENABLED=false'
+      );
+
+      const modelsResponse = await fetch(`${serverUrl}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'models', flags: {} }),
+      });
+      expect(modelsResponse.status).toBe(400);
+      expect(((await modelsResponse.json()) as { error: string }).error).toContain(
+        'BACKEND_SWITCHING_ENABLED=false'
+      );
+    } finally {
+      config.scheduler = { enabled: true, startupEnabled: true };
+      config.features = undefined;
+    }
   });
 
   it('returns HTTP 400 when schedule input parsing throws', async () => {

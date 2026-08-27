@@ -126,6 +126,28 @@ API（プログラマブル操作）:
 
 MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後はMonitorから消えます。検索結果などの会話ログはChatに残ります。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
 
+### Agent Run API
+
+同じタスクを異なるbackend・modelで比較する場合は、Agent Run APIで独立したWeb sessionを作成できます。`workspaceId`を省略するとdefault workspaceを使います。POSTは実行受付後すぐHTTP 202を返すため、個別GETで終端状態を確認します。
+
+```http
+POST /api/agent-runs
+Content-Type: application/json
+
+{
+  "task": "対象テストを通るように実装してください",
+  "backend": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "workspaceId": "default"
+}
+```
+
+- `GET /api/agent-runs` — run一覧
+- `GET /api/agent-runs/:id` — 状態、task hash、session ID、所要時間、usageを含むmanifest。`trajectoryPath`は実際にログが生成された場合だけ含まれる
+- 状態は`queued`、`running`、`succeeded`、`failed`
+- 初版はacceptance gate、自動修復、複数runの集計を行いません
+
 ## スケジューラー
 
 定期実行やリマインダーを設定できます。AI に自然言語で頼むと、AI が `xangi tool schedule_add` などを呼び出してスケジュールを登録します。
@@ -579,7 +601,7 @@ Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>]|reset` 
 
 Webのスラッシュコマンドパレットでは、`/backend set`でbackendを選ぶと同じ動的取得結果からmodel候補を表示し、modelを選ぶとその組み合わせで利用可能なeffort候補を表示します。Web Project設定のmodel / effort候補も同じ取得結果を使用します。
 
-Discordの`/backend set`でもmodelとeffortはautocomplete候補として表示されます。model候補は選択済みbackendの動的取得結果と`ALLOWED_MODELS`で絞り込み、effort候補は選択済みbackend/modelの両方で利用可能な値だけを表示します。
+Discordの`/backend set`でもmodelとeffortはautocomplete候補として表示されます。model候補は選択済みbackendの動的取得結果を使用し、effort候補は選択済みbackend/modelの両方で利用可能な値だけを表示します。
 
 AIへ自然言語でモデルの利用可否を尋ねた場合も、システムプロンプトは回答前に次の読み取り専用コマンドで実測するよう指示します。
 
@@ -598,16 +620,11 @@ xangi tool runtime_settings --name llmmode --action set --value chat
 
 `/restart`、`/stop`、`/new`、`/schedule`、`/skill` などライフサイクルや任意処理を伴うコマンドは対象外です。バックエンド・モデル・effortを変更した場合は、次のturnで古いprovider sessionを再利用しません。
 
-`ALLOWED_MODELS`が設定されている場合、動的取得結果も許可モデルだけに絞り込みます。
-
 #### 環境変数で制限
 
 ```bash
 # 切り替え許可バックエンド（未設定=全バックエンド許可）
 ALLOWED_BACKENDS=claude-code,codex,cursor,grok,antigravity,github-copilot,opencode,local-llm
-
-# 切り替え許可モデル（未設定=制限なし）
-ALLOWED_MODELS=nemotron-3-nano,nemotron-3-super,qwen3.5:9b
 
 # チャンネル別バックエンド設定（JSON）
 CHANNEL_OVERRIDES={"チャンネルID":{"backend":"local-llm","model":"nemotron-3-nano"}}
@@ -1210,6 +1227,8 @@ Local LLM の tool 使用挙動 (drift / loop / tool_search 採用ミス) を構
 logs/tool-trajectory/<appSessionId>.jsonl
 ```
 
+CLI backendではtool名・状態・所要時間だけを共通形式で保存し、command引数とoutput本文は保存しません。Local LLMは従来どおりrunner固有の詳細trajectoryを保存します。
+
 1 line = 1 event。既存 `logs/sessions/<appSessionId>.jsonl` (transcript) とは別ディレクトリで干渉しない。
 
 ### 記録される event 種別
@@ -1325,6 +1344,9 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `DISCORD_COMPLETION_NOTIFY_AFTER_MS` | 完了通知を出す最短経過時間（ms）                                                               | `10000`    |
 | `ALLOW_AUTOREPLY_COMMAND`            | `/autoreply` コマンドの有効化                                                                  | `true`     |
 | `XANGI_SELF_LIFECYCLE`               | xangi自身による再起動の許可（`off` / `restart-only`）                                          | `off`      |
+| `BACKEND_SWITCHING_ENABLED`           | backend・modelの表示／切替機能                                                                  | `true`     |
+| `RUNTIME_SETTINGS_ENABLED`            | runtime settingsの表示／変更機能                                                                | `true`     |
+| `WORKSPACE_SWITCHING_ENABLED`          | workspaceの表示／切替／Web操作機能                                                              | `true`     |
 | `RESPOND_TO_BOTS`                    | 反応対象 bot ID のホワイトリスト（`*` で全 bot）                                               | -          |
 | `RESPOND_TO_BOTS_ENABLED`            | bot メッセージ応答機能の ON/OFF（`/respondtobots` で動的切替）                                 | `false`    |
 | `RESPOND_TO_BOTS_MAX_CONSECUTIVE`    | 同じ bot との連続応答の上限（0 で無制限）                                                      | `3`        |
@@ -1359,7 +1381,6 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `WEB_CHAT_UPLOAD_MAX_MB`        | Web Chatの1アップロード要求の上限（MiB単位、multipartヘッダを含む）                                                     | `64`                         |
 | `WEB_CHAT_DOWNLOAD_ACCEPT`      | Web Chat ダウンロード許可拡張子リスト（`.html,.txt` 等）                                                                | 全許可                       |
 | `ALLOWED_BACKENDS`              | `/backend` で切り替え許可するバックエンド（カンマ区切り）。未設定なら全バックエンド許可                                 | 全バックエンド               |
-| `ALLOWED_MODELS`                | `/backend` で切り替え許可するモデル（カンマ区切り）                                                                     | -                            |
 | `CHANNEL_OVERRIDES`             | チャンネル別バックエンド設定（JSON）。Discord スレッドでは親チャンネルIDの設定を継承                                    | -                            |
 | `EXTENSION_BACKEND_TIMEOUT_MS`  | 拡張バックエンドへのHTTP要求タイムアウト（ms）                                                                          | `5000`                       |
 | `XANGI_PUBLIC_WEB_URL`          | 拡張へ渡す、外部から到達可能なWeb Chatのbase URL                                                                        | 未設定                       |
@@ -1419,9 +1440,13 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`。競合時は409
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。Sessionを「実行中」「入力待ち（継続可能）」「完了」の3列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は入力待ちカードの状態ラベルと色付きドットで区別する。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortを一つの「実行設定」枠で確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでターン開始・進捗・完了を受け取るため、セッション一覧を定期ポーリングしない。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。Sessionを「実行中」「入力待ち（継続可能）」「完了」の3列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は入力待ちカードの状態ラベルと色付きドットで区別する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Antigravityで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDK、Antigravityは公式statusline JSONを使用する。Claude CodeのcontextはCLIのresult eventを使用するが、アカウント枠のTUI解析は行わない。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
+
+補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Antigravityは公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安を推定表示しない。
+
+AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline /path/to/xangi/bin/xangi-antigravity-statusline` を一度実行する。このhelperは公式statusline JSONを`DATA_DIR/antigravity-status.json`へ原子的に保存し、quotaを含まない更新では最後に取得できた公式quotaを保持する。非公開APIや画面解析は行わない。
 
 ### スケジューラ
 
@@ -1429,6 +1454,8 @@ Workspace API:
 | ------------------- | -------------------------- | ---------- |
 | `SCHEDULER_ENABLED` | スケジューラ有効化         | `true`     |
 | `STARTUP_ENABLED`   | スタートアップタスク有効化 | `true`     |
+
+`SCHEDULER_ENABLED=false` は実行・一覧・追加・変更・削除の入口を無効にしますが、`schedules.json` は削除しません。再び `true` にして再起動すると、保存済みの有効な予定を再開します。
 
 ### 外部イベントストリーム（pull 型 SSE）
 
@@ -1658,22 +1685,11 @@ XANGI_SESSION_RETENTION_DAYS=0     # 剪定しない（デフォルトと同じ�
 
 ## オプション
 
-### AI CLIの許可確認スキップ（per-message）
+### AI CLIの許可確認
 
 xangi は **デフォルトで AI の許可確認をスキップ**します（`SKIP_PERMISSIONS=true` 相当）。Discord/Slack/Web チャットからの呼び出しは非対話実行のため、許可プロンプトに答える人間がいないとタスクが待ち状態になるからです。
 
-`.env` で `SKIP_PERMISSIONS=false` を明示すると許可確認が有効になります。その場合のみ、メッセージ単位で例外的にスキップしたいときに以下が使えます：
-
-| 入り口               | 説明                                                     |
-| -------------------- | -------------------------------------------------------- |
-| `!skip <メッセージ>` | メッセージ冒頭に付けると、そのメッセージだけスキップ実行 |
-| `/skip <メッセージ>` | スラッシュコマンド版。`!skip` と同じ動作                 |
-
-```
-@xangi !skip gh pr list
-!skip ビルドして                    # 専用チャンネルではメンション不要
-/skip ビルドして                    # スラッシュコマンド版
-```
+`SKIP_PERMISSIONS` は管理者が `.env` で設定します。チャット利用者が一時的に上書きする `!skip` と `/skip` はありません。
 
 > **⚠️ セキュリティ注意:** 信頼できないワークスペースやマルチユーザー環境では `SKIP_PERMISSIONS=false` を明示し、利用するAI CLI自身のsandbox・permission設定を確認してください。
 

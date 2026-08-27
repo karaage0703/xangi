@@ -202,20 +202,6 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
     ],
   },
   {
-    name: 'skip',
-    description: '許可確認をスキップしてメッセージを実行',
-    usage: '/skip <message>',
-    category: 'system',
-    options: [
-      {
-        name: 'message',
-        description: '実行するメッセージ',
-        type: 'string',
-        required: true,
-      },
-    ],
-  },
-  {
     name: 'restart',
     description: 'xangiを再起動',
     usage: '/restart',
@@ -236,10 +222,7 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
       name: getBackendDisplayName(backend),
       value: backend,
     })) ?? [];
-  const allowedModels = ctx.resolver?.getAllowedModels();
-  const discoveredModels = (ctx.modelDiscovery?.models ?? []).filter(
-    (model) => !allowedModels || allowedModels.includes(model.id)
-  );
+  const discoveredModels = ctx.modelDiscovery?.models ?? [];
   const modelChoices = [
     { name: 'バックエンドのデフォルト', value: '--model=default' },
     ...discoveredModels.map((model) => ({
@@ -267,7 +250,19 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
         }))
       : [];
 
-  return WEB_COMMANDS.map((command) => {
+  const visibleCommands = WEB_COMMANDS.filter((command) => {
+    if (command.name === 'settings' || command.name === 'llmmode') {
+      return ctx.config?.features?.runtimeSettings !== false;
+    }
+    if (command.name === 'models' || command.name === 'backend') {
+      return ctx.config?.features?.backendSwitching !== false;
+    }
+    if (command.name === 'schedule') return ctx.config?.scheduler.enabled !== false;
+    if (command.name === 'restart') return ctx.config?.features?.lifecycle !== false;
+    return true;
+  });
+
+  return visibleCommands.map((command) => {
     const copy = structuredClone(command);
     if (copy.name === 'skill' && copy.options?.[0]) {
       copy.options[0].choices = skills.map((skill) => ({
@@ -438,9 +433,6 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
   if (model === 'default') model = undefined;
   if ((effort as string | undefined) === 'default') effort = undefined;
 
-  if (model && !resolver.isModelAllowed(model)) {
-    throw new Error(`モデル \`${model}\` は許可されていません`);
-  }
   if (effort && !supportsEffort(backend, effort)) {
     throw new Error(
       `${backend} の effort は ${getSupportedEffortLevels(backend).join(', ') || '未対応'} です`
@@ -564,6 +556,17 @@ export async function executeWebCommand(
     throw new Error(`Unknown command: /${commandName}`);
   }
 
+  if (
+    ((commandName === 'settings' || commandName === 'llmmode') &&
+      ctx.config?.features?.runtimeSettings === false) ||
+    ((commandName === 'models' || commandName === 'backend') &&
+      ctx.config?.features?.backendSwitching === false) ||
+    (commandName === 'schedule' && ctx.config?.scheduler.enabled === false) ||
+    (commandName === 'restart' && ctx.config?.features?.lifecycle === false)
+  ) {
+    throw new Error('この機能は管理者により無効化されています');
+  }
+
   switch (commandName) {
     case 'help':
       return { kind: 'message', message: commandHelp() };
@@ -602,11 +605,6 @@ export async function executeWebCommand(
         displayMessage: input,
         message: `スキル「${skill.name}」を実行してください。${args ? `引数: ${args}` : ''}`,
       };
-    }
-    case 'skip': {
-      const message = tokens.join(' ').trim();
-      if (!message) throw new Error('使い方: /skip <message>');
-      return { kind: 'chat', displayMessage: input, message, skipPermissions: true };
     }
     case 'backend':
       return await handleBackend(tokens, ctx);

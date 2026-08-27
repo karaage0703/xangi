@@ -1607,11 +1607,6 @@ export async function processMessage(
   const startedAt = Date.now();
   let prompt = text;
 
-  // スキップ設定
-  if (prompt.startsWith('!skip')) {
-    prompt = prompt.replace(/^!skip\s*/, '').trim();
-  }
-
   // プラットフォーム情報をプロンプトに注入
   prompt = `[プラットフォーム: Slack]\n[チャンネル: ${channelId}]${threadTs ? `\n[スレッド: ${threadTs}]` : ''}\n${prompt}`;
 
