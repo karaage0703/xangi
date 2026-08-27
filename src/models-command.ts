@@ -3,6 +3,13 @@ import type { BackendResolver } from './backend-resolver.js';
 import { discoverBackendModels, formatBackendModels } from './backend-models.js';
 import { getSupportedEffortLevels, supportsEffort } from './backend-effort.js';
 import { ValidationError } from './errors.js';
+import { featureControlsFromEnv } from './feature-controls.js';
+
+function assertBackendSwitchingEnabled(): void {
+  if (!featureControlsFromEnv().backendSwitching) {
+    throw new ValidationError('backend switching is disabled by BACKEND_SWITCHING_ENABLED=false');
+  }
+}
 
 export const MODELS_COMMAND_USAGE = '/models [backend]';
 
@@ -17,6 +24,7 @@ export async function executeModelsCommand(
   resolver: BackendResolver,
   discover: typeof discoverBackendModels = discoverBackendModels
 ): Promise<string> {
+  assertBackendSwitchingEnabled();
   const selectableBackends = resolver.getSelectableBackends();
   let backends: AgentBackend[] = selectableBackends;
 
@@ -30,11 +38,7 @@ export async function executeModelsCommand(
   }
 
   const discoveries = await Promise.all(backends.map((backend) => discover(backend)));
-  const allowedModels = resolver.getAllowedModels();
-  return [
-    '## 利用可能なモデル',
-    ...discoveries.map((item) => formatBackendModels(item, allowedModels)),
-  ].join('\n\n');
+  return ['## 利用可能なモデル', ...discoveries.map(formatBackendModels)].join('\n\n');
 }
 
 export interface SelectModelOptions {
@@ -54,6 +58,7 @@ export async function selectModelForNextTurn(
   resolver: BackendResolver,
   discover: typeof discoverBackendModels = discoverBackendModels
 ): Promise<string> {
+  assertBackendSwitchingEnabled();
   const allowedBackends = resolver.getSelectableBackends();
   const backend = options.backend as AgentBackend | undefined;
   if (!backend || !resolver.isBackendSelectable(backend)) {
@@ -69,10 +74,6 @@ export async function selectModelForNextTurn(
       'models --use: channel is unavailable. Run inside xangi or pass --channel <channel ID>'
     );
   }
-  if (!resolver.isModelAllowed(options.model)) {
-    throw new ValidationError(`model '${options.model}' is not allowed by ALLOWED_MODELS`);
-  }
-
   const discovery = await discover(backend);
   if (discovery.status !== 'available') {
     throw new ValidationError(

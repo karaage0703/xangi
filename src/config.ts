@@ -3,6 +3,7 @@ import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { EnvValidator } from './config-validate.js';
 import { listExtensionAgentBackends } from './extensions.js';
+import { featureControlsFromEnv, type FeatureControls } from './feature-controls.js';
 
 export const BUILTIN_AGENT_BACKENDS = [
   'claude-code',
@@ -52,6 +53,7 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 export type { LocalLlmReasoningEffort } from './local-llm/reasoning-effort.js';
 
 export interface Config {
+  features?: FeatureControls;
   completion: {
     /** 完了表示へ経過時間を含める（default: true）。 */
     showElapsed: boolean;
@@ -218,8 +220,6 @@ export interface Config {
     platform?: ChatPlatform;
     /** 切り替え許可バックエンド一覧（未設定=全て許可） */
     allowedBackends: AgentBackend[];
-    /** 切り替え許可モデル一覧（未設定=全て許可） */
-    allowedModels?: string[];
   };
   scheduler: {
     enabled: boolean;
@@ -348,15 +348,8 @@ export function loadConfig(): Config {
     }
   }
 
-  const allowedModelsRaw = process.env.ALLOWED_MODELS;
-  const allowedModels: string[] | undefined = allowedModelsRaw
-    ? allowedModelsRaw
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : undefined;
-
   const config: Config = {
+    features: featureControlsFromEnv(),
     completion: {
       showElapsed: process.env.COMPLETION_SHOW_ELAPSED !== 'false',
       notifyAfterMs: v.int('COMPLETION_NOTIFY_AFTER_MS', DEFAULT_COMPLETION_NOTIFY_AFTER_MS, {
@@ -523,7 +516,6 @@ export function loadConfig(): Config {
       config: agentConfig,
       platform,
       allowedBackends,
-      allowedModels,
     },
     scheduler: {
       enabled: process.env.SCHEDULER_ENABLED !== 'false', // デフォルトで有効

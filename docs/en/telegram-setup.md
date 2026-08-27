@@ -81,9 +81,9 @@ Forward a message from the target bot to [@userinfobot](https://t.me/userinfobot
 xangi settings
 ```
 
-Paste the API token issued by BotFather into the Telegram field on the local settings page and save it. The optional webhook secret can be saved on the same page.
+Enter the API token issued by BotFather and the allowed user IDs in the Telegram fields on the local settings page, then save them. The optional webhook secret can be saved on the same page.
 
-In a source checkout, non-secret advanced settings such as allowed user IDs can still be placed in `.env`:
+In a source checkout, the same allowed user IDs and other advanced settings can be placed in `.env`:
 
 ```bash
 # Allowed users (numeric Telegram user IDs, CSV). Use "*" to allow everyone.

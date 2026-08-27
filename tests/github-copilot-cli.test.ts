@@ -175,6 +175,21 @@ describe('GitHubCopilotRunner', () => {
     expect(onText).toHaveBeenCalledTimes(2);
   });
 
+  it('returns official session context usage events', async () => {
+    const { promise, process } = await start(new GitHubCopilotRunner());
+    emitJson(process, {
+      type: 'session.usage_info',
+      data: { currentTokens: 12_345, tokenLimit: 128_000, messagesLength: 4 },
+    });
+    emitJson(process, { type: 'result', sessionId: 'session-usage', exitCode: 0 });
+    process.emit('close', 0);
+    await expect(promise).resolves.toEqual({
+      result: '',
+      sessionId: 'session-usage',
+      usage: { contextTokens: 12_345, contextWindow: 128_000 },
+    });
+  });
+
   it('reconciles a partial delta stream with the canonical final message', async () => {
     const onText = vi.fn();
     const { promise, process } = await start(new GitHubCopilotRunner(), { onText });
@@ -200,9 +215,7 @@ describe('GitHubCopilotRunner', () => {
       data: {
         messageId: 'message-tool',
         content: '',
-        toolRequests: [
-          { toolCallId: 'call-1', name: 'view', arguments: { path: 'package.json' } },
-        ],
+        toolRequests: [{ toolCallId: 'call-1', name: 'view', arguments: { path: 'package.json' } }],
       },
     };
     emitJson(process, event);

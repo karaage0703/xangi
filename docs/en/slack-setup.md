@@ -145,9 +145,9 @@ After adding or changing scopes/events, reinstall the app from **"Install App"**
 xangi settings
 ```
 
-Paste the Bot Token (xoxb-...) and App Token (xapp-...) into the Slack fields on the local settings page and save them.
+Enter the Bot Token (xoxb-...), App Token (xapp-...), and allowed user IDs in the Slack fields on the local settings page, then save them. Separate multiple users with commas, or use `*` to allow everyone.
 
-In a source checkout, non-secret advanced settings such as allowed user IDs can still be placed in `.env`:
+In a source checkout, the same allowed user IDs and other advanced settings can be placed in `.env`:
 
 ```bash
 # Allowed user ID (Slack User ID)

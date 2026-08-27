@@ -21,6 +21,7 @@ import {
   hasSessionGoneIdle,
   updateSessionProject,
   updateSessionTitle,
+  updateSessionContextUsage,
   WEB_CHAT_CONTEXT_PREFIX,
   closeSession,
   getSessionLifecycle,
@@ -432,6 +433,27 @@ describe('sessions', () => {
       const appId = createSession('discord-1', { platform: 'discord' });
       expect(updateSessionProject(appId, 'project-1')).toBe(false);
       expect(getSessionEntry(appId)?.projectId).toBeUndefined();
+    });
+
+    it('persists the last confirmed context usage', () => {
+      initSessions(testDir);
+      const appId = createSession('discord-usage', { platform: 'discord', backend: 'codex' });
+
+      expect(
+        updateSessionContextUsage(appId, {
+          usedTokens: 120_000,
+          contextWindow: 258_400,
+          source: 'codex-app-server',
+        })
+      ).toBe(true);
+      clearSessions();
+      initSessions(testDir);
+
+      expect(getSessionEntry(appId)?.contextUsage).toMatchObject({
+        usedTokens: 120_000,
+        contextWindow: 258_400,
+        source: 'codex-app-server',
+      });
     });
   });
 

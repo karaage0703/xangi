@@ -37,6 +37,7 @@ import {
   getSessionLifecycle,
   setAutoTalk,
   WEB_CHAT_CONTEXT_PREFIX,
+  subscribeSessionChanges,
 } from './sessions.js';
 import {
   readSessionMessages,
@@ -74,6 +75,7 @@ import { handleEventsStreamRequest } from './events-stream-server.js';
 import { handlePetInboxRequest, isInboxPath } from './pet-inbox-server.js';
 import { handleEvenTerminalRequest } from './even-terminal-server.js';
 import { TurnLatencyRecorder } from './turn-latency.js';
+import { readAccountUsage } from './usage-monitor.js';
 import { buildPrefetchedHistoryBlock } from './prefetched-history.js';
 import {
   appendReplySuggestionInstruction,
@@ -115,6 +117,7 @@ import {
 import { loadExtensionManifest, resolveExtensionAgentBackend } from './extensions.js';
 import { createExtensionUpdateRequest } from './extension-update.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
+import { AgentRunError, AgentRunStore } from './agent-runs.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -368,6 +371,7 @@ export function startWebChat(options: WebChatOptions): void {
     return { workspace, browser };
   };
   const webProjects = WebProjectStore.fromDataDir(dataDir);
+  const agentRuns = AgentRunStore.fromDataDir(dataDir);
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
 
   const resolveProject = (projectId: unknown) => {
@@ -414,9 +418,6 @@ export function startWebChat(options: WebChatOptions): void {
         `利用可能なバックエンドを指定してください: ${options.resolver.getSelectableBackends().join(', ')}`,
         400
       );
-    }
-    if (model && !options.resolver.isModelAllowed(model)) {
-      throw new WebProjectError(`モデル ${model} は許可されていません`, 400);
     }
     if (effort && !supportsEffort(backend as AgentBackend, effort as EffortLevel)) {
       throw new WebProjectError(
@@ -656,6 +657,7 @@ export function startWebChat(options: WebChatOptions): void {
         activity,
         projectId: s.projectId,
         backend,
+        contextUsage: s.contextUsage,
         origin,
       };
     });
@@ -804,6 +806,7 @@ export function startWebChat(options: WebChatOptions): void {
       // Snapshot refresh is best-effort and must not fail the completed mutation.
     }
   };
+  const unsubscribeSessionChanges = subscribeSessionChanges(invalidateSessionSnapshots);
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url || '/';
@@ -958,6 +961,11 @@ export function startWebChat(options: WebChatOptions): void {
 
     // Project設定フォーム向けの構造化モデル一覧。
     if (url === '/api/models' && req.method === 'GET') {
+      if (options.config?.features?.backendSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'backend switching is disabled' }));
+        return;
+      }
       if (!options.resolver) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'backend resolver is not available' }));
@@ -976,15 +984,10 @@ export function startWebChat(options: WebChatOptions): void {
         return;
       }
       const discovery = await discoverBackendModels(backend);
-      const allowedModels = options.resolver.getAllowedModels();
-      const models = allowedModels
-        ? discovery.models.filter((model) => allowedModels.includes(model.id))
-        : discovery.models;
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(
         JSON.stringify({
           ...discovery,
-          models,
           supportedEfforts: getSupportedEffortLevels(backend),
         })
       );
@@ -994,6 +997,11 @@ export function startWebChat(options: WebChatOptions): void {
     // Web automation: all supported platforms can be created and edited here. Web schedules
     // create a fresh conversation for every run, optionally inside a logical Project.
     if (url === '/api/schedules' && req.method === 'GET') {
+      if (options.config?.scheduler.enabled === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        return;
+      }
       if (!options.scheduler) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'scheduler is not available' }));
@@ -1014,7 +1022,126 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    if (url === '/api/agent-runs' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ runs: agentRuns.list() }));
+      return;
+    }
+
+    const agentRunMatch = url.match(/^\/api\/agent-runs\/([^/]+)$/);
+    if (agentRunMatch && req.method === 'GET') {
+      const run = agentRuns.get(decodeURIComponent(agentRunMatch[1]));
+      if (!run) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent Runが見つかりません' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ run }));
+      return;
+    }
+
+    if (url === '/api/agent-runs' && req.method === 'POST') {
+      try {
+        if (!acceptsSameHostMutation(req)) {
+          throw new AgentRunError('cross-origin Agent Run creation is not allowed', 403);
+        }
+        if (!options.resolver) {
+          throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
+        }
+        const body = await readBody(req);
+        const task = String(body.task || '');
+        const backend = String(body.backend || '').trim() as AgentBackend;
+        const model = body.model ? String(body.model).trim() : undefined;
+        const effort = body.effort ? (String(body.effort) as EffortLevel) : undefined;
+        if (!options.resolver.isBackendSelectable(backend)) {
+          throw new AgentRunError(
+            `利用可能なバックエンドを指定してください: ${options.resolver.getSelectableBackends().join(', ')}`,
+            400
+          );
+        }
+        if (effort && !supportsEffort(backend, effort)) {
+          throw new AgentRunError(
+            `${backend} のeffortは ${getSupportedEffortLevels(backend).join(', ') || '未対応'} です`,
+            400
+          );
+        }
+        if (effort && requiresExplicitModelForEffort(backend) && !model) {
+          throw new AgentRunError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
+        }
+
+        const workspace = await resolveWorkspace(body.workspaceId);
+        const appSessionId = createWebSession({
+          title:
+            String(body.title || '').trim() || `Agent Run: ${backend}${model ? ` / ${model}` : ''}`,
+          workspaceId: workspace.id,
+          workspacePath: workspace.path,
+        });
+        const run = agentRuns.create({
+          task,
+          backend,
+          model,
+          effort,
+          workspaceId: workspace.id,
+          workspacePath: workspace.path,
+          appSessionId,
+        });
+        invalidateSessionSnapshots();
+
+        void (async () => {
+          const contextKey = webContextKey(appSessionId);
+          agentRuns.markRunning(run.id);
+          try {
+            const runOptions = {
+              channelId: contextKey,
+              settingsChannelId: contextKey,
+              appSessionId,
+              platform: 'web' as const,
+              defaultBackend: backend,
+              defaultModel: model,
+              defaultEffort: effort,
+              workdir: workspace.path,
+              skipPermissions: body.skipPermissions === true ? true : undefined,
+            };
+            const result = await agentRunner.runStream(
+              `[プラットフォーム: Web]\n${run.task}`,
+              {},
+              runOptions
+            );
+            setSession(contextKey, result.sessionId);
+            setProviderSessionId(
+              appSessionId,
+              result.sessionId,
+              backend,
+              model,
+              effort,
+              result.sessionMode
+            );
+            incrementMessageCount(appSessionId);
+            agentRuns.markSucceeded(run.id, result);
+          } catch (error) {
+            agentRuns.markFailed(run.id, error);
+          } finally {
+            invalidateSessionSnapshots();
+          }
+        })();
+
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ run }));
+      } catch (error) {
+        const status = error instanceof AgentRunError ? error.status : 400;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
     if (url === '/api/schedules' && req.method === 'POST') {
+      if (options.config?.scheduler.enabled === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        return;
+      }
       if (!options.scheduler) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'scheduler is not available' }));
@@ -1034,6 +1161,11 @@ export function startWebChat(options: WebChatOptions): void {
 
     const scheduleMatch = url.match(/^\/api\/schedules\/([^/]+)$/);
     if (scheduleMatch && req.method === 'PATCH') {
+      if (options.config?.scheduler.enabled === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        return;
+      }
       if (!options.scheduler) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'scheduler is not available' }));
@@ -1068,6 +1200,11 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (scheduleMatch && req.method === 'DELETE') {
+      if (options.config?.scheduler.enabled === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        return;
+      }
       if (!options.scheduler) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'scheduler is not available' }));
@@ -1338,6 +1475,11 @@ export function startWebChat(options: WebChatOptions): void {
     // Workspace browser/editor. Paths are always workspace-relative and validated again
     // by WorkspaceBrowser before filesystem access.
     if (url === '/api/workspace/entries' && req.method === 'GET') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
+        return;
+      }
       try {
         const requestUrl = new URL(rawUrl, 'http://localhost');
         const directory = requestUrl.searchParams.get('path')?.trim() || '';
@@ -1359,6 +1501,11 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url === '/api/workspace/file' && req.method === 'GET') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
+        return;
+      }
       try {
         const requestUrl = new URL(rawUrl, 'http://localhost');
         const filePath = requestUrl.searchParams.get('path')?.trim() || '';
@@ -1380,6 +1527,11 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url === '/api/workspace/file' && req.method === 'PUT') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
+        return;
+      }
       try {
         const body = await readBody(req);
         const { browser } = await resolveWorkspaceBrowser(body.workspaceId);
@@ -1491,6 +1643,11 @@ export function startWebChat(options: WebChatOptions): void {
 
     // Web Projectは会話を束ねる論理単位。workspaceやディレクトリは作成しない。
     if (url === '/api/workspaces' && req.method === 'GET') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        return;
+      }
       const workspaces = workspaceRegistry
         ? await Promise.all(
             workspaceRegistry.list().map((workspace) => workspaceRegistry.resolveById(workspace.id))
@@ -1502,6 +1659,11 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url === '/api/workspaces' && req.method === 'POST') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        return;
+      }
       try {
         if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
         const body = await readBody(req);
@@ -1520,6 +1682,11 @@ export function startWebChat(options: WebChatOptions): void {
 
     const workspaceMatch = url.match(/^\/api\/workspaces\/([^/]+)$/);
     if (workspaceMatch && req.method === 'DELETE') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        return;
+      }
       try {
         if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
         const workspaceId = decodeURIComponent(workspaceMatch[1]);
@@ -1574,6 +1741,22 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/api/projects' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        if (
+          options.config?.features?.workspaceSwitching === false &&
+          body.workspaceId !== undefined
+        ) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+          return;
+        }
+        if (
+          options.config?.features?.backendSwitching === false &&
+          ['backend', 'model', 'effort'].some((key) => body[key] !== undefined)
+        ) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'backend switching is disabled' }));
+          return;
+        }
         const workspace = await resolveWorkspace(body.workspaceId);
         const project = webProjects.create({
           name: String(body.name || ''),
@@ -1627,10 +1810,20 @@ export function startWebChat(options: WebChatOptions): void {
         const projectId = decodeURIComponent(projectMatch[1]);
         const body = await readBody(req);
         const hasWorkspaceUpdate = body.workspaceId !== undefined;
+        if (hasWorkspaceUpdate && options.config?.features?.workspaceSwitching === false) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+          return;
+        }
         if (hasWorkspaceUpdate) await resolveWorkspace(body.workspaceId);
         const hasBackendUpdate = ['backend', 'model', 'effort'].some(
           (key) => body[key] !== undefined
         );
+        if (hasBackendUpdate && options.config?.features?.backendSwitching === false) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'backend switching is disabled' }));
+          return;
+        }
         const project = webProjects.update(projectId, {
           name: body.name === undefined ? undefined : String(body.name),
           prompt: body.prompt === undefined ? undefined : String(body.prompt),
@@ -1642,6 +1835,19 @@ export function startWebChat(options: WebChatOptions): void {
       } catch (error) {
         const status = error instanceof WebProjectError ? error.status : 400;
         res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    // GET /api/usage — provider account limits（短時間キャッシュ付き）
+    if (url === '/api/usage' && req.method === 'GET') {
+      try {
+        const usage = await readAccountUsage();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(usage));
+      } catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
       return;
@@ -2982,6 +3188,8 @@ export function startWebChat(options: WebChatOptions): void {
     res.writeHead(404);
     res.end('Not found');
   });
+
+  server.on('close', unsubscribeSessionChanges);
 
   server.listen(port, host, () => {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。

@@ -278,7 +278,7 @@ export async function processPrompt(
     const captureToolUse = toolHistoryMode !== 'off';
     const showLiveToolUse = captureToolUse && (config.discord.showLiveToolUse ?? true);
 
-    // !skip プレフィックスの場合、ワンショットランナーを使用
+    // 起動時設定より強い権限が明示された内部呼び出しではワンショットランナーを使用
     // （persistent-runner はプロセス起動時の権限設定を変えられないため）
     const defaultSkip = config.agent.config.skipPermissions ?? false;
     const needsSkipRunner = skipPermissions && !defaultSkip;
@@ -935,14 +935,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       .replace(/\s+/g, ' ')
       .trim();
 
-    // スキップ設定（返信元追加やリンク展開の前に判定する）
-    // !skip プレフィックスで一時的にスキップモードにできる
-    let skipPermissions = config.agent.config.skipPermissions ?? false;
-
-    if (prompt.startsWith('!skip')) {
-      skipPermissions = true;
-      prompt = prompt.replace(/^!skip\s*/, '').trim();
-    }
+    const skipPermissions = config.agent.config.skipPermissions ?? false;
 
     // Discordリンクからメッセージ内容を取得
     prompt = await fetchDiscordLinkContent(client, prompt);

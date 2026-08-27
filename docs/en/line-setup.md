@@ -36,9 +36,9 @@ In the **Messaging API** tab (lower section):
 xangi settings
 ```
 
-Paste the Channel access token and Channel secret into the LINE fields on the local settings page and save them.
+Enter the Channel access token, Channel secret, and allowed user IDs in the LINE fields on the local settings page, then save them.
 
-In a source checkout, non-secret advanced settings such as allowed user IDs can still be placed in `.env`:
+In a source checkout, the same allowed user IDs and other advanced settings can be placed in `.env`:
 
 ```bash
 LINE_ALLOWED_USER=<LINE userId(s), comma-separated, or "*" for all>

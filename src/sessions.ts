@@ -32,6 +32,13 @@ export interface AgentInfo {
   sessionMode?: ProviderSessionMode;
 }
 
+export interface SessionContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  updatedAt: string;
+  source: 'codex-app-server' | 'claude-result' | 'antigravity-statusline' | 'copilot-sdk';
+}
+
 export interface SessionEntry {
   id: string; // appSessionId
   title: string;
@@ -58,6 +65,8 @@ export interface SessionEntry {
   workspacePath?: string;
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
+  /** 最後に完了したturn時点のprovider context使用量。 */
+  contextUsage?: SessionContextUsage;
 }
 
 interface SessionsFile {
@@ -74,6 +83,7 @@ interface SessionSnapshotOptions {
 let sessionsPath: string | null = null;
 let data: SessionsFile = { activeByContext: {}, sessions: {} };
 let currentBootId: string = randomUUID();
+const sessionChangeListeners = new Set<() => void>();
 
 /**
  * sessions.json のパスを初期化
@@ -471,6 +481,42 @@ export function updateSessionProject(appSessionId: string, projectId?: string): 
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
   return true;
+}
+
+export function updateSessionContextUsage(
+  appSessionId: string,
+  usage: Omit<SessionContextUsage, 'updatedAt'>
+): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry || usage.usedTokens < 0 || usage.contextWindow <= 0) return false;
+  entry.contextUsage = { ...usage, updatedAt: new Date().toISOString() };
+  saveSessionsToFile();
+  for (const listener of sessionChangeListeners) {
+    try {
+      listener();
+    } catch {
+      // Usage persistence must not fail because a disconnected UI listener threw.
+    }
+  }
+  return true;
+}
+
+export function updateSessionContextUsageByProviderSession(
+  backend: string,
+  providerSessionId: string,
+  usage: Omit<SessionContextUsage, 'updatedAt'>
+): boolean {
+  const entry = Object.values(data.sessions).find(
+    (candidate) =>
+      candidate.agent?.backend === backend &&
+      candidate.agent.providerSessionId === providerSessionId
+  );
+  return entry ? updateSessionContextUsage(entry.id, usage) : false;
+}
+
+export function subscribeSessionChanges(listener: () => void): () => void {
+  sessionChangeListeners.add(listener);
+  return () => sessionChangeListeners.delete(listener);
 }
 
 /**

@@ -4,6 +4,8 @@ import type { BaseRunnerOptions } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
 import { logPrompt, logResponse } from './transcript-logger.js';
 import type { ChatPlatform } from './prompts/index.js';
+import { updateSessionContextUsage } from './sessions.js';
+import { readCodexContextUsage } from './usage-monitor.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
 
 export interface CodexOptions extends BaseRunnerOptions {
@@ -235,6 +237,15 @@ export class CodexRunner extends CliRunnerBase {
     return message.includes('thread/resume failed') || message.includes('no rollout found');
   }
 
+  private extractUsage(event: CodexEvent): RunResult['usage'] | undefined {
+    if (event.type !== 'turn.completed' || !event.usage) return undefined;
+    return {
+      inputTokens: event.usage.input_tokens,
+      cachedInputTokens: event.usage.cached_input_tokens,
+      outputTokens: event.usage.output_tokens,
+    };
+  }
+
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
     const prompt = prependRuntimeContext(rawPrompt, this.workdir);
     const args = this.buildArgs(prompt, options);
@@ -272,9 +283,11 @@ export class CodexRunner extends CliRunnerBase {
     }
 
     let sessionId = '';
+    let usage: RunResult['usage'];
     this.forEachJsonlEvent(stdout, (event) => {
       const sid = this.extractSessionId(event);
       if (sid) sessionId = sid;
+      usage = this.extractUsage(event) ?? usage;
     });
     const result = this.extractResult(stdout);
 
@@ -283,7 +296,7 @@ export class CodexRunner extends CliRunnerBase {
       logResponse(this.workdir, options.appSessionId, { result, sessionId });
     }
 
-    return { result, sessionId };
+    return usage ? { result, sessionId, usage } : { result, sessionId };
   }
 
   private extractResult(output: string): string {
@@ -326,6 +339,18 @@ export class CodexRunner extends CliRunnerBase {
           sessionId: result.sessionId,
         });
       }
+      if (options?.appSessionId && result.sessionId) {
+        void readCodexContextUsage(result.sessionId)
+          .then((usage) => {
+            if (usage) {
+              updateSessionContextUsage(options.appSessionId as string, {
+                ...usage,
+                source: 'codex-app-server',
+              });
+            }
+          })
+          .catch((error) => console.warn('[codex] Failed to refresh context usage:', error));
+      }
     };
 
     try {
@@ -355,6 +380,7 @@ export class CodexRunner extends CliRunnerBase {
     let fullText = '';
     let sessionId = '';
     let errorMessage: string | undefined;
+    let usage: RunResult['usage'];
     const emittedToolIds = new Set<string>();
     let backendReady = false;
 
@@ -429,21 +455,17 @@ export class CodexRunner extends CliRunnerBase {
           );
         }
         if (event.type === 'turn.completed') {
+          usage = this.extractUsage(event) ?? usage;
           callbacks.onTraceEvent?.({
             type: 'turn_completed',
-            usage: event.usage
-              ? {
-                  inputTokens: event.usage.input_tokens,
-                  cachedInputTokens: event.usage.cached_input_tokens,
-                  outputTokens: event.usage.output_tokens,
-                }
-              : undefined,
+            usage,
           });
         }
 
         return undefined;
       },
-      finalize: () => ({ result: fullText, sessionId }),
+      finalize: () =>
+        usage ? { result: fullText, sessionId, usage } : { result: fullText, sessionId },
       exitErrorDetail: () => errorMessage,
     };
   }

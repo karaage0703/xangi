@@ -181,7 +181,7 @@ export class ToolTrajectoryLogger {
     try {
       const dir = join(this.workdir, TRAJECTORY_DIR);
       if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
       const entry = {
         ts: new Date().toISOString(),
@@ -201,7 +201,7 @@ export class ToolTrajectoryLogger {
         ...payload,
       };
       const line = JSON.stringify(entry);
-      appendFileSync(this.filePath(common.appSessionId), line + '\n');
+      appendFileSync(this.filePath(common.appSessionId), line + '\n', { mode: 0o600 });
     } catch (err) {
       // fail-safe: ロガー失敗で runner を落とさない
       console.warn(

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,67 @@ function makeConfig(platform: Config['agent']['platform']): Config {
 }
 
 describe('DynamicRunnerManager platform routing', () => {
+  it('records timing-safe CLI trajectory metadata without wrapping Local LLM', async () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-trajectory-'));
+    const previous = process.env.XANGI_TOOL_TRAJECTORY_LOG;
+    process.env.XANGI_TOOL_TRAJECTORY_LOG = 'true';
+    try {
+      const config = makeConfig('web');
+      config.agent.backend = 'codex';
+      config.agent.config.workdir = workdir;
+      const resolved = { backend: 'codex' as const, model: 'gpt-test' };
+      const resolver = {
+        resolve: vi.fn().mockReturnValue(resolved),
+        getDefault: vi.fn().mockReturnValue(resolved),
+      } as unknown as BackendResolver;
+      const manager = new DynamicRunnerManager(config, resolver);
+      const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+        callbacks.onTraceEvent?.({
+          type: 'tool_started',
+          toolId: 'tool-1',
+          toolName: 'Bash',
+        });
+        callbacks.onTraceEvent?.({
+          type: 'tool_completed',
+          toolId: 'tool-1',
+          toolName: 'Bash',
+          exitCode: 0,
+          outputBytes: 999,
+        });
+        return { result: 'ok', sessionId: 'provider-1' };
+      });
+      (
+        manager as unknown as {
+          defaultRunner: { runStream: typeof runStream };
+        }
+      ).defaultRunner = { runStream };
+
+      await manager.runStream('prompt containing TOKEN=secret', {}, {
+        channelId: 'web-chat:session-1',
+        appSessionId: 'app-session-1',
+        platform: 'web',
+        workdir,
+      });
+
+      const path = join(workdir, 'logs', 'tool-trajectory', 'app-session-1.jsonl');
+      const contents = readFileSync(path, 'utf8');
+      expect(contents).toContain('"tool_name":"Bash"');
+      expect(contents).not.toContain('TOKEN=secret');
+      const entries = contents
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const toolCall = entries.find((entry) => entry.kind === 'tool_call');
+      expect(toolCall).toBeDefined();
+      expect(toolCall).not.toHaveProperty('output_bytes');
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      if (previous === undefined) delete process.env.XANGI_TOOL_TRAJECTORY_LOG;
+      else process.env.XANGI_TOOL_TRAJECTORY_LOG = previous;
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
   it('creates a dedicated runner keyed by a non-default canonical workdir', () => {
     const defaultWorkdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-default-'));
     const alternateWorkdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-alternate-'));

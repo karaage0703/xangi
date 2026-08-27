@@ -379,6 +379,114 @@ describe('Discord Commands', () => {
     });
   });
 
+  describe('/backend command response deadline', () => {
+    function createBackendInteraction(model = 'gpt-oss-120b-medium') {
+      const values: Record<string, string | null> = {
+        type: 'antigravity',
+        model,
+        effort: null,
+      };
+      return {
+        isAutocomplete: () => false,
+        isButton: () => false,
+        isChatInputCommand: () => true,
+        commandName: 'backend',
+        channelId: 'channel-123',
+        channel: { isThread: () => false },
+        user: { id: 'user-123' },
+        options: {
+          getSubcommand: () => 'set',
+          getString: (name: string) => values[name],
+        },
+        deferReply: vi.fn().mockResolvedValue(undefined),
+        editReply: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+
+    it('defers before slow model discovery and edits the reserved response', async () => {
+      let finishDiscovery: ((value: any) => void) | undefined;
+      const discoverModels = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finishDiscovery = resolve;
+          })
+      );
+      const setChannelOverride = vi.fn();
+      const switchBackend = vi.fn();
+      const handler = createInteractionHandler({
+        config: { agent: {}, discord: { allowedUsers: ['user-123'] } } as Config,
+        resolver: {
+          getSelectableBackends: () => [],
+          isBackendSelectable: () => true,
+          setChannelOverride,
+        } as unknown as BackendResolver,
+        agentRunner: { switchBackend } as unknown as AgentRunner,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+        workspaceRegistry: {} as never,
+        discoverModels: discoverModels as never,
+      });
+      const interaction = createBackendInteraction();
+
+      const handling = handler(interaction as never);
+      await vi.waitFor(() => expect(interaction.deferReply).toHaveBeenCalledOnce());
+      expect(discoverModels).toHaveBeenCalledWith('antigravity');
+      expect(interaction.editReply).not.toHaveBeenCalled();
+
+      finishDiscovery?.({
+        backend: 'antigravity',
+        source: 'agy models',
+        status: 'available',
+        models: [{ id: 'gpt-oss-120b-medium' }],
+      });
+      await handling;
+
+      expect(setChannelOverride).toHaveBeenCalledWith('channel-123', {
+        backend: 'antigravity',
+        model: 'gpt-oss-120b-medium',
+        effort: undefined,
+      });
+      expect(switchBackend).toHaveBeenCalledWith('channel-123');
+      expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining('次のturnから適用'));
+      expect(interaction.reply).not.toHaveBeenCalled();
+    });
+
+    it('returns discovery validation errors through the deferred response', async () => {
+      const switchBackend = vi.fn();
+      const handler = createInteractionHandler({
+        config: { agent: {}, discord: { allowedUsers: ['user-123'] } } as Config,
+        resolver: {
+          getSelectableBackends: () => [],
+          isBackendSelectable: () => true,
+          setChannelOverride: vi.fn(),
+        } as unknown as BackendResolver,
+        agentRunner: { switchBackend } as unknown as AgentRunner,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+        workspaceRegistry: {} as never,
+        discoverModels: vi.fn().mockResolvedValue({
+          backend: 'antigravity',
+          source: 'agy models',
+          status: 'available',
+          models: [{ id: 'claude-sonnet-4-6' }],
+        }),
+      });
+      const interaction = createBackendInteraction();
+
+      await handler(interaction as never);
+
+      expect(interaction.deferReply).toHaveBeenCalledOnce();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("model 'gpt-oss-120b-medium' was not found")
+      );
+      expect(switchBackend).not.toHaveBeenCalled();
+      expect(interaction.reply).not.toHaveBeenCalled();
+    });
+  });
+
   describe('/llmeffort command', () => {
     it('registers the vLLM-supported reasoning effort choices', () => {
       const commands = buildSlashCommands(
@@ -565,6 +673,36 @@ describe('Discord Commands', () => {
     });
   });
 
+  describe('shared-bot feature controls', () => {
+    it('does not register disabled mutation surfaces or removed /skip', () => {
+      const config = {
+        features: {
+          backendSwitching: false,
+          runtimeSettings: false,
+          workspaceSwitching: false,
+          lifecycle: false,
+        },
+        scheduler: { enabled: false, startupEnabled: true },
+        agent: { allowedBackends: ['claude-code'] },
+        discord: {},
+      } as Config;
+
+      const names = buildSlashCommands(config, []).map((command) => command.name);
+      expect(names).not.toEqual(
+        expect.arrayContaining([
+          'backend',
+          'models',
+          'settings',
+          'workspace',
+          'restart',
+          'schedule',
+          'skip',
+        ])
+      );
+      expect(names).toEqual(expect.arrayContaining(['new', 'stop', 'skill']));
+    });
+  });
+
   describe('/replysuggestions command registration', () => {
     it('registers the global on/off/show/default choices', () => {
       const config = {
@@ -655,7 +793,6 @@ describe('Discord Commands', () => {
     it('discovers model candidates for the selected backend', async () => {
       const resolver = {
         isBackendSelectable: (backend: string) => backend === 'local-llm',
-        getAllowedModels: () => undefined,
       } as BackendResolver;
       const discover = vi.fn().mockResolvedValue({
         backend: 'local-llm',
@@ -682,7 +819,6 @@ describe('Discord Commands', () => {
     it('returns only effort candidates supported by both xangi and the selected model', async () => {
       const resolver = {
         isBackendSelectable: (backend: string) => backend === 'codex',
-        getAllowedModels: () => undefined,
       } as BackendResolver;
       const discover = vi.fn().mockResolvedValue({
         backend: 'codex',

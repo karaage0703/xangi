@@ -302,10 +302,8 @@ describe('web-chat HTTP API', () => {
       getChannelOverride: (channelId: string) => overrides.get(channelId),
       getAllowedBackends: () => ['claude-code', 'codex'] as AgentBackend[],
       getSelectableBackends: () => ['claude-code', 'codex'] as AgentBackend[],
-      getAllowedModels: () => ['gpt-test'],
       isBackendAllowed: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
       isBackendSelectable: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
-      isModelAllowed: (model: string) => model === 'gpt-test',
       setChannelOverride: (channelId: string, override: ChannelOverride) => {
         overrides.set(channelId, override);
       },
@@ -416,6 +414,58 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('creates an Agent Run with an isolated session and persists its result manifest', async () => {
+    const response = await fetch(`${baseUrl}/api/agent-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: 'Implement a bounded change',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'high',
+      }),
+    });
+    const created = (await response.json()) as {
+      run: { id: string; appSessionId: string; taskHash: string; status: string };
+    };
+
+    expect(response.status).toBe(202);
+    expect(created.run.status).toBe('queued');
+    expect(created.run.taskHash).toMatch(/^[a-f0-9]{64}$/);
+
+    const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${created.run.appSessionId}`;
+    for (let attempt = 0; attempt < 30 && !runner.release(contextKey); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    let detail: { run: Record<string, unknown> } | undefined;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      detail = (await (
+        await fetch(`${baseUrl}/api/agent-runs/${encodeURIComponent(created.run.id)}`)
+      ).json()) as { run: Record<string, unknown> };
+      if (detail.run.status === 'succeeded') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(detail?.run).toMatchObject({
+      id: created.run.id,
+      status: 'succeeded',
+      backend: 'codex',
+      model: 'gpt-test',
+      effort: 'high',
+      result: 'ok',
+      providerSessionId: `provider-${contextKey}`,
+    });
+    expect(runner.options.at(-1)).toMatchObject({
+      appSessionId: created.run.appSessionId,
+      defaultBackend: 'codex',
+      defaultModel: 'gpt-test',
+      defaultEffort: 'high',
+      workdir: realpathSync(testDir),
+    });
+    expect(existsSync(join(testDir, '.xangi', 'agent-runs.json'))).toBe(true);
   });
 
   it('serves the Web app route used by message permalinks', async () => {

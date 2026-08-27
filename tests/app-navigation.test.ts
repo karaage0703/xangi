@@ -35,6 +35,27 @@ describe('AppNavigation', () => {
     expect(html).toContain('その他');
   });
 
+  it('only marks more active for destinations contained in the more menu', () => {
+    const monitor = renderToStaticMarkup(
+      createElement(AppNavigation, {
+        current: 'monitor',
+        moreOpen: false,
+        onMore: () => undefined,
+      })
+    );
+    const extensions = renderToStaticMarkup(
+      createElement(AppNavigation, {
+        current: 'extensions',
+        moreOpen: false,
+        onMore: () => undefined,
+      })
+    );
+
+    expect(monitor).toMatch(/<a class="active" aria-current="page" href="\/monitor">/);
+    expect(monitor).toContain('class="app-more-trigger"');
+    expect(extensions).toContain('class="app-more-trigger active"');
+  });
+
   it('keeps the shared navigation fixed instead of overriding it per page', () => {
     const styles = readFileSync(new URL('../web-ui/src/styles.css', import.meta.url), 'utf8');
     const monitorOverride = styles.match(/\.monitor-page\s*>\s*\.app-topbar\s*\{([^}]*)\}/)?.[1];

@@ -54,6 +54,9 @@ export interface RunResult {
     inputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
+    /** 最後のprovider requestが占めるcontext。turn累計とは分けて扱う。 */
+    contextTokens?: number;
+    contextWindow?: number;
   };
 }
 

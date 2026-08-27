@@ -27,3 +27,5 @@ export {
   truncate,
   type SanitizeOptions,
 } from './sanitize.js';
+
+export { ToolTrajectoryStreamRecorder } from './stream-recorder.js';

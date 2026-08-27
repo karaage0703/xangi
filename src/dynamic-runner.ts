@@ -26,6 +26,21 @@ import {
   createReloadingUserPromptSubmitHookRunner,
   type ReloadingUserPromptSubmitHookRunner,
 } from './hooks.js';
+import {
+  loggerOptionsFromEnv,
+  ToolTrajectoryLogger,
+  ToolTrajectoryStreamRecorder,
+} from './tool-trajectory/index.js';
+
+const CLI_TRAJECTORY_BACKENDS = new Set([
+  'claude-code',
+  'codex',
+  'cursor',
+  'grok',
+  'antigravity',
+  'github-copilot',
+  'opencode',
+]);
 
 /**
  * チャンネルごとにバックエンドを動的に切り替えるランナーマネージャー
@@ -254,7 +269,24 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     );
 
     const enrichedPrompt = await this.applyUserPromptSubmitHooks(prompt, runOptions);
-    const result = await runner.runStream(enrichedPrompt, callbacks, runOptions);
+    const recorder =
+      runOptions?.appSessionId && CLI_TRAJECTORY_BACKENDS.has(resolved.backend)
+        ? new ToolTrajectoryStreamRecorder(
+            new ToolTrajectoryLogger(loggerOptionsFromEnv(runOptions.workdir ?? this.workdir)),
+            {
+              appSessionId: runOptions.appSessionId,
+              platform: runOptions.platform ?? this.platform,
+              backend: resolved.backend,
+              model: resolved.model,
+              channelId: runOptions.channelId,
+            }
+          )
+        : undefined;
+    const result = await runner.runStream(
+      enrichedPrompt,
+      recorder?.callbacks(callbacks) ?? callbacks,
+      runOptions
+    );
     this.recordResolvedBackend(runOptions, resolved, result);
     return result;
   }

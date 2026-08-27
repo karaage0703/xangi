@@ -359,6 +359,22 @@ describe('config', () => {
     expect(config.scheduler.startupEnabled).toBe(false);
   });
 
+  it('loads shared-bot feature controls from env', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.BACKEND_SWITCHING_ENABLED = 'false';
+    process.env.RUNTIME_SETTINGS_ENABLED = 'false';
+    process.env.WORKSPACE_SWITCHING_ENABLED = 'false';
+    process.env.XANGI_SELF_LIFECYCLE = 'off';
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().features).toEqual({
+      backendSwitching: false,
+      runtimeSettings: false,
+      workspaceSwitching: false,
+      lifecycle: false,
+    });
+  });
+
   it('should enable allowAutoreplyCommand by default', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.ALLOW_AUTOREPLY_COMMAND;

@@ -7,11 +7,70 @@ import { deriveSessionOrigin } from '../src/session-title.js';
 import {
   activityFromEvent,
   applyActivitySnapshot,
+  conversationLabel,
+  displayUsageProviders,
   isMonitorVisible,
   monitorLane,
   revealMonitorDetail,
+  usageGroupPresentation,
+  usagePacePercent,
+  visibleUsageGroups,
   type MonitorSession,
 } from '../web-ui/src/Monitor.js';
+
+describe('Monitor account usage', () => {
+  it('shows elapsed-window pace for comparison with actual usage', () => {
+    const start = Date.parse('2026-08-26T00:00:00.000Z');
+    const reset = start + 5 * 60 * 60 * 1000;
+    expect(
+      usagePacePercent(
+        { resetsAt: reset / 1000, windowDurationMins: 5 * 60 },
+        start + 2 * 60 * 60 * 1000
+      )
+    ).toBe(40);
+  });
+
+  it('clamps the pace to the active window and omits incomplete metadata', () => {
+    const reset = Date.parse('2026-08-27T00:00:00.000Z');
+    const window = { resetsAt: reset / 1000, windowDurationMins: 60 };
+    expect(usagePacePercent(window, reset - 2 * 60 * 60 * 1000)).toBe(0);
+    expect(usagePacePercent(window, reset + 60 * 1000)).toBe(100);
+    expect(usagePacePercent({ resetsAt: reset / 1000 }, reset)).toBeUndefined();
+  });
+
+  it('labels the shared Codex quota bucket', () => {
+    expect(usageGroupPresentation({ id: 'codex', label: 'Codex', planType: 'pro' })).toEqual({
+      title: 'Codex共通枠',
+      description: 'Codex · pro',
+    });
+  });
+
+  it('omits the Spark-specific quota from Monitor', () => {
+    expect(
+      visibleUsageGroups([
+        { id: 'codex', label: 'Codex', planType: 'pro', windows: [] },
+        { id: 'codex_bengalfox', label: 'GPT-5.3-Codex-Spark', planType: 'pro', windows: [] },
+      ]).map((group) => group.id)
+    ).toEqual(['codex']);
+  });
+
+  it('shows every provider returned by an official usage source without requiring a Session', () => {
+    expect(
+      displayUsageProviders([
+        {
+          id: 'codex',
+          label: 'Codex',
+          groups: [{ id: 'codex', label: 'Codex', windows: [] }],
+        },
+        {
+          id: 'github-copilot',
+          label: 'GitHub Copilot',
+          groups: [{ id: 'copilot', label: 'GitHub Copilot', windows: [] }],
+        },
+      ]).map((provider) => provider.id)
+    ).toEqual(['codex', 'github-copilot']);
+  });
+});
 
 function session(overrides: Partial<MonitorSession>): MonitorSession {
   return {
@@ -153,6 +212,20 @@ describe('Monitor kanban lanes', () => {
 });
 
 describe('Monitor session details', () => {
+  it('keeps the destination compact and leaves the thread title to technical details', () => {
+    expect(
+      conversationLabel(
+        session({
+          platform: 'discord',
+          origin: {
+            channelName: 'test_xangi_dev_01',
+            threadName: 'バックエンド設定を保存しました。新しいセッションを開始します。',
+          },
+        })
+      )
+    ).toBe('Discord · #test_xangi_dev_01');
+  });
+
   it('uses the in-page confirm dialog instead of window.confirm for WKWebView', () => {
     const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
     const confirmDialogSource = readFileSync(

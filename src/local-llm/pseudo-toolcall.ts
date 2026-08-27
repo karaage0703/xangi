@@ -263,7 +263,6 @@ const SAFE_XANGI_SUBCOMMANDS = new Set([
   'discord_channels',
   'discord_search',
   'schedule_list',
-  'system_settings',
   'models',
   'help',
 ]);

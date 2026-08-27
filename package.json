@@ -43,6 +43,7 @@
   "author": "karaage",
   "license": "MIT",
   "dependencies": {
+    "@github/copilot-sdk": "^1.0.11",
     "@line/bot-sdk": "^11.2.0",
     "@octokit/auth-app": "^8.3.0",
     "@slack/bolt": "^4.7.3",

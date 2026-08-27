@@ -356,6 +356,29 @@ describe('CodexRunner エラー本文の救出', () => {
     await expect(promise).resolves.toEqual({ result: '', sessionId: 'thread-1' });
   });
 
+  it('run: turn.completed のusageをRunResultへ載せる', async () => {
+    const runner = new CodexRunner({});
+    const promise = runner.run('hi');
+
+    await emitEventsThenClose(
+      [
+        { type: 'thread.started', thread_id: 'thread-1' },
+        { type: 'item.completed', item: { type: 'agent_message', text: 'done' } },
+        {
+          type: 'turn.completed',
+          usage: { input_tokens: 120, cached_input_tokens: 100, output_tokens: 12 },
+        },
+      ],
+      0
+    );
+
+    await expect(promise).resolves.toEqual({
+      result: 'done',
+      sessionId: 'thread-1',
+      usage: { inputTokens: 120, cachedInputTokens: 100, outputTokens: 12 },
+    });
+  });
+
   it('runStream: exit 0 なら error イベントが無くても正常完了', async () => {
     const runner = new CodexRunner({});
     const promise = runner.runStream('hi', {});
@@ -532,7 +555,11 @@ describe('CodexRunner エラー本文の救出', () => {
     );
     mockProcess.emit('close', 0);
 
-    await expect(promise).resolves.toEqual({ result: 'done', sessionId: '' });
+    await expect(promise).resolves.toEqual({
+      result: 'done',
+      sessionId: '',
+      usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2 },
+    });
     expect(trace).toContainEqual({
       type: 'turn_completed',
       usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2 },

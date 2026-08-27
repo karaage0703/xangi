@@ -87,9 +87,9 @@ xangi を起動した後、対象グループでメッセージを送ると、�
 xangi settings
 ```
 
-開いたローカル設定画面のTelegram欄へBotFatherが発行したAPIトークンを貼り付けて保存する。Webhook secretを使う場合も同じ画面で設定できる。
+開いたローカル設定画面のTelegram欄へBotFatherが発行したAPIトークンと許可ユーザーIDを入力して保存する。Webhook secretを使う場合も同じ画面で設定できる。
 
-source checkoutで詳細設定を行う場合、許可ユーザーIDなど機密ではない値は`.env`へ設定できる。
+source checkoutで詳細設定を行う場合は、同じ許可ユーザーIDや他の詳細値を`.env`へ設定できる。
 
 ```bash
 # 許可ユーザー (Telegram 数値 ID の CSV)。"*" で全許可

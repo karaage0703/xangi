@@ -8,17 +8,12 @@ import {
   selectModelForNextTurn,
 } from '../src/models-command.js';
 
-function createResolver(
-  allowedBackends: AgentBackend[] = ['codex', 'cursor'],
-  allowedModels?: string[]
-): BackendResolver {
+function createResolver(allowedBackends: AgentBackend[] = ['codex', 'cursor']): BackendResolver {
   return {
     getAllowedBackends: () => allowedBackends,
     getSelectableBackends: () => allowedBackends,
-    getAllowedModels: () => allowedModels,
     isBackendAllowed: (backend: AgentBackend) => allowedBackends.includes(backend),
     isBackendSelectable: (backend: AgentBackend) => allowedBackends.includes(backend),
-    isModelAllowed: (model: string) => !allowedModels || allowedModels.includes(model),
     setChannelOverride: vi.fn(),
   } as BackendResolver;
 }
@@ -47,7 +42,7 @@ describe('/models common command', () => {
     expect(result).toContain('`cursor-model`');
   });
 
-  it('supports one allowed backend and applies ALLOWED_MODELS filtering', async () => {
+  it('supports one allowed backend and lists every discovered model', async () => {
     const discover = vi.fn(async (backend: AgentBackend): Promise<BackendModelDiscovery> => ({
       backend,
       source: 'test source',
@@ -55,16 +50,12 @@ describe('/models common command', () => {
       models: [{ id: 'gpt-visible' }, { id: 'gpt-hidden' }],
     }));
 
-    const result = await executeModelsCommand(
-      'codex',
-      createResolver(['codex', 'cursor'], ['gpt-visible']),
-      discover
-    );
+    const result = await executeModelsCommand('codex', createResolver(), discover);
 
     expect(discover).toHaveBeenCalledOnce();
     expect(discover).toHaveBeenCalledWith('codex');
     expect(result).toContain('`gpt-visible`');
-    expect(result).not.toContain('gpt-hidden');
+    expect(result).toContain('`gpt-hidden`');
   });
 
   it('rejects a backend outside ALLOWED_BACKENDS before discovery', async () => {
@@ -116,25 +107,6 @@ describe('/models common command', () => {
       )
     ).rejects.toThrow("model 'invented-model' was not found");
     expect(resolver.setChannelOverride).not.toHaveBeenCalled();
-  });
-
-  it('rejects a discovered model excluded by ALLOWED_MODELS', async () => {
-    const resolver = createResolver(['codex'], ['gpt-allowed']);
-    const discover = vi.fn(async (): Promise<BackendModelDiscovery> => ({
-      backend: 'codex',
-      source: 'test source',
-      status: 'available',
-      models: [{ id: 'gpt-blocked' }],
-    }));
-
-    await expect(
-      selectModelForNextTurn(
-        { backend: 'codex', model: 'gpt-blocked', channelId: 'channel-1' },
-        resolver,
-        discover
-      )
-    ).rejects.toThrow('not allowed by ALLOWED_MODELS');
-    expect(discover).not.toHaveBeenCalled();
   });
 
   it('rejects effort not supported by the selected model', async () => {

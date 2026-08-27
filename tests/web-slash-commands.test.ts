@@ -6,7 +6,7 @@ import { executeWebCommand, getWebCommandDefinitions } from '../src/web-slash-co
 import { Scheduler } from '../src/scheduler.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
-import type { AgentBackend } from '../src/config.js';
+import type { AgentBackend, Config } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
 
 const discoverModels = async (backend: AgentBackend): Promise<BackendModelDiscovery> => ({
@@ -36,20 +36,12 @@ class FakeResolver {
     return this.getAllowedBackends();
   }
 
-  getAllowedModels(): string[] | undefined {
-    return ['gpt-test'];
-  }
-
   isBackendAllowed(backend: AgentBackend): boolean {
     return this.getAllowedBackends().includes(backend);
   }
 
   isBackendSelectable(backend: AgentBackend): boolean {
     return this.getSelectableBackends().includes(backend);
-  }
-
-  isModelAllowed(model: string): boolean {
-    return model === 'gpt-test';
   }
 
   setChannelOverride(_channelId: string, override: ChannelOverride): void {
@@ -113,6 +105,25 @@ describe('Web slash command adapter', () => {
     });
     expect(getWebCommandDefinitions({ workdir }).map((command) => command.name)).not.toContain(
       'skills'
+    );
+  });
+
+  it('hides and rejects disabled shared-bot features', async () => {
+    const config = {
+      features: {
+        backendSwitching: false,
+        runtimeSettings: false,
+        workspaceSwitching: false,
+        lifecycle: false,
+      },
+      scheduler: { enabled: false, startupEnabled: true },
+    } as Config;
+    const names = getWebCommandDefinitions({ workdir, config }).map((command) => command.name);
+    expect(names).not.toEqual(
+      expect.arrayContaining(['backend', 'models', 'settings', 'llmmode', 'schedule', 'restart'])
+    );
+    await expect(executeWebCommand('/schedule list', { workdir, config })).rejects.toThrow(
+      '無効化'
     );
   });
 

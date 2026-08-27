@@ -20,6 +20,7 @@ Claude Code、Codex、OpenCode、Cursor CLI、Grok CLI、Antigravity CLI、GitHu
 - スケジューラーと外部イベントからのエージェント起動
 - Web Chatからワークスペース内のMarkdown・コードを閲覧・編集
 - Web Projectによる会話の分類・既存会話の移動と、Projectごとの追加プロンプト・既定モデル設定
+- Agent Run APIによるbackend・model・workspaceを固定した独立実行と再現用manifest
 - [外部extension連携](docs/usage.md#extension連携)（Web UIから追加・管理）
 
 ## アーキテクチャ

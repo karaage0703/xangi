@@ -137,9 +137,6 @@ async function executeBackend(
         : `runtime_settings backend: --backend must be one of: ${selectableBackends.join(', ')}`
     );
   }
-  if (request.model && !resolver.isModelAllowed(request.model)) {
-    throw new ValidationError(`runtime_settings backend: model '${request.model}' is not allowed`);
-  }
   if (request.model && discover) {
     const discovery = await discover(backend);
     if (
@@ -321,6 +318,13 @@ export async function executeRuntimeSettingsCommand(
     throw new ValidationError(
       'runtime_settings: --name must be one of: backend, llmmode, autoreply, notify, threadmode, replysuggestions, respondtobots'
     );
+  }
+
+  if (name === 'backend' && dependencies.config?.features?.backendSwitching === false) {
+    throw new ValidationError('backend switching is disabled by BACKEND_SWITCHING_ENABLED=false');
+  }
+  if (name !== 'backend' && dependencies.config?.features?.runtimeSettings === false) {
+    throw new ValidationError('runtime settings are disabled by RUNTIME_SETTINGS_ENABLED=false');
   }
 
   if (name === 'backend') {

@@ -84,12 +84,18 @@ async function executeCommand(
   } else if (command.startsWith('slack_') && command !== 'slack_history') {
     return slackApi(command, flags, context);
   } else if (command.startsWith('schedule_')) {
+    if (runtimeConfig?.scheduler?.enabled === false) {
+      throw new ValidationError('schedule is disabled by SCHEDULER_ENABLED=false');
+    }
     return scheduleCmd(command, flags, scheduleManager ?? undefined);
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
   } else if (command === 'help') {
     return formatXangiCmdHelp(flags['topic']);
   } else if (command === 'models') {
+    if (runtimeConfig?.features?.backendSwitching === false) {
+      throw new ValidationError('models is disabled by BACKEND_SWITCHING_ENABLED=false');
+    }
     if (!backendResolver) {
       throw new ValidationError('models is not available on this instance');
     }
@@ -109,6 +115,13 @@ async function executeCommand(
   } else if (command === 'runtime_settings') {
     if (!backendResolver || !runtimeConfig) {
       throw new ValidationError('runtime_settings is not available on this instance');
+    }
+    const isBackendSetting = flags.name === 'backend';
+    if (isBackendSetting && runtimeConfig.features?.backendSwitching === false) {
+      throw new ValidationError('backend switching is disabled by BACKEND_SWITCHING_ENABLED=false');
+    }
+    if (!isBackendSetting && runtimeConfig.features?.runtimeSettings === false) {
+      throw new ValidationError('runtime settings are disabled by RUNTIME_SETTINGS_ENABLED=false');
     }
     return executeRuntimeSettingsCommand(
       {
