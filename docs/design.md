@@ -9,7 +9,7 @@ xangiのアーキテクチャと設計思想について説明します。
 xangiは「AI CLI（Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
 
 ```
-User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
+User → Chat surfaces → xangi → AI agent → Workspace
 ```
 
 ## アーキテクチャ
@@ -37,7 +37,7 @@ flowchart LR
 
 | レイヤー           | 役割                            | 実装                                                                                                         |
 | ------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Chat               | ユーザーインターフェース        | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                                      |
+| Chat               | ユーザーインターフェース        | discord.js, @slack/bolt, grammy, http (Web Chat), @line/bot-sdk                                              |
 | xangi              | AI CLI / Local LLM の統合・制御 | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                                        |
 | Backend Resolution | チャンネル別バックエンド解決    | backend-resolver.ts, settings.ts                                                                             |
 | AI Backend         | 実際のAI処理                    | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, Local LLM (Ollama / vLLM) |
@@ -61,8 +61,9 @@ flowchart LR
 `discord.js` v14 ベース。役割別にモジュール分割されている:
 
 - `message-handler.ts` — MessageCreate/Update/Delete のハンドリングと `processPrompt`（メンション / DM / `settings.json` の `discordAutoReplyChannels` 判定 → Runner 転送。Discord system message は処理対象外）
+- `turn-coordinator.ts` — `conversationKey` 単位の実行中状態と、schedule / trigger ターンの FIFO 待機列を共有管理する `DiscordTurnCoordinator`
 - `slash-commands.ts` — スラッシュコマンド定義と Interaction 処理
-- `scheduler-bridge.ts` — スケジューラの Discord 送信関数・エージェント実行関数の登録。schedule / trigger 起点の処理中メッセージも `ui.ts` の処理中メッセージ管理に登録し、Stop / 延長 / 残り時間表示を通常メッセージ経路と揃える
+- `scheduler-bridge.ts` — スケジューラの Discord 送信関数・エージェント実行関数の登録。schedule / trigger ターンを共有調停器へ登録し、起点の処理中メッセージも `ui.ts` の処理中メッセージ管理に登録して、Stop / 延長 / 残り時間表示を通常メッセージ経路と揃える
 - `ui.ts` — ボタン行（Stop / 延長 / 残り時間表示）・処理中メッセージ管理
 - `tool-history.ts` — ツール履歴の整形・蓄積（`TOOL_HISTORY_MAX_LINES` で表示行数を制限）
 - `message-utils.ts` — Discord メッセージリンク展開・返信元引用・スレッド元引用・チャンネルメンション展開
@@ -71,6 +72,8 @@ flowchart LR
 
 - per-channel / per-thread セッション分離（`contextKey = discord:<channelId>`。スレッド返信モードで新規スレッドを作成できた場合は `discord:<threadId>`）
 - Discord API 投稿先は親チャンネルまたは作成済みスレッド、runner / timeout / Stop / processing 管理は確定済みの `runKey = contextKey` で分離し、同じDiscordチャンネル内の別スレッドを別実行単位として扱う。スレッドのpromptには親チャンネル名/IDとスレッド名/IDを併記し、追加検索なしでどちらも送信先に選べるようにする
+- 通常メッセージとWebからのDiscordセッション継続は、同じ`conversationKey`に実行中または待機中の仕事があれば既存の処理中案内・busy errorで拒否する。一方、schedule / triggerターンは同じkeyの実行中処理の後ろへ受付順のFIFOで待機し、異なるkeyは並列に実行できる。先行処理が失敗しても後続を開始する
+- 共有待機列はprocess内メモリだけに保持する非永続queueで、再起動後の復元は行わない。この調停はDiscord経路だけに適用し、Discord以外のplatformの実行規則は変更しない
 - Discord スレッド内の per-channel 設定解決は原則として親チャンネルIDを使う。`CHANNEL_OVERRIDES`（`/backend` / `/llmmode`）、`settings.json`（`/notify` / `/threadmode`）、チャンネル topic 注入は親チャンネル設定を継承する。`/autoreply`だけはスレッドIDへ明示overrideを保存し、未設定時に親チャンネルの値を継承する
 - 既存スレッド内の発言では、Discord の starter message（親チャンネル側の元メッセージ）を `🧵 スレッド元` としてプロンプトに注入し、スレッド履歴だけでは見えない最初の話題にフォーカスする
 - スレッド・添付ファイル・リアクション対応
@@ -731,6 +734,7 @@ AI CLI（Claude Code等）
 - Webは`web-chat:<sessionId>`と生の`sessionId`の両方を受け付け、runner呼び出し前に生のappSessionIdへ正規化する。これによりtrigger起点のターンも既存Web会話のtranscriptへ追加される
 - HTTP 応答（`202` + `triggerId`）はターン完了を待たない fire-and-forget。呼び出し側（ビルドスクリプト等）をブロックしない
 - `GET /api/trigger/:id`と`xangi tool trigger_status`は、`accepted` / `running` / `completed` / `delivered` / `failed` / `interrupted`を共通形式で返す。配信参照は`platform`、`destinationId`、任意の`messageIds` / `sessionId`で表し、Discord固有型を中核へ持ち込まない
+- Discord triggerのreceiptはFIFO待機中も`accepted`のまま保持し、scheduler bridgeが実際にrunnerを開始する時点で`running`と開始時刻を記録する。待機中または実行中の同一source再発火は既存ガードで`409`とし、完了・配信・失敗の遷移も既存どおり記録する。Discord以外はrunner呼び出し時に`running`へ進める従来の境界を維持する
 - receiptは`${DATA_DIR}/trigger-receipts.json`へアトミック保存し、直近1000件を再起動後も照会できる
 - 発火時に `⚡ trigger: <source>` ラベルをチャンネルへ先行投稿し、何が起動したか可視化する
 

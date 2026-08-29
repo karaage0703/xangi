@@ -31,6 +31,7 @@ import {
 } from './discord/message-handler.js';
 import { finalizeActiveStreams } from './stream-finalizer.js';
 import { registerDiscordSchedulerBridge } from './discord/scheduler-bridge.js';
+import { DiscordTurnCoordinator } from './discord/turn-coordinator.js';
 import {
   resolveCachedDiscordDestinationLabel,
   warmDiscordScheduleDestinations,
@@ -53,6 +54,7 @@ async function main() {
   config.agent.config.workdir = workdir;
   await startAutostartExtensions({ workspace: config.agent.config.workdir });
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
+  const discordTurnCoordinator = new DiscordTurnCoordinator();
   const destinationLabelResolverRef: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   } = {};
@@ -329,10 +331,18 @@ async function main() {
       agentRunner,
       workdir,
       workspaceRegistry,
+      turnCoordinator: discordTurnCoordinator,
     });
 
     // スケジューラに Discord 送信関数とエージェント実行関数を登録
-    registerDiscordSchedulerBridge({ scheduler, client, config, agentRunner, workspaceRegistry });
+    registerDiscordSchedulerBridge({
+      scheduler,
+      client,
+      config,
+      agentRunner,
+      workspaceRegistry,
+      turnCoordinator: discordTurnCoordinator,
+    });
 
     // Discordの初回接続は他platformと同時に開始。一時的なDNS/接続障害は
     // WebやSlackを止めず、同一process内で回復するまで再試行する。

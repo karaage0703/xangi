@@ -12,37 +12,35 @@ xangi is an AI assistant that connects Claude Code, Codex, OpenCode, Cursor CLI,
 
 ## Key features
 
-- Six AI backends and five chat surfaces
-- Per-channel backend, model, effort, and Local LLM reasoning-effort settings with dynamic model discovery
-- Immediate, restart-free updates to allowed channel settings through natural language or native commands
-- Run workspace skills directly from chat
-- Persistent sessions and transcripts, timeout extension, and workspace hooks
-- Scheduler and event-triggered agent turns
-- Browse and edit workspace Markdown and code from Web Chat
-- Organize and move conversations with logical Web Projects, optional extra prompts, and per-Project default models
-- Run isolated tasks with a fixed backend, model, and workspace through the Agent Run API and retain reproducibility manifests
-- [External extension integration](docs/en/usage.md#extension-integration) through the Web UI
+- Use your preferred AI agent from Discord, Web Chat, and other chat surfaces
+- Work in your own workspace containing skills and files
+- Keep conversation history and switch AI backends or models per channel
+- Run automatically on a schedule or in response to external events
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    User([User]) <-->|Message| Platform[Chat Platforms]
-    Platform <-->|Prompt / Response| xangi[xangi]
-    xangi <-->|Execute| Backend{{Agent Backends}}
-    Backend <-->|Read / Write| WS[(Workspace)]
-    Backend <--> External[External Knowledge / Web Services]
-    Scheduler[[Scheduler / Event Trigger]] -->|Prompt| xangi
-
+    User([User]) <-->|Messages / files| Channels[Chat surfaces]
+    Channels <--> Xangi[xangi<br>connectivity · sessions · automation]
+    Xangi <--> Backend[AI agent backend]
+    Backend <--> Workspace[User workspace<br>skills · code · documents · memory]
+    Backend <--> External[Web · APIs · external services]
     classDef user fill:#fef3c7,stroke:#d97706,color:#111;
-    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
-    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
-    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    classDef surface fill:#ede9fe,stroke:#7c3aed,color:#111;
+    classDef core fill:#dbeafe,stroke:#2563eb,color:#111;
+    classDef agent fill:#dcfce7,stroke:#16a34a,color:#111;
+    classDef workspace fill:#fef9c3,stroke:#ca8a04,color:#111;
+    classDef external fill:#f3f4f6,stroke:#6b7280,color:#111;
     class User user;
-    class Platform,xangi,Backend,Scheduler core;
-    class WS ws;
-    class External ext;
+    class Channels surface;
+    class Xangi core;
+    class Backend agent;
+    class Workspace workspace;
+    class External external;
 ```
+
+xangi handles chat connectivity, conversation continuity, and automated turns. The selected AI agent handles reasoning and tool execution, while skills and files remain in the user's workspace.
 
 ## Quickstart
 
@@ -135,6 +133,10 @@ See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 ## Workspace
 
 [ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace) is an optional starter kit with skills for notes, diaries, transcription, Notion integration, and more.
+
+## Extensions
+
+Add and manage external capabilities from Extensions in the Web UI. The official catalog includes [xangi-search](https://github.com/karaage0703/xangi-search) for searching your workspace. See [Extension Integration](docs/en/usage.md#extension-integration) for details.
 
 ## Related projects
 

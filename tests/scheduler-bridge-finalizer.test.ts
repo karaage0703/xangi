@@ -12,6 +12,7 @@ import {
   initSessions,
 } from '../src/sessions.js';
 import type { AgentRunContext } from '../src/scheduler.js';
+import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 
 type AgentRunResult = { result: string; sessionId: string; attachments?: string[] };
 type StreamCallbacks = {
@@ -33,7 +34,8 @@ function buildBridge(
       path: string;
       isDefault: boolean;
     }>;
-  }
+  },
+  turnCoordinator?: DiscordTurnCoordinator
 ) {
   let capturedRunner:
     | ((
@@ -88,6 +90,7 @@ function buildBridge(
     config,
     agentRunner,
     workspaceRegistry,
+    turnCoordinator,
   } as unknown as Parameters<typeof registerDiscordSchedulerBridge>[0]);
   if (!capturedRunner) throw new Error('agent runner not registered');
   return { runner: capturedRunner, thinkingMsg, channel, agentRunner };
@@ -99,6 +102,56 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
   beforeEach(async () => {
     // 前のテストの残留 finalizer を掃除（finalize は registry をクリアする）
     await finalizeActiveStreams(10);
+  });
+
+  it('通常ターン中のscheduler taskを共有調停器で待たせ、完了後に開始する', async () => {
+    const coordinator = new DiscordTurnCoordinator();
+    let releaseNormal!: () => void;
+    const normal = coordinator.tryRun(
+      'channel-1',
+      () => new Promise<void>((resolve) => (releaseNormal = resolve))
+    );
+    const { runner, agentRunner } = buildBridge(
+      async () => ({ result: 'scheduled', sessionId: 'scheduler-session' }),
+      undefined,
+      coordinator
+    );
+
+    const scheduled = runner('scheduled prompt', 'channel-1');
+    await flush();
+    expect(agentRunner.runStream).not.toHaveBeenCalled();
+
+    releaseNormal();
+    await normal;
+    await scheduled;
+    expect(agentRunner.runStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('queued scheduler taskの onStart を実行開始時に呼ぶ', async () => {
+    const coordinator = new DiscordTurnCoordinator();
+    let releaseNormal!: () => void;
+    const normal = coordinator.tryRun(
+      'channel-1',
+      () => new Promise<void>((resolve) => (releaseNormal = resolve))
+    );
+    const { runner, agentRunner } = buildBridge(
+      async () => ({ result: 'scheduled', sessionId: 'scheduler-session' }),
+      undefined,
+      coordinator
+    );
+    const onStart = vi.fn();
+
+    const scheduled = runner('scheduled prompt', 'channel-1', undefined, { onStart });
+    await flush();
+    expect(onStart).not.toHaveBeenCalled();
+
+    releaseNormal();
+    await normal;
+    await scheduled;
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
+      agentRunner.runStream.mock.invocationCallOrder[0]
+    );
   });
 
   it('turn 実行中に finalize されると「考え中」表示が中断表示に確定する', async () => {

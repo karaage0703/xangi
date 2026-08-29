@@ -82,6 +82,7 @@ import {
 import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../session-workspace.js';
+import { DiscordTurnCoordinator } from './turn-coordinator.js';
 
 export function shouldProcessDiscordMessage(input: { system?: boolean }): boolean {
   return !input.system;
@@ -776,6 +777,7 @@ export interface MessageHandlerDeps {
   agentRunner: AgentRunner;
   workdir: string;
   workspaceRegistry: WorkspaceRegistry;
+  turnCoordinator?: DiscordTurnCoordinator;
 }
 
 export interface DiscordRemoteInput {
@@ -794,11 +796,7 @@ export interface DiscordRemoteInputBridge {
  */
 export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): DiscordRemoteInputBridge {
   const { client, config, agentRunner, workdir, workspaceRegistry } = deps;
-
-  // 実行キー単位の処理中ロック。Discord のスレッド返信モードでは、親チャンネルに
-  // 届いた発言から先に thread を作って runKey を確定し、Slack の conversationKey と
-  // 同じくスレッドごとに独立してロックする。
-  const processingRuns = new Set<string>();
+  const turnCoordinator = deps.turnCoordinator ?? new DiscordTurnCoordinator();
 
   // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
   // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
@@ -1003,22 +1001,10 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     const target = await resolveDiscordMessageTarget(message, channelId, config, settings);
     const runKey = target.conversationChannelId;
 
-    let acquiredRunLock = false;
-    try {
-      // ここへ到達するのは、メンション / DM / autoreply のいずれかで bot 宛てと
-      // 判定済みのメッセージだけ。同じ実行キーが処理中なら runner を起動せず通知する。
-      if (processingRuns.has(runKey)) {
-        console.log(`[xangi] Rejecting message in busy run: ${runKey}`);
-        await target.sendInitial({
-          content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
-          allowedMentions: { parse: [], repliedUser: false },
-        });
-        return;
-      }
-
-      processingRuns.add(runKey);
-      acquiredRunLock = true;
-      await processPrompt(
+    // ここへ到達するのは、メンション / DM / autoreply のいずれかで bot 宛てと
+    // 判定済みのメッセージだけ。同じ実行キーが処理中またはqueue待ちなら起動しない。
+    const run = await turnCoordinator.tryRun(runKey, () =>
+      processPrompt(
         message,
         agentRunner,
         prompt,
@@ -1028,11 +1014,14 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         target,
         undefined,
         workspaceRegistry
-      );
-    } finally {
-      if (acquiredRunLock) {
-        processingRuns.delete(runKey);
-      }
+      )
+    );
+    if (!run.accepted) {
+      console.log(`[xangi] Rejecting message in busy run: ${runKey}`);
+      await target.sendInitial({
+        content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+        allowedMentions: { parse: [], repliedUser: false },
+      });
     }
   });
 
@@ -1046,26 +1035,21 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         throw new Error('Discordセッションが見つかりません');
       }
 
-      const channel = await client.channels.fetch(entry.contextKey);
-      if (!channel || !('send' in channel) || typeof channel.send !== 'function') {
-        throw new Error('Discordの投稿先を取得できません');
-      }
-      if (processingRuns.has(entry.contextKey)) {
-        throw new Error('このDiscordセッションは処理中です');
-      }
+      const run = await turnCoordinator.tryRun(entry.contextKey, async () => {
+        const channel = await client.channels.fetch(entry.contextKey);
+        if (!channel || !('send' in channel) || typeof channel.send !== 'function') {
+          throw new Error('Discordの投稿先を取得できません');
+        }
+        const sourceChannel = channel as unknown as {
+          isThread?: () => boolean;
+          parentId?: string | null;
+          name?: string;
+          parent?: { name?: string } | null;
+          send: (options: unknown) => Promise<Message>;
+        };
+        const isThread = typeof sourceChannel.isThread === 'function' && sourceChannel.isThread();
+        const settingsChannelId = resolveDiscordSettingsChannelId(entry.contextKey, sourceChannel);
 
-      const sourceChannel = channel as unknown as {
-        isThread?: () => boolean;
-        parentId?: string | null;
-        name?: string;
-        parent?: { name?: string } | null;
-        send: (options: unknown) => Promise<Message>;
-      };
-      const isThread = typeof sourceChannel.isThread === 'function' && sourceChannel.isThread();
-      const settingsChannelId = resolveDiscordSettingsChannelId(entry.contextKey, sourceChannel);
-
-      processingRuns.add(entry.contextKey);
-      try {
         activateSession(entry.contextKey, appSessionId);
         const mirroredMessage = await sourceChannel.send({
           content: `🌐 Webから: ${text}`,
@@ -1076,9 +1060,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         prompt = await fetchChannelMessages(client, prompt);
         if (config.discord.injectChannelTopic !== false) {
           const topic = getDiscordChannelTopic(sourceChannel);
-          if (topic) {
-            prompt += `\n\n[チャンネルルール（必ず従うこと）]\n${topic}`;
-          }
+          if (topic) prompt += `\n\n[チャンネルルール（必ず従うこと）]\n${topic}`;
         }
         if (config.discord.injectTimestamp !== false) {
           const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
@@ -1117,9 +1099,11 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
           workspaceRegistry
         );
         return { response };
-      } finally {
-        processingRuns.delete(entry.contextKey);
+      });
+      if (!run.accepted) {
+        throw new Error('このDiscordセッションは処理中です');
       }
+      return run.result!;
     },
   };
 }

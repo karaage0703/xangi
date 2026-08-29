@@ -57,6 +57,8 @@ export interface PlatformDeliveryReceipt {
   sessionId?: string;
 }
 export interface AgentRunContext {
+  /** キュー待機後、プラットフォーム側で実処理を開始する直前に呼ぶ */
+  onStart?: () => void;
   /** 最終結果がプラットフォームへ反映された時点で呼ぶ */
   onDelivery?: (receipt: PlatformDeliveryReceipt) => void;
 }

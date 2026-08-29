@@ -22,6 +22,7 @@ import {
   initSessions,
 } from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
+import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 
 let tempDir: string | undefined;
 
@@ -198,6 +199,62 @@ describe('Discord streaming attachments', () => {
 });
 
 describe('Discord thread run lock', () => {
+  it.each(['queued', 'running'])('scheduler taskが%sなら通常メッセージをbusy拒否する', async (state) => {
+    saveSettings({ discordAutoReplyChannels: { '123': true } });
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const runStream = vi.fn();
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: { allowedUsers: ['*'], streaming: true, showThinking: true, showButtons: false },
+    } as Config;
+    const coordinator = new DiscordTurnCoordinator();
+    let releaseBlocker!: () => void;
+    const blocker = coordinator.enqueue(
+      'busy-thread',
+      () => new Promise<void>((resolve) => (releaseBlocker = resolve))
+    );
+    let queued: Promise<void> | undefined;
+    if (state === 'queued') queued = coordinator.enqueue('busy-thread', async () => undefined);
+    registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+      turnCoordinator: coordinator,
+    } as Parameters<typeof registerDiscordMessageHandlers>[0]);
+    const message = createExistingThreadMessage({
+      messageId: `scheduler-${state}`,
+      content: '通常メッセージ',
+      threadId: 'busy-thread',
+      parentChannelId: '123',
+      starterContent: '共有busyテスト',
+      client,
+    });
+
+    await handlers.get(Events.MessageCreate)!(message);
+
+    expect(runStream).not.toHaveBeenCalled();
+    expect(message.reply).toHaveBeenCalledWith({
+      content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+      allowedMentions: { parse: [], repliedUser: false },
+    });
+    releaseBlocker();
+    await blocker;
+    await queued;
+  });
+
   it('bot宛ての2件目と3件目へ処理中を返し、先行処理の完了後だけ次を実行する', async () => {
     saveSettings({
       discordAutoReplyChannels: { '123': true },
@@ -666,6 +723,56 @@ describe('Discord thread run lock', () => {
 });
 
 describe('Discord remote input bridge', () => {
+  it.each(['queued', 'running'])('scheduler taskが%sならWeb継続をbusy拒否する', async (state) => {
+    const threadId = 'remote-busy-thread';
+    const appSessionId = createSession(threadId, { platform: 'discord' });
+    const thread = {
+      id: threadId,
+      isThread: () => true,
+      parentId: '123',
+      send: vi.fn(),
+    };
+    const client = {
+      user: { id: '999' },
+      on: vi.fn().mockReturnThis(),
+      channels: { fetch: vi.fn().mockResolvedValue(thread) },
+    } as unknown as Client;
+    const runStream = vi.fn();
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: { allowedUsers: ['*'], streaming: true, showThinking: true, showButtons: false },
+    } as Config;
+    const coordinator = new DiscordTurnCoordinator();
+    let releaseBlocker!: () => void;
+    const blocker = coordinator.enqueue(
+      threadId,
+      () => new Promise<void>((resolve) => (releaseBlocker = resolve))
+    );
+    let queued: Promise<void> | undefined;
+    if (state === 'queued') queued = coordinator.enqueue(threadId, async () => undefined);
+    const bridge = registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+      turnCoordinator: coordinator,
+    } as Parameters<typeof registerDiscordMessageHandlers>[0]);
+
+    await expect(
+      bridge.continueSession({ appSessionId, message: '続きをお願いします' })
+    ).rejects.toThrow('このDiscordセッションは処理中です');
+    expect(runStream).not.toHaveBeenCalled();
+    expect(thread.send).not.toHaveBeenCalled();
+
+    releaseBlocker();
+    await blocker;
+    await queued;
+  });
+
   it('Web入力を元スレッドへ表示し、指定されたappSessionIdで処理する', async () => {
     const threadId = 'remote-thread-123';
     const appSessionId = createSession(threadId, { platform: 'discord' });

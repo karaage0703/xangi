@@ -12,37 +12,35 @@ Claude Code、Codex、OpenCode、Cursor CLI、Grok CLI、Antigravity CLI、GitHu
 
 ## 主な機能
 
-- 6種類のAIバックエンドと5種類のチャット画面に対応
-- チャンネルごとのbackend・model・effort・Local LLM reasoning effort切り替えと、利用可能なモデルの動的取得
-- 自然言語またはネイティブコマンドから、許可されたチャンネル設定を再起動なしで即時変更
-- ワークスペースのskillsをチャットから実行
-- セッション・会話履歴の永続化、タイムアウト延長、ワークスペースhooks
-- スケジューラーと外部イベントからのエージェント起動
-- Web Chatからワークスペース内のMarkdown・コードを閲覧・編集
-- Web Projectによる会話の分類・既存会話の移動と、Projectごとの追加プロンプト・既定モデル設定
-- Agent Run APIによるbackend・model・workspaceを固定した独立実行と再現用manifest
-- [外部extension連携](docs/usage.md#extension連携)（Web UIから追加・管理）
+- 好きなAIエージェントをDiscordやWeb Chatなどから利用
+- スキルやファイルを置いた自分専用のワークスペースで動作
+- 会話履歴を引き継ぎ、チャンネルごとにAIやモデルを切り替え
+- スケジュールや外部イベントをきっかけに自動実行
 
 ## アーキテクチャ
 
 ```mermaid
 flowchart LR
-    User([ユーザー]) <-->|メッセージ| Platform[チャットプラットフォーム]
-    Platform <-->|プロンプト / 応答| xangi[xangi]
-    xangi <-->|実行| Backend{{エージェントバックエンド}}
-    Backend <-->|読み書き| WS[(ワークスペース)]
-    Backend <--> External[外部情報 / Webサービス]
-    Scheduler[[スケジューラー / イベントトリガー]] -->|プロンプト| xangi
-
+    User([ユーザー]) <-->|メッセージ / ファイル| Channels[チャット画面]
+    Channels <--> Xangi[xangi<br>接続 · セッション · 自動起動]
+    Xangi <--> Backend[AIエージェント<br>バックエンド]
+    Backend <--> Workspace[ユーザーのワークスペース<br>スキル · コード · 資料 · メモリ]
+    Backend <--> External[Web · API · 外部サービス]
     classDef user fill:#fef3c7,stroke:#d97706,color:#111;
-    classDef core fill:#dbeafe,stroke:#1e40af,color:#111;
-    classDef ws fill:#fef9c3,stroke:#a16207,color:#111;
-    classDef ext fill:#f3f4f6,stroke:#6b7280,color:#111;
+    classDef surface fill:#ede9fe,stroke:#7c3aed,color:#111;
+    classDef core fill:#dbeafe,stroke:#2563eb,color:#111;
+    classDef agent fill:#dcfce7,stroke:#16a34a,color:#111;
+    classDef workspace fill:#fef9c3,stroke:#ca8a04,color:#111;
+    classDef external fill:#f3f4f6,stroke:#6b7280,color:#111;
     class User user;
-    class Platform,xangi,Backend,Scheduler core;
-    class WS ws;
-    class External ext;
+    class Channels surface;
+    class Xangi core;
+    class Backend agent;
+    class Workspace workspace;
+    class External external;
 ```
+
+xangiはチャット接続、会話の継続、自動起動を担当します。推論とツール実行は選択したAIエージェントが担い、スキルやファイルはユーザーのワークスペースに残ります。
 
 ## Quickstart
 
@@ -135,6 +133,10 @@ docker compose up xangi-gpu -d --build
 ## ワークスペース
 
 スキル、メモ、日記、文字起こし、Notion連携などを含むスターターキットとして、[ai-assistant-workspace](https://github.com/karaage0703/ai-assistant-workspace)を利用できます。
+
+## 拡張機能
+
+Web UIの「拡張」から外部機能を追加・管理できます。公式カタログでは、ワークスペースを検索する[xangi-search](https://github.com/karaage0703/xangi-search)を提供しています。詳しくは[Extension連携](docs/usage.md#extension連携)を参照してください。
 
 ## 関連プロジェクト
 

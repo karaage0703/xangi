@@ -293,7 +293,7 @@ export class CodexRunner extends CliRunnerBase {
 
     // トランスクリプトログ: 応答を記録
     if (options?.appSessionId && this.workdir) {
-      logResponse(this.workdir, options.appSessionId, { result, sessionId });
+      logResponse(this.workdir, options.appSessionId, { result, sessionId, usage });
     }
 
     return usage ? { result, sessionId, usage } : { result, sessionId };
@@ -337,6 +337,7 @@ export class CodexRunner extends CliRunnerBase {
         logResponse(this.workdir, options.appSessionId, {
           result: result.result,
           sessionId: result.sessionId,
+          usage: result.usage,
         });
       }
       if (options?.appSessionId && result.sessionId) {

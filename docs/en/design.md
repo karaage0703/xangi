@@ -9,7 +9,7 @@ This document explains the architecture and design philosophy of xangi.
 xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
 
 ```
-User → Chat (Discord/Slack) → xangi → AI CLI → Workspace
+User → Chat surfaces → xangi → AI agent → Workspace
 ```
 
 ## Architecture
@@ -37,7 +37,7 @@ flowchart LR
 
 | Layer              | Role                                     | Implementation                                                                                               |
 | ------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Chat               | User interface                           | discord.js, @slack/bolt, http (Web Chat), @line/bot-sdk                                                      |
+| Chat               | User interface                           | discord.js, @slack/bolt, grammy, http (Web Chat), @line/bot-sdk                                              |
 | xangi              | AI CLI / Local LLM integration & control | runner-manager.ts, dynamic-runner.ts, agent-runner.ts                                                        |
 | Backend Resolution | Per-channel backend resolution           | backend-resolver.ts, settings.ts                                                                             |
 | AI Backend         | Actual AI processing                     | Claude Code, Codex CLI, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, Local LLM (Ollama / vLLM) |
@@ -61,8 +61,9 @@ A thin entry point dedicated to the startup sequence. It is responsible only for
 Based on `discord.js` v14. Split into modules by responsibility:
 
 - `message-handler.ts` — MessageCreate/Update/Delete handling and `processPrompt` (mention / DM / `discordAutoReplyChannels` in `settings.json` → forwarding to the Runner; Discord system messages are ignored)
+- `turn-coordinator.ts` — The shared `DiscordTurnCoordinator`, which owns active state and the FIFO wait queue for schedule / trigger turns per `conversationKey`
 - `slash-commands.ts` — Slash command definitions and interaction handling
-- `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions. Processing messages started by schedules / triggers are also registered with the processing-message UI so Stop / extend / remaining-time controls match the normal message path
+- `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions. It submits schedule / trigger turns to the shared coordinator and registers their processing messages with the processing-message UI so Stop / extend / remaining-time controls match the normal message path
 - `ui.ts` — Button rows (Stop / extend / remaining-time display) and processing-message management
 - `tool-history.ts` — Tool history formatting/accumulation (display lines capped via `TOOL_HISTORY_MAX_LINES`)
 - `message-utils.ts` — Discord message link expansion, reply quoting, thread-starter quoting, channel-mention expansion
@@ -71,6 +72,8 @@ Behavior:
 
 - Per-channel / per-thread session isolation (`contextKey = discord:<channelId>`; when thread-reply mode creates a new thread, `discord:<threadId>`)
 - Discord API posting targets the parent channel or the created thread, while runner / timeout / Stop / processing state use the resolved `runKey = contextKey`, so separate threads in the same Discord channel do not share an execution slot. Thread prompts include both the parent channel name/ID and thread name/ID so the agent can target either one without another lookup
+- Normal messages and Web continuations of Discord sessions retain the existing processing notice / busy error when the same `conversationKey` has active or queued work. Schedule / trigger turns instead wait in arrival-order FIFO behind active work for that key; different keys can run concurrently, and a failed predecessor does not prevent the next queued turn from starting
+- The shared wait queue is in-memory and non-durable, with no restoration after process restart. This coordination applies only to Discord paths; execution behavior for non-Discord platforms is unchanged
 - Per-channel settings inside Discord threads normally resolve through the parent channel ID. `CHANNEL_OVERRIDES` (`/backend` / `/llmmode`), `settings.json` (`/notify` / `/threadmode`), and channel topic injection inherit the parent channel configuration. `/autoreply` is the exception: it stores an explicit override under the thread ID and inherits the parent value only when the thread has no override
 - For messages inside an existing Discord thread, xangi injects the starter message from the parent channel as `🧵 スレッド元` so the agent focuses on the thread's original topic even when thread-local history does not include it
 - Threads, attachments, and reactions supported
@@ -734,6 +737,7 @@ External process (build script / CI / watcher cron)
 - Web accepts both `web-chat:<sessionId>` and the raw `sessionId`, normalizing either form to the raw appSessionId before invoking the runner. Triggered turns therefore append to the existing Web conversation transcript
 - The HTTP response (`202` + `triggerId`) is fire-and-forget and does not wait for the turn, so callers (build scripts etc.) are never blocked
 - `GET /api/trigger/:id` and `xangi tool trigger_status` return `accepted`, `running`, `completed`, `delivered`, `failed`, or `interrupted` through one platform-neutral schema. Delivery references use `platform`, `destinationId`, and optional `messageIds` / `sessionId`, keeping Discord-specific types out of the core
+- A Discord trigger receipt remains `accepted` while waiting in the FIFO and records `running` plus its start time only when the scheduler bridge actually starts the runner. The existing same-source guard returns `409` while that source is queued or running, and existing completion, delivery, and failure transitions remain intact. Non-Discord triggers retain their previous boundary of advancing to `running` when their runner is invoked
 - Receipts are atomically persisted to `${DATA_DIR}/trigger-receipts.json`; the latest 1,000 remain queryable after restart
 - A `⚡ trigger: <source>` label is posted to the channel first, making it visible what woke the agent
 
