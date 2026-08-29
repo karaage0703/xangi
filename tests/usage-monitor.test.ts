@@ -8,9 +8,18 @@ import {
   parseCodexRolloutContextUsage,
   parseCopilotQuota,
   parseAntigravityStatus,
+  parseClaudeUsage,
   readCodexContextUsage,
+  readClaudeUsage,
 } from '../src/usage-monitor.js';
 import { extractClaudeContextUsage } from '../src/claude-code.js';
+
+function claudeOutput(response: unknown): string {
+  return `${JSON.stringify({
+    type: 'control_response',
+    response: { subtype: 'success', request_id: '1', response },
+  })}\n`;
+}
 
 describe('usage monitor parsers', () => {
   it('parses supported Copilot account quota snapshots', () => {
@@ -193,5 +202,215 @@ describe('usage monitor parsers', () => {
         modelUsage: { 'claude-opus': { contextWindow: 200_000 } },
       })
     ).toEqual({ contextTokens: 2_400, contextWindow: 200_000 });
+  });
+
+  it('parses Claude get_usage five-hour and weekly windows with plan type', () => {
+    const output = claudeOutput({
+      subscription_type: 'max',
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 42, resets_at: '2026-09-01T12:00:00.000Z' },
+        seven_day: { utilization: 61, resets_at: '2026-09-05T12:00:00.000Z' },
+      },
+    });
+
+    expect(parseClaudeUsage(output)).toEqual([
+      {
+        id: 'claude',
+        label: 'アカウント枠',
+        planType: 'max',
+        windows: [
+          {
+            label: '5時間',
+            usedPercent: 42,
+            windowDurationMins: 300,
+            resetsAt: Date.parse('2026-09-01T12:00:00.000Z') / 1000,
+          },
+          {
+            label: '週次',
+            usedPercent: 61,
+            windowDurationMins: 10_080,
+            resetsAt: Date.parse('2026-09-05T12:00:00.000Z') / 1000,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('includes model-scoped weekly windows labeled by display name', () => {
+    const output = claudeOutput({
+      subscription_type: 'pro',
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 10, resets_at: '2026-09-01T12:00:00.000Z' },
+        model_scoped: [
+          { display_name: 'Opus', utilization: 88, resets_at: '2026-09-05T12:00:00.000Z' },
+        ],
+      },
+    });
+
+    const groups = parseClaudeUsage(output);
+    expect(groups[0].windows).toContainEqual({
+      label: 'Opus週次',
+      usedPercent: 88,
+      windowDurationMins: 10_080,
+      resetsAt: Date.parse('2026-09-05T12:00:00.000Z') / 1000,
+    });
+  });
+
+  it('never surfaces unreleased codename keys or extra usage', () => {
+    const output = claudeOutput({
+      subscription_type: 'max',
+      rate_limits_available: true,
+      member_dashboard_available: true,
+      rate_limits: {
+        five_hour: { utilization: 20, resets_at: '2026-09-01T12:00:00.000Z' },
+        seven_day: { utilization: 30, resets_at: '2026-09-05T12:00:00.000Z' },
+        seven_day_opus: { utilization: 40, resets_at: '2026-09-05T12:00:00.000Z' },
+        model_scoped: [
+          { display_name: 'Opus', utilization: 50, resets_at: '2026-09-05T12:00:00.000Z' },
+        ],
+        nimbus_quill: { utilization: 5, resets_at: '2026-09-05T12:00:00.000Z' },
+        extra_usage: { used_credits: 12.34, limit_dollars: 20, remaining_dollars: 7.66 },
+      },
+    });
+
+    const groups = parseClaudeUsage(output);
+    const labels = groups[0].windows.map((window) => window.label);
+    expect(labels).toEqual(['5時間', '週次', 'Opus週次']);
+    const serialized = JSON.stringify(groups);
+    expect(serialized).not.toContain('nimbus_quill');
+    expect(serialized).not.toContain('used_credits');
+    expect(serialized).not.toContain('12.34');
+    expect(serialized).not.toContain('member_dashboard_available');
+  });
+
+  it('returns no groups when rate limits are unavailable', () => {
+    const output = claudeOutput({
+      subscription_type: null,
+      rate_limits_available: false,
+      rate_limits: null,
+    });
+    expect(parseClaudeUsage(output)).toEqual([]);
+  });
+
+  it('returns no groups for a control error response', () => {
+    const errorOutput = `${JSON.stringify({
+      type: 'control_response',
+      response: { subtype: 'error', request_id: '1', error: 'boom' },
+    })}\n`;
+    expect(parseClaudeUsage(errorOutput)).toEqual([]);
+
+    const mismatchedRequestId = `${JSON.stringify({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: '2',
+        response: {
+          subscription_type: 'max',
+          rate_limits_available: true,
+          rate_limits: { five_hour: { utilization: 10, resets_at: null } },
+        },
+      },
+    })}\n`;
+    expect(parseClaudeUsage(mismatchedRequestId)).toEqual([]);
+  });
+
+  it('clamps utilization and omits pace for null reset times', () => {
+    const output = claudeOutput({
+      subscription_type: 'pro',
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 150, resets_at: null },
+      },
+    });
+
+    expect(parseClaudeUsage(output)).toEqual([
+      {
+        id: 'claude',
+        label: 'アカウント枠',
+        planType: 'pro',
+        windows: [
+          { label: '5時間', usedPercent: 100, windowDurationMins: 300, resetsAt: undefined },
+        ],
+      },
+    ]);
+  });
+
+  it('ignores surrounding stream noise and malformed model-scoped entries', () => {
+    const output = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'probe' }),
+      '{"type":"system","truncated',
+      claudeOutput({
+        subscription_type: 'pro',
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 7, resets_at: 'not-a-timestamp' },
+          model_scoped: [
+            { display_name: 'Opus', utilization: 20, resets_at: '2026-09-05T12:00:00.000Z' },
+            { display_name: 42, utilization: 99, resets_at: '2026-09-05T12:00:00.000Z' },
+          ],
+        },
+      }).trim(),
+    ].join('\n');
+
+    expect(parseClaudeUsage(output)).toEqual([
+      {
+        id: 'claude',
+        label: 'アカウント枠',
+        planType: 'pro',
+        windows: [
+          { label: '5時間', usedPercent: 7, windowDurationMins: 300, resetsAt: undefined },
+          {
+            label: 'Opus週次',
+            usedPercent: 20,
+            windowDurationMins: 10_080,
+            resetsAt: Date.parse('2026-09-05T12:00:00.000Z') / 1000,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('reads Claude usage through an injected runner', async () => {
+    await expect(
+      readClaudeUsage(async () =>
+        claudeOutput({
+          subscription_type: 'max',
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: 15, resets_at: '2026-09-01T12:00:00.000Z' },
+          },
+        })
+      )
+    ).resolves.toEqual({
+      id: 'claude-code',
+      label: 'Claude Code',
+      groups: [
+        {
+          id: 'claude',
+          label: 'アカウント枠',
+          planType: 'max',
+          windows: [
+            {
+              label: '5時間',
+              usedPercent: 15,
+              windowDurationMins: 300,
+              resetsAt: Date.parse('2026-09-01T12:00:00.000Z') / 1000,
+            },
+          ],
+        },
+      ],
+    });
+
+    await expect(
+      readClaudeUsage(async () =>
+        claudeOutput({
+          subscription_type: null,
+          rate_limits_available: false,
+          rate_limits: null,
+        })
+      )
+    ).rejects.toThrow(/no account rate limits/);
   });
 });
