@@ -244,6 +244,96 @@ describe('EventTrigger firing', () => {
     expect(third.status).toBe(202);
   });
 
+  it('keeps a queued Discord trigger accepted, then records running and delivered completion', async () => {
+    let runContext: AgentRunContext | undefined;
+    let resolveRun: (value: string) => void = () => {};
+    const { scheduler } = makeFakeScheduler({
+      runner: (_prompt, _channelId, _schedule, context) => {
+        runContext = context;
+        return new Promise<string>((resolve) => {
+          resolveRun = resolve;
+        });
+      },
+    });
+    const trigger = new EventTrigger(makeConfig(), scheduler);
+
+    const fired = await trigger.handleLocal({
+      channel: 'c1',
+      message: 'done',
+      source: 'queued-worker',
+      platform: 'discord',
+    });
+    const triggerId = String(fired.body.triggerId);
+
+    const acceptedReceipt = trigger.getReceipt(triggerId).body.receipt;
+    expect(acceptedReceipt).toMatchObject({ status: 'accepted' });
+    expect(acceptedReceipt).not.toHaveProperty('startedAt');
+    expect(
+      (
+        await trigger.handleLocal({
+          channel: 'c1',
+          message: 'duplicate',
+          source: 'queued-worker',
+          platform: 'discord',
+        })
+      ).status
+    ).toBe(409);
+
+    runContext?.onStart?.();
+    expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({
+      status: 'running',
+      startedAt: expect.any(String),
+    });
+    runContext?.onDelivery?.({
+      platform: 'discord',
+      destinationId: 'c1',
+      messageIds: ['message-1'],
+    });
+    resolveRun('agent result');
+    await flush();
+
+    expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({
+      status: 'delivered',
+      completedAt: expect.any(String),
+      resultLength: 12,
+      delivery: { messageIds: ['message-1'] },
+    });
+  });
+
+  it('records accepted then running then failed for a queued Discord trigger', async () => {
+    let runContext: AgentRunContext | undefined;
+    let rejectRun: (error: Error) => void = () => {};
+    const { scheduler } = makeFakeScheduler({
+      runner: (_prompt, _channelId, _schedule, context) => {
+        runContext = context;
+        return new Promise<string>((_resolve, reject) => {
+          rejectRun = reject;
+        });
+      },
+    });
+    const trigger = new EventTrigger(makeConfig(), scheduler);
+
+    const fired = await trigger.handleLocal({
+      channel: 'c1',
+      message: 'fail',
+      source: 'failing-worker',
+      platform: 'discord',
+    });
+    const triggerId = String(fired.body.triggerId);
+    expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({ status: 'accepted' });
+
+    runContext?.onStart?.();
+    expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({ status: 'running' });
+    rejectRun(new Error('provider unavailable'));
+    await flush();
+
+    expect(trigger.getReceipt(triggerId).body.receipt).toMatchObject({
+      status: 'failed',
+      completedAt: expect.any(String),
+      error: 'provider unavailable',
+    });
+  });
+
   it('keeps firing even when sender is missing (label is best-effort)', async () => {
     const { scheduler, runner } = makeFakeScheduler({ sender: null });
     const trigger = new EventTrigger(makeConfig(), scheduler);

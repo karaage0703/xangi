@@ -736,11 +736,11 @@ export function Monitor() {
                                   />
                                 )}
                               </div>
-                              <small>
-                                {window.resetsAt
-                                  ? `${new Date(window.resetsAt * 1000).toLocaleString()} リセット`
-                                  : 'リセット時刻不明'}
-                              </small>
+                              {window.resetsAt && (
+                                <small>
+                                  {new Date(window.resetsAt * 1000).toLocaleString()} リセット
+                                </small>
+                              )}
                             </div>
                           );
                         })}

@@ -256,7 +256,7 @@ function parseCodexResume(output: string): { codexHome: string; path: string } |
 
 let cached: AccountUsageResponse | undefined;
 
-export function parseCopilotQuota(result: unknown): AccountUsageGroup[] {
+export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsageGroup[] {
   const snapshots = (result as { quotaSnapshots?: Record<string, Record<string, unknown>> })
     ?.quotaSnapshots;
   if (!snapshots) return [];
@@ -275,7 +275,7 @@ export function parseCopilotQuota(result: unknown): AccountUsageGroup[] {
         usedPercent: Number(
           Math.min(100, Math.max(0, 100 - snapshot.remainingPercentage)).toFixed(6)
         ),
-        resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+        resetsAt: Number.isFinite(resetMs) && resetMs > now ? resetMs / 1000 : undefined,
       },
     ];
   });

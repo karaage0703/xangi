@@ -33,7 +33,7 @@ describe('usage monitor parsers', () => {
           },
           premium_interactions: { hasQuota: false, remainingPercentage: 0 },
         },
-      })
+      }, Date.parse('2026-08-28T00:00:00.000Z'))
     ).toEqual([
       {
         id: 'copilot',
@@ -45,6 +45,30 @@ describe('usage monitor parsers', () => {
             resetsAt: Date.parse('2026-09-01T00:00:00.000Z') / 1000,
           },
         ],
+      },
+    ]);
+  });
+
+  it('omits a Copilot reset date that is not in the future', () => {
+    const now = Date.parse('2026-08-28T01:45:03.832Z');
+    expect(
+      parseCopilotQuota(
+        {
+          quotaSnapshots: {
+            chat: {
+              hasQuota: true,
+              remainingPercentage: 84.6,
+              resetDate: '2026-08-28T01:45:03.832Z',
+            },
+          },
+        },
+        now
+      )
+    ).toEqual([
+      {
+        id: 'copilot',
+        label: 'GitHub Copilot',
+        windows: [{ label: 'Chat / AI Credits', usedPercent: 15.4, resetsAt: undefined }],
       },
     ]);
   });

@@ -254,9 +254,17 @@ export class EventTrigger {
     // エージェントターンは fire-and-forget（HTTP 応答はターン完了を待たない）
     const prompt = `[イベントトリガー発火: source=${source}, id=${triggerId}]\n${message}`;
     this.runningSources.add(source);
-    this.updateReceipt(triggerId, { status: 'running', startedAt: new Date().toISOString() });
-    console.log(`[trigger] ${triggerId} source=${source} platform=${platform} → turn started`);
+    const markRunning = () => {
+      const current = this.receipts.get(triggerId);
+      if (current?.status !== 'accepted') return;
+      this.updateReceipt(triggerId, { status: 'running', startedAt: new Date().toISOString() });
+      console.log(`[trigger] ${triggerId} source=${source} platform=${platform} → turn started`);
+    };
+    if (platform !== 'discord') {
+      markRunning();
+    }
     runner(prompt, channel, undefined, {
+      onStart: platform === 'discord' ? markRunning : undefined,
       onDelivery: (delivery) => {
         this.updateReceipt(triggerId, {
           status: 'delivered',

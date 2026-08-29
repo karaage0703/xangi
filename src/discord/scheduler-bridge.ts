@@ -15,6 +15,7 @@ import { createProcessingButtons, discordProcessingMessages } from './ui.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { TurnLatencyRecorder } from '../turn-latency.js';
+import { DiscordTurnCoordinator } from './turn-coordinator.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
@@ -22,26 +23,7 @@ export interface SchedulerBridgeDeps {
   config: Config;
   agentRunner: AgentRunner;
   workspaceRegistry?: WorkspaceRegistry;
-}
-
-function createChannelTurnQueue() {
-  const tails = new Map<string, Promise<void>>();
-
-  return function enqueue<T>(channelId: string, task: () => Promise<T>): Promise<T> {
-    const previous = tails.get(channelId) ?? Promise.resolve();
-    const result = previous.then(task, task);
-    const tail = result.then(
-      () => undefined,
-      () => undefined
-    );
-    tails.set(channelId, tail);
-    void tail.then(() => {
-      if (tails.get(channelId) === tail) {
-        tails.delete(channelId);
-      }
-    });
-    return result;
-  };
+  turnCoordinator?: DiscordTurnCoordinator;
 }
 
 /**
@@ -50,7 +32,7 @@ function createChannelTurnQueue() {
  */
 export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void {
   const { scheduler, client, config, agentRunner, workspaceRegistry } = deps;
-  const enqueueChannelTurn = createChannelTurnQueue();
+  const turnCoordinator = deps.turnCoordinator ?? new DiscordTurnCoordinator();
 
   // スケジューラにDiscord送信関数を登録
   scheduler.registerSender('discord', async (channelId, msg) => {
@@ -62,7 +44,8 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
 
   // スケジューラにエージェント実行関数を登録
   scheduler.registerAgentRunner('discord', (prompt, channelId, _schedule, runContext) =>
-    enqueueChannelTurn(channelId, async () => {
+    turnCoordinator.enqueue(channelId, async () => {
+      runContext?.onStart?.();
       const startedAt = Date.now();
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('send' in channel)) {
