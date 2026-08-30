@@ -35,8 +35,7 @@ import {
   updateSessionTitle,
 } from '../sessions.js';
 import { readSessionMessages } from '../transcript-logger.js';
-import { stripPromptMetadata, stripUserPromptHookContexts } from '../session-title.js';
-import { generateAiSessionTitle } from '../ai-session-title.js';
+import { buildAiSessionTitleSource, generateAiSessionTitle } from '../ai-session-title.js';
 import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
@@ -1292,14 +1291,11 @@ export function createInteractionHandler(
         const workspace = entry.workspacePath
           ? await workspaceRegistry.resolveSnapshot(registeredWorkspace.id, entry.workspacePath)
           : registeredWorkspace;
-        const messages = readSessionMessages(workspace.path || workdir, appSessionId)
-          .filter((message) => message.role === 'user' && typeof message.content === 'string')
-          .map((message) =>
-            stripUserPromptHookContexts(stripPromptMetadata(message.content as string))
-          )
-          .filter(Boolean)
-          .slice(-8);
-        const titleSource = messages.join('\n').slice(-4_000);
+        const titleSource = buildAiSessionTitleSource(
+          readSessionMessages(workspace.path || workdir, appSessionId)
+            .filter((message) => message.role === 'user' && typeof message.content === 'string')
+            .map((message) => message.content as string)
+        );
         if (!titleSource) throw new Error('タイトル生成に使える会話がありません');
 
         const title = await generateAiSessionTitle({

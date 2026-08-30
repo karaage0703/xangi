@@ -57,7 +57,11 @@ import {
 } from './activity-store.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
-import { startAiSessionTitle } from './ai-session-title.js';
+import {
+  buildAiSessionTitleSource,
+  generateAiSessionTitle,
+  startAiSessionTitle,
+} from './ai-session-title.js';
 import {
   deriveActivityThreadIdFromFirstMessage,
   deriveSessionOrigin,
@@ -1599,7 +1603,7 @@ export function startWebChat(options: WebChatOptions): void {
         const commandProject = commandSession?.projectId
           ? webProjects.get(commandSession.projectId)
           : undefined;
-        const result = await executeWebCommand(input, {
+        let result = await executeWebCommand(input, {
           appSessionId: commandSessionId,
           workdir,
           config: options.config,
@@ -1610,6 +1614,41 @@ export function startWebChat(options: WebChatOptions): void {
           scheduler: options.scheduler,
           skillsRef: options.skillsRef,
         });
+
+        if (result.kind === 'action' && result.action === 'retitle') {
+          if (!commandSessionId || !commandSession || commandSession.platform !== 'web') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Web会話を開いてから実行してください' }));
+            return;
+          }
+          const sessionWorkspace = await resolveSessionWorkspace(commandSessionId);
+          const titleSource = buildAiSessionTitleSource(
+            readSessionMessages(sessionWorkspace.path, commandSessionId)
+              .filter((message) => message.role === 'user' && typeof message.content === 'string')
+              .map((message) => message.content as string)
+          );
+          if (!titleSource) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'タイトル生成に使える会話がありません' }));
+            return;
+          }
+          const title = await generateAiSessionTitle({
+            runner: agentRunner,
+            appSessionId: `${commandSessionId}:retitle`,
+            userText: titleSource,
+            runOptions: {
+              settingsChannelId: webContextKey(commandSessionId),
+              platform: 'web',
+              defaultBackend: projectBackendDefault(commandProject)?.backend,
+              defaultModel: projectBackendDefault(commandProject)?.model,
+              defaultEffort: projectBackendDefault(commandProject)?.effort,
+              workdir: sessionWorkspace.path,
+            },
+          });
+          updateSessionTitle(commandSessionId, title);
+          invalidateSessionSnapshots();
+          result = { kind: 'message', message: `会話タイトルを「${title}」へ変更しました。` };
+        }
 
         if (result.kind === 'action' && result.action === 'restart') {
           if (!canSelfRestart(getSelfLifecyclePermission())) {

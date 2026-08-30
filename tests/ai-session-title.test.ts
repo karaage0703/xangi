@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentRunner } from '../src/agent-runner.js';
 import {
+  buildAiSessionTitleSource,
   generateAiSessionTitle,
   normalizeAiSessionTitle,
   startAiSessionTitle,
@@ -49,6 +50,19 @@ describe('generateAiSessionTitle', () => {
       })
     );
     expect(runner.destroy).toHaveBeenCalledWith('session-title:retitle-1');
+  });
+});
+
+describe('buildAiSessionTitleSource', () => {
+  it('メタデータを除いた直近8件を再生成入力にする', () => {
+    const source = buildAiSessionTitleSource([
+      '<system-context>内部</system-context>最初',
+      ...Array.from({ length: 9 }, (_, index) => `発言${index + 1}`),
+    ]);
+    expect(source).not.toContain('最初');
+    expect(source).not.toContain('発言1');
+    expect(source).toContain('発言2');
+    expect(source).toContain('発言9');
   });
 });
 

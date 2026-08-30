@@ -52,6 +52,16 @@ export interface StartAiSessionTitleOptions {
 
 export type GenerateAiSessionTitleOptions = Omit<StartAiSessionTitleOptions, 'onTitle'>;
 
+/** 既存会話の再タイトル生成に使う、直近ユーザー発言の短い入力を作る。 */
+export function buildAiSessionTitleSource(userMessages: string[]): string {
+  return userMessages
+    .map((message) => stripUserPromptHookContexts(stripPromptMetadata(message)))
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+    .slice(-4_000);
+}
+
 /** AIタイトルを1件生成する。明示的な再生成など、完了を待つ経路で使う。 */
 export async function generateAiSessionTitle(
   options: GenerateAiSessionTitleOptions

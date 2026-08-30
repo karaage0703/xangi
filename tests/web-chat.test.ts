@@ -1567,6 +1567,42 @@ process.stdin.on('end', () => process.exit(0));
     expect(runner.prompts).toEqual([]);
   });
 
+  it('POST /api/web-commands retitles the current Web conversation with AI', async () => {
+    const id = createWebSession({ title: '古いタイトル' });
+    logPrompt(testDir, id, '<system-context>内部</system-context>Web会話のタイトルを直す');
+    runner.nextResult = '「Web会話タイトルの再生成。」';
+
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, input: '/retitle' }),
+    });
+    const data = (await res.json()) as { kind: string; message: string };
+
+    expect(res.status).toBe(200);
+    expect(data).toEqual({
+      kind: 'message',
+      message: '会話タイトルを「Web会話タイトルの再生成」へ変更しました。',
+    });
+    expect(getSessionEntry(id)?.title).toBe('Web会話タイトルの再生成');
+    expect(runner.prompts.at(-1)).toContain('Web会話のタイトルを直す');
+    expect(runner.options.at(-1)).toEqual(
+      expect.objectContaining({ internalTask: true, platform: 'web' })
+    );
+  });
+
+  it('POST /api/web-commands retitle rejects a non-Web session', async () => {
+    const id = createSession('discord-thread-retitle', { platform: 'discord' });
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, input: '/retitle' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Web会話を開いてから実行してください' });
+  });
+
   it('POST /api/web-commands lists skills and converts a selected skill into a validated chat prompt', async () => {
     const skillDir = join(testDir, 'skills', 'demo-skill');
     mkdirSync(skillDir, { recursive: true });

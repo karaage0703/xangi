@@ -1324,7 +1324,7 @@ function ChatPane({
       message?: string;
       displayMessage?: string;
       skipPermissions?: boolean;
-      action?: 'new' | 'stop' | 'extend' | 'restart';
+      action?: 'new' | 'retitle' | 'stop' | 'extend' | 'restart';
     }>('/api/web-commands', jsonInit('POST', { appSessionId: sessionId, input }));
     if (result.kind === 'message') {
       setDetail((current) =>
