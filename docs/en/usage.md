@@ -73,9 +73,10 @@ Injection format: `[Current time: 2026/3/8 12:34:56]`
 
 ## Session Management
 
-| Command               | Description         |
-| --------------------- | ------------------- |
-| `/new`, `!new`, `new` | Start a new session |
+| Command               | Description                                                                    |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `/new`, `!new`, `new` | Start a new session                                                            |
+| `/retitle`            | Regenerate the current Discord thread title from recent conversation using AI |
 
 ### Discord Button Controls
 

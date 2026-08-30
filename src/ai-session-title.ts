@@ -50,6 +50,47 @@ export interface StartAiSessionTitleOptions {
   timeoutMs?: number;
 }
 
+export type GenerateAiSessionTitleOptions = Omit<StartAiSessionTitleOptions, 'onTitle'>;
+
+/** AIタイトルを1件生成する。明示的な再生成など、完了を待つ経路で使う。 */
+export async function generateAiSessionTitle(
+  options: GenerateAiSessionTitleOptions
+): Promise<string> {
+  const userText = stripUserPromptHookContexts(stripPromptMetadata(options.userText)).trim();
+  if (!userText) throw new Error('empty user text');
+
+  const runKey = `session-title:${options.appSessionId}`;
+  const timeoutMs = options.timeoutMs ?? TITLE_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        options.runner.cancel?.(runKey);
+        reject(new Error(`timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    const result = await Promise.race([
+      options.runner.run(`${AI_SESSION_TITLE_PROMPT}${userText}`, {
+        ...options.runOptions,
+        channelId: runKey,
+        runnerKey: runKey,
+        defaultLocalLlmMode: 'chat',
+        localLlmMode: 'chat',
+        skipPermissions: true,
+        internalTask: true,
+        userText,
+      }),
+      timeout,
+    ]);
+    const title = normalizeAiSessionTitle(result.result);
+    if (!title) throw new Error('empty title');
+    return title;
+  } finally {
+    if (timer) clearTimeout(timer);
+    options.runner.destroy?.(runKey);
+  }
+}
+
 /**
  * 初回ターンと並行してAIタイトルを生成する。呼び出し側はawaitせず、本編を優先する。
  * 失敗時は既存prefixを維持し、会話本体へ例外を伝播しない。
@@ -61,41 +102,16 @@ export function startAiSessionTitle(options: StartAiSessionTitleOptions): boolea
   if (!userText) return false;
 
   inFlight.add(options.appSessionId);
-  const runKey = `session-title:${options.appSessionId}`;
-  const timeoutMs = options.timeoutMs ?? TITLE_TIMEOUT_MS;
 
   void (async () => {
-    let timer: NodeJS.Timeout | undefined;
     try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          options.runner.cancel?.(runKey);
-          reject(new Error(`timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      });
-      const result = await Promise.race([
-        options.runner.run(`${AI_SESSION_TITLE_PROMPT}${userText}`, {
-          ...options.runOptions,
-          channelId: runKey,
-          runnerKey: runKey,
-          defaultLocalLlmMode: 'chat',
-          localLlmMode: 'chat',
-          skipPermissions: true,
-          internalTask: true,
-          userText,
-        }),
-        timeout,
-      ]);
-      const title = normalizeAiSessionTitle(result.result);
-      if (!title) throw new Error('empty title');
+      const title = await generateAiSessionTitle(options);
       await options.onTitle(title);
     } catch (error) {
       console.warn(
         `[session-title] AI title generation failed for ${options.appSessionId}: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      if (timer) clearTimeout(timer);
-      options.runner.destroy?.(runKey);
       inFlight.delete(options.appSessionId);
     }
   })();

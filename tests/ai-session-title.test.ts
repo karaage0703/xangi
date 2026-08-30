@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentRunner } from '../src/agent-runner.js';
 import {
+  generateAiSessionTitle,
   normalizeAiSessionTitle,
   startAiSessionTitle,
 } from '../src/ai-session-title.js';
@@ -23,6 +24,31 @@ describe('normalizeAiSessionTitle', () => {
     expect(normalizeAiSessionTitle('LLMエラー: API error 404')).toBe('');
     expect(normalizeAiSessionTitle('Error: model unavailable')).toBe('');
     expect(normalizeAiSessionTitle('LLMサーバーに接続できませんでした。')).toBe('');
+  });
+});
+
+describe('generateAiSessionTitle', () => {
+  it('完了を待って正規化したタイトルを返し、専用runnerを破棄する', async () => {
+    const runner = runnerWithRun(vi.fn().mockResolvedValue({ result: '「再生成タイトル。」', sessionId: 'provider' }));
+
+    await expect(
+      generateAiSessionTitle({
+        runner,
+        appSessionId: 'retitle-1',
+        userText: '既存スレッドのタイトルを直したい',
+        runOptions: { platform: 'discord' },
+      })
+    ).resolves.toBe('再生成タイトル');
+
+    expect(runner.run).toHaveBeenCalledWith(
+      expect.stringContaining('既存スレッドのタイトルを直したい'),
+      expect.objectContaining({
+        channelId: 'session-title:retitle-1',
+        internalTask: true,
+        localLlmMode: 'chat',
+      })
+    );
+    expect(runner.destroy).toHaveBeenCalledWith('session-title:retitle-1');
   });
 });
 
