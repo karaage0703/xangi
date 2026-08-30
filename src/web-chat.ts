@@ -57,6 +57,7 @@ import {
 } from './activity-store.js';
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { startAiSessionTitle } from './ai-session-title.js';
 import {
   deriveActivityThreadIdFromFirstMessage,
   deriveSessionOrigin,
@@ -3056,6 +3057,32 @@ export function startWebChat(options: WebChatOptions): void {
           }
 
           const startedAt = Date.now();
+          let aiTitleStarted = false;
+          const prefixTitle = truncateSessionTitle(message);
+          const startTitleIfNeeded = () => {
+            if (aiTitleStarted || options.config?.sessionTitle.mode !== 'ai') return;
+            const current = getSessionEntry(appSessionId);
+            if (!current || current.title) return;
+            aiTitleStarted = startAiSessionTitle({
+              runner: agentRunner,
+              appSessionId,
+              userText: message,
+              runOptions: {
+                settingsChannelId: ctxKey,
+                platform: 'web',
+                defaultBackend: backendDefault?.backend,
+                defaultModel: backendDefault?.model,
+                defaultEffort: backendDefault?.effort,
+                workdir: sessionWorkspace.path,
+              },
+              onTitle: (title) => {
+                const latest = getSessionEntry(appSessionId);
+                if (!latest || (latest.title && latest.title !== prefixTitle)) return;
+                updateSessionTitle(appSessionId, title);
+                invalidateSessionSnapshots();
+              },
+            });
+          };
           try {
             latency.markAgentStart();
             const result = await runWithBubbleEvents(
@@ -3063,9 +3090,13 @@ export function startWebChat(options: WebChatOptions): void {
               prompt,
               eventCtx,
               {
-                onBackendReady: () => latency.markBackendReady(),
+                onBackendReady: () => {
+                  latency.markBackendReady();
+                  startTitleIfNeeded();
+                },
                 onText: (_chunk, fullText) => {
                   latency.markText();
+                  startTitleIfNeeded();
                   lastStreamText = fullText;
                   sendSSE('text', { fullText: stripReplySuggestionMarkup(fullText) });
                 },

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -164,6 +164,55 @@ describe('LocalLlmRunner mode', () => {
     const runner = new LocalLlmRunner({ workdir: '/tmp', model: 'test' });
     expect(runner.enableTools).toBe(true);
     expect(runner.enableSkills).toBe(false);
+  });
+
+  it('should disable the streaming tool loop for a per-call chat mode override', async () => {
+    process.env.LOCAL_LLM_MODE = 'agent';
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-chat-override-'));
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const chat = vi.fn().mockResolvedValue({
+      content: '非stream短いタイトル',
+      finishReason: 'stop',
+      toolCalls: [],
+    });
+    const chatStream = vi.fn(async function* () {
+      yield '短いタイトル';
+    });
+    (runner as unknown as { llm: { chat: typeof chat; chatStream: typeof chatStream } }).llm = {
+      chat,
+      chatStream,
+    };
+
+    try {
+      const result = await runner.runStream(
+        'タイトルを生成',
+        {},
+        {
+          sessionId: 'title-chat-mode',
+          channelId: 'title-chat-mode',
+          localLlmMode: 'chat',
+        }
+      );
+      expect(result.result).toBe('短いタイトル');
+      expect(chat).not.toHaveBeenCalled();
+      expect(chatStream).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ tools: undefined, toolChoice: 'none' })
+      );
+
+      const nonStreamResult = await runner.run('タイトルを生成', {
+        sessionId: 'title-chat-mode-non-stream',
+        channelId: 'title-chat-mode-non-stream',
+        localLlmMode: 'chat',
+      });
+      expect(nonStreamResult.result).toBe('非stream短いタイトル');
+      expect(chat).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.not.objectContaining({ tools: expect.anything() })
+      );
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -54,6 +54,9 @@ export type { LocalLlmReasoningEffort } from './local-llm/reasoning-effort.js';
 
 export interface Config {
   features?: FeatureControls;
+  sessionTitle: {
+    mode: 'prefix' | 'ai';
+  };
   completion: {
     /** 完了表示へ経過時間を含める（default: true）。 */
     showElapsed: boolean;
@@ -350,6 +353,9 @@ export function loadConfig(): Config {
 
   const config: Config = {
     features: featureControlsFromEnv(),
+    sessionTitle: {
+      mode: v.enumOf('SESSION_TITLE_MODE', ['prefix', 'ai'] as const, 'prefix'),
+    },
     completion: {
       showElapsed: process.env.COMPLETION_SHOW_ELAPSED !== 'false',
       notifyAfterMs: v.int('COMPLETION_NOTIFY_AFTER_MS', DEFAULT_COMPLETION_NOTIFY_AFTER_MS, {

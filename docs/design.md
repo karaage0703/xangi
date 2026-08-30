@@ -814,6 +814,8 @@ skills/
 
 先読み結果は引用データ境界でpromptに含め、履歴内の命令文をsystem指示として扱わない。`HISTORY_PREFETCH_ENABLED` と `HISTORY_PREFETCH_COUNT` は3プラットフォーム共通。区間別レイテンシは `logs/turn-latency/<platform>.jsonl` に記録する。
 
+`SESSION_TITLE_MODE=ai`では、初回ターンのbackend受付通知後（通知非対応時は最初の本文受信後）、同じbackend・modelへタイトル専用の独立リクエストを開始する。タイトル処理は通常セッションとUserPromptSubmit hookから隔離し、Local LLMではchat modeでツールを無効化する。本編からはawaitしない。成功時はセッション台帳を更新し、Discordスレッドもrenameする。失敗・空出力・timeout時はprefixを正本として維持する。
+
 Codex backendでは、CLIの`turn.started`、toolの`item.started` / `item.completed`、`turn.completed`を同じレコードの`backend_trace`へ保存する。`tool_wall_ms`はtool実行区間の重複をまとめた実時間、`non_tool_backend_ms`はbackend turn全体からtool区間を引いた時間で、モデル推論とCLI orchestrationの両方を含む。toolの入力と出力本文は保存せず、tool名、経過時刻、終了状態、exit code、出力byte数だけを記録する。backendが対応イベントを提供しない場合、`backend_trace`は省略する。
 
 ### スケジュール実行フロー

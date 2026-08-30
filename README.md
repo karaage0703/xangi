@@ -15,6 +15,7 @@ Claude Code、Codex、OpenCode、Cursor CLI、Grok CLI、Antigravity CLI、GitHu
 - 好きなAIエージェントをDiscordやWeb Chatなどから利用
 - スキルやファイルを置いた自分専用のワークスペースで動作
 - 会話履歴を引き継ぎ、チャンネルごとにAIやモデルを切り替え
+- 必要に応じて、会話と並行して見返しやすいAIセッションタイトルを生成
 - スケジュールや外部イベントをきっかけに自動実行
 
 ## アーキテクチャ

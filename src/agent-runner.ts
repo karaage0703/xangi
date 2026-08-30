@@ -37,6 +37,8 @@ export interface RunOptions {
   localLlmReasoningEffort?: LocalLlmReasoningEffort;
   /** Platform adapter's unexpanded user text, used by deterministic backends. */
   userText?: string;
+  /** UI向け短文生成など、通常の会話履歴・UserPromptSubmit hookから隔離する内部タスク。 */
+  internalTask?: boolean;
 }
 
 export interface RunResult {
