@@ -380,15 +380,19 @@ export function buildGuidedLaunchArgs(
   prompt: string,
   env: NodeJS.ProcessEnv = process.env
 ): string[] {
-  if (selected.id !== 'opencode') return [prompt];
-  return [
-    'run',
-    '--auto',
-    '--agent',
-    'build',
-    ...(env.AGENT_MODEL ? ['--model', env.AGENT_MODEL] : []),
-    prompt,
-  ];
+  if (selected.id === 'opencode') {
+    return [
+      'run',
+      '--auto',
+      '--agent',
+      'build',
+      ...(env.AGENT_MODEL ? ['--model', env.AGENT_MODEL] : []),
+      prompt,
+    ];
+  } else if (selected.id === 'antigravity') {
+    return ['-i', prompt];
+  }
+  return [prompt];
 }
 
 async function defaultLaunchGuidedBackend(
