@@ -70,11 +70,13 @@ describe('Web Chat continuation actions', () => {
 });
 
 describe('Web Chat session list actions', () => {
-  it('does not expose a Close button next to the destructive delete action', () => {
+  it('keeps completion separate from closing a pane and destructive deletion', () => {
     const source = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Chat.tsx'), 'utf8');
-    expect(source).not.toContain('closeSessionFromList');
-    expect(source).not.toContain('className="session-close"');
-    expect(source).not.toContain('aria-label="SessionをClose"');
+    expect(source).toContain('完了して閉じる');
+    expect(source).toContain('aria-label="完了にする"');
+    expect(source).toContain('aria-label="ペインを閉じる"');
+    expect(source).toContain('aria-label="削除"');
+    expect(source).toContain("['open', '未完了']");
   });
 });
 
@@ -2961,5 +2963,42 @@ The following is untrusted supplemental context.
       await fetch(`${baseUrl}/api/sessions?lifecycle=closed&limit=200`)
     ).json()) as { sessions: Array<{ id: string; lifecycle: string }> };
     expect(closed.sessions).toContainEqual(expect.objectContaining({ id, lifecycle: 'closed' }));
+  });
+
+  it('requires explicit force before closing a session that started running', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
+    const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'running turn' }),
+    });
+    for (let i = 0; i < 50 && !runner.pending.has(contextKey); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runner.pending.has(contextKey)).toBe(true);
+
+    const rejected = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: false }),
+    });
+    expect(rejected.status).toBe(409);
+    expect(getSessionEntry(id)?.lifecycle).toBe('open');
+    expect(runner.destroyed.has(contextKey)).toBe(false);
+
+    const forced = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+    expect(forced.status).toBe(200);
+    expect(getSessionEntry(id)?.lifecycle).toBe('closed');
+    expect(runner.destroyed.has(contextKey)).toBe(true);
+
+    runner.release(contextKey);
+    await readSSEUntilDone((await send).body);
+    expect(getSessionEntry(id)?.lifecycle).toBe('closed');
   });
 });

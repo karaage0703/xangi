@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { clearRecoveredReadError, requestJson } from './api';
+import { ApiError, clearRecoveredReadError, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
 import {
   extensionConversationPrompt,
@@ -29,7 +29,7 @@ import {
   type StreamRecovery,
 } from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
-import { shouldShowAutoTalk } from './sessionList';
+import { sessionListStatus, sessionListStatusLabel, shouldShowAutoTalk } from './sessionList';
 import {
   messageElementId,
   messageIdFromHash,
@@ -46,6 +46,7 @@ const MAX_PANES = 8;
 const PANE_STATE_KEY = 'xangi_pane_state_v1';
 const PROJECT_STATE_KEY = 'xangi_active_project_v1';
 const SIDEBAR_COLLAPSED_KEY = 'xangi_sidebar_collapsed_v1';
+const SESSION_FILTER_KEY = 'xangi_session_filter_v1';
 const AUTO_TALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 
 interface Activity extends LiveActivity {
@@ -165,6 +166,13 @@ interface SessionsResponse {
     nextCursor?: string | null;
     workdir?: string;
   };
+}
+
+type SessionLifecycleFilter = 'open' | 'closed' | 'all';
+
+interface SessionCompletionTarget {
+  session: Session;
+  paneKey?: string;
 }
 
 interface CommandChoice {
@@ -839,6 +847,7 @@ function ChatPane({
   onSessionChange,
   onBusyChange,
   onSessionsInvalidated,
+  onComplete,
   refreshVersion,
   onAbortReady,
 }: {
@@ -852,6 +861,7 @@ function ChatPane({
   onSessionChange: (sessionId: string | null) => void;
   onBusyChange: (busy: boolean) => void;
   onSessionsInvalidated: () => Promise<void>;
+  onComplete: (session: Session, paneKey: string) => void;
   refreshVersion: number;
   onAbortReady: (abort: (() => void) | null) => void;
 }) {
@@ -1585,6 +1595,15 @@ function ChatPane({
             {backendLabel(summary.backend)}
           </span>
         )}
+        {summary?.lifecycle !== 'closed' && sessionId && (
+          <button
+            type="button"
+            className="pane-complete"
+            onClick={() => summary && onComplete(summary, pane.key)}
+          >
+            完了して閉じる
+          </button>
+        )}
         <button type="button" className="pane-close" aria-label="ペインを閉じる" onClick={onClose}>
           ×
         </button>
@@ -2068,6 +2087,10 @@ export function Chat() {
   const [workspaceToRemove, setWorkspaceToRemove] = useState<RegisteredWorkspace | null>(null);
   const [removingWorkspace, setRemovingWorkspace] = useState(false);
   const [query, setQuery] = useState('');
+  const [sessionFilter, setSessionFilter] = useState<SessionLifecycleFilter>(() => {
+    const saved = window.localStorage.getItem(SESSION_FILTER_KEY);
+    return saved === 'closed' || saved === 'all' ? saved : 'open';
+  });
   const [searching, setSearching] = useState(false);
   const [nextOffset, setNextOffset] = useState<number>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2086,6 +2109,8 @@ export function Chat() {
   const [notice, setNotice] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
+  const [sessionToComplete, setSessionToComplete] = useState<SessionCompletionTarget | null>(null);
+  const [completingSession, setCompletingSession] = useState(false);
   const [sessionToMove, setSessionToMove] = useState<Session | null>(null);
   const [moveProjectId, setMoveProjectId] = useState('');
   const [movingSession, setMovingSession] = useState(false);
@@ -2104,6 +2129,7 @@ export function Chat() {
       const params = new URLSearchParams({ limit: '100', offset: String(offset) });
       if (q.trim()) params.set('q', q.trim());
       if (activeProjectId) params.set('projectId', activeProjectId);
+      if (sessionFilter !== 'all') params.set('lifecycle', sessionFilter);
       setSearching(true);
       try {
         const data = await requestJson<SessionsResponse>(`/api/sessions?${params}`);
@@ -2127,7 +2153,7 @@ export function Chat() {
         if (requestId === loadRequestRef.current) setSearching(false);
       }
     },
-    [activeProjectId, query]
+    [activeProjectId, query, sessionFilter]
   );
 
   useEffect(() => {
@@ -2149,6 +2175,10 @@ export function Chat() {
   useEffect(() => {
     window.localStorage.setItem(PROJECT_STATE_KEY, activeProjectId);
   }, [activeProjectId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SESSION_FILTER_KEY, sessionFilter);
+  }, [sessionFilter]);
 
   useEffect(() => {
     if (!projectFormOpen || !projectBackend) {
@@ -2222,13 +2252,20 @@ export function Chat() {
     source.addEventListener('sessions', (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as SessionsResponse;
       if (queryRef.current.trim()) return;
-      const hadAdditionalPages = sessionsRef.current.length > data.sessions.length;
+      const filteredSessions = data.sessions.filter(
+        (session) => sessionFilter === 'all' || session.lifecycle === sessionFilter
+      );
+      const hadAdditionalPages = sessionsRef.current.length > filteredSessions.length;
       setSessions((current) => {
-        const incoming = new Map(data.sessions.map((session) => [session.id, session]));
+        const incoming = new Map(filteredSessions.map((session) => [session.id, session]));
         const retained = current
-          .filter((session) => !incoming.has(session.id))
+          .filter(
+            (session) =>
+              !incoming.has(session.id) &&
+              (sessionFilter === 'all' || session.lifecycle === sessionFilter)
+          )
           .map((session) => session);
-        const next = [...data.sessions, ...retained];
+        const next = [...filteredSessions, ...retained];
         sessionsRef.current = next;
         return next;
       });
@@ -2270,7 +2307,7 @@ export function Chat() {
     source.onopen = () => setNotice('');
     source.onerror = () => setNotice('更新ストリームを再接続しています');
     return () => source.close();
-  }, [activeProjectId]);
+  }, [activeProjectId, sessionFilter]);
 
   useEffect(() => {
     if (skipInitialSearchRef.current) {
@@ -2280,7 +2317,7 @@ export function Chat() {
     window.clearTimeout(searchTimerRef.current);
     searchTimerRef.current = window.setTimeout(() => void loadSessions(0, query, false), 180);
     return () => window.clearTimeout(searchTimerRef.current);
-  }, [activeProjectId, query]);
+  }, [activeProjectId, query, sessionFilter]);
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
@@ -2534,6 +2571,37 @@ export function Chat() {
     }
   }
 
+  function requestSessionCompletion(session: Session, paneKey?: string) {
+    if (session.isActive) {
+      setSessionToComplete({ session, paneKey });
+      return;
+    }
+    void completeSession({ session, paneKey }, false);
+  }
+
+  async function completeSession(target: SessionCompletionTarget, force: boolean) {
+    if (completingSession) return;
+    setCompletingSession(true);
+    try {
+      await requestJson(`/api/sessions/${encodeURIComponent(target.session.id)}/close`, {
+        ...jsonInit('POST', { force }),
+      });
+      setSessionToComplete(null);
+      if (target.paneKey) closePaneNow(target.paneKey);
+      await loadSessions(0, query, false);
+      setNotice('Sessionを完了しました');
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409 && !force) {
+        setSessionToComplete(target);
+      } else {
+        setSessionToComplete(null);
+        setNotice(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      setCompletingSession(false);
+    }
+  }
+
   async function deleteSession() {
     if (!sessionToDelete || deletingSession) return;
     const sessionId = sessionToDelete.id;
@@ -2661,6 +2729,24 @@ export function Chat() {
             ＋ 新規
           </button>
         </div>
+        <div className="session-filter" role="group" aria-label="セッションの状態で絞り込む">
+          {(
+            [
+              ['open', '未完了'],
+              ['closed', '完了'],
+              ['all', 'すべて'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={sessionFilter === value}
+              onClick={() => setSessionFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <nav className="session-list" aria-label="セッション一覧">
           {grouped.map((group) => (
             <section className="session-group" key={group.label}>
@@ -2672,6 +2758,7 @@ export function Chat() {
                 const projectName = session.projectId
                   ? projectNames.get(session.projectId)
                   : undefined;
+                const status = sessionListStatus(session);
                 return (
                   <div
                     className={[
@@ -2689,14 +2776,17 @@ export function Chat() {
                       className="session-main"
                       onClick={() => openSession(session.id)}
                     >
-                      <span className={`status-dot ${session.isActive ? 'active' : ''}`} />
+                      <span className={`status-dot ${status}`} aria-hidden="true">
+                        {status === 'completed' ? '✓' : ''}
+                      </span>
                       <span className="session-copy">
                         <strong>{session.title}</strong>
                         <small>
                           <span>
                             {platformLabel(session.platform)} · {relativeTime(session.updatedAt)}
                             {session.autoTalk ? ' · 自走' : ''}
-                            {session.lifecycle === 'closed' ? ' · Closed' : ''}
+                            {' · '}
+                            {sessionListStatusLabel(status)}
                           </span>
                           {projectName && (
                             <span className="session-project-tag" title={projectName}>
@@ -2714,6 +2804,16 @@ export function Chat() {
                           onClick={() => void stopSession(session.id)}
                         >
                           ■
+                        </button>
+                      )}
+                      {session.lifecycle !== 'closed' && (
+                        <button
+                          type="button"
+                          aria-label="完了にする"
+                          title="完了にする"
+                          onClick={() => requestSessionCompletion(session)}
+                        >
+                          ✓
                         </button>
                       )}
                       {session.platform === 'web' && (
@@ -3211,6 +3311,7 @@ export function Chat() {
                     setBusyPanes((current) => ({ ...current, [pane.key]: value }))
                   }
                   onSessionsInvalidated={() => loadSessions(0, query, false)}
+                  onComplete={requestSessionCompletion}
                   refreshVersion={refreshVersion}
                   onAbortReady={(abort) => {
                     if (abort) paneAbortersRef.current[pane.key] = abort;
@@ -3237,6 +3338,21 @@ export function Chat() {
           if (!deletingSession) setSessionToDelete(null);
         }}
         onConfirm={() => void deleteSession()}
+      />
+      <ConfirmDialog
+        open={Boolean(sessionToComplete)}
+        title="実行中のSessionを完了"
+        description="現在の処理を中断してSessionを完了します。履歴は残り、あとから再開できます。"
+        confirmLabel="中断して完了"
+        busyLabel="完了中…"
+        busy={completingSession}
+        variant="danger"
+        onCancel={() => {
+          if (!completingSession) setSessionToComplete(null);
+        }}
+        onConfirm={() => {
+          if (sessionToComplete) void completeSession(sessionToComplete, true);
+        }}
       />
       <SessionProjectDialog
         session={sessionToMove}

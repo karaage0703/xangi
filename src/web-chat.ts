@@ -2483,6 +2483,15 @@ export function startWebChat(options: WebChatOptions): void {
         res.end(JSON.stringify({ error: 'session not found' }));
         return;
       }
+      const body = await readBody(req);
+      const force = body.force === true;
+      if (busySessions.has(targetId) && !force) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ error: '実行中のSessionです。中断して完了するには確認が必要です' })
+        );
+        return;
+      }
       agentRunner.destroy?.(entry.contextKey);
       closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
       busySessions.delete(targetId);
