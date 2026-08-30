@@ -354,7 +354,7 @@ export function loadConfig(): Config {
   const config: Config = {
     features: featureControlsFromEnv(),
     sessionTitle: {
-      mode: v.enumOf('SESSION_TITLE_MODE', ['prefix', 'ai'] as const, 'prefix'),
+      mode: v.enumOf('SESSION_TITLE_MODE', ['prefix', 'ai'] as const, 'ai'),
     },
     completion: {
       showElapsed: process.env.COMPLETION_SHOW_ELAPSED !== 'false',
