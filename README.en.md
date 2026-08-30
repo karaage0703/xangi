@@ -15,7 +15,6 @@ xangi is an AI assistant that connects Claude Code, Codex, OpenCode, Cursor CLI,
 - Use your preferred AI agent from Discord, Web Chat, and other chat surfaces
 - Work in your own workspace containing skills and files
 - Keep conversation history and switch AI backends or models per channel
-- Optionally generate concise AI session titles alongside the main response
 - Run automatically on a schedule or in response to external events
 
 ## Architecture
