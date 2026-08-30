@@ -44,7 +44,11 @@ import { EventTrigger } from '../src/event-trigger.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
 import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
-import { canComposeInSession, shouldShowContinuationActions } from '../web-ui/src/Chat.js';
+import {
+  canComposeInSession,
+  resolveDisplayedSessionTitle,
+  shouldShowContinuationActions,
+} from '../web-ui/src/Chat.js';
 import { stopManagedExtensions } from '../src/extensions.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
@@ -66,6 +70,16 @@ describe('Web Chat continuation actions', () => {
     const detail = { lifecycle: 'open' as const, platform: 'web' };
     expect(shouldShowContinuationActions(detail)).toBe(false);
     expect(canComposeInSession(detail, false)).toBe(true);
+  });
+});
+
+describe('Web Chat live session titles', () => {
+  it('prefers the SSE session summary over stale pane detail', () => {
+    expect(resolveDisplayedSessionTitle('AIによる新タイトル', '送信前のタイトル')).toBe(
+      'AIによる新タイトル'
+    );
+    expect(resolveDisplayedSessionTitle(undefined, '保存済みタイトル')).toBe('保存済みタイトル');
+    expect(resolveDisplayedSessionTitle()).toBeUndefined();
   });
 });
 

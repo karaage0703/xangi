@@ -155,6 +155,13 @@ export function shouldShowContinuationActions(
   return Boolean(detail && (detail.lifecycle === 'closed' || detail.platform !== 'web'));
 }
 
+export function resolveDisplayedSessionTitle(
+  summaryTitle?: string,
+  detailTitle?: string
+): string | undefined {
+  return summaryTitle || detailTitle;
+}
+
 interface SessionsResponse {
   sessions: Session[];
   meta?: {
@@ -1073,7 +1080,7 @@ function ChatPane({
 
   useEffect(() => {
     if (refreshVersion > 0 && sessionId && !busy) void loadDetail();
-  }, [refreshVersion]);
+  }, [busy, loadDetail, refreshVersion, sessionId]);
 
   useEffect(() => {
     if (!active) setPaletteOpen(false);
@@ -1257,7 +1264,7 @@ function ChatPane({
 
   function openRenameDialog() {
     if (!sessionId) return;
-    setRenameValue(detail?.title || summary?.title || '');
+    setRenameValue(resolveDisplayedSessionTitle(summary?.title, detail?.title) || '');
     setRenameError('');
     setRenameDialogOpen(true);
   }
@@ -1575,7 +1582,7 @@ function ChatPane({
           onClick={openRenameDialog}
           disabled={!sessionId}
         >
-          {detail?.title || summary?.title || '(empty)'}
+          {resolveDisplayedSessionTitle(summary?.title, detail?.title) || '(empty)'}
         </button>
         {summary?.backend && (
           <span
