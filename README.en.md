@@ -136,12 +136,14 @@ See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 
 ## Extensions
 
-Add and manage external capabilities from Extensions in the Web UI. The official catalog includes [xangi-search](https://github.com/karaage0703/xangi-search) for searching your workspace. See [Extension Integration](docs/en/usage.md#extension-integration) for details.
+Add and manage external capabilities from Extensions in the Web UI. See [Extension Integration](docs/en/usage.md#extension-integration) for details.
+
+- [xangi-search](https://github.com/karaage0703/xangi-search) - An extension for searching your workspace
+- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - An extension that brings xangi responses, expressions, and head movement to M5Stack devices
+- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - An extension with an Even Hub app and bridge for using xangi from Even Realities G2
 
 ## Related projects
 
-- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - Bridge xangi responses to an expressive M5Stack character
-- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Hub app and bridge for using xangi from Even Realities G2
 - [xangi-pets](https://github.com/karaage0703/xangi-pets) - Desktop companions that display xangi state and responses
 
 ## Documentation

@@ -136,12 +136,14 @@ docker compose up xangi-gpu -d --build
 
 ## 拡張機能
 
-Web UIの「拡張」から外部機能を追加・管理できます。公式カタログでは、ワークスペースを検索する[xangi-search](https://github.com/karaage0703/xangi-search)を提供しています。詳しくは[Extension連携](docs/usage.md#extension連携)を参照してください。
+Web UIの「拡張」から外部機能を追加・管理できます。詳しくは[Extension連携](docs/usage.md#extension連携)を参照してください。
+
+- [xangi-search](https://github.com/karaage0703/xangi-search) - ワークスペースを検索する拡張機能
+- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - xangiの応答をM5Stackで喋らせ、表情や首振りと連動する拡張機能
+- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Realities G2からxangiを操作するEven Hubアプリとbridgeの拡張機能
 
 ## 関連プロジェクト
 
-- [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - xangiの応答をM5Stackで喋らせ、表情や首振りと連動するブリッジ
-- [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Realities G2からxangiを操作するEven Hubアプリとbridge
 - [xangi-pets](https://github.com/karaage0703/xangi-pets) - xangiの状態と応答を表示するデスクトップ常駐ペット
 
 ## ドキュメント

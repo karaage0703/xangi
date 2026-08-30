@@ -1345,7 +1345,9 @@ process.stdin.on('end', () => process.exit(0));
       const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
       expect(page.status).toBe(200);
       expect(page.headers.get('content-security-policy')).toContain("connect-src 'self'");
-      expect(await page.text()).toContain('xangi search');
+      expect(page.headers.get('content-security-policy')).toContain("form-action 'self'");
+      expect(page.headers.get('content-security-policy')).toContain("base-uri 'self'");
+      expect(await page.text()).toContain('<base href="./service/">');
 
       const blocked = await fetch(`${baseUrl}/api/extensions/ui-extension/service/settings`, {
         method: 'PUT',
