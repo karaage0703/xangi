@@ -32,7 +32,10 @@ import {
   closeActiveSession,
   getActiveSessionId,
   getSessionEntry,
+  updateSessionTitle,
 } from '../sessions.js';
+import { readSessionMessages } from '../transcript-logger.js';
+import { buildAiSessionTitleSource, generateAiSessionTitle } from '../ai-session-title.js';
 import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
@@ -150,6 +153,10 @@ export function buildSlashCommands(
 ): ReturnType<SlashCommandBuilder['toJSON']>[] {
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
+    new SlashCommandBuilder()
+      .setName('retitle')
+      .setDescription('現在のスレッドタイトルをAIで再生成する')
+      .toJSON(),
     new SlashCommandBuilder()
       .setName('workspace')
       .setDescription('このチャンネルのワークスペースを設定する')
@@ -1258,6 +1265,56 @@ export function createInteractionHandler(
       closeActiveSession(channelId, 'new');
       agentRunner.destroy?.(channelId);
       await interaction.reply('🆕 新しいセッションを開始しました');
+      return;
+    }
+
+    if (interaction.commandName === 'retitle') {
+      if (!interaction.channel?.isThread()) {
+        await interaction.reply({
+          content: '❌ このコマンドはDiscordスレッド内でのみ使えます',
+          ephemeral: true,
+        });
+        return;
+      }
+      const appSessionId = getActiveSessionId(channelId);
+      const entry = appSessionId ? getSessionEntry(appSessionId) : undefined;
+      if (!appSessionId || !entry) {
+        await interaction.reply({ content: '再生成できるセッションがありません', ephemeral: true });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const registeredWorkspace = entry.workspaceId
+          ? await workspaceRegistry.resolveById(entry.workspaceId)
+          : await workspaceRegistry.resolveById('default');
+        const workspace = entry.workspacePath
+          ? await workspaceRegistry.resolveSnapshot(registeredWorkspace.id, entry.workspacePath)
+          : registeredWorkspace;
+        const titleSource = buildAiSessionTitleSource(
+          readSessionMessages(workspace.path || workdir, appSessionId)
+            .filter((message) => message.role === 'user' && typeof message.content === 'string')
+            .map((message) => message.content as string)
+        );
+        if (!titleSource) throw new Error('タイトル生成に使える会話がありません');
+
+        const title = await generateAiSessionTitle({
+          runner: agentRunner,
+          appSessionId: `${appSessionId}:retitle`,
+          userText: titleSource,
+          runOptions: {
+            settingsChannelId,
+            platform: 'discord',
+            workdir: workspace.path || workdir,
+          },
+        });
+        await interaction.channel.setName(title);
+        updateSessionTitle(appSessionId, title);
+        await interaction.editReply(`✅ スレッドタイトルを「${title}」へ変更しました`);
+      } catch (error) {
+        console.warn('[session-title] Failed to retitle Discord thread:', error);
+        await interaction.editReply('❌ スレッドタイトルを再生成できませんでした');
+      }
       return;
     }
 

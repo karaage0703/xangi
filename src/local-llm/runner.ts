@@ -1340,7 +1340,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   ): Promise<string> {
     const logId = appSessionId || channelId;
     // ツール無効: 1回のLLM呼び出しで完了
-    if (!this.enableTools) {
+    if (llmTools.length === 0) {
       let response;
       try {
         response = await this.llm.chat(session.messages, {
@@ -1676,7 +1676,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     let terminalResponseContent: string | undefined;
 
     // ツール有効時のみツールループ実行
-    if (this.enableTools) {
+    if (llmTools.length > 0) {
       // ツールループ: non-streaming の chat() でツール呼び出しを処理
       let toolRounds = 0;
       let stepLimitReached = false;

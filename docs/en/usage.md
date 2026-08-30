@@ -73,9 +73,10 @@ Injection format: `[Current time: 2026/3/8 12:34:56]`
 
 ## Session Management
 
-| Command               | Description         |
-| --------------------- | ------------------- |
-| `/new`, `!new`, `new` | Start a new session |
+| Command               | Description                                                                    |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `/new`, `!new`, `new` | Start a new session                                                            |
+| `/retitle`            | Regenerate the current Web conversation or Discord thread title using AI      |
 
 ### Discord Button Controls
 
@@ -1284,6 +1285,14 @@ To modify the whitelist, edit `ALLOWED_ENV_KEYS` in `src/safe-env.ts`.
 ## Environment Variables Reference
 
 This section groups the key settings by purpose. See [`.env.example`](../../.env.example) for an annotated configuration sample.
+
+### Session titles
+
+| Variable             | Description                                                | Default  |
+| -------------------- | ---------------------------------------------------------- | -------- |
+| `SESSION_TITLE_MODE` | `prefix`: first-message prefix; `ai`: concise AI-generated title | `ai`     |
+
+In `ai` mode, xangi uses the same backend and model selected for the first turn. Title generation starts as an isolated internal task after the main backend reports readiness, or after the first response text for backends without that signal. The main response never waits for it. With a single-concurrency Local LLM, the main request claims the slot first and title generation follows it. Failure, empty output, or a 10-second timeout preserves the prefix title. Discord creates the thread immediately with the prefix and renames it after the AI title is ready.
 
 ### First-turn history prefetch (Discord / Slack / Web)
 

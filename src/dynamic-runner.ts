@@ -237,7 +237,9 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved
     );
 
-    const enrichedPrompt = await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const enrichedPrompt = runOptions?.internalTask
+      ? prompt
+      : await this.applyUserPromptSubmitHooks(prompt, runOptions);
     const result = await runner.run(enrichedPrompt, runOptions);
     this.recordResolvedBackend(runOptions, resolved, result);
     return result;
@@ -268,7 +270,9 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved
     );
 
-    const enrichedPrompt = await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const enrichedPrompt = runOptions?.internalTask
+      ? prompt
+      : await this.applyUserPromptSubmitHooks(prompt, runOptions);
     const recorder =
       runOptions?.appSessionId && CLI_TRAJECTORY_BACKENDS.has(resolved.backend)
         ? new ToolTrajectoryStreamRecorder(

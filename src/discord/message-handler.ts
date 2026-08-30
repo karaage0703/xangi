@@ -83,6 +83,7 @@ import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../session-workspace.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
+import { startAiSessionTitle } from '../ai-session-title.js';
 
 export function shouldProcessDiscordMessage(input: { system?: boolean }): boolean {
   return !input.system;
@@ -99,6 +100,7 @@ export interface DiscordMessageTarget {
     send: (options: unknown) => Promise<Message>;
   };
   sendInitial: (options: Parameters<Message['reply']>[0]) => Promise<Message>;
+  renameThread?: (title: string) => Promise<void>;
 }
 
 export async function sendDiscordCompletedResult(options: {
@@ -141,6 +143,7 @@ async function resolveDiscordMessageTarget(
     id: string;
     name?: string;
     send: (options: unknown) => Promise<Message>;
+    setName?: (title: string) => Promise<unknown>;
   } | null = null;
   const replyInThread = getChannelThreadMode(
     settings,
@@ -164,6 +167,7 @@ async function resolveDiscordMessageTarget(
           id: string;
           name?: string;
           send: (options: unknown) => Promise<Message>;
+          setName?: (title: string) => Promise<unknown>;
         };
       } catch (err) {
         console.warn(
@@ -194,6 +198,9 @@ async function resolveDiscordMessageTarget(
       ? sourceChannelName
       : (sourceChannelDetails.parent?.name ?? null)
     : null;
+  const threadChannel = (newThread ?? sourceChannel) as {
+    setName?: (title: string) => Promise<unknown>;
+  };
 
   return {
     conversationChannelId,
@@ -205,6 +212,12 @@ async function resolveDiscordMessageTarget(
     outputChannel,
     sendInitial: (options: Parameters<Message['reply']>[0]) =>
       newThread ? newThread.send(options) : message.reply(options),
+    renameThread:
+      isThread && typeof threadChannel.setName === 'function'
+        ? async (title: string) => {
+            await threadChannel.setName?.(title);
+          }
+        : undefined,
   };
 }
 
@@ -428,14 +441,52 @@ export async function processPrompt(
     let newSessionId: string;
     let structuredAttachments: string[] | undefined;
 
+    let aiTitleStarted = false;
+    const prefixTitle = truncateSessionTitle(stripPromptMetadata(prompt));
+    const startTitleIfNeeded = () => {
+      if (aiTitleStarted || config.sessionTitle?.mode !== 'ai') return;
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.title) return;
+      aiTitleStarted = startAiSessionTitle({
+        runner: agentRunner,
+        appSessionId,
+        userText: prompt,
+        runOptions: {
+          settingsChannelId: target.settingsChannelId,
+          platform: 'discord',
+          workdir: sessionWorkdir,
+        },
+        onTitle: async (title) => {
+          const current = getSessionEntry(appSessionId);
+          if (!current || (current.title && current.title !== prefixTitle)) return;
+          updateSessionTitle(appSessionId, title);
+          if (target.renameThread) {
+            try {
+              await target.renameThread(title);
+            } catch (error) {
+              console.warn(
+                `[session-title] Failed to rename Discord thread for ${appSessionId}: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+          }
+        },
+      });
+    };
+
     // 完了後ツール履歴の蓄積（表示は StreamSession 側、こちらは完了後の inline/button 表示用）
     const captureCallbacks = {
-      onBackendReady: () => latency.markBackendReady(),
+      onBackendReady: () => {
+        latency.markBackendReady();
+        startTitleIfNeeded();
+      },
       onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
         latency.markActivity();
         if (captureToolUse) addToolHistory(toolHistory, toolName, toolInput);
       },
-      onText: () => latency.markText(),
+      onText: () => {
+        latency.markText();
+        startTitleIfNeeded();
+      },
       onTraceEvent: (event: AgentTraceEvent) => latency.markTraceEvent(event),
     };
 

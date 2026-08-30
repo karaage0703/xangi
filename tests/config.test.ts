@@ -162,6 +162,17 @@ describe('config', () => {
     });
   });
 
+  it('enables AI session titles by default and supports prefix override', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.SESSION_TITLE_MODE;
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().sessionTitle.mode).toBe('ai');
+
+    process.env.SESSION_TITLE_MODE = 'prefix';
+    expect(loadConfig().sessionTitle.mode).toBe('prefix');
+  });
+
   it('should allow disabling Discord completion notifications via env', async () => {
     process.env.DISCORD_TOKEN = 'test-discord-token';
     process.env.DISCORD_COMPLETION_NOTIFY = 'off';

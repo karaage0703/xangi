@@ -375,6 +375,7 @@ describe('Discord Commands', () => {
       expect(names).toContain('notify');
       expect(names).toContain('llmeffort');
       expect(names).toContain('skill');
+      expect(names).toContain('retitle');
       expect(names.filter((name) => name.startsWith('skill-')).length).toBeLessThan(120);
     });
   });

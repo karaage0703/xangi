@@ -44,6 +44,12 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
     category: 'session',
   },
   {
+    name: 'retitle',
+    description: '現在のWeb会話タイトルをAIで再生成',
+    usage: '/retitle',
+    category: 'session',
+  },
+  {
     name: 'stop',
     description: '実行中のタスクを停止',
     usage: '/stop',
@@ -323,7 +329,7 @@ export type WebCommandResult =
   | { kind: 'message'; message: string }
   | { kind: 'chat'; message: string; displayMessage: string; skipPermissions?: boolean }
   | { kind: 'skills'; skills: Array<Pick<Skill, 'name' | 'description'>> }
-  | { kind: 'action'; action: 'new' | 'stop' | 'extend' | 'restart'; message?: string };
+  | { kind: 'action'; action: 'new' | 'retitle' | 'stop' | 'extend' | 'restart'; message?: string };
 
 export interface WebCommandContext {
   appSessionId?: string;
@@ -571,6 +577,7 @@ export async function executeWebCommand(
     case 'help':
       return { kind: 'message', message: commandHelp() };
     case 'new':
+    case 'retitle':
     case 'stop':
     case 'extend':
       return { kind: 'action', action: commandName };

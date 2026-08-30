@@ -108,6 +108,16 @@ describe('Web slash command adapter', () => {
     );
   });
 
+  it('registers /retitle as a Web session action', async () => {
+    expect(getWebCommandDefinitions({ workdir }).map((command) => command.name)).toContain(
+      'retitle'
+    );
+    expect(await executeWebCommand('/retitle', { workdir, appSessionId: 'web-1' })).toEqual({
+      kind: 'action',
+      action: 'retitle',
+    });
+  });
+
   it('hides and rejects disabled shared-bot features', async () => {
     const config = {
       features: {

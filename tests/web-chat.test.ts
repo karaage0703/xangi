@@ -44,7 +44,11 @@ import { EventTrigger } from '../src/event-trigger.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
 import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
-import { canComposeInSession, shouldShowContinuationActions } from '../web-ui/src/Chat.js';
+import {
+  canComposeInSession,
+  resolveDisplayedSessionTitle,
+  shouldShowContinuationActions,
+} from '../web-ui/src/Chat.js';
 import { stopManagedExtensions } from '../src/extensions.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
@@ -66,6 +70,16 @@ describe('Web Chat continuation actions', () => {
     const detail = { lifecycle: 'open' as const, platform: 'web' };
     expect(shouldShowContinuationActions(detail)).toBe(false);
     expect(canComposeInSession(detail, false)).toBe(true);
+  });
+});
+
+describe('Web Chat live session titles', () => {
+  it('prefers the SSE session summary over stale pane detail', () => {
+    expect(resolveDisplayedSessionTitle('AIによる新タイトル', '送信前のタイトル')).toBe(
+      'AIによる新タイトル'
+    );
+    expect(resolveDisplayedSessionTitle(undefined, '保存済みタイトル')).toBe('保存済みタイトル');
+    expect(resolveDisplayedSessionTitle()).toBeUndefined();
   });
 });
 
@@ -1551,6 +1565,42 @@ process.stdin.on('end', () => process.exit(0));
     expect(data.kind).toBe('message');
     expect(data.message).toContain('/skill [name] [args]');
     expect(runner.prompts).toEqual([]);
+  });
+
+  it('POST /api/web-commands retitles the current Web conversation with AI', async () => {
+    const id = createWebSession({ title: '古いタイトル' });
+    logPrompt(testDir, id, '<system-context>内部</system-context>Web会話のタイトルを直す');
+    runner.nextResult = '「Web会話タイトルの再生成。」';
+
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, input: '/retitle' }),
+    });
+    const data = (await res.json()) as { kind: string; message: string };
+
+    expect(res.status).toBe(200);
+    expect(data).toEqual({
+      kind: 'message',
+      message: '会話タイトルを「Web会話タイトルの再生成」へ変更しました。',
+    });
+    expect(getSessionEntry(id)?.title).toBe('Web会話タイトルの再生成');
+    expect(runner.prompts.at(-1)).toContain('Web会話のタイトルを直す');
+    expect(runner.options.at(-1)).toEqual(
+      expect.objectContaining({ internalTask: true, platform: 'web' })
+    );
+  });
+
+  it('POST /api/web-commands retitle rejects a non-Web session', async () => {
+    const id = createSession('discord-thread-retitle', { platform: 'discord' });
+    const res = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, input: '/retitle' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Web会話を開いてから実行してください' });
   });
 
   it('POST /api/web-commands lists skills and converts a selected skill into a validated chat prompt', async () => {
