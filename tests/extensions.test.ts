@@ -9,6 +9,7 @@ import {
   linkExtension,
   listExtensions,
   listExtensionAgentBackends,
+  managedExtensionHostContext,
   migrateLegacyExtensionStore,
   parseExtensionManifest,
   resolveCapabilityBaseUrl,
@@ -17,10 +18,16 @@ import {
   stopManagedExtensions,
   unlinkExtension,
 } from '../src/extensions.js';
+import { _resetEventsConfigForTest } from '../src/events-emitter.js';
 
 const previousConfig = process.env.XANGI_EXTENSIONS_FILE;
 const previousDataDir = process.env.DATA_DIR;
 const previousWorkspace = process.env.WORKSPACE_PATH;
+const previousWebEnabled = process.env.WEB_CHAT_ENABLED;
+const previousWebHost = process.env.WEB_CHAT_HOST;
+const previousWebPort = process.env.WEB_CHAT_PORT;
+const previousEventsEnabled = process.env.XANGI_EVENTS_ENABLED;
+const previousInstanceId = process.env.XANGI_INSTANCE_ID;
 
 afterEach(async () => {
   await stopManagedExtensions();
@@ -31,6 +38,17 @@ afterEach(async () => {
   else process.env.DATA_DIR = previousDataDir;
   if (previousWorkspace === undefined) delete process.env.WORKSPACE_PATH;
   else process.env.WORKSPACE_PATH = previousWorkspace;
+  for (const [key, value] of [
+    ['WEB_CHAT_ENABLED', previousWebEnabled],
+    ['WEB_CHAT_HOST', previousWebHost],
+    ['WEB_CHAT_PORT', previousWebPort],
+    ['XANGI_EVENTS_ENABLED', previousEventsEnabled],
+    ['XANGI_INSTANCE_ID', previousInstanceId],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  _resetEventsConfigForTest();
 });
 
 async function fixture() {
@@ -159,6 +177,46 @@ process.stdin.on('end', () => server.close());
 }
 
 describe('extensions', () => {
+  it('provides managed children with explicit parent host context', () => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    process.env.WEB_CHAT_HOST = '0.0.0.0';
+    process.env.WEB_CHAT_PORT = '19991';
+    process.env.XANGI_EVENTS_ENABLED = 'true';
+    process.env.XANGI_INSTANCE_ID = 'xangi-test';
+    _resetEventsConfigForTest();
+
+    expect(managedExtensionHostContext()).toEqual({
+      XANGI_EXTENSION_HOST_URL: 'http://127.0.0.1:19991',
+      XANGI_EXTENSION_EVENTS_URL: 'http://127.0.0.1:19991/api/events/stream',
+      XANGI_EXTENSION_INSTANCE_ID: 'xangi-test',
+    });
+  });
+
+  it('uses the same strict port and quoted host resolution as the web server', () => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    process.env.WEB_CHAT_HOST = "'::1'";
+    process.env.WEB_CHAT_PORT = '19991abc';
+    process.env.XANGI_EVENTS_ENABLED = 'true';
+    process.env.XANGI_INSTANCE_ID = 'xangi-test';
+    _resetEventsConfigForTest();
+
+    expect(managedExtensionHostContext()).toEqual({
+      XANGI_EXTENSION_HOST_URL: 'http://[::1]:18888',
+      XANGI_EXTENSION_EVENTS_URL: 'http://[::1]:18888/api/events/stream',
+      XANGI_EXTENSION_INSTANCE_ID: 'xangi-test',
+    });
+  });
+
+  it('omits unavailable parent HTTP endpoints while retaining the instance identity', () => {
+    process.env.WEB_CHAT_ENABLED = 'false';
+    process.env.XANGI_INSTANCE_ID = 'xangi-headless';
+    _resetEventsConfigForTest();
+
+    expect(managedExtensionHostContext()).toEqual({
+      XANGI_EXTENSION_INSTANCE_ID: 'xangi-headless',
+    });
+  });
+
   it('isolates the default registry by DATA_DIR under the same OS user', async () => {
     const { root, manifestPath } = await fixture();
     delete process.env.XANGI_EXTENSIONS_FILE;

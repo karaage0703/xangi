@@ -13,7 +13,9 @@ import {
 import { constants, existsSync, readFileSync } from 'node:fs';
 import { arch, homedir, platform } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { getEventsConfig } from './events-emitter.js';
 import { resolveAppLayout } from './installer/layout.js';
+import { resolveWebChatHost, resolveWebChatPort } from './web-endpoint-config.js';
 
 export type ExtensionAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor' | 'update';
 
@@ -109,6 +111,34 @@ interface ManagedReadyMessage {
 }
 
 const managedRuntimes = new Map<string, ManagedExtensionRuntime>();
+
+function managedExtensionHostUrl(env: NodeJS.ProcessEnv): string {
+  const port = resolveWebChatPort(undefined, env).port;
+  const host = resolveWebChatHost(undefined, env);
+  if (host === '::1') return `http://[::1]:${port}`;
+  if (host === '0.0.0.0' || host === '::' || host === '*') {
+    return `http://127.0.0.1:${port}`;
+  }
+  const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${authority}:${port}`;
+}
+
+export function managedExtensionHostContext(
+  env: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const eventsConfig = getEventsConfig();
+  const context: NodeJS.ProcessEnv = {
+    XANGI_EXTENSION_INSTANCE_ID: eventsConfig.instanceId,
+  };
+  if (env.WEB_CHAT_ENABLED !== 'true') return context;
+
+  const hostUrl = managedExtensionHostUrl(env);
+  context.XANGI_EXTENSION_HOST_URL = hostUrl;
+  if (eventsConfig.enabled) {
+    context.XANGI_EXTENSION_EVENTS_URL = `${hostUrl}/api/events/stream`;
+  }
+  return context;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -620,9 +650,16 @@ async function startManagedExtension(
   const workspace = resolve(options.workspace ?? process.env.WORKSPACE_PATH ?? process.cwd());
   const executable = resolve(dirname(linked.manifestPath), manifest.entrypoint);
   const token = randomBytes(32).toString('base64url');
+  const childEnv = { ...process.env };
+  delete childEnv.XANGI_EXTENSION_HOST_URL;
+  delete childEnv.XANGI_EXTENSION_EVENTS_URL;
+  delete childEnv.XANGI_EXTENSION_INSTANCE_ID;
+  Object.assign(childEnv, managedExtensionHostContext(), {
+    XANGI_EXTENSION_AUTH_TOKEN: token,
+  });
   const child = spawn(executable, ['serve', '--workspace', workspace], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, XANGI_EXTENSION_AUTH_TOKEN: token },
+    env: childEnv,
   });
   let ready: ManagedReadyMessage;
   let baseUrl: string;

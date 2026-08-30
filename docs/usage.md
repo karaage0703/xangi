@@ -910,6 +910,8 @@ XANGI_WORKSPACE=/home/user/my-workspace
 
 managed extensionの状態は`running`、`healthy`、`ready`を別々に表示します。`running`は子processが生存中、`healthy`はhealth endpointが2xx応答、`ready`はその2xx payloadが`ready: false`を明示していない状態です。旧extensionが`ready`を返さない場合はreadyとして扱います。cold start中に初回healthがtimeout、非2xx、または`ready: false`になっても、検証済みの子processは停止せず、後続の`status` / `doctor`で回復を確認できます。`doctor`はreadyになるまで成功しません。
 
+managed extensionの子processには親xangiの`XANGI_EXTENSION_INSTANCE_ID`が渡ります。Web Chat有効時は`XANGI_EXTENSION_HOST_URL`、イベント配信も有効なら`XANGI_EXTENSION_EVENTS_URL`も渡るため、イベント購読型extensionはportやbind hostを推測せず現在のinstanceへ接続できます。無効なendpointのURLは渡しません。これらは親が所有するruntime contextであり、利用者が`.env`で設定する項目ではありません。
+
 初回起動時も公式catalogのxangi-searchが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
 
 CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup文書に承認待ちの設定・workspace変更・任意機能がある場合、LLMはそれをgenericな活用案や次回依頼へ先送りせず、重要な差分・影響・選択肢を具体的に提示します。返答待ちの項目は変更せず、未決の間はsetup完了と報告しません。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。

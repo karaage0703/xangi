@@ -1403,14 +1403,26 @@ export function startWebChat(options: WebChatOptions): void {
           headers: { Authorization: target.authorization },
           signal: AbortSignal.timeout(10_000),
         });
-        const body = Buffer.from(await upstream.arrayBuffer());
+        const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+        const upstreamBody = Buffer.from(await upstream.arrayBuffer());
+        const upstreamHtml = upstreamBody.toString('utf8');
+        const body = contentType.includes('text/html')
+          ? Buffer.from(
+              /<head(\s[^>]*)?>/i.test(upstreamHtml)
+                ? upstreamHtml.replace(
+                    /<head(\s[^>]*)?>/i,
+                    (head) => `${head}<base href="./service/">`
+                  )
+                : `<base href="./service/">${upstreamHtml}`
+            )
+          : upstreamBody;
         res.writeHead(upstream.status, {
-          'Content-Type': upstream.headers.get('content-type') || 'text/html; charset=utf-8',
+          'Content-Type': contentType,
           'Content-Length': String(body.length),
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy':
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
         });
         res.end(body);
       } catch (error) {
