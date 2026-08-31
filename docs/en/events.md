@@ -12,7 +12,7 @@ Events are emitted across Discord, Slack, Web Chat, LINE, and Telegram. Consumer
 GET http://<xangi-host>:<WEB_CHAT_PORT>/api/events/stream
 ```
 
-- Served by the Web Chat HTTP server (default port: `18888`)
+- Served by the shared HTTP server (default port: `18888`)
 - `Content-Type: text/event-stream`
 - Sends one initial `event: ready` frame with `instance_id` and `host_hint`
 - Supports server-side thread filtering with `?thread_id=web:<appSessionId>`
@@ -24,10 +24,13 @@ GET http://<xangi-host>:<WEB_CHAT_PORT>/api/events/stream
 | Variable               | Default                                 | Description                                                        |
 | ---------------------- | --------------------------------------- | ------------------------------------------------------------------ |
 | `WEB_CHAT_PORT`        | `18888`                                 | HTTP server port for Web Chat and SSE                              |
+| `XANGI_EVENTS_SERVER_ENABLED` | `false`                           | Run the companion API without serving the Web UI                   |
 | `XANGI_EVENTS_ENABLED` | `true`                                  | Set to `false` to disable event streaming (connections return 503) |
 | `XANGI_INSTANCE_ID`    | `xangi-<hostname>-<sha1(DATA_DIR)[:6]>` | Stable instance identifier used by consumers for filtering         |
 
 If `XANGI_INSTANCE_ID` is not set, xangi derives it from hostname and `DATA_DIR`. Same machine + same `DATA_DIR` keeps the same ID across restarts; same machine + different `DATA_DIR` gets a different ID.
+
+Set `XANGI_EVENTS_SERVER_ENABLED=true` to use xangi-pets or another companion while keeping Web Chat disabled. In this headless mode, the server exposes only health, event streaming, session reads, and pet/device/terminal inbox routes; Web UI assets and unrelated Web APIs return 404.
 
 ## Event Schema
 

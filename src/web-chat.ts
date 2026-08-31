@@ -81,6 +81,7 @@ import { handlePetInboxRequest, isInboxPath } from './pet-inbox-server.js';
 import { handleEvenTerminalRequest } from './even-terminal-server.js';
 import { TurnLatencyRecorder } from './turn-latency.js';
 import { readAccountUsage } from './usage-monitor.js';
+import { renderSlackEmojiAliases } from './slack-emoji.js';
 import { buildPrefetchedHistoryBlock } from './prefetched-history.js';
 import {
   appendReplySuggestionInstruction,
@@ -327,6 +328,11 @@ function hasInternalPromptMetadata(text: string): boolean {
 
 interface WebChatOptions {
   agentRunner: AgentRunner;
+  /**
+   * HTML UI and Web-only APIs are disabled when false. The shared HTTP
+   * listener still exposes the companion API used by xangi-pets.
+   */
+  uiEnabled?: boolean;
   port?: number;
   historyPrefetch?: Config['historyPrefetch'];
   replySuggestions?: Config['web'];
@@ -353,6 +359,7 @@ export function startWebChat(options: WebChatOptions): void {
   };
   const port = resolveWebChatPort(options.port).port;
   const host = resolveWebChatHost(options.host);
+  const uiEnabled = options.uiEnabled ?? true;
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const workspaceRegistry = options.workspaceRegistry;
@@ -854,6 +861,16 @@ export function startWebChat(options: WebChatOptions): void {
         }
         return;
       }
+    }
+
+    // Headless companion mode intentionally exposes only the small surface
+    // required by xangi-pets. Keep this gate before the broader Web/Even API
+    // dispatch so enabling an event endpoint does not also enable Web UI,
+    // Workspace editing, schedules, or session mutation APIs.
+    if (!uiEnabled && !isHeadlessCompanionRequest(req.method, url)) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Web UI is disabled' }));
+      return;
     }
 
     // Even Terminal compatibility API (`@evenrealities/even-terminal`)
@@ -2144,12 +2161,16 @@ export function startWebChat(options: WebChatOptions): void {
                 join(dataDir, 'media', 'attachments'),
               ])
             : { content: '', attachments: [] };
-        const displayContent =
+        const rawDisplayContent =
           m.role === 'user'
             ? displayedUser.content
             : m.role === 'assistant'
               ? assistantReplyData?.text || stripReplySuggestionMarkup(String(rawContent))
               : rawContent;
+        const displayContent =
+          entry?.platform === 'slack' && typeof rawDisplayContent === 'string'
+            ? renderSlackEmojiAliases(rawDisplayContent)
+            : rawDisplayContent;
         return {
           id: m.id,
           role: m.role,
@@ -3285,13 +3306,17 @@ export function startWebChat(options: WebChatOptions): void {
 
   server.listen(port, host, () => {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。
-    console.log(`[web-chat] Chat UI: ${primaryAccessUrl(port, host)}`);
+    if (uiEnabled) {
+      console.log(`[web-chat] Chat UI: ${primaryAccessUrl(port, host)}`);
+    } else {
+      console.log(`[xangi-events] Headless companion API: ${primaryAccessUrl(port, host)}`);
+    }
     // Tailscale が動いてれば LAN/Tailnet 経由のアクセス URL も出す（best-effort）。
     // host を loopback / 特定 IP に絞っている場合は到達できない経路を出さないよう、
     // resolveAccessUrls 側で表示範囲を host 種別に合わせる。
     resolveAccessUrls(port, host)
       .then((urls) => {
-        console.log(formatAccessUrls('web-chat', urls));
+        if (uiEnabled) console.log(formatAccessUrls('web-chat', urls));
         // pull 型 events SSE の URL も併せて出す。consumer (pet 等) はこれに繋ぐ。
         const eventsUrls = urls.map((u) => `${u}/api/events/stream`);
         console.log(formatAccessUrls('xangi-events (SSE)', eventsUrls));
@@ -3307,7 +3332,15 @@ export const __test__ = {
   busySessions,
   webContextKey,
   isWebSession,
+  isHeadlessCompanionRequest,
 };
+
+function isHeadlessCompanionRequest(method: string | undefined, url: string): boolean {
+  if (url === '/health' && method === 'GET') return true;
+  if (url === '/api/sessions' && method === 'GET') return true;
+  if (isInboxPath(url) && method === 'POST') return true;
+  return false;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function readBody(req: import('http').IncomingMessage): Promise<Record<string, any>> {

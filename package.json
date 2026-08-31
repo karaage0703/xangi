@@ -51,6 +51,7 @@
     "dotenv": "^17.4.2",
     "grammy": "^1.46.0",
     "node-cron": "^4.6.0",
+    "node-emoji": "^2.2.0",
     "proper-lockfile": "^4.1.2",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",

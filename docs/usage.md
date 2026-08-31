@@ -1031,6 +1031,8 @@ LOCAL_LLM_XANGI_COMMANDS=false
 | `LOCAL_LLM_SKILLS`         | スキル一覧注入                                                   | `true`     |
 | `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS注入                                               | `true`     |
 
+`read` / `write` / `edit` / `glob` / `grep` が扱えるパスは、ワークスペース内とsystem temp directory（Linuxでは`/tmp`）です。symlink解決後にこの範囲を外れるパスは拒否されます。
+
 `LOCAL_LLM_MODE` でプリセットも使えます（個別設定が優先）：
 
 - `agent`（デフォルト）— tools / skills / xangi_commands ON
@@ -1470,11 +1472,12 @@ AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline /pa
 
 ### 外部イベントストリーム（pull 型 SSE）
 
-応答ライフサイクル（`turn.started` / `message.delta` / `turn.complete` / `turn.aborted` / `agent.error`）を SSE で配信する。consumer は web-chat サーバの `GET /api/events/stream` に接続して購読する。詳細は [外部イベントストリーム](events.md) を参照。
+応答ライフサイクル（`turn.started` / `message.delta` / `turn.complete` / `turn.aborted` / `agent.error`）を SSE で配信する。consumer は `GET /api/events/stream` に接続して購読する。Web UIが無効のxangiは `XANGI_EVENTS_SERVER_ENABLED=true` を明示すると、Web UIやWorkspace編集を公開せずheadless companion APIとして利用できる。詳細は [外部イベントストリーム](events.md) を参照。
 
 | 変数                   | 説明                                                                                      | デフォルト |
 | ---------------------- | ----------------------------------------------------------------------------------------- | ---------- |
 | `XANGI_EVENTS_ENABLED` | `false` で SSE 配信を完全無効化（接続要求は 503）                                         | `true`     |
+| `XANGI_EVENTS_SERVER_ENABLED` | Web UI無効時もheadless companion API用HTTPサーバを起動 | `false` |
 | `XANGI_INSTANCE_ID`    | 送信元インスタンスの識別子。未指定なら `xangi-<hostname>-<sha1(DATA_DIR)[:6]>` で自動採番 | `auto`     |
 
 ### Pet / Device からの入力 (`POST /api/*/inbox`)

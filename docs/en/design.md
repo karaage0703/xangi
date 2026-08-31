@@ -102,6 +102,8 @@ Based on `@slack/bolt`.
 
 Lightweight server based on `http.createServer` (no Express dependency).
 
+With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless setup with only `XANGI_EVENTS_SERVER_ENABLED=true` starts the same server but exposes only health, event SSE, session reads, and pet/device/terminal inbox routes; Web UI assets and unrelated Web APIs return 404.
+
 - A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
 - Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops
 - Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
@@ -1058,7 +1060,7 @@ src/
 ├── tool-server.ts      # Tool Server (HTTP API for AI CLIs)
 ├── event-trigger.ts    # Event trigger (start a turn externally via POST /api/trigger)
 ├── events-emitter.ts   # Event bus for response lifecycle events
-├── events-stream-server.ts # Pull-based SSE delivery (GET /api/events/stream, piggybacks on web-chat)
+├── events-stream-server.ts # Pull-based SSE delivery (GET /api/events/stream, shared HTTP server)
 ├── activity-store.ts   # Current-turn snapshots plus persisted commentary/tool timelines
 ├── pet-inbox-server.ts # Accepts text sent from xangi-pets (POST /api/pet/inbox)
 ├── even-terminal-server.ts # Even Terminal compatible HTTP API

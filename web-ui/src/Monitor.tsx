@@ -177,6 +177,10 @@ export function displayUsageProviders(providers: UsageProvider[]): UsageProvider
     .filter((provider) => provider.groups.length > 0);
 }
 
+export function accountUsageStatusLabel(stale?: boolean): string | undefined {
+  return stale ? '前回値' : undefined;
+}
+
 function isRunning(session: MonitorSession): boolean {
   return session.isActive === true;
 }
@@ -690,11 +694,13 @@ export function Monitor() {
             </header>
             <div className="monitor-usage-providers">
               {visibleUsageProviders.map((provider) => (
-                <details className="monitor-usage-provider" open key={provider.id}>
-                  <summary>
+                <article className="monitor-usage-provider" key={provider.id}>
+                  <header className="monitor-usage-provider-header">
                     <strong>{provider.label}</strong>
-                    <span>{accountUsage?.stale ? '前回値' : '最新'}</span>
-                  </summary>
+                    {accountUsageStatusLabel(accountUsage?.stale) && (
+                      <span>{accountUsageStatusLabel(accountUsage?.stale)}</span>
+                    )}
+                  </header>
                   <button
                     className="monitor-usage-hide"
                     type="button"
@@ -760,7 +766,7 @@ export function Monitor() {
                       </section>
                     );
                   })}
-                </details>
+                </article>
               ))}
             </div>
           </section>

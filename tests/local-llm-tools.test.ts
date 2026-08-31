@@ -1,20 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { executeTool } from '../src/local-llm/tools.js';
 import type { ToolContext } from '../src/local-llm/types.js';
 
 let workspace: string;
+let systemTemp: string;
 let context: ToolContext;
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'xangi-tools-test-'));
+  systemTemp = mkdtempSync(join(tmpdir(), 'xangi-tools-system-temp-'));
   context = { workspace };
 });
 
 afterEach(() => {
   rmSync(workspace, { recursive: true, force: true });
+  rmSync(systemTemp, { recursive: true, force: true });
 });
 
 describe('write tool', () => {
@@ -274,7 +277,7 @@ describe('path traversal protection', () => {
       context
     );
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
   it('rejects deep ../../ traversal in write', async () => {
@@ -284,17 +287,17 @@ describe('path traversal protection', () => {
       context
     );
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
-  it('rejects absolute path outside workspace in write', async () => {
+  it('rejects absolute path outside the allowlist in write', async () => {
     const result = await executeTool(
       'write',
-      { path: '/tmp/xangi-pwn-test', content: 'pwn' },
+      { path: '/etc/xangi-pwn-test', content: 'pwn' },
       context
     );
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
   it('allows absolute path inside workspace in write', async () => {
@@ -310,7 +313,7 @@ describe('path traversal protection', () => {
   it('rejects ../ traversal in read', async () => {
     const result = await executeTool('read', { path: '../etc/passwd' }, context);
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
   it('rejects ../ traversal in edit', async () => {
@@ -320,19 +323,57 @@ describe('path traversal protection', () => {
       context
     );
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
   it('rejects ../ traversal in glob cwd', async () => {
     const result = await executeTool('glob', { pattern: '*', cwd: '../..' }, context);
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
   });
 
   it('rejects ../ traversal in grep path', async () => {
     const result = await executeTool('grep', { pattern: 'x', path: '../..' }, context);
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/outside workspace/);
+    expect(result.error).toMatch(/outside allowed roots/);
+  });
+
+  it('rejects a workspace symlink that resolves outside the allowlist', async () => {
+    symlinkSync('/etc/hosts', join(workspace, 'outside-link'));
+    const result = await executeTool('read', { path: 'outside-link' }, context);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/outside allowed roots/);
+  });
+});
+
+describe('system temp access', () => {
+  it('reads a temp file created by exec', async () => {
+    const path = join(systemTemp, 'from-exec.txt');
+    const exec = await executeTool('exec', { command: `printf 'from exec' > '${path}'` }, context);
+    const read = await executeTool('read', { path }, context);
+    expect(exec.success).toBe(true);
+    expect(read).toMatchObject({ success: true, output: 'from exec' });
+  });
+
+  it('supports write, read, and edit with an absolute temp path', async () => {
+    const path = join(systemTemp, 'digest.txt');
+    expect((await executeTool('write', { path, content: 'draft' }, context)).success).toBe(true);
+    expect((await executeTool('read', { path }, context)).output).toBe('draft');
+    expect(
+      (await executeTool('edit', { path, old_string: 'draft', new_string: 'final' }, context))
+        .success
+    ).toBe(true);
+    expect(readFileSync(path, 'utf-8')).toBe('final');
+  });
+
+  it('supports glob and grep in the system temp directory', async () => {
+    writeFileSync(join(systemTemp, 'digest.txt'), 'arxiv result\n');
+    const glob = await executeTool('glob', { pattern: '*.txt', cwd: systemTemp }, context);
+    const grep = await executeTool('grep', { pattern: 'arxiv', path: systemTemp }, context);
+    expect(glob.success).toBe(true);
+    expect(glob.output).toContain('digest.txt');
+    expect(grep.success).toBe(true);
+    expect(grep.output).toContain('digest.txt:1:arxiv result');
   });
 });
 

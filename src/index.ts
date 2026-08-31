@@ -162,8 +162,12 @@ async function main() {
     );
   }
 
-  // WebチャットUI起動
-  if (process.env.WEB_CHAT_ENABLED === 'true') {
+  // Web UI または xangi-pets 向けの headless companion API を起動。
+  // Headless modeは明示opt-inとし、従来のDiscord/Slack単独運用で
+  // 意図せずHTTP portが開かないようにする。
+  const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
+  const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
+  if (webChatEnabled || eventsServerEnabled) {
     startWebChat({
       agentRunner,
       historyPrefetch: config.historyPrefetch,
@@ -175,6 +179,7 @@ async function main() {
       discordRemoteInputRef,
       destinationLabelResolverRef,
       workspaceRegistry,
+      uiEnabled: webChatEnabled,
     });
   }
 
@@ -372,7 +377,6 @@ async function main() {
     );
   }
 
-  const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
   if (
     !config.discord.enabled &&
     !config.slack.enabled &&

@@ -1,9 +1,18 @@
 /**
  * ローカルLLM用ビルトインツール（exec, read, write, edit, glob, grep, web_fetch）
  */
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, readdirSync } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  statSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+} from 'fs';
 import { promises as fsp } from 'fs';
-import { resolve, join, dirname, relative, sep } from 'path';
+import { tmpdir } from 'os';
+import { resolve, join, dirname, relative, sep, isAbsolute, basename } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
 import { getSafeEnv } from '../safe-env.js';
@@ -33,16 +42,44 @@ const READ_JSON_MAX_BYTES = parseInt(
 const WRITE_MAX_BYTES = parseInt(process.env.LOCAL_LLM_WRITE_MAX_BYTES ?? String(512 * 1024), 10);
 
 /**
- * パスをワークスペース基準で解決し、ワークスペース外（../traversal や絶対パス経由）に
- * 出るパスは Error を投げる。ツール側で try/catch して ToolResult のエラーに変換する。
+ * Local LLM のファイルツールは workspace と system temp のみ許可する。
+ * 既存部分を realpath 化して、symlink 経由で allowlist 外へ出るパスも拒否する。
  */
-function resolveWorkspacePath(filePath: string, workspace: string): string {
-  const resolved = filePath.startsWith('/') ? filePath : resolve(join(workspace, filePath));
-  const rel = relative(workspace, resolved);
-  if (rel === '..' || rel.startsWith('..' + sep)) {
-    throw new Error(`Path outside workspace: ${filePath}`);
+function isWithinRoot(candidate: string, root: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel));
+}
+
+function canonicalizePath(filePath: string): string {
+  let existing = filePath;
+  const missing: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(basename(existing));
+    existing = parent;
   }
-  return resolved;
+  return resolve(realpathSync(existing), ...missing);
+}
+
+function resolveLocalToolPath(filePath: string, workspace: string): string {
+  const workspacePath = resolve(workspace);
+  const absoluteInput = isAbsolute(filePath);
+  const resolved = absoluteInput ? resolve(filePath) : resolve(workspacePath, filePath);
+
+  // Relative paths always remain workspace-relative. Use an absolute /tmp path for temp files.
+  if (!absoluteInput && !isWithinRoot(resolved, workspacePath)) {
+    throw new Error(`Path outside allowed roots (workspace or system temp): ${filePath}`);
+  }
+
+  const canonical = canonicalizePath(resolved);
+  const roots = [workspacePath, tmpdir(), '/tmp']
+    .filter((root) => existsSync(root))
+    .map((root) => realpathSync(root));
+  if (!roots.some((root) => isWithinRoot(canonical, root))) {
+    throw new Error(`Path outside allowed roots (workspace or system temp): ${filePath}`);
+  }
+  return canonical;
 }
 
 // --- exec tool ---
@@ -106,7 +143,7 @@ const readToolHandler: ToolHandler = {
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path to the file (absolute or relative to workspace)' },
+      path: { type: 'string', description: 'Path under the workspace or system temp directory' },
     },
     required: ['path'],
   },
@@ -116,7 +153,7 @@ const readToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveWorkspacePath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context.workspace);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -155,7 +192,7 @@ const writeToolHandler: ToolHandler = {
     properties: {
       path: {
         type: 'string',
-        description: 'Path to the file (absolute or relative to workspace)',
+        description: 'Path under the workspace or system temp directory',
       },
       content: { type: 'string', description: 'Content to write to the file' },
     },
@@ -179,7 +216,7 @@ const writeToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveWorkspacePath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context.workspace);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -206,7 +243,7 @@ const editToolHandler: ToolHandler = {
     properties: {
       path: {
         type: 'string',
-        description: 'Path to the file (absolute or relative to workspace)',
+        description: 'Path under the workspace or system temp directory',
       },
       old_string: { type: 'string', description: 'Exact text to find' },
       new_string: { type: 'string', description: 'Replacement text' },
@@ -233,7 +270,7 @@ const editToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveWorkspacePath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context.workspace);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -307,7 +344,7 @@ const globToolHandler: ToolHandler = {
 
     let searchRoot: string;
     try {
-      searchRoot = cwdArg ? resolveWorkspacePath(cwdArg, context.workspace) : context.workspace;
+      searchRoot = cwdArg ? resolveLocalToolPath(cwdArg, context.workspace) : context.workspace;
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -404,7 +441,7 @@ const grepToolHandler: ToolHandler = {
 
     let searchRoot: string;
     try {
-      searchRoot = pathArg ? resolveWorkspacePath(pathArg, context.workspace) : context.workspace;
+      searchRoot = pathArg ? resolveLocalToolPath(pathArg, context.workspace) : context.workspace;
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }

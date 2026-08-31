@@ -102,6 +102,8 @@ flowchart LR
 
 `http.createServer` ベースの軽量サーバー（Express 依存なし）。
 
+`WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。`XANGI_EVENTS_SERVER_ENABLED=true`だけを指定したheadless構成では同じサーバーを起動するが、health、イベントSSE、session参照、pet/device/terminal inboxだけを公開し、Web UI assetとその他のWeb APIは404にする。
+
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
@@ -1055,7 +1057,7 @@ src/
 ├── tool-server.ts      # Tool Server（AI CLI向けHTTP API）
 ├── event-trigger.ts    # イベントトリガー（POST /api/trigger で外部からターン起動）
 ├── events-emitter.ts   # 応答ライフサイクルイベントの event bus
-├── events-stream-server.ts # Pull型SSE配信（GET /api/events/stream、web-chatに相乗り）
+├── events-stream-server.ts # Pull型SSE配信（GET /api/events/stream、共有HTTPサーバーを利用）
 ├── activity-store.ts   # 現在ターンの軽量スナップショット＋途中コメント/ツールの時系列永続化
 ├── pet-inbox-server.ts # xangi-pets からのテキスト送信受付（POST /api/pet/inbox）
 ├── even-terminal-server.ts # Even Terminal 互換 HTTP API

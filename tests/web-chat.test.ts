@@ -1067,10 +1067,22 @@ describe('web-chat HTTP API', () => {
           installed: false,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-search',
         }),
+        expect.objectContaining({
+          id: 'xangi-stackchan',
+          displayName: 'xangi-stack-chan',
+          installed: false,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stackchan',
+        }),
+        expect.objectContaining({
+          id: 'xangi-even-g2',
+          displayName: 'xangi-even-g2',
+          installed: false,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-even-g2',
+        }),
       ],
       issues: [],
     });
-    expect(body.extensions[0]).not.toHaveProperty('version');
+    expect(body.extensions.every((entry) => !('version' in entry))).toBe(true);
   });
 
   it('completes the Extensions API response when one repository manifest is unsupported', async () => {
@@ -1109,7 +1121,11 @@ describe('web-chat HTTP API', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       degraded: true,
-      extensions: [expect.objectContaining({ id: 'xangi-search' })],
+      extensions: [
+        expect.objectContaining({ id: 'xangi-search' }),
+        expect.objectContaining({ id: 'xangi-stackchan' }),
+        expect.objectContaining({ id: 'xangi-even-g2' }),
+      ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });
   });
@@ -2233,6 +2249,29 @@ process.stdin.on('end', () => process.exit(0));
       Array.from({ length: 20 }, (_, index) => `message ${index}`)
     );
     expect(oldest).toMatchObject({ hasMore: false, nextBefore: null });
+  });
+
+  it('GET /api/sessions/:id renders Slack emoji aliases for Web display', async () => {
+    const id = createSession('slack-channel:emoji-thread', {
+      platform: 'slack',
+      title: 'Slack emoji',
+    });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      join(logsDir, `${id}.jsonl`),
+      `${JSON.stringify({
+        id: 'a1',
+        role: 'assistant',
+        content: 'こんにちは :dolphin: `:smile:` :custom_team_emoji:',
+        createdAt: '2026-08-31T06:10:00.000Z',
+      })}\n`
+    );
+
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
+    expect(detail.messages[0].content).toBe(
+      'こんにちは 🐬 `:smile:` :custom_team_emoji:'
+    );
   });
 
   it('GET /api/sessions/:id exposes the active turn for stream recovery', async () => {
