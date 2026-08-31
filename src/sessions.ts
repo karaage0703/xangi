@@ -39,6 +39,12 @@ export interface SessionContextUsage {
   source: 'codex-app-server' | 'claude-result' | 'antigravity-statusline' | 'copilot-sdk';
 }
 
+export interface SessionEstimatedCost {
+  value: number;
+  updatedAt: string;
+  source: 'antigravity-statusline';
+}
+
 export interface SessionEntry {
   id: string; // appSessionId
   title: string;
@@ -67,6 +73,8 @@ export interface SessionEntry {
   projectId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
   contextUsage?: SessionContextUsage;
+  /** Providerが報告したセッションの推定利用料。金額・通貨はxangi側で推定しない。 */
+  estimatedCost?: SessionEstimatedCost;
 }
 
 interface SessionsFile {
@@ -501,6 +509,24 @@ export function updateSessionContextUsage(
   return true;
 }
 
+export function updateSessionEstimatedCost(
+  appSessionId: string,
+  cost: Omit<SessionEstimatedCost, 'updatedAt'>
+): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry || !Number.isFinite(cost.value) || cost.value < 0) return false;
+  entry.estimatedCost = { ...cost, updatedAt: new Date().toISOString() };
+  saveSessionsToFile();
+  for (const listener of sessionChangeListeners) {
+    try {
+      listener();
+    } catch {
+      // Usage persistence must not fail because a disconnected UI listener threw.
+    }
+  }
+  return true;
+}
+
 export function updateSessionContextUsageByProviderSession(
   backend: string,
   providerSessionId: string,
@@ -512,6 +538,19 @@ export function updateSessionContextUsageByProviderSession(
       candidate.agent.providerSessionId === providerSessionId
   );
   return entry ? updateSessionContextUsage(entry.id, usage) : false;
+}
+
+export function updateSessionEstimatedCostByProviderSession(
+  backend: string,
+  providerSessionId: string,
+  cost: Omit<SessionEstimatedCost, 'updatedAt'>
+): boolean {
+  const entry = Object.values(data.sessions).find(
+    (candidate) =>
+      candidate.agent?.backend === backend &&
+      candidate.agent.providerSessionId === providerSessionId
+  );
+  return entry ? updateSessionEstimatedCost(entry.id, cost) : false;
 }
 
 export function subscribeSessionChanges(listener: () => void): () => void {

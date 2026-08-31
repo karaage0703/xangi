@@ -40,6 +40,11 @@ interface MonitorContextUsage {
   updatedAt: string;
 }
 
+interface MonitorEstimatedCost {
+  value: number;
+  updatedAt: string;
+}
+
 export interface UsageWindow {
   label: string;
   usedPercent: number;
@@ -78,6 +83,7 @@ export interface MonitorSession {
   backend?: MonitorBackend;
   origin?: MonitorOrigin;
   contextUsage?: MonitorContextUsage;
+  estimatedCost?: MonitorEstimatedCost;
 }
 
 export interface MonitorSessionsResponse {
@@ -138,6 +144,13 @@ export function usagePacePercent(
   const durationMs = window.windowDurationMins * 60_000;
   const startMs = window.resetsAt * 1000 - durationMs;
   return Math.min(100, Math.max(0, ((now - startMs) / durationMs) * 100));
+}
+
+export function formatEstimatedCost(value: number): string {
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  });
 }
 
 export function usageGroupPresentation(group: Pick<UsageGroup, 'id' | 'label' | 'planType'>): {
@@ -827,6 +840,15 @@ export function Monitor() {
                       ? `${selected.contextUsage.usedTokens.toLocaleString()} / ${selected.contextUsage.contextWindow.toLocaleString()} (${Math.round((selected.contextUsage.usedTokens / selected.contextUsage.contextWindow) * 100)}%)`
                       : '未取得',
                   ],
+                  ...(typeof selected.estimatedCost?.value === 'number'
+                    ? [
+                        [
+                          'estimated-cost',
+                          '推定利用料',
+                          formatEstimatedCost(selected.estimatedCost.value),
+                        ],
+                      ]
+                    : []),
                 ].map(([key, label, value]) => (
                   <div className={`monitor-detail-kv monitor-detail-kv-${key}`} key={key}>
                     <dt>{label}</dt>

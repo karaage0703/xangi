@@ -23,12 +23,14 @@ describe('xangi-antigravity-statusline', () => {
       plan_tier: 'Pro',
       quota: { 'gemini-weekly': { remaining_fraction: 0.8 } },
       context_window: { used_percentage: 10 },
+      cost: 0.25,
     });
     updateStatus(dataDir, {
       context_window: { used_percentage: 20 },
       conversation_id: 'next',
     });
 
+    // Cost belongs to one conversation and must not leak into the next snapshot.
     expect(JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'))).toEqual({
       plan_tier: 'Pro',
       quota: { 'gemini-weekly': { remaining_fraction: 0.8 } },

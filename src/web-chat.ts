@@ -663,6 +663,7 @@ export function startWebChat(options: WebChatOptions): void {
         projectId: s.projectId,
         backend,
         contextUsage: s.contextUsage,
+        estimatedCost: s.estimatedCost,
         origin,
       };
     });

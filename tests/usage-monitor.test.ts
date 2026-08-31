@@ -8,11 +8,19 @@ import {
   parseCodexRolloutContextUsage,
   parseCopilotQuota,
   parseAntigravityStatus,
+  applyAntigravitySessionUsage,
   parseClaudeUsage,
   readCodexContextUsage,
   readClaudeUsage,
 } from '../src/usage-monitor.js';
 import { extractClaudeContextUsage } from '../src/claude-code.js';
+import {
+  clearSessions,
+  createSession,
+  getSessionEntry,
+  initSessions,
+  setProviderSessionId,
+} from '../src/sessions.js';
 
 function claudeOutput(response: unknown): string {
   return `${JSON.stringify({
@@ -83,13 +91,22 @@ describe('usage monitor parsers', () => {
           used_percentage: 12.5,
           current_usage: { input_tokens: 100, output_tokens: 20 },
         },
+        cost: 0.012345678,
         quota: {
+          '3p-5h': {
+            remaining_fraction: 1,
+            reset_time: '2026-08-31T08:00:06.000Z',
+          },
           '3p-weekly': {
             remaining_fraction: 1,
             reset_time: '2026-09-02T00:00:00.000Z',
           },
+          'gemini-5h': {
+            remaining_fraction: 0.95,
+            reset_time: '2026-08-31T08:00:06.000Z',
+          },
           'gemini-weekly': {
-            remaining_fraction: 0.75,
+            remaining_fraction: 0.9035936,
             reset_time: '2026-09-01T00:00:00.000Z',
           },
         },
@@ -97,12 +114,35 @@ describe('usage monitor parsers', () => {
     ).toEqual({
       conversationId: 'conversation-1',
       context: { usedTokens: 125_000, contextWindow: 1_000_000 },
+      estimatedCost: 0.012345678,
       groups: [
         {
-          id: '3p-weekly',
+          id: 'gemini',
+          label: 'Geminiモデル',
+          planType: 'Pro',
+          windows: [
+            {
+              label: '5時間',
+              usedPercent: 5,
+              resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
+            },
+            {
+              label: '週次',
+              usedPercent: 9.64064,
+              resetsAt: Date.parse('2026-09-01T00:00:00.000Z') / 1000,
+            },
+          ],
+        },
+        {
+          id: 'third-party',
           label: 'サードパーティモデル',
           planType: 'Pro',
           windows: [
+            {
+              label: '5時間',
+              usedPercent: 0,
+              resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
+            },
             {
               label: '週次',
               usedPercent: 0,
@@ -110,20 +150,63 @@ describe('usage monitor parsers', () => {
             },
           ],
         },
+      ],
+    });
+  });
+
+  it('keeps unknown Antigravity quota buckets and ignores unavailable cost', () => {
+    expect(
+      parseAntigravityStatus({
+        cost: 'not-reported',
+        quota: {
+          'future-daily': {
+            remaining_fraction: 0.5,
+            reset_time: '2026-09-01T00:00:00.000Z',
+          },
+          invalid: { reset_time: '2026-09-01T00:00:00.000Z' },
+        },
+      })
+    ).toEqual({
+      conversationId: undefined,
+      context: undefined,
+      groups: [
         {
-          id: 'gemini-weekly',
-          label: 'Geminiモデル',
-          planType: 'Pro',
+          id: 'future-daily',
+          label: 'future-daily',
+          planType: undefined,
           windows: [
             {
-              label: '週次',
-              usedPercent: 25,
+              label: 'future-daily',
+              usedPercent: 50,
               resetsAt: Date.parse('2026-09-01T00:00:00.000Z') / 1000,
             },
           ],
         },
       ],
     });
+  });
+
+  it('persists Antigravity cost when a status update omits context', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-cost-'));
+    clearSessions();
+    initSessions(dataDir);
+    const appId = createSession('antigravity-cost', {
+      platform: 'web',
+      backend: 'antigravity',
+    });
+    setProviderSessionId(appId, 'conversation-cost', 'antigravity');
+
+    const result = applyAntigravitySessionUsage(
+      parseAntigravityStatus({ conversation_id: 'conversation-cost', cost: 0.25 })
+    );
+
+    expect(result).toEqual({ contextUpdated: false, costUpdated: true });
+    expect(getSessionEntry(appId)?.estimatedCost).toMatchObject({
+      value: 0.25,
+      source: 'antigravity-statusline',
+    });
+    expect(getSessionEntry(appId)?.contextUsage).toBeUndefined();
+    clearSessions();
   });
 
   it('parses and deduplicates named Codex account limit buckets', () => {
