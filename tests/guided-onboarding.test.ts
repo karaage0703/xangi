@@ -53,6 +53,18 @@ describe('guided setup backend preflight', () => {
     ]);
   });
 
+  it('launches Antigravity with an interactive initial prompt', () => {
+    const backend = {
+      id: 'antigravity' as const,
+      label: 'Antigravity',
+      command: 'agy',
+      executable: '/usr/local/bin/agy',
+      version: '1.1.22',
+      authGuide: 'agyを初回起動して認証',
+    };
+    expect(buildGuidedLaunchArgs(backend, 'setup prompt')).toEqual(['-i', 'setup prompt']);
+  });
+
   it('detects only executable supported agent CLIs and records versions', async () => {
     const executable = new Set([
       '/agents/codex',
