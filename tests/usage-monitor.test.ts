@@ -209,6 +209,40 @@ describe('usage monitor parsers', () => {
     clearSessions();
   });
 
+  it('attributes Antigravity usage to the latest session after resume', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-resume-'));
+    clearSessions();
+    initSessions(dataDir);
+    const sourceId = createSession('antigravity-source', {
+      platform: 'web',
+      backend: 'antigravity',
+    });
+    setProviderSessionId(sourceId, 'conversation-resumed', 'antigravity');
+    const resumedId = createSession('antigravity-resumed', {
+      platform: 'web',
+      backend: 'antigravity',
+    });
+    setProviderSessionId(resumedId, 'conversation-resumed', 'antigravity');
+
+    const result = applyAntigravitySessionUsage(
+      parseAntigravityStatus({
+        conversation_id: 'conversation-resumed',
+        context_window: {
+          context_window_size: 1_000_000,
+          current_usage: { input_tokens: 200, output_tokens: 50 },
+        },
+        cost: 0.5,
+      })
+    );
+
+    expect(result).toEqual({ contextUpdated: true, costUpdated: true });
+    expect(getSessionEntry(sourceId)?.contextUsage).toBeUndefined();
+    expect(getSessionEntry(sourceId)?.estimatedCost).toBeUndefined();
+    expect(getSessionEntry(resumedId)?.contextUsage).toMatchObject({ usedTokens: 250 });
+    expect(getSessionEntry(resumedId)?.estimatedCost).toMatchObject({ value: 0.5 });
+    clearSessions();
+  });
+
   it('parses and deduplicates named Codex account limit buckets', () => {
     const snapshot = {
       limitId: 'codex',

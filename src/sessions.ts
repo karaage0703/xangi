@@ -532,12 +532,23 @@ export function updateSessionContextUsageByProviderSession(
   providerSessionId: string,
   usage: Omit<SessionContextUsage, 'updatedAt'>
 ): boolean {
-  const entry = Object.values(data.sessions).find(
-    (candidate) =>
-      candidate.agent?.backend === backend &&
-      candidate.agent.providerSessionId === providerSessionId
-  );
+  const entry = findLatestSessionByProviderSession(backend, providerSessionId);
   return entry ? updateSessionContextUsage(entry.id, usage) : false;
+}
+
+function findLatestSessionByProviderSession(
+  backend: string,
+  providerSessionId: string
+): SessionEntry | undefined {
+  return Object.values(data.sessions).reduce<SessionEntry | undefined>((latest, candidate) => {
+    if (
+      candidate.agent?.backend !== backend ||
+      candidate.agent.providerSessionId !== providerSessionId
+    ) {
+      return latest;
+    }
+    return !latest || candidate.updatedAt >= latest.updatedAt ? candidate : latest;
+  }, undefined);
 }
 
 export function updateSessionEstimatedCostByProviderSession(
@@ -545,11 +556,7 @@ export function updateSessionEstimatedCostByProviderSession(
   providerSessionId: string,
   cost: Omit<SessionEstimatedCost, 'updatedAt'>
 ): boolean {
-  const entry = Object.values(data.sessions).find(
-    (candidate) =>
-      candidate.agent?.backend === backend &&
-      candidate.agent.providerSessionId === providerSessionId
-  );
+  const entry = findLatestSessionByProviderSession(backend, providerSessionId);
   return entry ? updateSessionEstimatedCost(entry.id, cost) : false;
 }
 
