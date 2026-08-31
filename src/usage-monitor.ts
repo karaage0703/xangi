@@ -4,7 +4,10 @@ import { basename, join, resolve, sep } from 'node:path';
 import { CopilotClient } from '@github/copilot-sdk';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { getSafeEnv } from './safe-env.js';
-import { updateSessionContextUsageByProviderSession } from './sessions.js';
+import {
+  updateSessionContextUsageByProviderSession,
+  updateSessionEstimatedCostByProviderSession,
+} from './sessions.js';
 
 const TIMEOUT_MS = 5000;
 // claude CLI ships a larger Node bundle than codex, so allow more headroom for cold start
@@ -41,6 +44,7 @@ export interface AccountUsageProvider {
 interface AntigravityStatusPayload {
   conversation_id?: string;
   plan_tier?: string;
+  cost?: number;
   context_window?: {
     context_window_size?: number;
     used_percentage?: number;
@@ -286,31 +290,87 @@ export function parseAntigravityStatus(payload: unknown): {
   groups: AccountUsageGroup[];
   conversationId?: string;
   context?: { usedTokens: number; contextWindow: number };
+  estimatedCost?: number;
 } {
   const status = payload as AntigravityStatusPayload;
-  const quotaLabels: Record<string, string> = {
-    'gemini-weekly': 'Geminiモデル',
-    '3p-weekly': 'サードパーティモデル',
+  const knownQuotaBuckets: Record<
+    string,
+    { groupId: string; groupLabel: string; windowLabel: string; order: number }
+  > = {
+    'gemini-5h': {
+      groupId: 'gemini',
+      groupLabel: 'Geminiモデル',
+      windowLabel: '5時間',
+      order: 0,
+    },
+    'gemini-weekly': {
+      groupId: 'gemini',
+      groupLabel: 'Geminiモデル',
+      windowLabel: '週次',
+      order: 1,
+    },
+    '3p-5h': {
+      groupId: 'third-party',
+      groupLabel: 'サードパーティモデル',
+      windowLabel: '5時間',
+      order: 0,
+    },
+    '3p-weekly': {
+      groupId: 'third-party',
+      groupLabel: 'サードパーティモデル',
+      windowLabel: '週次',
+      order: 1,
+    },
   };
-  const groups = Object.entries(status?.quota ?? {}).flatMap(([id, quota]) => {
-    if (typeof quota.remaining_fraction !== 'number') return [];
+  const grouped = new Map<
+    string,
+    Omit<AccountUsageGroup, 'windows'> & {
+      windows: Array<UsageWindow & { sortOrder: number }>;
+      sortOrder: number;
+    }
+  >();
+  const fallbackGroups: AccountUsageGroup[] = [];
+  for (const [id, quota] of Object.entries(status?.quota ?? {})) {
+    if (typeof quota.remaining_fraction !== 'number') continue;
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
-    const label = /week/i.test(id) ? '週次' : id;
-    return [
-      {
+    const known = knownQuotaBuckets[id];
+    const window = {
+      label: known?.windowLabel ?? (/week/i.test(id) ? '週次' : id),
+      usedPercent: Number(
+        Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
+      ),
+      resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+    };
+    if (!known) {
+      fallbackGroups.push({
         id,
-        label: quotaLabels[id] ?? id,
+        label: id,
         planType: status.plan_tier,
-        windows: [
-          {
-            label,
-            usedPercent: Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)),
-            resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
-          },
-        ],
-      },
-    ];
-  });
+        windows: [window],
+      });
+      continue;
+    }
+    const group = grouped.get(known.groupId) ?? {
+      id: known.groupId,
+      label: known.groupLabel,
+      planType: status.plan_tier,
+      windows: [],
+      sortOrder: known.groupId === 'gemini' ? 0 : 1,
+    };
+    group.windows.push({ ...window, sortOrder: known.order });
+    grouped.set(known.groupId, group);
+  }
+  const groups = [
+    ...[...grouped.values()]
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .map(({ sortOrder: _groupOrder, ...group }) => ({
+        ...group,
+        windows: [...group.windows]
+          .sort((left, right) => left.sortOrder - right.sortOrder)
+          .map(({ sortOrder: _windowOrder, ...window }) => window),
+      })),
+    ...fallbackGroups,
+  ];
   const contextWindow = status?.context_window?.context_window_size;
   const current = status?.context_window?.current_usage;
   const usedTokens =
@@ -325,10 +385,36 @@ export function parseAntigravityStatus(payload: unknown): {
   return {
     groups,
     conversationId: status?.conversation_id,
+    ...(typeof status?.cost === 'number' && Number.isFinite(status.cost) && status.cost >= 0
+      ? { estimatedCost: status.cost }
+      : {}),
     context:
       typeof usedTokens === 'number' && typeof contextWindow === 'number' && contextWindow > 0
         ? { usedTokens, contextWindow }
         : undefined,
+  };
+}
+
+export function applyAntigravitySessionUsage(parsed: {
+  conversationId?: string;
+  context?: { usedTokens: number; contextWindow: number };
+  estimatedCost?: number;
+}): { contextUpdated: boolean; costUpdated: boolean } {
+  if (!parsed.conversationId) return { contextUpdated: false, costUpdated: false };
+  return {
+    contextUpdated: parsed.context
+      ? updateSessionContextUsageByProviderSession('antigravity', parsed.conversationId, {
+          ...parsed.context,
+          source: 'antigravity-statusline',
+        })
+      : false,
+    costUpdated:
+      parsed.estimatedCost !== undefined
+        ? updateSessionEstimatedCostByProviderSession('antigravity', parsed.conversationId, {
+            value: parsed.estimatedCost,
+            source: 'antigravity-statusline',
+          })
+        : false,
   };
 }
 
@@ -417,12 +503,7 @@ async function readAntigravityUsage(): Promise<AccountUsageProvider> {
   const payload = JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'));
   const parsed = parseAntigravityStatus(payload);
   const groups = parsed.groups;
-  if (parsed.conversationId && parsed.context) {
-    updateSessionContextUsageByProviderSession('antigravity', parsed.conversationId, {
-      ...parsed.context,
-      source: 'antigravity-statusline',
-    });
-  }
+  applyAntigravitySessionUsage(parsed);
   if (!groups.length) throw new Error('Antigravity status payload has no quota');
   return { id: 'antigravity', label: 'Antigravity', groups };
 }

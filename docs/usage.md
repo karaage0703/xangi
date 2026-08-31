@@ -1455,7 +1455,7 @@ Workspace API:
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
 
-補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。Antigravityは公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安を推定表示しない。
+補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。AntigravityはGeminiモデルとサードパーティモデルごとに5時間枠・週次枠をまとめて表示する。公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安は推定表示しない。Agyがセッションの推定`cost`を返す場合だけSession詳細に推定利用料を表示し、xangi側では金額や通貨を推定しない。
 
 AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline /path/to/xangi/bin/xangi-antigravity-statusline` を一度実行する。このhelperは公式statusline JSONを`DATA_DIR/antigravity-status.json`へ原子的に保存し、quotaを含まない更新では最後に取得できた公式quotaを保持する。非公開APIや画面解析は行わない。
 

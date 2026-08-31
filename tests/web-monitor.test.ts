@@ -9,6 +9,7 @@ import {
   applyActivitySnapshot,
   conversationLabel,
   displayUsageProviders,
+  formatEstimatedCost,
   isMonitorVisible,
   monitorLane,
   revealMonitorDetail,
@@ -69,6 +70,11 @@ describe('Monitor account usage', () => {
         },
       ]).map((provider) => provider.id)
     ).toEqual(['codex', 'github-copilot']);
+  });
+
+  it('formats provider-reported estimated cost without inventing a currency', () => {
+    expect(formatEstimatedCost(0)).toBe('0');
+    expect(formatEstimatedCost(0.012345678)).toBe('0.012346');
   });
 });
 

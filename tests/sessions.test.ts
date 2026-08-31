@@ -22,6 +22,7 @@ import {
   updateSessionProject,
   updateSessionTitle,
   updateSessionContextUsage,
+  updateSessionEstimatedCost,
   WEB_CHAT_CONTEXT_PREFIX,
   closeSession,
   getSessionLifecycle,
@@ -454,6 +455,29 @@ describe('sessions', () => {
         contextWindow: 258_400,
         source: 'codex-app-server',
       });
+    });
+
+    it('persists provider-reported estimated cost independently from context usage', () => {
+      initSessions(testDir);
+      const appId = createSession('discord-cost', {
+        platform: 'discord',
+        backend: 'antigravity',
+      });
+
+      expect(
+        updateSessionEstimatedCost(appId, {
+          value: 0.012345,
+          source: 'antigravity-statusline',
+        })
+      ).toBe(true);
+      clearSessions();
+      initSessions(testDir);
+
+      expect(getSessionEntry(appId)?.estimatedCost).toMatchObject({
+        value: 0.012345,
+        source: 'antigravity-statusline',
+      });
+      expect(getSessionEntry(appId)?.contextUsage).toBeUndefined();
     });
   });
 
