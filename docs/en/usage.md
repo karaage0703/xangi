@@ -1016,6 +1016,8 @@ LOCAL_LLM_XANGI_COMMANDS=false
 | `LOCAL_LLM_SKILLS`         | Skill list injection                                                | `true`  |
 | `LOCAL_LLM_XANGI_COMMANDS` | XANGI_COMMANDS injection                                            | `true`  |
 
+The `read`, `write`, `edit`, `glob`, and `grep` tools can access paths under the workspace and the system temporary directory (`/tmp` on Linux). Paths that resolve outside these roots through symlinks are rejected.
+
 `LOCAL_LLM_MODE` presets are also available (individual settings take priority):
 
 - `agent` (default) — tools / skills / xangi_commands ON
@@ -1440,8 +1442,11 @@ AI usage note: Each account window uses a filled bar for actual usage. When an o
 
 xangi exposes response lifecycle events through pull SSE (`GET /api/events/stream`) and small write endpoints for external UI clients (`POST /api/pet/inbox`, `/api/device/inbox`, `/api/terminal/inbox`). When Web reply suggestions are enabled, inbox responses expose generated suggestions through `GET /api/sessions/:id`. See [External Event Stream](events.md) for schemas and examples.
 
+To connect a desktop companion without enabling the browser UI, set `XANGI_EVENTS_SERVER_ENABLED=true`. The shared server then exposes only health, event streaming, session reads, and inbox routes; Web UI assets and unrelated Web APIs remain unavailable.
+
 | Variable                     | Description                                                                         | Default |
 | ---------------------------- | ----------------------------------------------------------------------------------- | ------- |
+| `XANGI_EVENTS_SERVER_ENABLED` | Run the companion API without serving the Web UI                                   | `false` |
 | `XANGI_EVENTS_ENABLED`       | Set to `false` to disable SSE event streaming (connections return 503)              | `true`  |
 | `XANGI_INSTANCE_ID`          | Stable instance identifier. Auto-derived from hostname + `DATA_DIR` hash when unset | `auto`  |
 | `XANGI_PET_INBOX_ENABLED`    | Set to `false` to disable pet/device inbox writes                                   | `true`  |

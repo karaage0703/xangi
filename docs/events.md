@@ -2,7 +2,7 @@
 
 # 外部イベントストリーム（pull 型 SSE）
 
-xangi はチャット応答のライフサイクルを SSE（Server-Sent Events）で配信する。consumer（デスクトップアバター、ダッシュボード、可視化ツール等）が `GET /api/events/stream` に接続すれば、いま xangi が何をしているかをリアルタイムに購読できる。
+xangi はチャット応答のライフサイクルを SSE（Server-Sent Events）で配信する。consumer（デスクトップアバター、ダッシュボード、可視化ツール等）が `GET /api/events/stream` に接続すれば、いま xangi が何をしているかをリアルタイムに購読できる。Web UIを使わないxangiでも `XANGI_EVENTS_SERVER_ENABLED=true` を設定すれば、必要最小限のheadless companion APIだけを起動できる。
 
 Discord / Slack / Web Chat / LINE / Telegramの全プラットフォーム共通でイベントが流れる。consumerは`platform`フィールドや`thread_label`を見て表示分けする。
 
@@ -12,7 +12,8 @@ Discord / Slack / Web Chat / LINE / Telegramの全プラットフォーム共通
 GET http://<xangi-host>:<WEB_CHAT_PORT>/api/events/stream
 ```
 
-- web-chat の HTTP サーバに相乗り（デフォルト port `18888`）
+- Web UI有効時はweb-chatのHTTPサーバに相乗り（デフォルト port `18888`）
+- Web UI無効時は `XANGI_EVENTS_SERVER_ENABLED=true` で同じhost/portにheadless APIだけを起動
 - `Content-Type: text/event-stream`
 - 接続直後に `event: ready` を 1 回（`instance_id` / `host_hint` を payload）
 - `?thread_id=web:<appSessionId>` を付けると、その thread だけをサーバ側で絞り込む

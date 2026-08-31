@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 
 import { deriveSessionOrigin } from '../src/session-title.js';
 import {
+  accountUsageStatusLabel,
   activityFromEvent,
   applyActivitySnapshot,
   conversationLabel,
@@ -20,6 +21,18 @@ import {
 } from '../web-ui/src/Monitor.js';
 
 describe('Monitor account usage', () => {
+  it('keeps provider usage expanded instead of using a disclosure control', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    expect(monitorSource).toContain('<article className="monitor-usage-provider"');
+    expect(monitorSource).not.toContain('<details className="monitor-usage-provider"');
+  });
+
+  it('shows a status only when cached usage is stale', () => {
+    expect(accountUsageStatusLabel()).toBeUndefined();
+    expect(accountUsageStatusLabel(false)).toBeUndefined();
+    expect(accountUsageStatusLabel(true)).toBe('前回値');
+  });
+
   it('shows elapsed-window pace for comparison with actual usage', () => {
     const start = Date.parse('2026-08-26T00:00:00.000Z');
     const reset = start + 5 * 60 * 60 * 1000;

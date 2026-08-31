@@ -3509,12 +3509,11 @@ video.media-preview {
   padding: 9px;
 }
 
-.monitor-usage-provider > summary {
-  cursor: pointer;
+.monitor-usage-provider-header {
   font-size: 12px;
 }
 
-.monitor-usage-provider > summary span {
+.monitor-usage-provider-header span {
   color: var(--ink-muted);
   font-size: 10px;
 }
@@ -3522,7 +3521,7 @@ video.media-preview {
 .monitor-usage-hide {
   position: absolute;
   top: 8px;
-  right: 48px;
+  right: 8px;
 }
 
 .monitor-usage-group {
