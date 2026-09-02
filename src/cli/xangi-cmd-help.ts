@@ -12,6 +12,7 @@ export interface XangiCmdHelpEntry {
     | 'trigger'
     | 'system'
     | 'extension'
+    | 'progress'
     | 'local';
   summary: string;
   usage: string;
@@ -245,6 +246,17 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     ],
   },
   {
+    name: 'progress_card',
+    topic: 'progress',
+    summary: '現在のセッションの進捗カードを置換・消去',
+    usage: "xangi tool progress_card [--plan-json '<json-array>'] [--note <text>] [--clear true]",
+    notes: [
+      '複数工程の作業で、工程完了・現在工程・ブロッカーが変わった時だけ更新する。',
+      '各stepはstepとstatus（pending|in_progress|completed）を持ち、in_progressは最大1件。',
+      'planとnoteは毎回全置換される。進捗率を推測しない。',
+    ],
+  },
+  {
     name: 'inter_chat_send',
     topic: 'local',
     summary: '別インスタンスへメッセージを送信',
@@ -298,6 +310,7 @@ const TOPICS = [
   'trigger',
   'system',
   'extension',
+  'progress',
   'local',
 ] as const;
 

@@ -2331,7 +2331,7 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto auto;
   overflow: hidden;
   background: var(--surface);
 }
@@ -2429,8 +2429,12 @@ button:disabled {
   cursor: pointer;
 }
 
-.pane-complete {
+.pane-complete,
+.pane-external-chat {
+  display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
   min-height: 28px;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -2438,14 +2442,21 @@ button:disabled {
   color: var(--ink-secondary);
   background: var(--surface);
   font-size: 11px;
+  line-height: 1;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .pane-complete:hover,
-.pane-complete:focus-visible {
+.pane-complete:focus-visible,
+.pane-external-chat:hover,
+.pane-external-chat:focus-visible {
   color: var(--ink);
   background: var(--surface-subtle);
+}
+
+.pane-external-chat {
+  text-decoration: none;
 }
 
 .pane-close:hover {
@@ -3131,6 +3142,67 @@ video.media-preview {
   padding: 8px;
 }
 
+.pane-statusline {
+  display: flex;
+  min-width: 0;
+  min-height: 25px;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  border-top: 1px solid var(--hairline);
+  padding: 4px 10px;
+  color: var(--ink-muted);
+  background: var(--surface-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.pane-statusline > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.pane-statusline-model,
+.pane-statusline-context {
+  flex: 0 0 auto;
+}
+
+.pane-statusline-cwd {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-statusline-label {
+  color: var(--ink-secondary);
+}
+
+.pane-statusline-context progress {
+  width: 42px;
+  height: 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--accent);
+}
+
+.pane-statusline-context progress::-webkit-progress-bar {
+  background: var(--border);
+}
+
+.pane-statusline-context progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.pane-statusline-context progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
 .pane-command-shell {
   position: relative;
   min-width: 0;
@@ -3383,6 +3455,7 @@ video.media-preview {
 }
 
 .monitor-filter,
+.monitor-bulk-close,
 .monitor-detail-close,
 .monitor-detail-session-close,
 .monitor-detail-open {
@@ -3401,9 +3474,41 @@ video.media-preview {
 }
 
 .monitor-detail-session-close {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--ink-secondary);
+  border-color: var(--border);
   background: var(--surface);
+}
+
+.monitor-bulk-close {
+  margin-left: auto;
+  color: var(--ink-secondary);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.monitor-bulk-close:hover,
+.monitor-bulk-close:focus-visible {
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.monitor-bulk-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.monitor-detail-close {
+  color: var(--ink-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+.monitor-detail-session-close:hover,
+.monitor-detail-session-close:focus-visible,
+.monitor-detail-close:hover,
+.monitor-detail-close:focus-visible {
+  color: var(--ink);
+  background: var(--surface-subtle);
 }
 
 .monitor-detail-session-close:disabled {
@@ -3669,6 +3774,71 @@ video.media-preview {
 
 .monitor-detail-kv dd {
   margin: 3px 0 0;
+}
+
+.monitor-progress {
+  margin-top: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 9px;
+}
+
+.monitor-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monitor-progress-head h3 {
+  margin: 0;
+  font-size: 11px;
+}
+
+.monitor-progress-head span,
+.monitor-progress-note {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.monitor-progress-note {
+  margin: 6px 0 0;
+}
+
+.monitor-progress-list {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitor-progress-step {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.monitor-progress-status {
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 1px 5px;
+  color: var(--ink-muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+.monitor-progress-step.is-in_progress .monitor-progress-status {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.monitor-progress-step.is-completed .monitor-progress-text {
+  color: var(--ink-muted);
+  text-decoration: line-through;
 }
 
 .monitor-runtime {
@@ -3952,11 +4122,10 @@ video.media-preview {
   gap: 3px;
 }
 
-.monitor-session-meta {
-  flex-wrap: wrap;
-  gap: 7px;
+.monitor-session-usage {
   color: var(--ink-muted);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .monitor-session-activity {
@@ -3965,6 +4134,45 @@ video.media-preview {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.monitor-session-progress {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 5px;
+  font-size: 10px;
+}
+
+.monitor-session-progress-current {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-session-progress-current > span {
+  flex: 0 0 auto;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 5px;
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.monitor-session-progress-count {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .monitor-session-right {
@@ -3979,6 +4187,13 @@ video.media-preview {
 
 .monitor-platform {
   font-weight: 700;
+}
+
+.monitor-session-right > * + *::before {
+  margin-right: 8px;
+  color: var(--border-strong);
+  content: '/';
+  font-weight: 400;
 }
 
 .monitor-tool-lines {
@@ -4485,10 +4700,13 @@ video.media-preview {
   .reply-suggestions li button,
   .attachment button,
   .pane-close,
+  .pane-complete,
+  .pane-external-chat,
   .pane-command-btn,
   .pane-attach-btn,
   .action-btn,
   .monitor-filter,
+  .monitor-bulk-close,
   .monitor-detail-close,
   .monitor-detail-session-close,
   .monitor-detail-open,
@@ -4644,6 +4862,20 @@ video.media-preview {
     padding-right: max(8px, var(--safe-right));
     padding-bottom: max(8px, var(--safe-bottom));
     padding-left: max(8px, var(--safe-left));
+  }
+
+  .pane-statusline {
+    gap: 8px;
+    padding-right: max(9px, var(--safe-right));
+    padding-left: max(9px, var(--safe-left));
+  }
+
+  .pane-statusline-cwd {
+    max-width: 38vw;
+  }
+
+  .pane-statusline-context progress {
+    display: none;
   }
 
   .pane-error,

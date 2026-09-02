@@ -101,7 +101,9 @@ describe('registerSlackSchedulerBridge', () => {
     });
 
     const activity = await import('../src/activity-store.js');
-    const snapshot = activity.getActivity('slack-schedule:C123');
+    const appSessionId = vi.mocked(agentRunner.runStream).mock.calls[0]?.[2]
+      ?.appSessionId as string;
+    const snapshot = activity.getActivity(`slack-schedule:${appSessionId}`);
     expect(snapshot?.toolLines).toEqual([
       'Read: skills/xs-example/SKILL.md',
       'Bash: uv run example.py',
@@ -109,5 +111,10 @@ describe('registerSlackSchedulerBridge', () => {
     expect(snapshot?.state).toBe('complete');
     expect(getActiveSessionId('C123')).toBe(interactiveId);
     expect(getSessionEntry(interactiveId)).toEqual(interactiveBefore);
+    expect(getSessionEntry(appSessionId)).toMatchObject({
+      scope: 'scheduler',
+      lifecycle: 'closed',
+      messageCount: 1,
+    });
   });
 });

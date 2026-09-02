@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -99,9 +99,19 @@ function buildBridge(
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('scheduler-bridge stream finalizer (issue #293)', () => {
+  let sessionsDir: string;
+
   beforeEach(async () => {
     // 前のテストの残留 finalizer を掃除（finalize は registry をクリアする）
     await finalizeActiveStreams(10);
+    clearSessions();
+    sessionsDir = mkdtempSync(join(tmpdir(), 'xangi-scheduler-bridge-'));
+    initSessions(sessionsDir);
+  });
+
+  afterEach(() => {
+    clearSessions();
+    rmSync(sessionsDir, { recursive: true, force: true });
   });
 
   it('通常ターン中のscheduler taskを共有調停器で待たせ、完了後に開始する', async () => {
@@ -237,7 +247,8 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
     await runner('xs-example を実行して', 'channel-1');
 
     const activity = await import('../src/activity-store.js');
-    const snapshot = activity.getActivity('discord-schedule:channel-1');
+    const appSessionId = agentRunner.runStream.mock.calls[0]?.[2]?.appSessionId as string;
+    const snapshot = activity.getActivity(`discord-schedule:${appSessionId}`);
     expect(snapshot?.toolLines).toEqual([
       'Read: skills/xs-example/SKILL.md',
       'Bash: uv run example.py',

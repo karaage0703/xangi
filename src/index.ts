@@ -36,13 +36,14 @@ import {
   resolveCachedDiscordDestinationLabel,
   warmDiscordScheduleDestinations,
 } from './discord/destination-label.js';
-import { runShutdownCleanup } from './shutdown.js';
+import { runShutdownCleanup, XANGI_SHUTDOWN_TIMEOUT_MS } from './shutdown.js';
 import { processManager } from './process-manager.js';
 import { getSelfLifecyclePermission } from './self-lifecycle.js';
 import { loadStoredSecrets } from './setup/runtime-secrets.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
 import { acquireDataDirLock } from './data-dir-lock.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
+import { discordChannelUrl, type ExternalChatUrlResolvers } from './external-chat-link.js';
 import { startAutostartExtensions, stopManagedExtensions } from './extensions.js';
 dotenvConfig({ override: true });
 await applySetupRuntimeEnvFromProcess();
@@ -58,6 +59,7 @@ async function main() {
   const destinationLabelResolverRef: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   } = {};
+  const externalChatUrlResolvers: ExternalChatUrlResolvers = {};
   const platformStartupTasks: Promise<void>[] = [];
 
   // 許可リストのチェック（"*" で全員許可、カンマ区切りで複数ユーザー対応）
@@ -178,6 +180,7 @@ async function main() {
       skillsRef,
       discordRemoteInputRef,
       destinationLabelResolverRef,
+      externalChatUrlResolvers,
       workspaceRegistry,
       uiEnabled: webChatEnabled,
     });
@@ -264,6 +267,11 @@ async function main() {
       platform === 'discord'
         ? resolveCachedDiscordDestinationLabel(client, destinationId)
         : undefined;
+    externalChatUrlResolvers.discord = async ({ contextKey }) => {
+      const channel = await client.channels.fetch(contextKey).catch(() => null);
+      if (!channel) return undefined;
+      return discordChannelUrl(contextKey, 'guildId' in channel ? channel.guildId : undefined);
+    };
 
     // runner の timeout-* イベントを Discord メッセージ更新に紐付け
     registerDiscordTimeoutUi(agentRunner);
@@ -371,6 +379,7 @@ async function main() {
           return skillsRef.current;
         },
         scheduler,
+        externalChatUrlResolvers,
       }).then(() => {
         console.log('[xangi] Slack bot started');
       })
@@ -410,7 +419,7 @@ async function main() {
       stopExtensions: stopManagedExtensions,
       releaseDataDirLock,
       exit: (code) => process.exit(code),
-      hardTimeoutMs: 7_000,
+      hardTimeoutMs: XANGI_SHUTDOWN_TIMEOUT_MS,
     });
     return shutdownPromise;
   };

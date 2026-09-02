@@ -16,6 +16,7 @@ import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import { TurnLatencyRecorder } from '../turn-latency.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
+import { closeSession, createSchedulerSession, incrementMessageCount } from '../sessions.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
@@ -59,6 +60,12 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         ? await workspaceRegistry.resolve('discord', settingsChannelId)
         : undefined;
       const freshAppSessionId = createSchedulerRunId('discord');
+      createSchedulerSession(freshAppSessionId, channelId, {
+        platform: 'discord',
+        title: prompt,
+        workspaceId: workspace?.id,
+        workspacePath: workspace?.path,
+      });
       const latency = new TurnLatencyRecorder({
         platform: 'discord',
         turnId: `discord-schedule:${freshAppSessionId}`,
@@ -109,7 +116,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         //   cron 文脈で stateful 化してしまう構造バグの修正）。
         // - 通常セッションの activeByContext / updatedAt は触らない。
         const eventCtx = {
-          threadId: `discord-schedule:${channelId}`,
+          threadId: `discord-schedule:${freshAppSessionId}`,
           turnId: `discord-schedule:${freshAppSessionId}`,
           threadLabel: 'scheduled task',
           platform: 'discord' as const,
@@ -137,6 +144,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           }
         );
         latency.markAgentComplete();
+        incrementMessageCount(freshAppSessionId);
 
         // 結果を送信（テキスト由来 + 構造化 attachments を合算・重複排除）
         const { filePaths, displayText } = buildAttachmentResult(
@@ -227,6 +235,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         latency.finish('error');
         throw error;
       } finally {
+        closeSession(freshAppSessionId, 'other');
         const entry = discordProcessingMessages.get(channelId);
         if (entry?.intervalId) clearInterval(entry.intervalId);
         discordProcessingMessages.delete(channelId);

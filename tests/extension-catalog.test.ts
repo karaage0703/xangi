@@ -561,6 +561,31 @@ describe('development extension catalog', () => {
     expect(setup.prompt).toContain('同じsetup会話で残りの作業と確認を続けてください');
   });
 
+  it('builds setup from a linked manifest that is not in the display catalog', async () => {
+    const { root, manifestPath } = await fixture();
+    await linkExtension(manifestPath);
+    delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+
+    const setup = await createExtensionSetupRequest('demo-search');
+
+    expect(setup).toMatchObject({ id: 'demo-search', displayName: 'Demo Search' });
+    expect(setup.prompt).toContain(`manifest: ${manifestPath}`);
+    expect(setup.prompt).toContain(join(root, 'XANGI_SETUP.md'));
+    expect(setup.prompt).toContain(`README document: ${join(root, 'README.md')}`);
+  });
+
+  it('rejects a linked manifest whose id changed after linking', async () => {
+    const { manifestPath } = await fixture();
+    await linkExtension(manifestPath);
+    delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, id: 'changed-id' }));
+
+    await expect(createExtensionSetupRequest('demo-search')).rejects.toThrow(
+      `extension id changed for ${manifestPath}`
+    );
+  });
+
   it('builds a guarded uninstall request without changing the installed extension', async () => {
     const { root } = await fixture();
     await installDevelopmentExtension('demo-search', root);

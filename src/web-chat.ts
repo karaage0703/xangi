@@ -124,6 +124,11 @@ import { loadExtensionManifest, resolveExtensionAgentBackend } from './extension
 import { createExtensionUpdateRequest } from './extension-update.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
 import { AgentRunError, AgentRunStore } from './agent-runs.js';
+import {
+  isAllowedExternalChatUrl,
+  type ExternalChatPlatform,
+  type ExternalChatUrlResolvers,
+} from './external-chat-link.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -348,6 +353,7 @@ interface WebChatOptions {
   discoverModels?: typeof discoverBackendModels;
   extensionUpdateRequest?: typeof createExtensionUpdateRequest;
   workspaceRegistry?: WorkspaceRegistry;
+  externalChatUrlResolvers?: ExternalChatUrlResolvers;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -616,7 +622,12 @@ export function startWebChat(options: WebChatOptions): void {
     const managed = allManaged.map((s) => {
       const isCurrentSession = getActiveSessionId(s.contextKey) === s.id;
       const lifecycle = getSessionLifecycle(s.id);
-      const threadId = isCurrentSession ? sessionThreadId(s) : null;
+      const threadId =
+        s.scope === 'scheduler'
+          ? `${s.platform}-schedule:${s.id}`
+          : isCurrentSession
+            ? sessionThreadId(s)
+            : null;
       const activity = threadId ? getActivity(threadId) : undefined;
       const isActive = activity?.active === true;
       const timeoutState =
@@ -645,6 +656,7 @@ export function startWebChat(options: WebChatOptions): void {
         id: s.id,
         title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
         platform: s.platform,
+        scope: s.scope,
         contextKey: s.contextKey,
         createdAt: s.createdAt,
         updatedAt: activity?.updatedAt
@@ -668,9 +680,12 @@ export function startWebChat(options: WebChatOptions): void {
         timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
         activity,
         projectId: s.projectId,
+        cwd: s.workspacePath ?? workdir,
         backend,
         contextUsage: s.contextUsage,
+        tokenUsage: s.tokenUsage,
         estimatedCost: s.estimatedCost,
+        progressCard: s.progressCard,
         origin,
       };
     });
@@ -2102,6 +2117,55 @@ export function startWebChat(options: WebChatOptions): void {
         'Cache-Control': 'no-store',
       });
       res.end(JSON.stringify({ tools }));
+      return;
+    }
+
+    // GET /api/sessions/:id/external-chat-link — Discord/Slack上の元会話へのリンク
+    const externalChatLinkMatch = url.match(/^\/api\/sessions\/([^/]+)\/external-chat-link$/);
+    if (externalChatLinkMatch && req.method === 'GET') {
+      const appSessionId = decodeURIComponent(externalChatLinkMatch[1]);
+      const entry = getSessionEntry(appSessionId);
+      if (!entry) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'session not found' }));
+        return;
+      }
+      const source =
+        entry.platform === 'discord' || entry.platform === 'slack'
+          ? entry
+          : entry.externalSourceSessionId
+            ? getSessionEntry(entry.externalSourceSessionId)
+            : undefined;
+      const platform = source?.platform as ExternalChatPlatform | undefined;
+      const resolver = platform ? options.externalChatUrlResolvers?.[platform] : undefined;
+      if (!source || !platform || !resolver) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'external chat link unavailable' }));
+        return;
+      }
+      const platformMessageId = readSessionMessages(workdir, source.id).find(
+        (message) => message.role === 'user' && message.platformMessageId
+      )?.platformMessageId;
+      try {
+        const externalUrl = await resolver({
+          contextKey: source.contextKey,
+          platformMessageId,
+        });
+        if (!externalUrl || !isAllowedExternalChatUrl(platform, externalUrl)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'external chat link unavailable' }));
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({ platform, url: externalUrl, sourceSessionId: source.id }));
+      } catch (error) {
+        console.warn('[web-chat] Failed to resolve external chat link:', error);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'failed to resolve external chat link' }));
+      }
       return;
     }
 

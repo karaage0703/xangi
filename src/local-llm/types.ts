@@ -20,12 +20,21 @@ export interface LLMToolCall {
   arguments: Record<string, unknown>;
 }
 
+export interface LLMToolParameterSchema {
+  type: string;
+  description?: string;
+  enum?: string[];
+  properties?: Record<string, LLMToolParameterSchema>;
+  items?: LLMToolParameterSchema;
+  required?: string[];
+}
+
 export interface LLMTool {
   name: string;
   description: string;
   parameters: {
     type: 'object';
-    properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+    properties: Record<string, LLMToolParameterSchema>;
     required?: string[];
   };
 }
@@ -107,7 +116,7 @@ export interface ToolHandler {
   description: string;
   parameters: {
     type: 'object';
-    properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+    properties: Record<string, LLMToolParameterSchema>;
     required?: string[];
   };
   execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;

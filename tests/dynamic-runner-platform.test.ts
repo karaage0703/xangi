@@ -63,18 +63,34 @@ describe('DynamicRunnerManager platform routing', () => {
         }
       ).defaultRunner = { runStream };
 
-      await manager.runStream('prompt containing TOKEN=secret', {}, {
-        channelId: 'web-chat:session-1',
-        appSessionId: 'app-session-1',
-        platform: 'web',
-        workdir,
-      });
+      await manager.runStream(
+        'prompt containing TOKEN=secret',
+        {},
+        {
+          channelId: 'web-chat:session-1',
+          appSessionId: 'app-session-1',
+          platform: 'web',
+          workdir,
+        }
+      );
 
       const path = join(workdir, 'logs', 'tool-trajectory', 'app-session-1.jsonl');
       const contents = readFileSync(path, 'utf8');
-      expect(contents).toContain('"tool_name":"Bash"');
-      expect(contents).not.toContain('TOKEN=secret');
-      expect(contents).not.toContain('999');
+      const entries = contents
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const toolCall = entries.find((entry) => entry.kind === 'tool_call');
+
+      expect(toolCall).toMatchObject({
+        tool_name: 'Bash',
+        args_sanitized: {},
+        status: 'success',
+      });
+      expect(entries.every((entry) => !Object.hasOwn(entry, 'prompt'))).toBe(true);
+      expect(toolCall).not.toHaveProperty('result_truncated');
+      expect(toolCall).not.toHaveProperty('outputBytes');
+      expect(toolCall).not.toHaveProperty('output_bytes');
       expect(statSync(path).mode & 0o777).toBe(0o600);
     } finally {
       if (previous === undefined) delete process.env.XANGI_TOOL_TRAJECTORY_LOG;
@@ -383,6 +399,7 @@ describe('DynamicRunnerManager platform routing', () => {
         result: 'result',
         sessionId: 'search:discord-channel',
         sessionMode: 'stateless' as const,
+        usage: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 20 },
       });
       (
         manager as unknown as {
@@ -396,6 +413,21 @@ describe('DynamicRunnerManager platform routing', () => {
       });
 
       expect(getSessionEntry(appSessionId)?.agent?.sessionMode).toBe('stateless');
+      expect(getSessionEntry(appSessionId)?.tokenUsage).toMatchObject({
+        inputTokens: 100,
+        cachedInputTokens: 80,
+        outputTokens: 20,
+      });
+
+      await manager.run('second prompt', {
+        channelId: 'discord-channel',
+        appSessionId,
+      });
+      expect(getSessionEntry(appSessionId)?.tokenUsage).toMatchObject({
+        inputTokens: 200,
+        cachedInputTokens: 160,
+        outputTokens: 40,
+      });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

@@ -34,6 +34,11 @@ describe('buildXangiCommands', () => {
     expect(XANGI_COMMANDS_COMMON).not.toContain('ユーザー向け操作方法');
   });
 
+  it('複数工程だけ進捗カードを使うよう案内する', () => {
+    expect(XANGI_COMMANDS_COMMON).toContain('xangi tool progress_card');
+    expect(XANGI_COMMANDS_COMMON).toContain('短い作業や単純な質問では使わない');
+  });
+
   it('runtime設定の詳細契約を常駐promptへ注入しない', () => {
     const prompt = buildXangiCommands('slack');
     expect(prompt).not.toContain('xangi tool help runtime_settings');

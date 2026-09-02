@@ -10,14 +10,19 @@ import {
   applyActivitySnapshot,
   conversationLabel,
   displayUsageProviders,
+  formatSessionTokens,
   formatEstimatedCost,
   isMonitorVisible,
   monitorLane,
   revealMonitorDetail,
+  sessionMatchesActivityThread,
+  sessionLine,
+  sessionProgressSummary,
   usageGroupPresentation,
   usagePacePercent,
   visibleUsageGroups,
   type MonitorSession,
+  totalSessionTokens,
 } from '../web-ui/src/Monitor.js';
 
 describe('Monitor account usage', () => {
@@ -106,6 +111,16 @@ describe('Monitor kanban lanes', () => {
   it('shows stateless backends only while their request is running', () => {
     expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: true }))).toBe(true);
     expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: false }))).toBe(false);
+    expect(
+      isMonitorVisible(
+        session({ sessionMode: 'stateless', scope: 'scheduler', lifecycle: 'closed' })
+      )
+    ).toBe(false);
+    expect(
+      isMonitorVisible(
+        session({ sessionMode: 'stateless', scope: 'scheduler', lifecycle: 'open', isActive: true })
+      )
+    ).toBe(false);
     expect(isMonitorVisible(session({ sessionMode: 'stateful', isActive: false }))).toBe(true);
   });
 
@@ -118,6 +133,34 @@ describe('Monitor kanban lanes', () => {
         })
       )
     ).toBe('running');
+  });
+
+  it('keeps an open scheduler run in running before its first activity event arrives', () => {
+    const scheduled = session({
+      id: 'scheduler-run-discord-1',
+      platform: 'discord',
+      scope: 'scheduler',
+      lifecycle: 'open',
+      isActive: false,
+    });
+    expect(monitorLane(scheduled)).toBe('running');
+    expect(sessionLine(scheduled)).toBe('スケジュールを実行中');
+  });
+
+  it('matches scheduler activity to exactly one run session', () => {
+    const scheduled = session({
+      id: 'scheduler-run-discord-1',
+      platform: 'discord',
+      scope: 'scheduler',
+      contextKey: 'channel-1',
+    });
+    expect(
+      sessionMatchesActivityThread('discord-schedule:scheduler-run-discord-1', scheduled)
+    ).toBe(true);
+    expect(
+      sessionMatchesActivityThread('discord-schedule:scheduler-run-discord-2', scheduled)
+    ).toBe(false);
+    expect(sessionMatchesActivityThread('discord:channel-1', scheduled)).toBe(false);
   });
 
   it.each(['error', 'aborted'])('keeps inactive %s sessions in waiting', (state) => {
@@ -230,7 +273,88 @@ describe('Monitor kanban lanes', () => {
   });
 });
 
+describe('Monitor session token usage', () => {
+  it('counts cached input as part of provider-reported input, not twice', () => {
+    expect(
+      totalSessionTokens({
+        inputTokens: 1_000,
+        cachedInputTokens: 800,
+        outputTokens: 200,
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      })
+    ).toBe(1_200);
+  });
+
+  it('uses compact units so large token totals remain scannable', () => {
+    expect(formatSessionTokens(999)).toBe('999');
+    expect(formatSessionTokens(1_000)).toBe('1K');
+    expect(formatSessionTokens(132_624)).toBe('132.6K');
+    expect(formatSessionTokens(1_250_000)).toBe('1.3M');
+  });
+});
+
 describe('Monitor session details', () => {
+  it('keeps internal IDs out and groups secondary metadata below the activity', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    const card = monitorSource.match(
+      /<span className="monitor-session-body">([\s\S]*?)<\/button>/
+    )?.[1];
+    const metadataStart = card?.indexOf('<span className="monitor-session-right">') ?? -1;
+    const metadata = metadataStart >= 0 ? card?.slice(metadataStart) : undefined;
+
+    expect(card).toBeDefined();
+    expect(card).not.toContain('shortId(session.id)');
+    expect(card).not.toContain('session.contextKey');
+    expect(card).not.toContain('monitor-session-meta');
+    expect(metadata).toContain('platformLabel(session.platform)');
+    expect(metadata).toContain('stateLabel(session)');
+    expect(metadata).toContain('formatAge(');
+    expect(metadata).toContain('formatSessionTokens(');
+  });
+
+  it('summarizes the current step and completion count for collapsed cards', () => {
+    expect(
+      sessionProgressSummary(
+        session({
+          progressCard: {
+            revision: 2,
+            updatedAt: '2020-01-01T00:00:00.000Z',
+            plan: [
+              { step: '調査', status: 'completed' },
+              { step: '実装', status: 'in_progress' },
+              { step: '確認', status: 'pending' },
+            ],
+          },
+        })
+      )
+    ).toEqual({ current: '実装', completed: 1, total: 3 });
+  });
+
+  it('labels completed and not-started plans without inventing a current step', () => {
+    expect(
+      sessionProgressSummary(
+        session({
+          progressCard: {
+            revision: 1,
+            updatedAt: '2020-01-01T00:00:00.000Z',
+            plan: [{ step: '確認', status: 'pending' }],
+          },
+        })
+      )
+    ).toEqual({ current: '開始前', completed: 0, total: 1 });
+    expect(
+      sessionProgressSummary(
+        session({
+          progressCard: {
+            revision: 2,
+            updatedAt: '2020-01-01T00:00:00.000Z',
+            plan: [{ step: '確認', status: 'completed' }],
+          },
+        })
+      )
+    ).toEqual({ current: '全工程完了', completed: 1, total: 1 });
+  });
+
   it('keeps the destination compact and leaves the thread title to technical details', () => {
     expect(
       conversationLabel(
@@ -261,6 +385,32 @@ describe('Monitor session details', () => {
     expect(confirmDialogSource).toContain('dialog.showModal()');
     expect(confirmDialogSource).toContain('clickedBackdrop');
     expect(sourceStylesheet).toContain('.monitor-page > :not(.app-topbar, .confirm-dialog)');
+  });
+
+  it('uses semantic action hierarchy instead of danger styling for session completion', () => {
+    const sourceStylesheet = readFileSync(
+      join(process.cwd(), 'web-ui', 'src', 'styles.css'),
+      'utf8'
+    );
+
+    expect(sourceStylesheet).toMatch(
+      /\.monitor-detail-session-close\s*\{[^}]*color:\s*var\(--ink-secondary\)[^}]*border-color:\s*var\(--border\)/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.monitor-detail-close\s*\{[^}]*color:\s*var\(--ink-muted\)[^}]*border-color:\s*transparent/s
+    );
+    expect(sourceStylesheet).not.toMatch(
+      /\.monitor-detail-session-close\s*\{[^}]*var\(--danger\)/s
+    );
+  });
+
+  it('offers a confirmed bulk completion action for all waiting sessions', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+
+    expect(monitorSource).toContain('入力待ちをすべて完了');
+    expect(monitorSource).toContain('waitingSessions.length');
+    expect(monitorSource).toContain('setCloseAllWaitingOpen(true)');
+    expect(monitorSource).toContain('onConfirm={() => void closeAllWaitingSessions()}');
   });
 
   it('reveals an off-screen detail with motion that follows the user preference', () => {

@@ -33,6 +33,7 @@ import { listExtensions, runExtensionAction, type ExtensionAction } from './exte
 import { executeExtensionRequest } from './extension-request.js';
 import { updateExtension } from './extension-update.js';
 import { finalizeDevelopmentExtensionUninstall } from './extension-catalog.js';
+import { executeProgressCardCommand } from './progress-card-command.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
@@ -138,6 +139,8 @@ async function executeCommand(
     );
   } else if (command === 'web_status') {
     return webStatusCommand();
+  } else if (command === 'progress_card') {
+    return executeProgressCardCommand(flags, context);
   } else if (command === 'extension_runtime') {
     if (!runtimeConfig) {
       throw new ValidationError('extension_runtime is not available on this instance');

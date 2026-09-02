@@ -53,6 +53,8 @@ module.exports = {
       },
       instances: 1,
       exec_mode: 'fork',
+      // xangi側のshutdown cleanup（最大7秒）がdataDir lockを解放するまで待つ。
+      kill_timeout: 10_000,
     },
   ],
 };

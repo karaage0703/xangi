@@ -74,11 +74,17 @@ interface Session {
   timeoutMs?: number;
   activity?: Activity;
   projectId?: string;
+  cwd?: string;
   backend?: {
     backend: string;
     model?: string;
     effort?: string;
     source: 'session' | 'project' | 'default';
+  };
+  contextUsage?: {
+    usedTokens: number;
+    contextWindow: number;
+    updatedAt: string;
   };
 }
 
@@ -141,6 +147,11 @@ export interface SessionDetail {
   nextCursor?: number | null;
 }
 
+interface ExternalChatLink {
+  platform: 'discord' | 'slack';
+  url: string;
+}
+
 export function canComposeInSession(
   detail: Pick<SessionDetail, 'lifecycle' | 'platform'> | null,
   discordComposeEnabled: boolean
@@ -161,6 +172,14 @@ export function resolveDisplayedSessionTitle(
   detailTitle?: string
 ): string | undefined {
   return summaryTitle || detailTitle;
+}
+
+export function formatContextUsage(
+  usage?: Pick<NonNullable<Session['contextUsage']>, 'usedTokens' | 'contextWindow'>
+): string | undefined {
+  if (!usage || usage.contextWindow <= 0 || usage.usedTokens < 0) return undefined;
+  const percent = Math.min(100, Math.round((usage.usedTokens / usage.contextWindow) * 100));
+  return `${usage.usedTokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} (${percent}%)`;
 }
 
 interface SessionsResponse {
@@ -892,6 +911,7 @@ function ChatPane({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [streamRecovery, setStreamRecovery] = useState<StreamRecovery>();
   const [discordComposeEnabled, setDiscordComposeEnabled] = useState(false);
+  const [externalChatLink, setExternalChatLink] = useState<ExternalChatLink>();
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState('');
@@ -918,6 +938,22 @@ function ChatPane({
   const sessionId = pane.sessionId;
   const editable = canComposeInSession(detail, discordComposeEnabled);
   const discordRemoteMode = detail?.platform === 'discord' && discordComposeEnabled;
+
+  useEffect(() => {
+    let cancelled = false;
+    setExternalChatLink(undefined);
+    if (!sessionId) return;
+    requestJson<ExternalChatLink>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/external-chat-link`
+    )
+      .then((link) => {
+        if (!cancelled) setExternalChatLink(link);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     activeRef.current = active;
@@ -1602,6 +1638,17 @@ function ChatPane({
             {backendLabel(summary.backend)}
           </span>
         )}
+        {externalChatLink && (
+          <a
+            className="pane-external-chat"
+            href={externalChatLink.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`元の${platformLabel(externalChatLink.platform)}を開く`}
+          >
+            {platformLabel(externalChatLink.platform)} ↗
+          </a>
+        )}
         {summary?.lifecycle !== 'closed' && sessionId && (
           <button
             type="button"
@@ -1913,6 +1960,40 @@ function ChatPane({
           </span>
         )}
       </form>
+      {sessionId && (summary?.backend || summary?.cwd || summary?.contextUsage) && (
+        <footer className="pane-statusline" aria-label="セッション情報">
+          {summary?.backend && (
+            <span className="pane-statusline-model" title={backendLabel(summary.backend)}>
+              <span aria-hidden="true">◇</span>
+              {backendLabel(summary.backend)}
+            </span>
+          )}
+          {summary?.cwd && (
+            <span className="pane-statusline-cwd" title={`Current runner cwd: ${summary.cwd}`}>
+              <span aria-hidden="true">⌁</span>
+              <span className="pane-statusline-label">cwd</span>
+              {summary.cwd}
+            </span>
+          )}
+          {summary?.contextUsage && formatContextUsage(summary.contextUsage) && (
+            <span
+              className="pane-statusline-context"
+              title={`Context: ${formatContextUsage(summary.contextUsage)}`}
+            >
+              <span aria-hidden="true">◔</span>
+              {formatContextUsage(summary.contextUsage)}
+              <progress
+                aria-label="コンテキスト使用率"
+                max={summary.contextUsage.contextWindow}
+                value={Math.min(
+                  summary.contextUsage.usedTokens,
+                  summary.contextUsage.contextWindow
+                )}
+              />
+            </span>
+          )}
+        </footer>
+      )}
       <TextInputDialog
         open={renameDialogOpen}
         title="セッション名を変更"

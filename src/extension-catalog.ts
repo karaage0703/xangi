@@ -321,8 +321,17 @@ async function extensionReadmePath(root: string): Promise<string | undefined> {
 }
 
 export async function createExtensionSetupRequest(id: string): Promise<ExtensionSetupRequest> {
-  const selected = (await loadDisplayCatalog()).entries.find((entry) => entry.manifest.id === id);
-  if (!selected) throw new Error(`Unknown development extension: ${id}`);
+  let selected = (await loadDisplayCatalog()).entries.find((entry) => entry.manifest.id === id);
+  if (!selected) {
+    const linked = (await listExtensions()).find((entry) => entry.id === id);
+    if (!linked) throw new Error(`Unknown development extension: ${id}`);
+    const manifestPath = await realpath(linked.manifestPath);
+    const manifest = await loadExtensionManifest(manifestPath, { requireEntrypoint: false });
+    if (manifest.id !== id) {
+      throw new Error(`extension id changed for ${linked.manifestPath}`);
+    }
+    selected = { manifestPath, manifest };
+  }
   const instructionsPath = await setupInstructionsPath(selected);
   const manifestPath = await realpath(selected.manifestPath);
   const root = dirname(manifestPath);
