@@ -496,6 +496,42 @@ const webHistoryHandler: ToolHandler = {
   },
 };
 
+const progressCardHandler: ToolHandler = {
+  name: 'progress_card',
+  description:
+    '現在のセッションの進捗カードを更新する。複数ステップの長い作業で、計画や現在位置が変わった時だけ使う。',
+  parameters: {
+    type: 'object',
+    properties: {
+      plan: {
+        type: 'array',
+        description: 'カード全体を置き換えるステップ一覧',
+        items: {
+          type: 'object',
+          properties: {
+            step: { type: 'string', description: '短い作業ステップ' },
+            status: {
+              type: 'string',
+              enum: ['pending', 'in_progress', 'completed'],
+            },
+          },
+          required: ['step', 'status'],
+        },
+      },
+      note: { type: 'string', description: '必要な時だけ表示する短い補足' },
+      clear: { type: 'boolean', description: '既存カードを削除する' },
+    },
+  },
+  async execute(args, context): Promise<ToolResult> {
+    const flags: Record<string, string> = {};
+    if (args.plan !== undefined) flags['plan-json'] = JSON.stringify(args.plan);
+    if (args.note !== undefined) flags.note = String(args.note);
+    if (args.clear === true) flags.clear = 'true';
+    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
+    return runXangiCmd(['progress_card', ...flagsToArgs(flags)], env);
+  },
+};
+
 /**
  * slack_history: 現在の Slack チャンネルの履歴を取得する。
  * Slack 経由で runner が起動された時、XANGI_CHANNEL_ID=<channelId> がセットされる。
@@ -700,6 +736,7 @@ export function getAllXangiTools(): ToolHandler[] {
     ...getDiscordTools(),
     ...getSlackTools(),
     webHistoryHandler,
+    progressCardHandler,
     ...getScheduleTools(),
     ...getSystemTools(),
     ...getExtensionTools(),
@@ -709,6 +746,7 @@ export function getAllXangiTools(): ToolHandler[] {
 /** 実行プラットフォームに応じたxangiツール */
 export function getXangiTools(platform?: ChatPlatform): ToolHandler[] {
   const commonTools = [
+    progressCardHandler,
     ...getScheduleTools(platform),
     ...getSystemTools(platform),
     ...getExtensionTools(),

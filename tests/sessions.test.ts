@@ -22,10 +22,14 @@ import {
   updateSessionProject,
   updateSessionTitle,
   updateSessionContextUsage,
+  addSessionTokenUsage,
+  closeSession,
+  createSchedulerSession,
   updateSessionEstimatedCost,
   WEB_CHAT_CONTEXT_PREFIX,
-  closeSession,
   getSessionLifecycle,
+  replaceSessionProgressCard,
+  subscribeSessionChanges,
 } from '../src/sessions.js';
 
 describe('sessions', () => {
@@ -163,6 +167,30 @@ describe('sessions', () => {
       expect(getSessionCount()).toBe(1);
     });
 
+    it('preserves completed scheduler runs on init', () => {
+      const runId = 'scheduler-run-discord-1783929000000-deadbeef';
+      initSessions(testDir);
+      createSchedulerSession(runId, 'channel-1', {
+        platform: 'discord',
+        title: 'daily digest',
+      });
+      addSessionTokenUsage(runId, {
+        inputTokens: 120,
+        cachedInputTokens: 80,
+        outputTokens: 30,
+      });
+      closeSession(runId);
+
+      initSessions(testDir);
+
+      expect(getSessionEntry(runId)).toMatchObject({
+        scope: 'scheduler',
+        lifecycle: 'closed',
+        tokenUsage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 30 },
+      });
+      expect(getActiveSessionId('channel-1')).toBeUndefined();
+    });
+
     it('should generate a new bootId on each init', () => {
       initSessions(testDir);
       const bootId1 = getBootId();
@@ -171,6 +199,35 @@ describe('sessions', () => {
       const bootId2 = getBootId();
       expect(bootId1).not.toBe(bootId2);
     });
+  });
+
+  it('persists, reloads, and clears a session progress card', () => {
+    initSessions(testDir);
+    const appSessionId = createSession('channel-progress', { platform: 'discord' });
+
+    const card = replaceSessionProgressCard(appSessionId, {
+      plan: [
+        { step: '調査', status: 'completed' },
+        { step: '実装', status: 'in_progress' },
+      ],
+      note: 'APIとMonitorを接続中',
+    });
+
+    expect(card).toMatchObject({
+      revision: 1,
+      note: 'APIとMonitorを接続中',
+      plan: [
+        { step: '調査', status: 'completed' },
+        { step: '実装', status: 'in_progress' },
+      ],
+    });
+
+    clearSessions();
+    initSessions(testDir);
+    expect(getSessionEntry(appSessionId)?.progressCard).toEqual(card);
+
+    replaceSessionProgressCard(appSessionId, { clear: true });
+    expect(getSessionEntry(appSessionId)?.progressCard).toBeUndefined();
   });
 
   describe('getSession', () => {
@@ -255,6 +312,20 @@ describe('sessions', () => {
       });
       expect(getSessionEntry(appId)?.closedAt).toBeTruthy();
       expect(getSessionLifecycle(appId)).toBe('closed');
+    });
+
+    it('notifies Monitor subscribers when a session closes', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-close-notify', { platform: 'discord' });
+      let notifications = 0;
+      const unsubscribe = subscribeSessionChanges(() => {
+        notifications += 1;
+      });
+
+      expect(closeSession(appId, 'other')).toBe(true);
+      unsubscribe();
+
+      expect(notifications).toBe(1);
     });
 
     it('treats existing entries without lifecycle as closed', () => {

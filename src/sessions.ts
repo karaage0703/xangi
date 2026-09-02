@@ -39,10 +39,31 @@ export interface SessionContextUsage {
   source: 'codex-app-server' | 'claude-result' | 'antigravity-statusline' | 'copilot-sdk';
 }
 
+export interface SessionTokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  updatedAt: string;
+}
+
 export interface SessionEstimatedCost {
   value: number;
   updatedAt: string;
   source: 'antigravity-statusline';
+}
+
+export type SessionProgressStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface SessionProgressStep {
+  step: string;
+  status: SessionProgressStatus;
+}
+
+export interface SessionProgressCard {
+  revision: number;
+  updatedAt: string;
+  plan: SessionProgressStep[];
+  note?: string;
 }
 
 export interface SessionEntry {
@@ -63,6 +84,8 @@ export interface SessionEntry {
   closeReason?: SessionCloseReason;
   /** Webへ引き継いだ元セッション。最初の発話で履歴を注入した後に消費する。 */
   resumedFromSessionId?: string;
+  /** Webへ引き継いだ会話のうち、Discord/Slack上の起点セッション。 */
+  externalSourceSessionId?: string;
   /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
   autoTalk?: boolean;
   /** セッション作成時に選択されたworkspace ID。 */
@@ -73,8 +96,12 @@ export interface SessionEntry {
   projectId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
   contextUsage?: SessionContextUsage;
+  /** このxangiセッション内で完了したturnの累積token使用量。 */
+  tokenUsage?: SessionTokenUsage;
   /** Providerが報告したセッションの推定利用料。金額・通貨はxangi側で推定しない。 */
   estimatedCost?: SessionEstimatedCost;
+  /** Agent-maintained, durable at-a-glance progress for this session. */
+  progressCard?: SessionProgressCard;
 }
 
 interface SessionsFile {
@@ -92,6 +119,16 @@ let sessionsPath: string | null = null;
 let data: SessionsFile = { activeByContext: {}, sessions: {} };
 let currentBootId: string = randomUUID();
 const sessionChangeListeners = new Set<() => void>();
+
+function notifySessionChanges(): void {
+  for (const listener of sessionChangeListeners) {
+    try {
+      listener();
+    } catch {
+      // Persistence must not fail because a disconnected UI listener threw.
+    }
+  }
+}
 
 /**
  * sessions.json のパスを初期化
@@ -219,20 +256,31 @@ function saveSessionsToFile(): void {
 
 function purgeSchedulerSessions(): void {
   let purged = 0;
+  let repaired = 0;
   for (const [id, entry] of Object.entries(data.sessions)) {
     if (entry.scope === 'scheduler') {
-      delete data.sessions[id];
-      // activeByContextからも消す
       for (const [ctx, activeId] of Object.entries(data.activeByContext)) {
         if (activeId === id) {
           delete data.activeByContext[ctx];
         }
       }
-      purged++;
+      if (id.startsWith('scheduler-run-')) {
+        if (entry.lifecycle !== 'closed') {
+          entry.lifecycle = 'closed';
+          entry.closedAt = entry.updatedAt;
+          entry.closeReason = 'other';
+          repaired++;
+        }
+      } else {
+        delete data.sessions[id];
+        purged++;
+      }
     }
   }
-  if (purged > 0) {
-    console.log(`[xangi] Purged ${purged} stale scheduler session(s)`);
+  if (purged > 0 || repaired > 0) {
+    console.log(
+      `[xangi] Purged ${purged} legacy scheduler session(s), closed ${repaired} interrupted run(s)`
+    );
     saveSessionsToFile();
   }
 }
@@ -342,6 +390,11 @@ export function createWebSession(
   const resumedFrom = opts.resumedFromSessionId
     ? data.sessions[opts.resumedFromSessionId]
     : undefined;
+  const externalSourceSessionId = resumedFrom
+    ? resumedFrom.platform === 'discord' || resumedFrom.platform === 'slack'
+      ? resumedFrom.id
+      : resumedFrom.externalSourceSessionId
+    : undefined;
   data.sessions[appId] = {
     id: appId,
     title: sanitizeSessionTitle(opts.title || ''),
@@ -356,6 +409,7 @@ export function createWebSession(
     archived: false,
     lifecycle: 'open',
     resumedFromSessionId: opts.resumedFromSessionId,
+    externalSourceSessionId,
     workspaceId: opts.workspaceId ?? resumedFrom?.workspaceId,
     workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
     projectId: opts.projectId ?? resumedFrom?.projectId,
@@ -409,6 +463,33 @@ export function createSession(
   };
   data.activeByContext[contextKey] = appId;
   saveSessionsToFile();
+  return appId;
+}
+
+/** activeByContextを変更せず、1回のスケジュール実行を独立Sessionとして登録する。 */
+export function createSchedulerSession(
+  appId: string,
+  contextKey: string,
+  opts: { platform: string; title: string } & SessionSnapshotOptions
+): string {
+  const now = new Date().toISOString();
+  data.sessions[appId] = {
+    id: appId,
+    title: sanitizeSessionTitle(opts.title),
+    platform: opts.platform,
+    contextKey,
+    scope: 'scheduler',
+    bootId: currentBootId,
+    createdAt: now,
+    updatedAt: now,
+    messageCount: 0,
+    archived: false,
+    lifecycle: 'open',
+    workspaceId: opts.workspaceId,
+    workspacePath: opts.workspacePath,
+  };
+  saveSessionsToFile();
+  notifySessionChanges();
   return appId;
 }
 
@@ -499,13 +580,29 @@ export function updateSessionContextUsage(
   if (!entry || usage.usedTokens < 0 || usage.contextWindow <= 0) return false;
   entry.contextUsage = { ...usage, updatedAt: new Date().toISOString() };
   saveSessionsToFile();
-  for (const listener of sessionChangeListeners) {
-    try {
-      listener();
-    } catch {
-      // Usage persistence must not fail because a disconnected UI listener threw.
-    }
+  notifySessionChanges();
+  return true;
+}
+
+export function addSessionTokenUsage(
+  appSessionId: string,
+  usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }
+): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return false;
+  const values = [usage.inputTokens, usage.cachedInputTokens, usage.outputTokens];
+  if (values.some((value) => value !== undefined && (!Number.isFinite(value) || value < 0))) {
+    return false;
   }
+  const previous = entry.tokenUsage;
+  entry.tokenUsage = {
+    inputTokens: (previous?.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+    cachedInputTokens: (previous?.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
+    outputTokens: (previous?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+    updatedAt: new Date().toISOString(),
+  };
+  saveSessionsToFile();
+  notifySessionChanges();
   return true;
 }
 
@@ -517,14 +614,36 @@ export function updateSessionEstimatedCost(
   if (!entry || !Number.isFinite(cost.value) || cost.value < 0) return false;
   entry.estimatedCost = { ...cost, updatedAt: new Date().toISOString() };
   saveSessionsToFile();
-  for (const listener of sessionChangeListeners) {
-    try {
-      listener();
-    } catch {
-      // Usage persistence must not fail because a disconnected UI listener threw.
-    }
-  }
+  notifySessionChanges();
   return true;
+}
+
+export function replaceSessionProgressCard(
+  appSessionId: string,
+  input: { plan?: SessionProgressStep[]; note?: string; clear?: boolean }
+): SessionProgressCard | undefined {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return undefined;
+
+  if (input.clear) {
+    delete entry.progressCard;
+    entry.updatedAt = new Date().toISOString();
+    saveSessionsToFile();
+    notifySessionChanges();
+    return undefined;
+  }
+
+  const now = new Date().toISOString();
+  entry.progressCard = {
+    revision: (entry.progressCard?.revision ?? 0) + 1,
+    updatedAt: now,
+    plan: input.plan ?? [],
+    ...(input.note ? { note: input.note } : {}),
+  };
+  entry.updatedAt = now;
+  saveSessionsToFile();
+  notifySessionChanges();
+  return entry.progressCard;
 }
 
 export function updateSessionContextUsageByProviderSession(
@@ -637,6 +756,7 @@ export function closeSession(appSessionId: string, reason: SessionCloseReason = 
     if (id === appSessionId) delete data.activeByContext[ctx];
   }
   saveSessionsToFile();
+  notifySessionChanges();
   return true;
 }
 

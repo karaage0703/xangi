@@ -25,6 +25,8 @@ describe('xangi tool help', () => {
     expect(formatXangiCmdHelp('runtime_settings')).toContain('明示依頼');
     expect(formatXangiCmdHelp('trigger')).toContain('定刻確認はschedule');
     expect(formatXangiCmdHelp('system_restart')).toContain('復帰後に状態');
+    expect(formatXangiCmdHelp('progress')).toContain('xangi tool progress_card');
+    expect(formatXangiCmdHelp('progress_card')).toContain('--plan-json');
   });
 
   it('未知のtopicやcommandを拒否する', () => {

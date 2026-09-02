@@ -10,6 +10,9 @@ export interface ShutdownCleanupOptions {
   hardTimeoutMs?: number;
 }
 
+/** SIGTERM受信後にcleanupを完了させる最大時間。 */
+export const XANGI_SHUTDOWN_TIMEOUT_MS = 7_000;
+
 /**
  * Run graceful shutdown cleanup, but never let cleanup block process exit.
  *

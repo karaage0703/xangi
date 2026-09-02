@@ -14,6 +14,7 @@ import type { AgentConfig, Config } from './config.js';
 import { BackendResolver, type ResolvedBackend } from './backend-resolver.js';
 import { RunnerManager } from './runner-manager.js';
 import {
+  addSessionTokenUsage,
   deleteSession,
   getActiveSessionId,
   getSessionEntry,
@@ -393,6 +394,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved.effort,
       result.sessionMode
     );
+    if (result.usage) addSessionTokenUsage(options.appSessionId, result.usage);
   }
 
   private sessionWorkdirMatches(options: RunOptions, appSessionId: string): boolean {

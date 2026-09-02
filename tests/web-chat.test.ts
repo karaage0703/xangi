@@ -25,6 +25,7 @@ import {
   createSession,
   createWebSession,
   setProviderSessionId,
+  replaceSessionProgressCard,
   WEB_CHAT_CONTEXT_PREFIX,
 } from '../src/sessions.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../src/agent-runner.js';
@@ -46,11 +47,13 @@ import type { AgentBackend } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
 import {
   canComposeInSession,
+  formatContextUsage,
   resolveDisplayedSessionTitle,
   shouldShowContinuationActions,
 } from '../web-ui/src/Chat.js';
 import { stopManagedExtensions } from '../src/extensions.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
+import type { ExternalChatUrlResolvers } from '../src/external-chat-link.js';
 
 describe('Web Chat continuation actions', () => {
   it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
@@ -80,6 +83,25 @@ describe('Web Chat live session titles', () => {
     );
     expect(resolveDisplayedSessionTitle(undefined, '保存済みタイトル')).toBe('保存済みタイトル');
     expect(resolveDisplayedSessionTitle()).toBeUndefined();
+  });
+});
+
+describe('Web Chat status line', () => {
+  it('formats provider context usage and caps only the displayed percentage', () => {
+    expect(formatContextUsage({ usedTokens: 64_000, contextWindow: 128_000 })).toBe(
+      '64,000 / 128,000 (50%)'
+    );
+    expect(formatContextUsage({ usedTokens: 130_000, contextWindow: 128_000 })).toBe(
+      '130,000 / 128,000 (100%)'
+    );
+    expect(formatContextUsage({ usedTokens: 1, contextWindow: 0 })).toBeUndefined();
+  });
+
+  it('labels the effective runner path as cwd', () => {
+    const source = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Chat.tsx'), 'utf8');
+    expect(source).toContain('pane-statusline-label">cwd');
+    expect(source).toContain('Current runner cwd:');
+    expect(source).toContain('pane-statusline-cwd');
   });
 });
 
@@ -294,6 +316,7 @@ describe('web-chat HTTP API', () => {
   };
   let scheduler: Scheduler;
   let resolver: BackendResolver;
+  let externalChatUrlResolvers: ExternalChatUrlResolvers;
   const prevWorkspace = process.env.WORKSPACE_PATH;
   const prevDataDir = process.env.DATA_DIR;
   const prevExtensionManifests = process.env.XANGI_EXTENSION_DEV_MANIFESTS;
@@ -335,6 +358,7 @@ describe('web-chat HTTP API', () => {
     });
     discordRemoteInputRef = {};
     destinationLabelResolverRef = {};
+    externalChatUrlResolvers = {};
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
@@ -347,6 +371,7 @@ describe('web-chat HTTP API', () => {
       scheduler,
       resolver,
       workspaceRegistry,
+      externalChatUrlResolvers,
       discoverModels: async (backend): Promise<BackendModelDiscovery> => ({
         backend,
         source: 'web-chat test discovery',
@@ -958,6 +983,12 @@ describe('web-chat HTTP API', () => {
       workspaceId: registered.workspace.id,
       workspacePath: realpathSync(alternate),
     });
+    const sessions = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string; cwd?: string }>;
+    };
+    expect(sessions.sessions.find((session) => session.id === created.sessionId)?.cwd).toBe(
+      realpathSync(alternate)
+    );
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${created.sessionId}`);
     await readSSEUntilDone((await send).body);
   });
@@ -1448,6 +1479,90 @@ process.stdin.on('end', () => process.exit(0));
     });
   });
 
+  it('GET /api/sessions/:id/external-chat-link resolves a Discord source', async () => {
+    const sourceId = createSession('123456789', { platform: 'discord' });
+    externalChatUrlResolvers.discord = vi
+      .fn()
+      .mockResolvedValue('https://discord.com/channels/111/123456789');
+
+    const response = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(sourceId)}/external-chat-link`
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      platform: 'discord',
+      url: 'https://discord.com/channels/111/123456789',
+      sourceSessionId: sourceId,
+    });
+    expect(externalChatUrlResolvers.discord).toHaveBeenCalledWith({
+      contextKey: '123456789',
+      platformMessageId: undefined,
+    });
+  });
+
+  it('keeps the external source link after a Discord session is resumed on Web', async () => {
+    const sourceId = createSession('987654321', { platform: 'discord' });
+    externalChatUrlResolvers.discord = vi
+      .fn()
+      .mockResolvedValue('https://discord.com/channels/222/987654321');
+    const resumed = (await (
+      await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sourceId)}/resume`, {
+        method: 'POST',
+      })
+    ).json()) as { sessionId: string };
+
+    const response = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(resumed.sessionId)}/external-chat-link`
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      platform: 'discord',
+      sourceSessionId: sourceId,
+    });
+  });
+
+  it('GET /api/sessions/:id/external-chat-link resolves a Slack permalink target', async () => {
+    const sourceId = createSession('C123', { platform: 'slack' });
+    const logsDir = join(testDir, 'logs', 'sessions');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      join(logsDir, `${sourceId}.jsonl`),
+      `${JSON.stringify({
+        role: 'user',
+        content: 'Slack message',
+        platformMessageId: '1234.5678',
+        createdAt: '2026-09-02T00:00:00.000Z',
+      })}\n`
+    );
+    externalChatUrlResolvers.slack = vi
+      .fn()
+      .mockResolvedValue('https://example.slack.com/archives/C123/p12345678');
+
+    const response = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(sourceId)}/external-chat-link`
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ platform: 'slack', sourceSessionId: sourceId });
+    expect(externalChatUrlResolvers.slack).toHaveBeenCalledWith({
+      contextKey: 'C123',
+      platformMessageId: '1234.5678',
+    });
+  });
+
+  it('does not expose an unsafe external chat URL', async () => {
+    const sourceId = createSession('123456789', { platform: 'discord' });
+    externalChatUrlResolvers.discord = vi.fn().mockResolvedValue('https://example.com/phishing');
+
+    const response = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(sourceId)}/external-chat-link`
+    );
+
+    expect(response.status).toBe(404);
+  });
+
   it('POST /api/sessions/:id/discord-continue rejects non-Discord sessions', async () => {
     const id = createSession('web-chat:test', { platform: 'web' });
     const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/discord-continue`, {
@@ -1878,6 +1993,26 @@ process.stdin.on('end', () => process.exit(0));
     expect(typeof list.meta?.pid).toBe('number');
   });
 
+  it('GET /api/sessions includes the durable progress card', async () => {
+    const id = createSession('progress-channel', { platform: 'discord' });
+    replaceSessionProgressCard(id, {
+      plan: [
+        { step: '調査', status: 'completed' },
+        { step: '実装', status: 'in_progress' },
+      ],
+      note: 'Monitorで確認中',
+    });
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{ id: string; progressCard?: { note?: string; revision: number } }>;
+    };
+
+    expect(list.sessions.find((session) => session.id === id)?.progressCard).toMatchObject({
+      revision: 1,
+      note: 'Monitorで確認中',
+    });
+  });
+
   it('GET /api/sessions exposes whether provider context is resumable', async () => {
     const id = createSession('stateless-channel', {
       platform: 'discord',
@@ -1963,6 +2098,12 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(sourceStylesheet).toMatch(
       /\.app-shell\.sidebar-collapsed\s*\{[^}]*grid-template-columns:\s*0 minmax\(0,\s*1fr\)/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /\.pane-complete,\s*\.pane-external-chat\s*\{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*line-height:\s*1/s
+    );
+    expect(sourceStylesheet).toMatch(
+      /@media \(max-width: 768px\), \(max-height: 500px\) and \(hover: none\)[\s\S]*?\.pane-complete,\s*\.pane-external-chat,[\s\S]*?min-height:\s*44px/
     );
     expect(sourceStylesheet).toMatch(/\.session-project-tag\s*\{/);
     expect(sourceStylesheet).toMatch(/\.workspace\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);

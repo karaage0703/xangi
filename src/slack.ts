@@ -35,7 +35,15 @@ import {
   formatTurnHistoryDisclosure,
   withoutFinalResponse,
 } from './tool-history.js';
-import { ensureSession, getActiveSessionId, getProviderSessionId } from './sessions.js';
+import {
+  closeActiveSession,
+  closeSession,
+  createSchedulerSession,
+  ensureSession,
+  getActiveSessionId,
+  getProviderSessionId,
+  incrementMessageCount,
+} from './sessions.js';
 import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
 import {
   attachPlatformMessageIdToLast,
@@ -55,6 +63,7 @@ import { executeModelsCommand } from './models-command.js';
 import { prependReferencedMessages } from './session-reference.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
 import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
+import { slackPermalinkTarget, type ExternalChatUrlResolvers } from './external-chat-link.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
@@ -125,6 +134,21 @@ function slackRunKeyFromActionBody(body: {
   const channelId = body.channel?.id;
   if (!channelId) return undefined;
   return slackConversationKey(channelId, body.message?.thread_ts);
+}
+
+export function closeSlackConversationFromAction(
+  body: {
+    channel?: { id?: string };
+    message?: { thread_ts?: string; ts?: string };
+  },
+  agentRunner: Pick<AgentRunner, 'destroy'>
+): boolean {
+  const conversationKey = slackRunKeyFromActionBody(body);
+  if (!conversationKey) return false;
+  const reason = body.message?.thread_ts ? 'leave' : 'new';
+  sessions.delete(conversationKey);
+  agentRunner.destroy?.(conversationKey);
+  return closeActiveSession(conversationKey, reason);
 }
 
 function markSlackMessageProcessed(channelId: string, ts: string): boolean {
@@ -635,6 +659,7 @@ export interface SlackChannelOptions {
   skills: Skill[];
   reloadSkills: () => Skill[];
   scheduler?: Scheduler;
+  externalChatUrlResolvers?: ExternalChatUrlResolvers;
 }
 
 type SlackRestartResponse = {
@@ -715,13 +740,17 @@ export function registerSlackSchedulerBridge(deps: {
       startedAt: Date.now(),
     });
 
+    const freshAppSessionId = createSchedulerRunId('slack');
+    createSchedulerSession(freshAppSessionId, channelId, {
+      platform: 'slack',
+      title: prompt,
+    });
     try {
-      const freshAppSessionId = createSchedulerRunId('slack');
       const { result, attachments } = await runWithBubbleEvents(
         agentRunner,
         prompt,
         {
-          threadId: `slack-schedule:${channelId}`,
+          threadId: `slack-schedule:${freshAppSessionId}`,
           turnId: turnIdFor('slack', `sched-${freshAppSessionId}`),
           threadLabel: 'scheduled task',
           platform: 'slack',
@@ -735,6 +764,7 @@ export function registerSlackSchedulerBridge(deps: {
           appSessionId: freshAppSessionId,
         }
       );
+      incrementMessageCount(freshAppSessionId);
 
       const { displayText } = buildAttachmentResult(result, attachments);
       await sendSlackResult(
@@ -784,6 +814,7 @@ export function registerSlackSchedulerBridge(deps: {
       const entry = slackProcessingMessages.get(channelId);
       if (entry?.intervalId) clearInterval(entry.intervalId);
       slackProcessingMessages.delete(channelId);
+      closeSession(freshAppSessionId, 'other');
     }
   });
 }
@@ -802,6 +833,18 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+
+  if (options.externalChatUrlResolvers) {
+    options.externalChatUrlResolvers.slack = async ({ contextKey, platformMessageId }) => {
+      const target = slackPermalinkTarget(contextKey, platformMessageId);
+      if (!target) return undefined;
+      const response = await app.client.chat.getPermalink({
+        channel: target.channel,
+        message_ts: target.messageTs,
+      });
+      return response.ok ? response.permalink : undefined;
+    };
+  }
 
   // ボタンアクション: Stop
   app.action('xangi_stop', async ({ ack, body }) => {
@@ -1010,12 +1053,11 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
   );
 
-  // ボタンアクション: New Session
+  // ボタンアクション: スレッドのClose / チャンネルのNew Session
   app.action('xangi_new', async ({ ack, body, client: actionClient }) => {
     await ack();
     const channelId = body.channel?.id;
     if (!channelId) return;
-    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
     if (
       !config.slack.allowedUsers?.includes('*') &&
@@ -1024,8 +1066,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     ) {
       return;
     }
-    sessions.delete(runKey);
-    agentRunner.destroy?.(runKey);
+    closeSlackConversationFromAction(body, agentRunner);
     // ボタンを消す
     if ('message' in body && body.message) {
       slackToolHistoryByMessageKey.delete(

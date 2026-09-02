@@ -6,7 +6,14 @@ import type { WebClient } from '@slack/web-api';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
-import { clearSessions, createWebSession, initSessions } from '../src/sessions.js';
+import {
+  clearSessions,
+  createWebSession,
+  ensureSession,
+  getActiveSessionId,
+  getSessionEntry,
+  initSessions,
+} from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import {
   _resetSlackStateForTest,
@@ -14,6 +21,7 @@ import {
   createSlackHistoryBlocks,
   createSlackReplySuggestionBlocks,
   buildSlackCompletionNotification,
+  closeSlackConversationFromAction,
   dismissSlackHistory,
   executeSlackBackendCommand,
   processMessage,
@@ -24,6 +32,45 @@ import {
   shouldReplyInSlackThread,
   slackConversationKey,
 } from '../src/slack.js';
+
+describe('Slack session completion', () => {
+  it('closes a thread session only when Close is selected', () => {
+    const conversationKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+    const firstSessionId = ensureSession(conversationKey, { platform: 'slack' });
+    const destroy = vi.fn();
+
+    expect(getSessionEntry(firstSessionId)?.lifecycle).toBe('open');
+    expect(
+      closeSlackConversationFromAction(
+        { channel: { id: AUTO_REPLY_CHANNEL }, message: { thread_ts: THREAD_TS } },
+        { destroy }
+      )
+    ).toBe(true);
+    expect(destroy).toHaveBeenCalledWith(conversationKey);
+    expect(getSessionEntry(firstSessionId)).toMatchObject({
+      lifecycle: 'closed',
+      closeReason: 'leave',
+    });
+    expect(getActiveSessionId(conversationKey)).toBeUndefined();
+
+    const nextSessionId = ensureSession(conversationKey, { platform: 'slack' });
+    expect(nextSessionId).not.toBe(firstSessionId);
+    expect(getSessionEntry(nextSessionId)?.lifecycle).toBe('open');
+  });
+
+  it('uses the same lifecycle transition for New outside a thread', () => {
+    const firstSessionId = ensureSession(AUTO_REPLY_CHANNEL, { platform: 'slack' });
+
+    expect(
+      closeSlackConversationFromAction({ channel: { id: AUTO_REPLY_CHANNEL }, message: {} }, {})
+    ).toBe(true);
+    expect(getSessionEntry(firstSessionId)).toMatchObject({
+      lifecycle: 'closed',
+      closeReason: 'new',
+    });
+    expect(getActiveSessionId(AUTO_REPLY_CHANNEL)).toBeUndefined();
+  });
+});
 
 describe('Slack reply suggestion UI', () => {
   it('keeps reply suggestions collapsed behind one completed-message button', () => {

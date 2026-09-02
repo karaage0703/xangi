@@ -45,6 +45,13 @@ interface MonitorEstimatedCost {
   updatedAt: string;
 }
 
+interface MonitorTokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  updatedAt: string;
+}
+
 export interface UsageWindow {
   label: string;
   usedPercent: number;
@@ -69,6 +76,7 @@ export interface MonitorSession {
   id: string;
   title?: string;
   platform?: string;
+  scope?: 'interactive' | 'scheduler';
   contextKey?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -83,7 +91,17 @@ export interface MonitorSession {
   backend?: MonitorBackend;
   origin?: MonitorOrigin;
   contextUsage?: MonitorContextUsage;
+  tokenUsage?: MonitorTokenUsage;
   estimatedCost?: MonitorEstimatedCost;
+  progressCard?: {
+    revision: number;
+    updatedAt: string;
+    note?: string;
+    plan: Array<{
+      step: string;
+      status: 'pending' | 'in_progress' | 'completed';
+    }>;
+  };
 }
 
 export interface MonitorSessionsResponse {
@@ -182,11 +200,33 @@ export function accountUsageStatusLabel(stale?: boolean): string | undefined {
 }
 
 function isRunning(session: MonitorSession): boolean {
-  return session.isActive === true;
+  return (
+    session.isActive === true || (session.scope === 'scheduler' && session.lifecycle === 'open')
+  );
 }
 
 export function isMonitorVisible(session: MonitorSession): boolean {
+  if (session.scope === 'scheduler') return false;
   return isRunning(session) || session.sessionMode !== 'stateless';
+}
+
+export function totalSessionTokens(usage?: MonitorTokenUsage): number | undefined {
+  if (!usage) return undefined;
+  return usage.inputTokens + usage.outputTokens;
+}
+
+export function formatSessionTokens(tokens?: number): string | undefined {
+  if (!Number.isFinite(tokens)) return undefined;
+  if ((tokens as number) < 1_000) return Math.round(tokens as number).toLocaleString();
+
+  const units = [
+    { threshold: 1_000_000_000, suffix: 'B' },
+    { threshold: 1_000_000, suffix: 'M' },
+    { threshold: 1_000, suffix: 'K' },
+  ];
+  const unit = units.find(({ threshold }) => (tokens as number) >= threshold);
+  if (!unit) return Math.round(tokens as number).toLocaleString();
+  return `${((tokens as number) / unit.threshold).toFixed(1).replace(/\.0$/, '')}${unit.suffix}`;
 }
 
 function isChatPlatform(session: MonitorSession): boolean {
@@ -244,11 +284,36 @@ function stateDescription(session: MonitorSession): string {
   return 'このセッションで会話を継続できる';
 }
 
-function sessionLine(session: MonitorSession): string {
+export function sessionLine(session: MonitorSession): string {
+  const currentStep = session.progressCard?.plan.find((item) => item.status === 'in_progress');
   return (
     session.activity?.summary ||
+    (currentStep ? `現在: ${currentStep.step}` : undefined) ||
+    (session.scope === 'scheduler' && monitorLane(session) === 'running'
+      ? 'スケジュールを実行中'
+      : undefined) ||
     (monitorLane(session) === 'completed' ? '完了: 現在の処理なし' : '次の入力を待っています')
   );
+}
+
+export function sessionProgressSummary(
+  session: MonitorSession
+): { current: string; completed: number; total: number } | undefined {
+  const plan = session.progressCard?.plan;
+  if (!plan?.length) return undefined;
+  const currentStep = plan.find((item) => item.status === 'in_progress');
+  const completed = plan.filter((item) => item.status === 'completed').length;
+  return {
+    current: currentStep?.step || (completed === plan.length ? '全工程完了' : '開始前'),
+    completed,
+    total: plan.length,
+  };
+}
+
+function progressStatusLabel(status: 'pending' | 'in_progress' | 'completed'): string {
+  if (status === 'completed') return '完了';
+  if (status === 'in_progress') return '現在';
+  return '未着手';
 }
 
 export function conversationLabel(session: MonitorSession): string {
@@ -256,12 +321,6 @@ export function conversationLabel(session: MonitorSession): string {
   const channelName = session.origin?.channelName || session.activity?.threadLabel;
   const channel = channelName ? `#${channelName.replace(/^#/, '')}` : session.origin?.channelId;
   return `${platformName(session.platform)} · ${channel || '-'}`;
-}
-
-function shortId(id?: string): string {
-  const raw = String(id || '');
-  if (raw.length <= 12) return raw;
-  return `${raw.slice(0, 8)}...${raw.slice(-4)}`;
 }
 
 function formatAge(value?: string, now = Date.now()): string {
@@ -354,15 +413,27 @@ export function applyActivitySnapshot(
   };
 }
 
-function eventMatchesSession(event: MonitorActivityEvent, session: MonitorSession): boolean {
-  const separator = event.thread_id.indexOf(':');
+export function sessionMatchesActivityThread(threadId: string, session: MonitorSession): boolean {
+  const separator = threadId.indexOf(':');
   if (separator < 0) return false;
-  const platform = event.thread_id.slice(0, separator);
-  const context = event.thread_id.slice(separator + 1);
+  const platform = threadId.slice(0, separator);
+  const context = threadId.slice(separator + 1);
+  if (platform.endsWith('-schedule')) {
+    return (
+      session.scope === 'scheduler' &&
+      session.platform === platform.slice(0, -'-schedule'.length) &&
+      session.id === context
+    );
+  }
+  if (session.scope === 'scheduler') return false;
   return (
     session.platform === platform &&
     (platform === 'web' ? session.id === context : session.contextKey === context)
   );
+}
+
+function eventMatchesSession(event: MonitorActivityEvent, session: MonitorSession): boolean {
+  return sessionMatchesActivityThread(event.thread_id, session);
 }
 
 export function revealMonitorDetail(
@@ -389,6 +460,8 @@ export function Monitor() {
   const [source, setSource] = useState('source --');
   const [closingId, setClosingId] = useState('');
   const [sessionToClose, setSessionToClose] = useState<MonitorSession | null>(null);
+  const [closeAllWaitingOpen, setCloseAllWaitingOpen] = useState(false);
+  const [closingAllWaiting, setClosingAllWaiting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [accountUsage, setAccountUsage] = useState<AccountUsageResponse>();
   const [hiddenUsageProviders, setHiddenUsageProviders] = useState<string[]>(() => {
@@ -504,6 +577,38 @@ export function Monitor() {
     }
   }, [closingId, loadSessions, sessionToClose]);
 
+  const waitingSessions = useMemo(
+    () => sessions.filter((session) => monitorLane(session) === 'waiting'),
+    [sessions]
+  );
+
+  const closeAllWaitingSessions = useCallback(async () => {
+    if (closingAllWaiting) return;
+    const targets = sessionsRef.current.filter((session) => monitorLane(session) === 'waiting');
+    if (targets.length === 0) {
+      setCloseAllWaitingOpen(false);
+      return;
+    }
+    setClosingAllWaiting(true);
+    setActionError('');
+    let failed = 0;
+    try {
+      for (const session of targets) {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
+          method: 'POST',
+        });
+        if (!response.ok) failed += 1;
+      }
+      await loadSessions();
+      if (failed > 0) setActionError(`${targets.length}件中${failed}件を変更できませんでした`);
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setCloseAllWaitingOpen(false);
+      setClosingAllWaiting(false);
+    }
+  }, [closingAllWaiting, loadSessions]);
+
   const hasRunningSession = sessions.some(isRunning);
   useEffect(() => {
     const interval = window.setInterval(
@@ -555,15 +660,10 @@ export function Monitor() {
           threadId: string;
           activity: MonitorActivity;
         };
-        const separator = data.threadId.indexOf(':');
-        const platform = data.threadId.slice(0, separator);
-        const context = data.threadId.slice(separator + 1);
         let matched = false;
         const updatedSessions = sessionsRef.current
           .map((session) => {
-            const isMatch =
-              session.platform === platform &&
-              (platform === 'web' ? session.id === context : session.contextKey === context);
+            const isMatch = sessionMatchesActivityThread(data.threadId, session);
             if (isMatch) matched = true;
             return isMatch ? applyActivitySnapshot(session, data.activity) : session;
           })
@@ -666,6 +766,14 @@ export function Monitor() {
             {item.label}
           </button>
         ))}
+        <button
+          type="button"
+          className="monitor-bulk-close"
+          disabled={waitingSessions.length === 0 || closingAllWaiting}
+          onClick={() => setCloseAllWaitingOpen(true)}
+        >
+          入力待ちをすべて完了
+        </button>
       </nav>
 
       <section className="monitor-content">
@@ -840,6 +948,13 @@ export function Monitor() {
                   ['updated', '更新', formatAge(selected.updatedAt || selected.createdAt, clock)],
                   ['turns', '完了ターン数', String(selected.messageCount || 0)],
                   [
+                    'tokens',
+                    'トークン使用量',
+                    selected.tokenUsage
+                      ? `${totalSessionTokens(selected.tokenUsage)?.toLocaleString()}（入力 ${selected.tokenUsage.inputTokens.toLocaleString()} / キャッシュ ${selected.tokenUsage.cachedInputTokens.toLocaleString()} / 出力 ${selected.tokenUsage.outputTokens.toLocaleString()}）`
+                      : '未取得',
+                  ],
+                  [
                     'context',
                     'コンテキスト',
                     selected.contextUsage
@@ -862,6 +977,31 @@ export function Monitor() {
                   </div>
                 ))}
               </dl>
+
+              {selected.progressCard && (
+                <section className="monitor-progress" aria-label="作業の進捗">
+                  <div className="monitor-progress-head">
+                    <h3>作業の進捗</h3>
+                    <span>{formatAge(selected.progressCard.updatedAt, clock)}更新</span>
+                  </div>
+                  {selected.progressCard.note && (
+                    <p className="monitor-progress-note">{selected.progressCard.note}</p>
+                  )}
+                  <ol className="monitor-progress-list">
+                    {selected.progressCard.plan.map((item, index) => (
+                      <li
+                        className={`monitor-progress-step is-${item.status}`}
+                        key={`${index}-${item.step}`}
+                      >
+                        <span className="monitor-progress-status">
+                          {progressStatusLabel(item.status)}
+                        </span>
+                        <span className="monitor-progress-text">{item.step}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
 
               <section className="monitor-runtime" aria-label="実行設定">
                 <h3>このセッションの実行設定</h3>
@@ -944,6 +1084,7 @@ export function Monitor() {
                       const hasError = activityState === 'error';
                       const wasAborted = activityState === 'aborted';
                       const selectedRow = session.id === selectedId;
+                      const progressSummary = sessionProgressSummary(session);
                       const elapsed =
                         session.activity?.active && Number.isFinite(session.activity.startedAt)
                           ? ` ${Math.max(
@@ -995,15 +1136,23 @@ export function Monitor() {
                               <strong className="monitor-session-title">
                                 {session.title || session.id}
                               </strong>
-                              <span className="monitor-session-meta">
-                                {platformLabel(session.platform)} #{shortId(session.id)}
-                                {session.contextKey
-                                  ? ` / ${shortId(session.contextKey)}`
-                                  : ''} / {formatAge(session.updatedAt || session.createdAt, clock)}
-                              </span>
                               <span className="monitor-session-activity">
                                 {sessionLine(session)}
                               </span>
+                              {progressSummary && (
+                                <span
+                                  className="monitor-session-progress"
+                                  aria-label={`作業の進捗: 現在 ${progressSummary.current}、${progressSummary.completed}/${progressSummary.total}完了`}
+                                >
+                                  <span className="monitor-session-progress-current">
+                                    <span>現在</span>
+                                    {progressSummary.current}
+                                  </span>
+                                  <span className="monitor-session-progress-count">
+                                    {progressSummary.completed}/{progressSummary.total} 完了
+                                  </span>
+                                </span>
+                              )}
                               {!!session.activity?.toolLines?.length && (
                                 <span className="monitor-tool-lines">
                                   {session.activity.toolLines.slice(-3).map((line, index) => (
@@ -1026,6 +1175,12 @@ export function Monitor() {
                               <time>
                                 {formatAge(session.updatedAt || session.createdAt, clock)}
                               </time>
+                              {session.tokenUsage && (
+                                <span className="monitor-session-usage">
+                                  {formatSessionTokens(totalSessionTokens(session.tokenUsage))}{' '}
+                                  tokens
+                                </span>
+                              )}
                             </span>
                           </button>
                         </article>
@@ -1055,6 +1210,23 @@ export function Monitor() {
           if (!closingId) setSessionToClose(null);
         }}
         onConfirm={() => void closeSelectedSession()}
+      />
+      <ConfirmDialog
+        open={closeAllWaitingOpen}
+        title="入力待ちをすべて完了"
+        description={
+          <>
+            入力待ちのセッション{waitingSessions.length}
+            件を完了にします。会話履歴は残り、履歴から再開・分岐できます。
+          </>
+        }
+        confirmLabel={`${waitingSessions.length}件を完了にする`}
+        busyLabel="変更中…"
+        busy={closingAllWaiting}
+        onCancel={() => {
+          if (!closingAllWaiting) setCloseAllWaitingOpen(false);
+        }}
+        onConfirm={() => void closeAllWaitingSessions()}
       />
     </main>
   );

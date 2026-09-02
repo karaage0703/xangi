@@ -106,6 +106,14 @@ describe('Local LLM xangi tools by platform', () => {
     }
   });
 
+  it('exposes the session progress card on every platform', () => {
+    for (const platform of ['web', 'discord', 'slack', 'telegram'] as const) {
+      const tool = getXangiTools(platform).find((candidate) => candidate.name === 'progress_card');
+      expect(tool?.parameters.properties.plan.type).toBe('array');
+      expect(tool?.parameters.properties.clear.type).toBe('boolean');
+    }
+  });
+
   it('keeps the legacy all-platform set when platform is unknown', () => {
     const toolNames = names();
 
