@@ -17,6 +17,7 @@ import {
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import {
   _resetSlackStateForTest,
+  addSlackCloseReaction,
   createSlackCompletedBlocks,
   createSlackHistoryBlocks,
   createSlackReplySuggestionBlocks,
@@ -31,6 +32,7 @@ import {
   shouldProcessSlackMessage,
   shouldReplyInSlackThread,
   slackConversationKey,
+  slackThreadParentTsFromActionBody,
 } from '../src/slack.js';
 
 describe('Slack session completion', () => {
@@ -69,6 +71,87 @@ describe('Slack session completion', () => {
       closeReason: 'new',
     });
     expect(getActiveSessionId(AUTO_REPLY_CHANNEL)).toBeUndefined();
+  });
+});
+
+describe('Slack Close action', () => {
+  it('gets the thread parent ts from a reply in a thread', () => {
+    expect(
+      slackThreadParentTsFromActionBody({
+        message: { ts: 'reply-ts', thread_ts: THREAD_TS },
+      })
+    ).toBe(THREAD_TS);
+  });
+
+  it('does not get a thread parent ts from a channel message', () => {
+    expect(slackThreadParentTsFromActionBody({ message: { ts: 'channel-message-ts' } })).toBe(
+      undefined
+    );
+  });
+
+  it('does not treat a channel message later threaded as a thread reply', () => {
+    expect(
+      slackThreadParentTsFromActionBody({
+        message: { ts: THREAD_TS, thread_ts: THREAD_TS },
+      })
+    ).toBe(undefined);
+  });
+
+  it('adds a check mark reaction to the thread parent', async () => {
+    const add = vi.fn().mockResolvedValue(undefined);
+    const client = { reactions: { add } } as unknown as WebClient;
+
+    await addSlackCloseReaction(client, AUTO_REPLY_CHANNEL, THREAD_TS);
+
+    expect(add).toHaveBeenCalledWith({
+      channel: AUTO_REPLY_CHANNEL,
+      timestamp: THREAD_TS,
+      name: 'white_check_mark',
+    });
+  });
+
+  it('does nothing outside a thread', async () => {
+    const add = vi.fn().mockResolvedValue(undefined);
+    const client = { reactions: { add } } as unknown as WebClient;
+
+    await addSlackCloseReaction(client, AUTO_REPLY_CHANNEL);
+
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('silently ignores an already_reacted error', async () => {
+    const error = Object.assign(new Error('An API error occurred: already_reacted'), {
+      data: { error: 'already_reacted' },
+    });
+    const add = vi.fn().mockRejectedValue(error);
+    const client = { reactions: { add } } as unknown as WebClient;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(addSlackCloseReaction(client, AUTO_REPLY_CHANNEL, THREAD_TS)).resolves.toBe(
+      undefined
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+
+  it('logs and does not reject for other reaction errors', async () => {
+    const error = Object.assign(new Error('An API error occurred: invalid_auth'), {
+      data: { error: 'invalid_auth' },
+    });
+    const add = vi.fn().mockRejectedValue(error);
+    const client = { reactions: { add } } as unknown as WebClient;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(addSlackCloseReaction(client, AUTO_REPLY_CHANNEL, THREAD_TS)).resolves.toBe(
+      undefined
+    );
+    expect(consoleError).toHaveBeenCalledWith(
+      '[slack] Failed to add close reaction:',
+      error.message
+    );
+
+    consoleError.mockRestore();
   });
 });
 

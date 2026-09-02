@@ -151,6 +151,34 @@ export function closeSlackConversationFromAction(
   return closeActiveSession(conversationKey, reason);
 }
 
+/** Slack アクションのメッセージがスレッド内の返信なら親 ts を返す */
+export function slackThreadParentTsFromActionBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object' || !('message' in body)) return undefined;
+  const message = body.message;
+  if (!message || typeof message !== 'object') return undefined;
+  const { thread_ts: threadTs, ts } = message as { thread_ts?: string; ts?: string };
+  return threadTs && threadTs !== ts ? threadTs : undefined;
+}
+
+/** Close 時にスレッド親へ完了リアクションを追加する */
+export async function addSlackCloseReaction(
+  client: WebClient,
+  channelId: string,
+  threadTs?: string
+): Promise<void> {
+  if (!threadTs) return;
+  await client.reactions
+    .add({
+      channel: channelId,
+      timestamp: threadTs,
+      name: 'white_check_mark',
+    })
+    .catch((err) => {
+      if (err.data?.error === 'already_reacted') return;
+      console.error('[slack] Failed to add close reaction:', err.message || err);
+    });
+}
+
 function markSlackMessageProcessed(channelId: string, ts: string): boolean {
   const key = `${channelId}:${ts}`;
   if (processedSlackMessages.has(key)) return false;
@@ -1084,6 +1112,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         })
         .catch(() => {});
     }
+    await addSlackCloseReaction(actionClient, channelId, slackThreadParentTsFromActionBody(body));
   });
 
   // リアクションによる bot メッセージ削除
