@@ -14,6 +14,7 @@ import type { AgentConfig, Config } from './config.js';
 import { BackendResolver, type ResolvedBackend } from './backend-resolver.js';
 import { RunnerManager } from './runner-manager.js';
 import {
+  addSessionProcessingTime,
   addSessionTokenUsage,
   deleteSession,
   getActiveSessionId,
@@ -220,6 +221,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    const startedAt = Date.now();
     const channelId = options?.channelId;
     const settingsChannelId = options?.settingsChannelId ?? channelId;
     const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
@@ -241,9 +243,15 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const enrichedPrompt = runOptions?.internalTask
       ? prompt
       : await this.applyUserPromptSubmitHooks(prompt, runOptions);
-    const result = await runner.run(enrichedPrompt, runOptions);
-    this.recordResolvedBackend(runOptions, resolved, result);
-    return result;
+    try {
+      const result = await runner.run(enrichedPrompt, runOptions);
+      this.recordResolvedBackend(runOptions, resolved, result);
+      return result;
+    } finally {
+      if (runOptions?.appSessionId) {
+        addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
+      }
+    }
   }
 
   /**
@@ -254,6 +262,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const startedAt = Date.now();
     const channelId = options?.channelId;
     const settingsChannelId = options?.settingsChannelId ?? channelId;
     const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
@@ -287,13 +296,19 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
             }
           )
         : undefined;
-    const result = await runner.runStream(
-      enrichedPrompt,
-      recorder?.callbacks(callbacks) ?? callbacks,
-      runOptions
-    );
-    this.recordResolvedBackend(runOptions, resolved, result);
-    return result;
+    try {
+      const result = await runner.runStream(
+        enrichedPrompt,
+        recorder?.callbacks(callbacks) ?? callbacks,
+        runOptions
+      );
+      this.recordResolvedBackend(runOptions, resolved, result);
+      return result;
+    } finally {
+      if (runOptions?.appSessionId) {
+        addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
+      }
+    }
   }
 
   private async applyUserPromptSubmitHooks(

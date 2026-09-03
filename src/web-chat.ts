@@ -652,6 +652,16 @@ export function startWebChat(options: WebChatOptions): void {
                 source: 'session' as const,
               }
             : undefined;
+      const schedulerElapsedMs = Date.parse(s.updatedAt) - Date.parse(s.createdAt);
+      const processingTime =
+        s.processingTime ??
+        (s.scope === 'scheduler' && Number.isFinite(schedulerElapsedMs)
+          ? {
+              durationMs: Math.max(0, schedulerElapsedMs),
+              updatedAt: s.updatedAt,
+              source: 'session-elapsed' as const,
+            }
+          : undefined);
       return {
         id: s.id,
         title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
@@ -684,6 +694,7 @@ export function startWebChat(options: WebChatOptions): void {
         backend,
         contextUsage: s.contextUsage,
         tokenUsage: s.tokenUsage,
+        processingTime,
         estimatedCost: s.estimatedCost,
         progressCard: s.progressCard,
         origin,

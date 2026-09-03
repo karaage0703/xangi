@@ -52,6 +52,12 @@ interface MonitorTokenUsage {
   updatedAt: string;
 }
 
+interface MonitorProcessingTime {
+  durationMs: number;
+  updatedAt: string;
+  source?: 'measured' | 'session-elapsed';
+}
+
 export interface UsageWindow {
   label: string;
   usedPercent: number;
@@ -92,6 +98,7 @@ export interface MonitorSession {
   origin?: MonitorOrigin;
   contextUsage?: MonitorContextUsage;
   tokenUsage?: MonitorTokenUsage;
+  processingTime?: MonitorProcessingTime;
   estimatedCost?: MonitorEstimatedCost;
   progressCard?: {
     revision: number;
@@ -133,24 +140,38 @@ interface MonitorActivityEvent {
   ts: number;
 }
 
-type MonitorFilter = 'chat' | 'web' | 'all';
+type MonitorFilter = 'chat' | 'web' | 'scheduler';
+export type MonitorTimeRange = '24h' | '7d' | '30d' | 'all';
 export type MonitorLane = 'running' | 'waiting' | 'completed';
 
 const PAGE_SIZE = 200;
-const RECENT_MS = 24 * 60 * 60 * 1000;
 const USAGE_VISIBILITY_KEY = 'xangi.monitor.hidden-usage-providers';
 
 const FILTERS: Array<{ value: MonitorFilter; label: string }> = [
-  { value: 'all', label: 'All' },
   { value: 'chat', label: 'Chat' },
   { value: 'web', label: 'Web' },
+  { value: 'scheduler', label: 'Schedule' },
+];
+
+const TIME_RANGES: Array<{ value: MonitorTimeRange; label: string; durationMs?: number }> = [
+  { value: '24h', label: '24時間', durationMs: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: '7日', durationMs: 7 * 24 * 60 * 60 * 1000 },
+  { value: '30d', label: '30日', durationMs: 30 * 24 * 60 * 60 * 1000 },
+  { value: 'all', label: 'すべて' },
 ];
 
 const LANES: Array<{ value: MonitorLane; label: string; description: string }> = [
   { value: 'running', label: '実行中', description: '返答・tool実行中' },
   { value: 'waiting', label: '入力待ち', description: '次の入力を待機・継続可能' },
-  { value: 'completed', label: '完了', description: '24時間以内に完了・再開可能' },
+  { value: 'completed', label: '完了', description: '選択期間内に完了・再開可能' },
 ];
+
+export function monitorTimeRange(range: MonitorTimeRange): {
+  label: string;
+  durationMs?: number;
+} {
+  return TIME_RANGES.find((item) => item.value === range) || TIME_RANGES[0];
+}
 
 export function usagePacePercent(
   window: Pick<UsageWindow, 'resetsAt' | 'windowDurationMins'>,
@@ -206,7 +227,7 @@ function isRunning(session: MonitorSession): boolean {
 }
 
 export function isMonitorVisible(session: MonitorSession): boolean {
-  if (session.scope === 'scheduler') return false;
+  if (session.scope === 'scheduler') return true;
   return isRunning(session) || session.sessionMode !== 'stateless';
 }
 
@@ -229,19 +250,44 @@ export function formatSessionTokens(tokens?: number): string | undefined {
   return `${((tokens as number) / unit.threshold).toFixed(1).replace(/\.0$/, '')}${unit.suffix}`;
 }
 
+export function formatProcessingDuration(durationMs?: number): string | undefined {
+  if (!Number.isFinite(durationMs) || (durationMs as number) < 0) return undefined;
+  const totalSeconds = Math.floor((durationMs as number) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}時間${minutes}分`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+export function formatSessionProcessingTime(
+  processingTime?: MonitorProcessingTime
+): string | undefined {
+  const duration = formatProcessingDuration(processingTime?.durationMs);
+  if (!duration) return undefined;
+  return processingTime?.source === 'session-elapsed' ? `約${duration}` : duration;
+}
+
 function isChatPlatform(session: MonitorSession): boolean {
   return session.platform === 'discord' || session.platform === 'slack';
 }
 
-function isRecent(session: MonitorSession, now = Date.now()): boolean {
+export function isWithinMonitorTimeRange(
+  session: MonitorSession,
+  range: MonitorTimeRange,
+  now = Date.now()
+): boolean {
+  const durationMs = monitorTimeRange(range).durationMs;
+  if (durationMs === undefined) return true;
   const updatedAt = Date.parse(session.updatedAt || session.createdAt || '');
-  return Number.isFinite(updatedAt) && now - updatedAt < RECENT_MS;
+  return Number.isFinite(updatedAt) && now - updatedAt < durationMs;
 }
 
-function matchesFilter(session: MonitorSession, filter: MonitorFilter): boolean {
-  if (filter === 'chat') return isChatPlatform(session);
-  if (filter === 'web') return session.platform === 'web';
-  return true;
+export function matchesFilter(session: MonitorSession, filters: readonly MonitorFilter[]): boolean {
+  if (session.scope === 'scheduler') return filters.includes('scheduler');
+  if (session.platform === 'web') return filters.includes('web');
+  return isChatPlatform(session) && filters.includes('chat');
 }
 
 export function monitorLane(session: MonitorSession): MonitorLane {
@@ -452,7 +498,8 @@ export function revealMonitorDetail(
 
 export function Monitor() {
   const [sessions, setSessions] = useState<MonitorSession[]>([]);
-  const [filter, setFilter] = useState<MonitorFilter>('all');
+  const [filters, setFilters] = useState<MonitorFilter[]>(['chat', 'web']);
+  const [timeRange, setTimeRange] = useState<MonitorTimeRange>('24h');
   const [selectedId, setSelectedId] = useState('');
   const [online, setOnline] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number>();
@@ -535,7 +582,10 @@ export function Monitor() {
           lifecycle,
         });
         if (lifecycle === 'closed') {
-          params.set('updatedSince', new Date(Date.now() - RECENT_MS).toISOString());
+          const durationMs = monitorTimeRange(timeRange).durationMs;
+          if (durationMs !== undefined) {
+            params.set('updatedSince', new Date(Date.now() - durationMs).toISOString());
+          }
         }
         const response = await fetch(`/api/sessions?${params}`, { cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -556,7 +606,7 @@ export function Monitor() {
         },
       });
     }
-  }, [applySnapshot]);
+  }, [applySnapshot, timeRange]);
 
   const closeSelectedSession = useCallback(async () => {
     const session = sessionToClose;
@@ -684,8 +734,8 @@ export function Monitor() {
   }, [applySnapshot, loadSessions]);
 
   const filteredSessions = useMemo(
-    () => sessions.filter((session) => matchesFilter(session, filter)),
-    [filter, sessions]
+    () => sessions.filter((session) => matchesFilter(session, filters)),
+    [filters, sessions]
   );
 
   const visibleSessions = useMemo(
@@ -696,8 +746,12 @@ export function Monitor() {
             Number(isRunning(b)) - Number(isRunning(a)) ||
             String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
         )
-        .filter((session) => monitorLane(session) !== 'completed' || isRecent(session, clock)),
-    [clock, filteredSessions]
+        .filter(
+          (session) =>
+            monitorLane(session) !== 'completed' ||
+            isWithinMonitorTimeRange(session, timeRange, clock)
+        ),
+    [clock, filteredSessions, timeRange]
   );
 
   const sessionsByLane = useMemo(
@@ -757,15 +811,34 @@ export function Monitor() {
         {FILTERS.map((item) => (
           <button
             type="button"
-            className={`monitor-filter ${filter === item.value ? 'active' : ''}`}
-            aria-pressed={filter === item.value}
+            className={`monitor-filter ${filters.includes(item.value) ? 'active' : ''}`}
+            aria-pressed={filters.includes(item.value)}
             data-filter={item.value}
             key={item.value}
-            onClick={() => setFilter(item.value)}
+            onClick={() =>
+              setFilters((current) =>
+                current.includes(item.value)
+                  ? current.filter((value) => value !== item.value)
+                  : [...current, item.value]
+              )
+            }
           >
             {item.label}
           </button>
         ))}
+        <span className="monitor-toolbar-label monitor-time-range-label">期間</span>
+        <select
+          className="monitor-time-range"
+          aria-label="完了セッションの表示期間"
+          value={timeRange}
+          onChange={(event) => setTimeRange(event.target.value as MonitorTimeRange)}
+        >
+          {TIME_RANGES.map((item) => (
+            <option value={item.value} key={item.value}>
+              {item.label}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           className="monitor-bulk-close"
@@ -891,7 +964,7 @@ export function Monitor() {
           </div>
           <div className="monitor-metric">
             <div className="monitor-metric-value">{completedCount}</div>
-            <div className="monitor-metric-label">完了（24時間）</div>
+            <div className="monitor-metric-label">完了（{monitorTimeRange(timeRange).label}）</div>
           </div>
         </section>
 
@@ -947,6 +1020,11 @@ export function Monitor() {
                   ['destination', '会話先', conversationLabel(selected)],
                   ['updated', '更新', formatAge(selected.updatedAt || selected.createdAt, clock)],
                   ['turns', '完了ターン数', String(selected.messageCount || 0)],
+                  [
+                    'processing-time',
+                    '累計処理時間',
+                    formatSessionProcessingTime(selected.processingTime) || '未取得',
+                  ],
                   [
                     'tokens',
                     'トークン使用量',
@@ -1133,7 +1211,10 @@ export function Monitor() {
                             />
 
                             <span className="monitor-session-body">
-                              <strong className="monitor-session-title">
+                              <strong
+                                className="monitor-session-title"
+                                title={session.title || session.id}
+                              >
                                 {session.title || session.id}
                               </strong>
                               <span className="monitor-session-activity">
@@ -1175,10 +1256,20 @@ export function Monitor() {
                               <time>
                                 {formatAge(session.updatedAt || session.createdAt, clock)}
                               </time>
-                              {session.tokenUsage && (
+                              {(session.tokenUsage || session.processingTime) && (
                                 <span className="monitor-session-usage">
-                                  {formatSessionTokens(totalSessionTokens(session.tokenUsage))}{' '}
-                                  tokens
+                                  {session.tokenUsage && (
+                                    <>
+                                      {formatSessionTokens(totalSessionTokens(session.tokenUsage))}{' '}
+                                      tokens
+                                    </>
+                                  )}
+                                  {session.tokenUsage && session.processingTime && ' / '}
+                                  {session.processingTime && (
+                                    <>
+                                      累計処理 {formatSessionProcessingTime(session.processingTime)}
+                                    </>
+                                  )}
                                 </span>
                               )}
                             </span>

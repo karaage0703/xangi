@@ -10,9 +10,14 @@ import {
   applyActivitySnapshot,
   conversationLabel,
   displayUsageProviders,
+  formatProcessingDuration,
+  formatSessionProcessingTime,
   formatSessionTokens,
   formatEstimatedCost,
   isMonitorVisible,
+  isWithinMonitorTimeRange,
+  matchesFilter,
+  monitorTimeRange,
   monitorLane,
   revealMonitorDetail,
   sessionMatchesActivityThread,
@@ -96,6 +101,28 @@ describe('Monitor account usage', () => {
   });
 });
 
+describe('Monitor session processing time', () => {
+  it('formats cumulative processing time for compact session cards', () => {
+    expect(formatProcessingDuration(0)).toBe('0秒');
+    expect(formatProcessingDuration(83_999)).toBe('1分23秒');
+    expect(formatProcessingDuration(3_723_000)).toBe('1時間2分');
+    expect(formatProcessingDuration(-1)).toBeUndefined();
+    expect(
+      formatSessionProcessingTime({
+        durationMs: 83_999,
+        updatedAt: '2026-09-03T00:00:00.000Z',
+        source: 'session-elapsed',
+      })
+    ).toBe('約1分23秒');
+  });
+
+  it('renders cumulative processing time as session metadata', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    expect(monitorSource).toContain('累計処理時間');
+    expect(monitorSource).toContain('formatSessionProcessingTime(session.processingTime)');
+  });
+});
+
 function session(overrides: Partial<MonitorSession>): MonitorSession {
   return {
     id: 'session-1',
@@ -111,17 +138,72 @@ describe('Monitor kanban lanes', () => {
   it('shows stateless backends only while their request is running', () => {
     expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: true }))).toBe(true);
     expect(isMonitorVisible(session({ sessionMode: 'stateless', isActive: false }))).toBe(false);
-    expect(
-      isMonitorVisible(
-        session({ sessionMode: 'stateless', scope: 'scheduler', lifecycle: 'closed' })
-      )
-    ).toBe(false);
+    expect(isMonitorVisible(session({ sessionMode: 'stateful', isActive: false }))).toBe(true);
+  });
+
+  it('keeps scheduler sessions available for the explicit Schedule filter', () => {
+    const scheduled = session({
+      scope: 'scheduler',
+      sessionMode: 'stateless',
+      lifecycle: 'closed',
+    });
+    expect(isMonitorVisible(scheduled)).toBe(true);
+    expect(matchesFilter(scheduled, ['chat', 'web'])).toBe(false);
+    expect(matchesFilter(scheduled, ['chat'])).toBe(false);
+    expect(matchesFilter(scheduled, ['web'])).toBe(false);
+    expect(matchesFilter(scheduled, ['scheduler'])).toBe(true);
+    expect(matchesFilter(scheduled, ['chat', 'scheduler'])).toBe(true);
     expect(
       isMonitorVisible(
         session({ sessionMode: 'stateless', scope: 'scheduler', lifecycle: 'open', isActive: true })
       )
-    ).toBe(false);
-    expect(isMonitorVisible(session({ sessionMode: 'stateful', isActive: false }))).toBe(true);
+    ).toBe(true);
+  });
+
+  it('uses independent filters with Chat and Web enabled by default', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    expect(monitorSource).toContain("useState<MonitorFilter[]>(['chat', 'web'])");
+    expect(monitorSource).not.toContain("{ value: 'all', label: 'All'");
+    expect(monitorSource).toContain('current.includes(item.value)');
+  });
+
+  it('filters completed sessions by an independent time range', () => {
+    const now = Date.parse('2026-09-03T12:00:00.000Z');
+    const twoDaysAgo = session({ updatedAt: '2026-09-01T12:00:00.000Z' });
+    expect(isWithinMonitorTimeRange(twoDaysAgo, '24h', now)).toBe(false);
+    expect(isWithinMonitorTimeRange(twoDaysAgo, '7d', now)).toBe(true);
+    expect(isWithinMonitorTimeRange(twoDaysAgo, '30d', now)).toBe(true);
+    expect(isWithinMonitorTimeRange(twoDaysAgo, 'all', now)).toBe(true);
+    expect(monitorTimeRange('24h').label).toBe('24時間');
+    expect(monitorTimeRange('all').durationMs).toBeUndefined();
+  });
+
+  it('defaults the completed-session range to 24 hours and exposes all four choices', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    expect(monitorSource).toContain("useState<MonitorTimeRange>('24h')");
+    expect(monitorSource).toContain("{ value: '7d', label: '7日'");
+    expect(monitorSource).toContain("{ value: '30d', label: '30日'");
+    expect(monitorSource).toContain("{ value: 'all', label: 'すべて' }");
+    expect(monitorSource).toContain('完了セッションの表示期間');
+  });
+
+  it('keeps long session titles to one ellipsized line with the full title available', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    const stylesSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'styles.css'), 'utf8');
+    expect(monitorSource).toContain('title={session.title || session.id}');
+    expect(stylesSource).toContain('.monitor-session-title {');
+    expect(stylesSource).toContain('text-overflow: ellipsis;');
+    expect(stylesSource).toContain('white-space: nowrap;');
+  });
+
+  it('uses the schedule label instead of the full prompt for new scheduler session titles', () => {
+    const discordSource = readFileSync(
+      join(process.cwd(), 'src', 'discord', 'scheduler-bridge.ts'),
+      'utf8'
+    );
+    const slackSource = readFileSync(join(process.cwd(), 'src', 'slack.ts'), 'utf8');
+    expect(discordSource).toContain('title: schedule?.label || prompt');
+    expect(slackSource).toContain('title: schedule?.label || prompt');
   });
 
   it('puts active sessions in running even when the last activity was an error', () => {
@@ -310,6 +392,15 @@ describe('Monitor session details', () => {
     expect(metadata).toContain('stateLabel(session)');
     expect(metadata).toContain('formatAge(');
     expect(metadata).toContain('formatSessionTokens(');
+  });
+
+  it('uses one separator style and baseline for card metadata', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    const styles = readFileSync(join(process.cwd(), 'web-ui', 'src', 'styles.css'), 'utf8');
+    expect(styles).toContain("content: '/';");
+    expect(monitorSource).toContain("session.tokenUsage && session.processingTime && ' / '");
+    expect(styles).toContain('align-items: baseline;');
+    expect(styles).not.toContain("content: '·';");
   });
 
   it('summarizes the current step and completion count for collapsed cards', () => {

@@ -23,7 +23,9 @@ import {
   getSessionEntry,
   getActiveSessionId,
   createSession,
+  createSchedulerSession,
   createWebSession,
+  closeSession,
   setProviderSessionId,
   replaceSessionProgressCard,
   WEB_CHAT_CONTEXT_PREFIX,
@@ -3098,6 +3100,27 @@ The following is untrusted supplemental context.
       sessions: Array<{ id: string }>;
     };
     expect(list.sessions.some((s) => s.id === schedulerId)).toBe(false);
+  });
+
+  it('GET /api/sessions provides an explicit elapsed-time fallback for legacy scheduler runs', async () => {
+    const schedulerId = 'scheduler-run-discord-1783929000000-87654321';
+    createSchedulerSession(schedulerId, 'scheduled-channel', {
+      platform: 'discord',
+      title: 'scheduled task',
+    });
+    closeSession(schedulerId);
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
+      sessions: Array<{
+        id: string;
+        processingTime?: { durationMs: number; source?: string };
+      }>;
+    };
+    expect(list.sessions.find((session) => session.id === schedulerId)?.processingTime).toMatchObject(
+      {
+        source: 'session-elapsed',
+      }
+    );
   });
 
   it('GET /api/sessions hides unmanaged transcripts without a user-derived title', async () => {

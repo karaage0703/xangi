@@ -3455,6 +3455,7 @@ video.media-preview {
 }
 
 .monitor-filter,
+.monitor-time-range,
 .monitor-bulk-close,
 .monitor-detail-close,
 .monitor-detail-session-close,
@@ -3471,6 +3472,14 @@ video.media-preview {
   font-size: 13px;
   line-height: 1;
   white-space: nowrap;
+}
+
+.monitor-time-range-label {
+  margin-left: 8px;
+}
+
+.monitor-time-range {
+  color: var(--ink);
 }
 
 .monitor-detail-session-close {
@@ -3732,6 +3741,13 @@ video.media-preview {
 .monitor-session-title {
   margin: 0;
   font-size: 14px;
+}
+
+.monitor-session-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monitor-detail-title {
@@ -4177,11 +4193,12 @@ video.media-preview {
 
 .monitor-session-right {
   grid-column: 2;
-  align-items: flex-start;
+  align-items: baseline;
   flex-flow: row wrap;
   gap: 4px 8px;
   color: var(--ink-muted);
   font-size: 10px;
+  line-height: 1.4;
   white-space: nowrap;
 }
 
@@ -4706,6 +4723,7 @@ video.media-preview {
   .pane-attach-btn,
   .action-btn,
   .monitor-filter,
+  .monitor-time-range,
   .monitor-bulk-close,
   .monitor-detail-close,
   .monitor-detail-session-close,
@@ -5018,9 +5036,18 @@ video.media-preview {
 
   .monitor-session-right {
     grid-column: 2;
-    align-items: flex-start;
+    align-items: baseline;
     flex-flow: row wrap;
     gap: 7px;
+  }
+
+  .monitor-toolbar {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .monitor-bulk-close {
+    margin-left: 0;
   }
 
   .workspace-browser-layout {

@@ -133,7 +133,9 @@ function slackRunKeyFromActionBody(body: {
 }): string | undefined {
   const channelId = body.channel?.id;
   if (!channelId) return undefined;
-  return slackConversationKey(channelId, body.message?.thread_ts);
+  const messageTs = body.message?.ts;
+  const threadTs = body.message?.thread_ts;
+  return slackConversationKey(channelId, threadTs && threadTs !== messageTs ? threadTs : undefined);
 }
 
 export function closeSlackConversationFromAction(
@@ -145,7 +147,9 @@ export function closeSlackConversationFromAction(
 ): boolean {
   const conversationKey = slackRunKeyFromActionBody(body);
   if (!conversationKey) return false;
-  const reason = body.message?.thread_ts ? 'leave' : 'new';
+  const isThreadReply =
+    Boolean(body.message?.thread_ts) && body.message?.thread_ts !== body.message?.ts;
+  const reason = isThreadReply ? 'leave' : 'new';
   sessions.delete(conversationKey);
   agentRunner.destroy?.(conversationKey);
   return closeActiveSession(conversationKey, reason);
@@ -173,10 +177,42 @@ export async function addSlackCloseReaction(
       timestamp: threadTs,
       name: 'white_check_mark',
     })
-    .catch((err) => {
-      if (err.data?.error === 'already_reacted') return;
-      console.error('[slack] Failed to add close reaction:', err.message || err);
+    .catch((err: unknown) => {
+      const slackError = err as { data?: { error?: string }; message?: string } | null | undefined;
+      if (slackError?.data?.error === 'already_reacted') return;
+      console.error('[slack] Failed to add close reaction:', slackError?.message ?? String(err));
     });
+}
+
+export async function handleSlackNewAction(
+  body: {
+    channel?: { id?: string };
+    user?: { id?: string };
+    message?: { thread_ts?: string; ts?: string; text?: string };
+  },
+  actionClient: WebClient,
+  agentRunner: Pick<AgentRunner, 'destroy'>,
+  allowedUsers?: string[]
+): Promise<void> {
+  const channelId = body.channel?.id;
+  if (!channelId) return;
+  const userId = body.user?.id;
+  if (!allowedUsers?.includes('*') && userId && !allowedUsers?.includes(userId)) return;
+
+  closeSlackConversationFromAction(body, agentRunner);
+  if (body.message) {
+    slackToolHistoryByMessageKey.delete(slackMessageKey(channelId, body.message.ts || ''));
+    slackReplySuggestionsByMessageKey.delete(slackMessageKey(channelId, body.message.ts || ''));
+    await actionClient.chat
+      .update({
+        channel: channelId,
+        ts: body.message.ts || '',
+        text: body.message.text || '✅',
+        blocks: [],
+      })
+      .catch(() => {});
+  }
+  await addSlackCloseReaction(actionClient, channelId, slackThreadParentTsFromActionBody(body));
 }
 
 function markSlackMessageProcessed(channelId: string, ts: string): boolean {
@@ -745,7 +781,7 @@ export function registerSlackSchedulerBridge(deps: {
     });
   });
 
-  scheduler.registerAgentRunner('slack', async (prompt, channelId, _schedule, runContext) => {
+  scheduler.registerAgentRunner('slack', async (prompt, channelId, schedule, runContext) => {
     const startedAt = Date.now();
     const initialText = '🤔 考え中...';
     const thinking = await client.chat.postMessage({
@@ -771,7 +807,7 @@ export function registerSlackSchedulerBridge(deps: {
     const freshAppSessionId = createSchedulerRunId('slack');
     createSchedulerSession(freshAppSessionId, channelId, {
       platform: 'slack',
-      title: prompt,
+      title: schedule?.label || prompt,
     });
     try {
       const { result, attachments } = await runWithBubbleEvents(
@@ -1084,35 +1120,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // ボタンアクション: スレッドのClose / チャンネルのNew Session
   app.action('xangi_new', async ({ ack, body, client: actionClient }) => {
     await ack();
-    const channelId = body.channel?.id;
-    if (!channelId) return;
-    const userId = body.user?.id;
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      userId &&
-      !config.slack.allowedUsers?.includes(userId)
-    ) {
-      return;
-    }
-    closeSlackConversationFromAction(body, agentRunner);
-    // ボタンを消す
-    if ('message' in body && body.message) {
-      slackToolHistoryByMessageKey.delete(
-        slackMessageKey(channelId, (body.message as { ts: string }).ts)
-      );
-      slackReplySuggestionsByMessageKey.delete(
-        slackMessageKey(channelId, (body.message as { ts: string }).ts)
-      );
-      await actionClient.chat
-        .update({
-          channel: channelId,
-          ts: (body.message as { ts: string }).ts,
-          text: (body.message as { text?: string }).text || '✅',
-          blocks: [],
-        })
-        .catch(() => {});
-    }
-    await addSlackCloseReaction(actionClient, channelId, slackThreadParentTsFromActionBody(body));
+    await handleSlackNewAction(body, actionClient, agentRunner, config.slack.allowedUsers);
   });
 
   // リアクションによる bot メッセージ削除
