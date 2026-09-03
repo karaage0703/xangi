@@ -23,6 +23,7 @@ import {
   updateSessionTitle,
   updateSessionContextUsage,
   addSessionTokenUsage,
+  addSessionProcessingTime,
   closeSession,
   createSchedulerSession,
   updateSessionEstimatedCost,
@@ -228,6 +229,21 @@ describe('sessions', () => {
 
     replaceSessionProgressCard(appSessionId, { clear: true });
     expect(getSessionEntry(appSessionId)?.progressCard).toBeUndefined();
+  });
+
+  it('accumulates and persists agent processing time', () => {
+    initSessions(testDir);
+    const appSessionId = createSession('channel-processing-time', { platform: 'discord' });
+
+    expect(addSessionProcessingTime(appSessionId, 1_250)).toBe(true);
+    expect(addSessionProcessingTime(appSessionId, 2_750)).toBe(true);
+    expect(addSessionProcessingTime(appSessionId, -1)).toBe(false);
+
+    initSessions(testDir);
+    expect(getSessionEntry(appSessionId)?.processingTime).toMatchObject({
+      durationMs: 4_000,
+      source: 'measured',
+    });
   });
 
   describe('getSession', () => {

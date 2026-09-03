@@ -46,6 +46,13 @@ export interface SessionTokenUsage {
   updatedAt: string;
 }
 
+/** Total wall-clock time spent running agent turns in this xangi session. */
+export interface SessionProcessingTime {
+  durationMs: number;
+  updatedAt: string;
+  source?: 'measured' | 'session-elapsed';
+}
+
 export interface SessionEstimatedCost {
   value: number;
   updatedAt: string;
@@ -98,6 +105,8 @@ export interface SessionEntry {
   contextUsage?: SessionContextUsage;
   /** このxangiセッション内で完了したturnの累積token使用量。 */
   tokenUsage?: SessionTokenUsage;
+  /** このxangiセッション内でagent turnの実行に費やした累積時間。 */
+  processingTime?: SessionProcessingTime;
   /** Providerが報告したセッションの推定利用料。金額・通貨はxangi側で推定しない。 */
   estimatedCost?: SessionEstimatedCost;
   /** Agent-maintained, durable at-a-glance progress for this session. */
@@ -600,6 +609,19 @@ export function addSessionTokenUsage(
     cachedInputTokens: (previous?.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
     outputTokens: (previous?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
     updatedAt: new Date().toISOString(),
+  };
+  saveSessionsToFile();
+  notifySessionChanges();
+  return true;
+}
+
+export function addSessionProcessingTime(appSessionId: string, durationMs: number): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry || !Number.isFinite(durationMs) || durationMs < 0) return false;
+  entry.processingTime = {
+    durationMs: (entry.processingTime?.durationMs ?? 0) + durationMs,
+    updatedAt: new Date().toISOString(),
+    source: 'measured',
   };
   saveSessionsToFile();
   notifySessionChanges();

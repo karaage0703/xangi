@@ -428,6 +428,7 @@ describe('DynamicRunnerManager platform routing', () => {
         cachedInputTokens: 160,
         outputTokens: 40,
       });
+      expect(getSessionEntry(appSessionId)?.processingTime?.durationMs).toBeGreaterThanOrEqual(0);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

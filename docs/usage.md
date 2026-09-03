@@ -124,10 +124,13 @@ API（プログラマブル操作）:
 - `GET /api/sessions/:id/timeout` — 現在のタイムアウト状態 `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`で延長。省略時は現在の残り時間を加算（残り時間を2倍）
 - `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。誤操作を避けるため、Web UIではMonitor詳細から実行する
+- Monitorの完了Sessionは24時間・7日・30日・すべてから期間を選べる。既定は24時間で、`Chat`・`Web`・`Schedule`の表示切り替えとは独立する
 
 MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後はMonitorから消えます。検索結果などの会話ログはChatに残ります。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。Discord / Slack由来の会話では、Chatペイン上部のプラットフォーム名から元のチャンネルまたはスレッドをブラウザで開けます。Webへ履歴を引き継いだ後もこのリンクは維持されます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
 
 複数工程の長い作業では、agentが`progress_card` toolで計画を更新します。Monitorの一覧カードには現在工程と完了工程数が表示され、Sessionを選ぶと「未着手／現在／完了」の全工程と任意の補足を確認できます。ページ再読込やxangi再起動後も残り、進捗率は表示内容から推定しません。手動利用時は、引数を推測せず`xangi tool help progress_card`で現在の契約を確認してください。
+
+各Monitorカードと詳細には、そのSessionでagent turnの実行に費やした累計処理時間も表示します。値はSessionに保存され、xangi再起動後も引き継がれます。`Chat`・`Web`・`Schedule`は独立してON/OFFでき、初期状態は`Chat`と`Web`だけがONです。スケジュール実行Sessionも`Schedule`をONにすると、他の種別と同じtoken・累計処理時間の形式で同時に確認できます。新しいスケジュール実行Sessionは長い実行promptではなくスケジュール名をタイトルに使い、カード上の長いタイトルは1行へ省略します。
 
 ### Agent Run API
 

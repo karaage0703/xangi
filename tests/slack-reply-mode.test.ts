@@ -25,6 +25,7 @@ import {
   closeSlackConversationFromAction,
   dismissSlackHistory,
   executeSlackBackendCommand,
+  handleSlackNewAction,
   processMessage,
   processSlackSkillCommand,
   resolveSlackDeleteReactionTarget,
@@ -71,6 +72,32 @@ describe('Slack session completion', () => {
       closeReason: 'new',
     });
     expect(getActiveSessionId(AUTO_REPLY_CHANNEL)).toBeUndefined();
+  });
+
+  it('keeps New bound to the channel when its message later becomes a thread parent', () => {
+    const messageTs = '1700000000.000100';
+    const threadConversationKey = slackConversationKey(AUTO_REPLY_CHANNEL, messageTs);
+    const channelSessionId = ensureSession(AUTO_REPLY_CHANNEL, { platform: 'slack' });
+    const threadSessionId = ensureSession(threadConversationKey, { platform: 'slack' });
+    const destroy = vi.fn();
+
+    expect(
+      closeSlackConversationFromAction(
+        {
+          channel: { id: AUTO_REPLY_CHANNEL },
+          message: { ts: messageTs, thread_ts: messageTs },
+        },
+        { destroy }
+      )
+    ).toBe(true);
+    expect(destroy).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL);
+    expect(getSessionEntry(channelSessionId)).toMatchObject({
+      lifecycle: 'closed',
+      closeReason: 'new',
+    });
+    expect(getActiveSessionId(AUTO_REPLY_CHANNEL)).toBeUndefined();
+    expect(getSessionEntry(threadSessionId)?.lifecycle).toBe('open');
+    expect(getActiveSessionId(threadConversationKey)).toBe(threadSessionId);
   });
 });
 
@@ -152,6 +179,81 @@ describe('Slack Close action', () => {
     );
 
     consoleError.mockRestore();
+  });
+
+  it.each([null, undefined])(
+    'does not reject for a non-object reaction error: %s',
+    async (error) => {
+      const add = vi.fn().mockRejectedValue(error);
+      const client = { reactions: { add } } as unknown as WebClient;
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(addSlackCloseReaction(client, AUTO_REPLY_CHANNEL, THREAD_TS)).resolves.toBe(
+        undefined
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        '[slack] Failed to add close reaction:',
+        String(error)
+      );
+
+      consoleError.mockRestore();
+    }
+  );
+
+  it('handles a thread Close end to end and reacts to the parent message', async () => {
+    const conversationKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+    const sessionId = ensureSession(conversationKey, { platform: 'slack' });
+    const destroy = vi.fn();
+    const update = vi.fn().mockResolvedValue(undefined);
+    const add = vi.fn().mockResolvedValue(undefined);
+    const client = { chat: { update }, reactions: { add } } as unknown as WebClient;
+
+    await handleSlackNewAction(
+      {
+        channel: { id: AUTO_REPLY_CHANNEL },
+        user: { id: 'U_ALLOWED' },
+        message: { ts: 'reply-ts', thread_ts: THREAD_TS, text: 'done' },
+      },
+      client,
+      { destroy },
+      ['U_ALLOWED']
+    );
+
+    expect(getSessionEntry(sessionId)).toMatchObject({ lifecycle: 'closed', closeReason: 'leave' });
+    expect(destroy).toHaveBeenCalledWith(conversationKey);
+    expect(update).toHaveBeenCalledWith({
+      channel: AUTO_REPLY_CHANNEL,
+      ts: 'reply-ts',
+      text: 'done',
+      blocks: [],
+    });
+    expect(add).toHaveBeenCalledWith({
+      channel: AUTO_REPLY_CHANNEL,
+      timestamp: THREAD_TS,
+      name: 'white_check_mark',
+    });
+  });
+
+  it('handles a channel New end to end without adding a reaction', async () => {
+    const sessionId = ensureSession(AUTO_REPLY_CHANNEL, { platform: 'slack' });
+    const update = vi.fn().mockResolvedValue(undefined);
+    const add = vi.fn().mockResolvedValue(undefined);
+    const client = { chat: { update }, reactions: { add } } as unknown as WebClient;
+
+    await handleSlackNewAction(
+      {
+        channel: { id: AUTO_REPLY_CHANNEL },
+        user: { id: 'U_ALLOWED' },
+        message: { ts: 'channel-message-ts', text: 'done' },
+      },
+      client,
+      {},
+      ['U_ALLOWED']
+    );
+
+    expect(getSessionEntry(sessionId)).toMatchObject({ lifecycle: 'closed', closeReason: 'new' });
+    expect(update).toHaveBeenCalledOnce();
+    expect(add).not.toHaveBeenCalled();
   });
 });
 

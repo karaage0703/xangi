@@ -44,7 +44,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
   });
 
   // スケジューラにエージェント実行関数を登録
-  scheduler.registerAgentRunner('discord', (prompt, channelId, _schedule, runContext) =>
+  scheduler.registerAgentRunner('discord', (prompt, channelId, schedule, runContext) =>
     turnCoordinator.enqueue(channelId, async () => {
       runContext?.onStart?.();
       const startedAt = Date.now();
@@ -62,7 +62,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
       const freshAppSessionId = createSchedulerRunId('discord');
       createSchedulerSession(freshAppSessionId, channelId, {
         platform: 'discord',
-        title: prompt,
+        title: schedule?.label || prompt,
         workspaceId: workspace?.id,
         workspacePath: workspace?.path,
       });
