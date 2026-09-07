@@ -1580,6 +1580,12 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 ### Antigravity CLI（`AGENT_BACKEND=antigravity` 時）
 
+Agy 1.1.27以降のJSON / stream-json最終結果に`denied_actions`がある場合、回答本文に権限不足で未実行となった操作の通知を追加します。`SUCCESS`でも本文が空なら、この通知を回答として返します。通知のためにタスクを再実行したり、権限を自動変更したりはしません。旧版でこのフィールドがない場合は従来どおりです。
+
+statuslineの`conversation_title`は、`conversation_id`が一致する最新のAntigravityセッションへ補助情報として保存し、Monitor詳細の「AI側の会話名」に表示します。xangiのタイトルは上書きしません。反映は利用量取得時に行い、既存のstatusline設定をそのまま使用できます。
+
+1.1.27で追加された一時的なモデル相談`/model <name> <prompt>`は、対話CLI向けです。1.1.27の実機では`agy -p '/model <name> <prompt>' --output-format json`が`/model takes no arguments`（終了コード2）となるため、xangiのヘッドレス経路では未対応です。`--disable-slash-commands`の既定動作は維持します。
+
 Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
 
 非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトと同じ値（通常 `1800s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。

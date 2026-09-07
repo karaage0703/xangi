@@ -696,6 +696,7 @@ export function startWebChat(options: WebChatOptions): void {
         tokenUsage: s.tokenUsage,
         processingTime,
         estimatedCost: s.estimatedCost,
+        providerTitle: s.providerTitle,
         progressCard: s.progressCard,
         origin,
       };

@@ -186,6 +186,56 @@ describe('usage monitor parsers', () => {
     });
   });
 
+  it('stores provider renames without replacing the xangi title, even without quota', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-title-'));
+    clearSessions();
+    initSessions(dataDir);
+    const appId = createSession('title-context', {
+      platform: 'web',
+      backend: 'antigravity',
+      title: 'My title',
+    });
+    setProviderSessionId(appId, 'title-conversation', 'antigravity');
+    for (const title of ['Provider title', 'Renamed title']) {
+      applyAntigravitySessionUsage(
+        parseAntigravityStatus({ conversation_id: 'title-conversation', conversation_title: title })
+      );
+      expect(getSessionEntry(appId)?.providerTitle).toBe(title);
+      expect(getSessionEntry(appId)?.title).toBe('My title');
+    }
+    applyAntigravitySessionUsage(parseAntigravityStatus({ conversation_id: 'title-conversation' }));
+    applyAntigravitySessionUsage(
+      parseAntigravityStatus({ conversation_id: 'other', conversation_title: 'Wrong title' })
+    );
+    expect(getSessionEntry(appId)?.providerTitle).toBe('Renamed title');
+    clearSessions();
+  });
+
+  it.each([
+    ['a'.repeat(1000), 'a'.repeat(50)],
+    ['a'.repeat(49) + '\uD83D\uDE00tail', 'a'.repeat(49)],
+    ['a'.repeat(48) + '\uD83D\uDE00tail', 'a'.repeat(48) + '\uD83D\uDE00'],
+  ])('bounds provider titles without splitting surrogate pairs (case %#)', async (title, expected) => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-provider-title-limit-'));
+    clearSessions();
+    initSessions(dataDir);
+    const appId = createSession('title-limit', {
+      platform: 'web',
+      backend: 'antigravity',
+      title: 'My title',
+    });
+    setProviderSessionId(appId, 'title-limit-conversation', 'antigravity');
+    applyAntigravitySessionUsage(
+      parseAntigravityStatus({
+        conversation_id: 'title-limit-conversation',
+        conversation_title: `  ${title}  `,
+      })
+    );
+    expect(getSessionEntry(appId)?.providerTitle).toBe(expected);
+    expect(getSessionEntry(appId)?.title).toBe('My title');
+    clearSessions();
+  });
+
   it('persists Antigravity cost when a status update omits context', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-cost-'));
     clearSessions();

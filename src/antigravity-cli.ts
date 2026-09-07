@@ -22,6 +22,7 @@ export interface AntigravityOptions extends BaseRunnerOptions {
 }
 
 interface AntigravityJsonResponse {
+  denied_actions?: unknown;
   status?: string;
   duration_seconds?: number;
   num_turns?: number;
@@ -652,7 +653,7 @@ export class AntigravityRunner extends CliRunnerBase {
             return phase === 'stream' ? new Error(errorDetail) : undefined;
           }
 
-          const response = typeof result.response === 'string' ? result.response : '';
+          const response = this.withDeniedActions(result);
           if (!response) {
             errorDetail =
               lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response';
@@ -738,7 +739,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
       this.outputCapability = 'json';
       if (response.status === 'SUCCESS') {
-        const result = typeof response.response === 'string' ? response.response : '';
+        const result = this.withDeniedActions(response);
         if (!result) {
           throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
         }
@@ -756,6 +757,24 @@ export class AntigravityRunner extends CliRunnerBase {
     }
 
     return this.buildLegacyResult(stdout, stderr, response, conversationsBefore, priorSessionId);
+  }
+
+  private withDeniedActions(response: AntigravityJsonResponse): string {
+    const text = typeof response.response === 'string' ? response.response : '';
+    if (!Array.isArray(response.denied_actions) || !response.denied_actions.length) return text;
+    const names = [
+      ...new Set(
+        response.denied_actions.flatMap((item: unknown) => {
+          const action = this.toRecord(item);
+          const name = action?.display_name ?? action?.action;
+          return typeof name === 'string' && name.trim()
+            ? [name.replace(/\s/g, ' ').slice(0, 120)]
+            : [];
+        })
+      ),
+    ].slice(0, 10);
+    const notice = `権限がないため実行されなかった操作があります${names.length ? `: ${names.join(', ')}` : '。'}`;
+    return text.includes(notice) ? text : [text, notice].filter(Boolean).join('\n\n');
   }
 
   private buildLegacyResult(

@@ -7,6 +7,7 @@ import { getSafeEnv } from './safe-env.js';
 import {
   updateSessionContextUsageByProviderSession,
   updateSessionEstimatedCostByProviderSession,
+  updateSessionProviderTitle,
 } from './sessions.js';
 
 const TIMEOUT_MS = 5000;
@@ -43,6 +44,7 @@ export interface AccountUsageProvider {
 
 interface AntigravityStatusPayload {
   conversation_id?: string;
+  conversation_title?: string;
   plan_tier?: string;
   cost?: number;
   context_window?: {
@@ -289,6 +291,7 @@ export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsa
 export function parseAntigravityStatus(payload: unknown): {
   groups: AccountUsageGroup[];
   conversationId?: string;
+  conversationTitle?: string;
   context?: { usedTokens: number; contextWindow: number };
   estimatedCost?: number;
 } {
@@ -385,6 +388,9 @@ export function parseAntigravityStatus(payload: unknown): {
   return {
     groups,
     conversationId: status?.conversation_id,
+    ...(typeof status?.conversation_title === 'string'
+      ? { conversationTitle: status.conversation_title }
+      : {}),
     ...(typeof status?.cost === 'number' && Number.isFinite(status.cost) && status.cost >= 0
       ? { estimatedCost: status.cost }
       : {}),
@@ -397,10 +403,12 @@ export function parseAntigravityStatus(payload: unknown): {
 
 export function applyAntigravitySessionUsage(parsed: {
   conversationId?: string;
+  conversationTitle?: string;
   context?: { usedTokens: number; contextWindow: number };
   estimatedCost?: number;
 }): { contextUpdated: boolean; costUpdated: boolean } {
   if (!parsed.conversationId) return { contextUpdated: false, costUpdated: false };
+  updateSessionProviderTitle('antigravity', parsed.conversationId, parsed.conversationTitle);
   return {
     contextUpdated: parsed.context
       ? updateSessionContextUsageByProviderSession('antigravity', parsed.conversationId, {
