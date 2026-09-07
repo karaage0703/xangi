@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
-import { sanitizeSessionTitle } from './session-title.js';
+import { sanitizeSessionTitle, truncateSessionTitle } from './session-title.js';
 
 /**
  * セッション管理（appSessionId方式）
@@ -76,6 +76,7 @@ export interface SessionProgressCard {
 export interface SessionEntry {
   id: string; // appSessionId
   title: string;
+  providerTitle?: string;
   platform: string; // 'discord' | 'slack' | 'web'
   contextKey: string; // channelId or 'web-chat'
   scope: SessionScope;
@@ -690,6 +691,21 @@ function findLatestSessionByProviderSession(
     }
     return !latest || candidate.updatedAt >= latest.updatedAt ? candidate : latest;
   }, undefined);
+}
+
+export function updateSessionProviderTitle(
+  backend: string,
+  providerSessionId: string,
+  title: unknown
+): boolean {
+  if (typeof title !== 'string') return false;
+  const sanitized = truncateSessionTitle(title.trim());
+  const entry = findLatestSessionByProviderSession(backend, providerSessionId);
+  if (!entry || !sanitized || entry.providerTitle === sanitized) return false;
+  entry.providerTitle = sanitized;
+  saveSessionsToFile();
+  notifySessionChanges();
+  return true;
 }
 
 export function updateSessionEstimatedCostByProviderSession(

@@ -833,6 +833,66 @@ describe('AntigravityRunner', () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['run', 'stream'])('reports 1.1.27 denied actions without retry in %s', async (mode) => {
+    const runner = new AntigravityRunner({});
+    const onError = vi.fn();
+    const onText = vi.fn();
+    const promise =
+      mode === 'run'
+        ? runner.run('write file')
+        : runner.runStream('write file', { onError, onText });
+    const proc = await waitForProcess();
+    const result = {
+      status: 'SUCCESS',
+      response: '',
+      conversation_id: 'denied-conversation',
+      denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+    };
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(answer).toEqual({
+      result: '権限がないため実行されなかった操作があります: RunCommand',
+      sessionId: 'denied-conversation',
+    });
+    expect(await getProcesses()).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+    if (mode === 'stream') expect(onText).toHaveBeenCalledWith(answer.result, answer.result);
+  });
+
+  it('appends a denial notice after streamed text without replaying the answer', async () => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const promise = runner.runStream('write file', { onText });
+    const proc = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: { step_type: 'agent_response', text_delta: 'Partial answer\n' },
+      },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'Partial answer\n',
+          denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+        },
+      },
+    ];
+    proc.stdout.emit(
+      'data',
+      Buffer.from(events.map((value) => JSON.stringify(value)).join('\n') + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
+    expect(answer.result.match(/Partial answer/g)).toHaveLength(1);
+    expect(answer.result).toContain('RunCommand');
+  });
+
   it('keeps a tool error non-fatal when Agy later returns an answer', async () => {
     const runner = new AntigravityRunner({});
     const promise = runner.runStream('hello', {});

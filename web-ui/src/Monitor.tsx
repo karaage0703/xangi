@@ -100,6 +100,7 @@ export interface MonitorSession {
   tokenUsage?: MonitorTokenUsage;
   processingTime?: MonitorProcessingTime;
   estimatedCost?: MonitorEstimatedCost;
+  providerTitle?: string;
   progressCard?: {
     revision: number;
     updatedAt: string;
@@ -1047,6 +1048,9 @@ export function Monitor() {
                           formatEstimatedCost(selected.estimatedCost.value),
                         ],
                       ]
+                    : []),
+                  ...(selected.providerTitle
+                    ? [['provider-title', 'AI側の会話名', selected.providerTitle]]
                     : []),
                 ].map(([key, label, value]) => (
                   <div className={`monitor-detail-kv monitor-detail-kv-${key}`} key={key}>

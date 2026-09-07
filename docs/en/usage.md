@@ -1553,6 +1553,12 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--always-approve` to a
 
 ### Antigravity CLI (`AGENT_BACKEND=antigravity`)
 
+When an Agy 1.1.27+ JSON or stream-json final result contains `denied_actions`, xangi appends a notice naming the operations that permissions prevented. A `SUCCESS` result with an empty response returns this notice as the answer. This does not retry the task or change permissions. Older versions without the field retain their existing behavior.
+
+The statusline `conversation_title` is stored as supplemental information on the latest Antigravity session matching `conversation_id`. Monitor details display it as the provider conversation name without replacing the xangi title. It refreshes during usage retrieval using the existing statusline configuration.
+
+The temporary model consultation syntax `/model <name> <prompt>` added in 1.1.27 is for the interactive CLI. Testing `agy -p '/model <name> <prompt>' --output-format json` on 1.1.27 returned `/model takes no arguments` with exit code 2, so xangi does not support it through headless execution. The default `--disable-slash-commands` behavior remains enabled.
+
 The Antigravity backend uses Google's `agy` command. Install it with `curl -fsSL https://antigravity.google/cli/install.sh | bash` and complete the first-run `agy` authentication flow.
 
 Non-interactive execution uses `agy --print-timeout <timeout> --output-format json -p ...`. Structured output became an official Agy CLI feature in 1.1.8, and xangi is also verified against real 1.1.12 output. xangi reads `status`, `response`, and `conversation_id` from the final JSON and returns `conversation_id` as the provider session. Set `ANTIGRAVITY_PRINT_TIMEOUT` to control agy's own print-mode timeout. When unset, it matches xangi's execution timeout (normally `1800s`). xangi passes `--model` when `AGENT_MODEL` is set and `--conversation` when a provider session id is available. When a workdir is configured, it also passes `--add-dir .` for that same child-process cwd.
