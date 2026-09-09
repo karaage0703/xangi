@@ -32,8 +32,8 @@ export interface CliStreamParser {
   handleEvent(json: unknown, phase: 'stream' | 'flush'): Error | false | undefined | void;
   /** JSON ではない行を扱う必要があるランナー向け（旧 CLI のプレーン出力など） */
   handleRawLine?(line: string, phase: 'stream' | 'flush'): void;
-  /** 正常終了時の結果テキストとセッション ID を返す */
-  finalize(): Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
+  /** 正常終了時の結果を返す。stderrはプロセス終了までの全文（利用は任意）。 */
+  finalize(stderr?: string): Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
   /** exit code != 0 のとき、エラーメッセージに添える詳細（CLI の error イベント本文など） */
   exitErrorDetail?(): string | undefined;
   /** exit code != 0 のエラーへ、ランナー固有の状態を引き継ぐ */
@@ -326,7 +326,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
         let finalized: Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
         try {
-          finalized = parser.finalize();
+          finalized = parser.finalize(stderr);
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           notifyError(err);

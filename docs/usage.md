@@ -1580,6 +1580,14 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 ### Antigravity CLI（`AGENT_BACKEND=antigravity` 時）
 
+既定のprint timeoutの余裕は起動・終了処理のためのもので、途中回答の取得を保証するものではありません。MCP初期化などが余裕時間を超える環境では、`ANTIGRAVITY_PRINT_TIMEOUT`をさらに短く調整してください。明示した値はそのまま使用します。
+
+Agy 1.1.28はprint timeout時に途中回答を返し、終了コード0・`SUCCESS`になる場合があります。xangiはstderrの `[agy] print timeout after ... with turn in progress; returning partial output` を終了時に確認し、本文と会話IDを保持して「時間上限に達したため未完了」と通知します。空本文でも通知を返します。非ゼロ終了、通常のエラー、最終resultの欠落は従来どおりエラーです。途中回答を受け取った場合は同じ会話で続きを依頼してください。自動再送はしません。
+
+1.1.28からURL取得も既定では承認が必要です。無人実行で拒否された場合は未実行操作の通知を確認し、Agyの対話モードの権限設定・承認画面で必要なURLへのアクセスを許可してから再依頼してください。すべての権限を省略する設定へ自動変更はしません。設定後は同じ実行ユーザー・作業ディレクトリで目的のURLだけを読む依頼を試し、拒否されないことを確認してください。
+
+1.1.28は一時的なAPIエラーを以前より長く再試行します。時間不足が続く場合はxangiの `TIMEOUT_MS` とAgyの `ANTIGRAVITY_PRINT_TIMEOUT` の両方を確認してください。後者が未指定なら、xangiの期限から30秒（短い処理では全体の10%）を差し引きます。xangi側の期限が先に到達するとプロセスが終了されるため、Agyの途中回答通知を必ず受け取りたい場合はAgy側を短めに設定し、終了処理の余裕を設けてください（例: `TIMEOUT_MS=1800000`、`ANTIGRAVITY_PRINT_TIMEOUT=1740s`）。余裕時間は環境に合わせて調整します。
+
 Agy 1.1.27以降のJSON / stream-json最終結果に`denied_actions`がある場合、回答本文に権限不足で未実行となった操作の通知を追加します。`SUCCESS`でも本文が空なら、この通知を回答として返します。通知のためにタスクを再実行したり、権限を自動変更したりはしません。旧版でこのフィールドがない場合は従来どおりです。
 
 statuslineの`conversation_title`は、`conversation_id`が一致する最新のAntigravityセッションへ補助情報として保存し、Monitor詳細の「AI側の会話名」に表示します。xangiのタイトルは上書きしません。反映は利用量取得時に行い、既存のstatusline設定をそのまま使用できます。
@@ -1588,7 +1596,7 @@ statuslineの`conversation_title`は、`conversation_id`が一致する最新の
 
 Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
 
-非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトと同じ値（通常 `1800s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
+非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトから最大30秒（全体の10%を上限）を差し引いた値（通常 `1770s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
 
 ストリーミングでは `--output-format stream-json` を使用します。`step_update.text_delta` を逐次表示し、`init` / `result` の `conversation_id` を provider session として保持します。tool の `ACTIVE` は進捗として通知します。tool 単体の `ERROR` は agent が回復できるため即座に会話全体を失敗させず、最終 `result` を待ちます。`tool_info.output` と `subagent_info` は互換性のため受理しますが、大容量または機密情報を含み得るtool出力をチャットへそのまま転送せず、子agentのconversation IDで親sessionを上書きしません。
 
