@@ -18,6 +18,7 @@ import type { AppLayout, ManifestPublicKey } from '../installer/types.js';
 import { managedServicePath } from '../installer/service-environment.js';
 import { streamTarListing } from '../installer/tar-listing.js';
 import { parseSetupConfig } from '../setup/schema.js';
+import { readLimitedResponseBody } from '../response-body.js';
 import {
   Updater,
   type ArtifactExtractor,
@@ -271,30 +272,7 @@ async function readLimitedBody(
   label: string
 ): Promise<Uint8Array> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error(`${label} size is invalid`);
-  const declared = response.headers.get('content-length');
-  if (declared !== null && Number(declared) > maxBytes)
-    throw new Error(`${label} exceeds signed size`);
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error(`${label} exceeds signed size`);
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return readLimitedResponseBody(response, maxBytes, `${label} exceeds signed size`);
 }
 
 export async function extractTarGzip(artifact: Uint8Array, destination: string): Promise<void> {

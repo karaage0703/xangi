@@ -4,10 +4,8 @@ import {
   chmod,
   mkdir,
   mkdtemp,
-  open,
   readFile,
   readdir,
-  rename,
   rm,
   stat,
   unlink,
@@ -15,12 +13,13 @@ import {
 } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import readline from 'node:readline/promises';
 import type { SetupBackend, SetupWebChatAccess } from './schema.js';
 import { parseSetupConfig, SETUP_WEB_CHAT_ACCESS } from './schema.js';
 import { verifyBackendExecutable } from './backend-executable.js';
 import { SetupStore } from './store.js';
+import { writePrivateJsonFile } from './private-json-file.js';
 import type { AppLayout } from '../installer/types.js';
 
 export interface OnboardingStatus {
@@ -226,7 +225,7 @@ export function authenticationGuide(
   ].join('\n');
 }
 
-async function defaultSelectBackend(backends: DetectedBackend[]): Promise<DetectedBackend> {
+export async function selectGuidedBackend(backends: DetectedBackend[]): Promise<DetectedBackend> {
   if (backends.length === 1) return backends[0]!;
   console.log('利用可能なAIエージェント:');
   backends.forEach((backend, index) =>
@@ -433,7 +432,7 @@ export async function guidedSetupCmd(options: GuidedSetupOptions): Promise<strin
   }
   if (unauthenticated.length > 0)
     console.log(authenticationGuide(unauthenticated, { blocking: false }));
-  const backend = await (options.selectBackend ?? defaultSelectBackend)(readyBackends);
+  const backend = await (options.selectBackend ?? selectGuidedBackend)(readyBackends);
   if (!readyBackends.some((candidate) => candidate.id === backend.id)) {
     throw new Error('選択したAIエージェントは事前確認で検出されていません');
   }
@@ -498,22 +497,7 @@ export async function writeOnboardingState(
   layout: AppLayout,
   value: Record<string, unknown>
 ): Promise<void> {
-  const path = join(layout.configDir, 'onboarding.json');
-  const temporary = `${path}.tmp-${process.pid}`;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try {
-      await file.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, path);
-    await chmod(path, 0o600);
-  } finally {
-    await unlink(temporary).catch(() => undefined);
-  }
+  await writePrivateJsonFile(join(layout.configDir, 'onboarding.json'), value);
 }
 
 export async function readOnboardingStatus(layout: AppLayout): Promise<OnboardingStatus> {

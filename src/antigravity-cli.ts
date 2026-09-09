@@ -1,3 +1,4 @@
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
   extractAntigravityErrorMessage,
@@ -6,9 +7,8 @@ import {
 } from './antigravity-output.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
-import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import { inferEffortFromModelName } from './backend-effort.js';
+import { CliRunnerBase, extractNestedText, type CliStreamParser } from './cli-runner-core.js';
 import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
@@ -22,6 +22,7 @@ export interface AntigravityOptions extends BaseRunnerOptions {
 }
 
 interface AntigravityJsonResponse {
+  model?: string;
   denied_actions?: unknown;
   status?: string;
   duration_seconds?: number;
@@ -65,6 +66,7 @@ interface AntigravityStreamEvent {
   event?: string;
   conversation_id?: string;
   init?: {
+    model?: string;
     conversation_id?: string;
     cwd?: string;
     tools?: string[];
@@ -177,7 +179,7 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--model', this.model);
     }
 
-    if (options?.effort) {
+    if (options?.effort && inferEffortFromModelName(this.model ?? '') !== options.effort) {
       args.push('--effort', options.effort);
     }
 
@@ -358,13 +360,6 @@ export class AntigravityRunner extends CliRunnerBase {
     }
   }
 
-  private buildFullPrompt(rawPrompt: string): string {
-    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${promptWithRuntime}`
-      : promptWithRuntime;
-  }
-
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
     return {
       ...super.buildEnv(channelId),
@@ -399,13 +394,11 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
 
     this.logExecution('Executing', options);
 
-    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    if (attemptOptions.recordPrompt !== false) this.logPromptTranscript(fullPrompt, options);
 
     const wantsJson = this.outputCapability !== 'legacy';
     // Unknown runners need a pre-run snapshot in case they return legacy plain text.
@@ -451,7 +444,7 @@ export class AntigravityRunner extends CliRunnerBase {
       );
     }
 
-    const { result, sessionId } = this.interpretOutput(
+    const result = this.interpretOutput(
       execution.stdout,
       execution.stderr,
       usedJson,
@@ -459,11 +452,9 @@ export class AntigravityRunner extends CliRunnerBase {
       options?.sessionId
     );
 
-    if (options?.appSessionId && this.workdir) {
-      logResponse(this.workdir, options.appSessionId, { result, sessionId });
-    }
+    this.logResponseTranscript(result, options);
 
-    return { result, sessionId };
+    return result;
   }
 
   async runStream(
@@ -518,12 +509,10 @@ export class AntigravityRunner extends CliRunnerBase {
       return this.runPseudoStream(prompt, callbacks, options, attemptOptions);
     }
 
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     this.logExecution('Streaming', options);
 
-    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    if (attemptOptions.recordPrompt !== false) this.logPromptTranscript(fullPrompt, options);
 
     // Unknown stream capability may be Agy 1.1.2 returning plain output while ignoring
     // --output-format. Snapshot before execution so its conversation ID can be recovered.
@@ -537,12 +526,7 @@ export class AntigravityRunner extends CliRunnerBase {
         result.sessionId =
           this.findChangedConversationId(conversationsBefore) || options?.sessionId || '';
       }
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
-      }
+      this.logResponseTranscript(result, options);
     };
 
     try {
@@ -578,6 +562,7 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let rawOutput = '';
@@ -605,6 +590,8 @@ export class AntigravityRunner extends CliRunnerBase {
         }
 
         sawNativeEvent = true;
+        if (event.event === 'init') models.add(event.init?.model);
+        if (event.event === 'result') models.add(event.result?.model);
         this.streamOutputCapability = 'stream-json';
         this.outputCapability = 'json';
         sessionId = event.conversation_id ?? sessionId;
@@ -719,7 +706,7 @@ export class AntigravityRunner extends CliRunnerBase {
           stderr
         );
         if (result !== fullText) callbacks.onText?.(result.slice(fullText.length), result);
-        return { result, sessionId };
+        return { result, sessionId, ...models.result() };
       },
       exitErrorDetail: () => errorDetail ?? (emptySuccess ? lastToolError : undefined),
       wrapExitError: (error) =>
@@ -736,6 +723,9 @@ export class AntigravityRunner extends CliRunnerBase {
     attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
     const result = await this.runOnce(prompt, options, attemptOptions);
+    const models = new ProviderModels(callbacks.onModel);
+    for (const model of result.models ?? []) models.add(model);
+    models.add(result.model);
     callbacks.onText?.(result.result, result.result);
     callbacks.onComplete?.(result);
     return result;
@@ -773,7 +763,13 @@ export class AntigravityRunner extends CliRunnerBase {
         if (!result) {
           throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
         }
-        return { result, sessionId: response.conversation_id ?? priorSessionId ?? '' };
+        const models = new ProviderModels();
+        models.add(response.model);
+        return {
+          result,
+          sessionId: response.conversation_id ?? priorSessionId ?? '',
+          ...models.result(),
+        };
       }
       if (response.status === 'ERROR') {
         throw new AntigravityConversationError(
@@ -789,9 +785,11 @@ export class AntigravityRunner extends CliRunnerBase {
     return this.buildLegacyResult(stdout, stderr, response, conversationsBefore, priorSessionId);
   }
 
-  private withDeniedActions(response: AntigravityJsonResponse): string {
-    const text = typeof response.response === 'string' ? response.response : '';
-    if (!Array.isArray(response.denied_actions) || !response.denied_actions.length) return text;
+  private withDeniedActions(response: AntigravityJsonResponse, streamedText = ''): string {
+    const responseText = typeof response.response === 'string' ? response.response : '';
+    if (!Array.isArray(response.denied_actions) || !response.denied_actions.length)
+      return responseText;
+    const text = responseText || streamedText;
     const names = [
       ...new Set(
         response.denied_actions.flatMap((item: unknown) => {
@@ -892,24 +890,9 @@ export class AntigravityRunner extends CliRunnerBase {
       event.text,
       event.content,
       event.response,
-      this.extractTextFromUnknown(event.message),
+      extractNestedText(event.message),
     ]) {
       if (typeof value === 'string' && value) return value;
-    }
-    return '';
-  }
-
-  private extractTextFromUnknown(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (!value || typeof value !== 'object') return '';
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === 'string') return record.text;
-    if (typeof record.content === 'string') return record.content;
-    if (Array.isArray(record.content)) {
-      return record.content
-        .map((block) => this.extractTextFromUnknown(block))
-        .filter(Boolean)
-        .join('');
     }
     return '';
   }

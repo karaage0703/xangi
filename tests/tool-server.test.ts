@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
 import type { BackendResolver } from '../src/backend-resolver.js';
 import type { AgentBackend, Config } from '../src/config.js';
+import type { AgentRunner } from '../src/agent-runner.js';
 
 /**
  * tool-server のステータスコード退行検出テスト。
@@ -13,6 +14,8 @@ import type { AgentBackend, Config } from '../src/config.js';
 describe('tool-server HTTP status codes', () => {
   let serverUrl: string;
   const overrides = new Map<string, { backend: AgentBackend; model?: string }>();
+  let globalDefault = { backend: 'codex' as AgentBackend, model: undefined as string | undefined };
+  const switchDefaultBackend = vi.fn();
   const resolver = {
     getAllowedBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
     getSelectableBackends: () => ['codex', 'claude-code', 'workspace-search'] as AgentBackend[],
@@ -24,8 +27,11 @@ describe('tool-server HTTP status codes', () => {
       overrides.set(channelId, override),
     deleteChannelOverride: (channelId: string) => overrides.delete(channelId),
     getChannelOverride: (channelId: string) => overrides.get(channelId),
-    getDefault: () => ({ backend: 'codex' as AgentBackend }),
-    resolve: (channelId?: string) => overrides.get(channelId ?? '') ?? { backend: 'codex' as AgentBackend },
+    getDefault: () => globalDefault,
+    setDefault: (backend: AgentBackend, model?: string) => {
+      globalDefault = { backend, model };
+    },
+    resolve: (channelId?: string) => overrides.get(channelId ?? '') ?? globalDefault,
   } as BackendResolver;
   const config = {
     agent: { config: { workdir: '/tmp/xangi-extension-update-test' } },
@@ -40,6 +46,7 @@ describe('tool-server HTTP status codes', () => {
     startToolServer({
       backendResolver: resolver,
       config,
+      agentRunner: { switchDefaultBackend } as unknown as AgentRunner,
       modelDiscovery: async (backend) =>
         backend === 'codex'
           ? {
@@ -374,6 +381,28 @@ describe('tool-server HTTP status codes', () => {
       model: undefined,
       effort: undefined,
     });
+  });
+
+  it('changes the global default through the shared runtime settings endpoint', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'runtime_settings',
+        flags: {
+          name: 'backend',
+          action: 'set',
+          backend: 'codex',
+          model: 'gpt-test',
+          scope: 'global',
+        },
+        context: { platform: 'discord' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(globalDefault).toEqual({ backend: 'codex', model: 'gpt-test' });
+    expect(switchDefaultBackend).toHaveBeenCalledOnce();
   });
 
   it('reports unsupported backend model discovery without hard-coded models', async () => {

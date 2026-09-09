@@ -1,8 +1,9 @@
+import { readOpenCodeTurnModels } from './opencode-model-evidence.js';
+import { configuredBackendCommand } from './setup/backend-executable.js';
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
 import type { ChatPlatform } from './prompts/index.js';
 
@@ -19,6 +20,7 @@ interface OpenCodeToolState {
   };
 }
 
+// OpenCode run JSONL parts omit identity; export supplies session-linked assistant metadata.
 interface OpenCodeEvent {
   type?: string;
   sessionID?: string;
@@ -62,13 +64,6 @@ export class OpenCodeRunner extends CliRunnerBase {
     this.systemPrompt = buildSystemPrompt(options?.platform);
   }
 
-  private buildFullPrompt(rawPrompt: string): string {
-    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${prompt}`
-      : prompt;
-  }
-
   private buildArgs(fullPrompt: string, options?: RunOptions): string[] {
     const args = ['run', '--format', 'json', '--agent', 'build'];
 
@@ -100,44 +95,40 @@ export class OpenCodeRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const startedAt = Date.now();
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = this.buildArgs(fullPrompt, options);
 
     this.logExecution('Streaming', options);
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    this.logPromptTranscript(fullPrompt, options);
+    const onComplete = (result: RunResult) => this.logResponseTranscript(result, options);
 
-    const onComplete = (result: RunResult) => {
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
+    const result = await this.executeStreamWithResumeRetry(
+      args,
+      { ...callbacks, onComplete: undefined },
+      options,
+      {
+        isStaleError: (error) => this.isStaleSessionError(error),
+        args: () => this.buildArgs(fullPrompt, { ...options, sessionId: undefined }),
+        warning: (id) =>
+          `[opencode] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
       }
-    };
-
-    try {
-      return await this.executeStreamCore(args, callbacks, {
-        channelId: options?.channelId,
-        notifyOnError: false,
-        onComplete,
-      });
-    } catch (error) {
-      if (!options?.sessionId || !this.isStaleSessionError(error)) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        callbacks.onError?.(err);
-        throw error;
-      }
-      console.warn(
-        `[opencode] Resume failed for stale session ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryArgs = this.buildArgs(fullPrompt, { ...options, sessionId: undefined });
-      return this.executeStreamCore(retryArgs, callbacks, {
-        channelId: options?.channelId,
-        onComplete,
-      });
-    }
+    );
+    const env = this.buildEnv(options?.channelId);
+    const models = new ProviderModels(callbacks.onModel);
+    for (const model of await readOpenCodeTurnModels({
+      command: configuredBackendCommand(this.command, env),
+      sessionId: result.sessionId,
+      startedAt,
+      finishedAt: Date.now(),
+      cwd: this.workdir,
+      env,
+    }))
+      models.add(model);
+    Object.assign(result, models.result());
+    onComplete(result);
+    callbacks.onComplete?.(result);
+    return result;
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {

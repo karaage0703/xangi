@@ -160,12 +160,25 @@ function safeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 160) || 'unknown';
 }
 
-export function readToolHistory(threadId: string, requestedLimit = 100): ToolHistoryEntry[] {
-  const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit) || 100));
+interface ActivityLogEvent {
+  at: number;
+  state?: string;
+  turnId?: string;
+  text?: string;
+  toolName?: string;
+  summary?: string;
+  toolInputPreview?: string;
+  turnHistory?: TurnHistoryEntry[];
+}
+
+function historyLimit(requested: number): number {
+  return Math.min(200, Math.max(1, Math.floor(requested) || 100));
+}
+
+function readActivityLog(threadId: string): ActivityLogEvent[] {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const file = join(workdir, monitorActivityDir, `${safeFilePart(threadId)}.jsonl`);
   if (!existsSync(file)) return [];
-
   let fd: number | undefined;
   try {
     fd = openSync(file, 'r');
@@ -180,33 +193,17 @@ export function readToolHistory(threadId: string, requestedLimit = 100): ToolHis
       text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
     }
 
-    const result: ToolHistoryEntry[] = [];
-    const lines = text.trimEnd().split('\n');
-    for (let index = lines.length - 1; index >= 0 && result.length < limit; index -= 1) {
+    const result: ActivityLogEvent[] = [];
+    for (const line of text.trimEnd().split('\n').reverse()) {
       try {
-        const event = JSON.parse(lines[index]) as {
-          ts?: string;
-          state?: string;
-          turnId?: string;
-          toolName?: string;
-          summary?: string;
-          toolInputPreview?: string;
-        };
-        if (event.state !== 'tool' || !event.turnId || !event.toolName || !event.ts) continue;
-        const at = Date.parse(event.ts);
-        if (!Number.isFinite(at)) continue;
-        result.push({
-          at,
-          turnId: event.turnId,
-          toolName: event.toolName,
-          summary: event.summary || event.toolName,
-          inputPreview: event.toolInputPreview,
-        });
+        const event = JSON.parse(line) as Omit<ActivityLogEvent, 'at'> & { ts?: string };
+        const at = Date.parse(event.ts ?? '');
+        if (Number.isFinite(at)) result.push({ ...event, at });
       } catch {
-        // A partially written or old malformed line must not hide the remaining history.
+        // A partially written line must not hide older history.
       }
     }
-    return result.reverse();
+    return result;
   } catch {
     return [];
   } finally {
@@ -214,93 +211,67 @@ export function readToolHistory(threadId: string, requestedLimit = 100): ToolHis
   }
 }
 
-export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHistoryEntry[] {
-  const limit = Math.min(200, Math.max(1, Math.floor(requestedLimit) || 100));
-  const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  const file = join(workdir, monitorActivityDir, `${safeFilePart(threadId)}.jsonl`);
-  if (!existsSync(file)) return [];
-
-  let fd: number | undefined;
-  try {
-    fd = openSync(file, 'r');
-    const size = fstatSync(fd).size;
-    const bytesToRead = Math.min(size, maxToolHistoryReadBytes);
-    const offset = size - bytesToRead;
-    const buffer = Buffer.alloc(bytesToRead);
-    readSync(fd, buffer, 0, bytesToRead, offset);
-    let text = buffer.toString('utf8');
-    if (offset > 0) {
-      const firstNewline = text.indexOf('\n');
-      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
-    }
-
-    const result: TurnHistoryEntry[] = [];
-    const snapshottedTurns = new Set<string>();
-    const legacyCompletedTurns = new Set<string>();
-    const lines = text.trimEnd().split('\n');
-    for (let index = lines.length - 1; index >= 0 && result.length < limit; index -= 1) {
-      try {
-        const event = JSON.parse(lines[index]) as {
-          ts?: string;
-          state?: string;
-          turnId?: string;
-          text?: string;
-          toolName?: string;
-          summary?: string;
-          toolInputPreview?: string;
-          turnHistory?: TurnHistoryEntry[];
-        };
-        if (!event.ts || !event.turnId) continue;
-        const at = Date.parse(event.ts);
-        if (!Number.isFinite(at)) continue;
-        if (event.state === 'complete') {
-          if (Array.isArray(event.turnHistory)) {
-            snapshottedTurns.add(event.turnId);
-            for (
-              let historyIndex = event.turnHistory.length - 1;
-              historyIndex >= 0 && result.length < limit;
-              historyIndex -= 1
-            ) {
-              const entry = event.turnHistory[historyIndex];
-              if (
-                entry?.turnId === event.turnId &&
-                (entry.kind === 'text' || entry.kind === 'tool')
-              ) {
-                result.push(entry);
-              }
-            }
-          } else {
-            // Logs written before completed snapshots cannot distinguish final
-            // response fragments from genuine commentary. Keep their tools, but
-            // do not expose raw streamed text after a process restart.
-            legacyCompletedTurns.add(event.turnId);
-          }
-          continue;
-        }
-        if (snapshottedTurns.has(event.turnId)) continue;
-        if (event.state === 'streaming' && event.text) {
-          if (legacyCompletedTurns.has(event.turnId)) continue;
-          result.push({ kind: 'text', at, turnId: event.turnId, text: event.text });
-        } else if (event.state === 'tool' && event.toolName) {
-          result.push({
-            kind: 'tool',
-            at,
-            turnId: event.turnId,
-            toolName: event.toolName,
-            summary: event.summary || event.toolName,
-            inputPreview: event.toolInputPreview,
-          });
-        }
-      } catch {
-        // Ignore a partially written line and keep scanning older history.
-      }
-    }
-    return result.reverse();
-  } catch {
-    return [];
-  } finally {
-    if (fd !== undefined) closeSync(fd);
+export function readToolHistory(threadId: string, requestedLimit = 100): ToolHistoryEntry[] {
+  const result: ToolHistoryEntry[] = [];
+  for (const event of readActivityLog(threadId)) {
+    if (result.length >= historyLimit(requestedLimit)) break;
+    if (event.state !== 'tool' || !event.turnId || !event.toolName) continue;
+    result.push({
+      at: event.at,
+      turnId: event.turnId,
+      toolName: event.toolName,
+      summary: event.summary || event.toolName,
+      inputPreview: event.toolInputPreview,
+    });
   }
+  return result.reverse();
+}
+
+export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHistoryEntry[] {
+  const limit = historyLimit(requestedLimit);
+  const result: TurnHistoryEntry[] = [];
+  const snapshottedTurns = new Set<string>();
+  const legacyCompletedTurns = new Set<string>();
+  for (const event of readActivityLog(threadId)) {
+    if (result.length >= limit) break;
+    if (!event.turnId) continue;
+    if (event.state === 'complete') {
+      if (Array.isArray(event.turnHistory)) {
+        snapshottedTurns.add(event.turnId);
+        for (
+          let historyIndex = event.turnHistory.length - 1;
+          historyIndex >= 0 && result.length < limit;
+          historyIndex -= 1
+        ) {
+          const entry = event.turnHistory[historyIndex];
+          if (entry?.turnId === event.turnId && (entry.kind === 'text' || entry.kind === 'tool')) {
+            result.push(entry);
+          }
+        }
+      } else {
+        // Logs written before completed snapshots cannot distinguish final
+        // response fragments from genuine commentary. Keep their tools, but
+        // do not expose raw streamed text after a process restart.
+        legacyCompletedTurns.add(event.turnId);
+      }
+      continue;
+    }
+    if (snapshottedTurns.has(event.turnId)) continue;
+    if (event.state === 'streaming' && event.text) {
+      if (legacyCompletedTurns.has(event.turnId)) continue;
+      result.push({ kind: 'text', at: event.at, turnId: event.turnId, text: event.text });
+    } else if (event.state === 'tool' && event.toolName) {
+      result.push({
+        kind: 'tool',
+        at: event.at,
+        turnId: event.turnId,
+        toolName: event.toolName,
+        summary: event.summary || event.toolName,
+        inputPreview: event.toolInputPreview,
+      });
+    }
+  }
+  return result.reverse();
 }
 
 function appendActivityLog(
@@ -390,10 +361,8 @@ function pushHistory(
   }
 }
 
-function getExisting(ctx: ActivityContext): ActivityRecord {
+function createActivity(ctx: ActivityContext): ActivityRecord {
   const t = now();
-  const existing = activities.get(ctx.threadId);
-  if (existing && existing.turnId === ctx.turnId) return existing;
   const summary = ctx.userText ? `考え中: ${truncate(ctx.userText, maxUserChars)}` : '考え中';
   const record: ActivityRecord = {
     state: 'thinking',
@@ -415,26 +384,13 @@ function getExisting(ctx: ActivityContext): ActivityRecord {
   return record;
 }
 
+function getExisting(ctx: ActivityContext): ActivityRecord {
+  const existing = activities.get(ctx.threadId);
+  return existing?.turnId === ctx.turnId ? existing : createActivity(ctx);
+}
+
 export function startActivity(ctx: ActivityContext): void {
-  const t = now();
-  const summary = ctx.userText ? `考え中: ${truncate(ctx.userText, maxUserChars)}` : '考え中';
-  activities.set(ctx.threadId, {
-    state: 'thinking',
-    summary,
-    userTextPreview: ctx.userText ? truncate(ctx.userText, maxUserChars) : undefined,
-    toolLines: [],
-    history: [{ state: 'thinking', summary, at: t }],
-    turnId: ctx.turnId,
-    threadId: ctx.threadId,
-    threadLabel: ctx.threadLabel,
-    platform: ctx.platform,
-    startedAt: t,
-    updatedAt: t,
-    active: true,
-    turnHistory: [],
-  });
-  const record = activities.get(ctx.threadId);
-  if (record) appendActivityLog(record, record.state, record.summary, t);
+  createActivity(ctx);
   notifyActivity(ctx.threadId);
 }
 

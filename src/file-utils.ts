@@ -95,7 +95,7 @@ function resolveCandidate(raw: string, workspaceRoot: string): string | null {
  * realpath ベースで検査する。realpath を使うことで `..` や symlink による
  * サンドボックス脱出も防ぐ。戻り値は canonical な realpath（重複排除のため）。
  */
-function realFileWithinRoots(resolved: string, allowedRoots: string[]): string | null {
+export function realFileWithinRoots(resolved: string, allowedRoots: string[]): string | null {
   let real: string;
   try {
     real = fs.realpathSync(resolved);
@@ -260,34 +260,41 @@ export function stripFilePaths(text: string): string {
 
 function inspectUnattachedMediaMarkers(
   text: string,
-  workspaceRootOverride?: string
+  workspaceRootOverride?: string,
+  structuredAttachments?: string[]
 ): { hasMissing: boolean; hasOutsideAllowedExisting: boolean } {
-  if (!text) return { hasMissing: false, hasOutsideAllowedExisting: false };
   const workspaceRoot = getWorkspaceRoot(workspaceRootOverride);
   const broadRoots = getBroadAllowedRoots(workspaceRoot);
-  const patterns = [/MEDIA:\s*([^\s\n]+)/g, /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi];
+  const patterns = [
+    /MEDIA:\s*([^\s\n]+)/g,
+    /\[(?:IMAGE|FILE|VIDEO|AUDIO|MEDIA):\s*([^\]\n]+)\]/gi,
+    /!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g,
+  ];
   let hasMissing = false;
   let hasOutsideAllowedExisting = false;
+
+  const inspect = (raw: string) => {
+    if (/^(?:https?|data):/i.test(raw)) return;
+    const resolved = resolveCandidate(raw, workspaceRoot);
+    if (!resolved || realFileWithinRoots(resolved, broadRoots)) return;
+    if (realExistingFile(resolved)) {
+      hasOutsideAllowedExisting = true;
+    } else {
+      hasMissing = true;
+    }
+  };
 
   for (const segment of nonCodeSegments(text)) {
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(segment)) !== null) {
-        const raw = match[1].trim();
-        // http(s)/data URL は添付対象外なので「生成失敗」ではない（誤検知を防ぐ）
-        if (/^(?:https?|data):/i.test(raw)) continue;
-        const resolved = resolveCandidate(raw, workspaceRoot);
-        if (!resolved) continue;
-        if (realFileWithinRoots(resolved, broadRoots)) continue;
-        if (realExistingFile(resolved)) {
-          hasOutsideAllowedExisting = true;
-        } else {
-          hasMissing = true;
-        }
+        inspect(match[1].trim());
       }
     }
   }
+
+  for (const attachment of structuredAttachments ?? []) inspect(attachment.trim());
 
   return { hasMissing, hasOutsideAllowedExisting };
 }
@@ -330,7 +337,11 @@ export function buildAttachmentResult(
   result: string,
   structuredAttachments?: string[],
   workspaceRootOverride?: string
-): { filePaths: string[]; displayText: string } {
+): {
+  filePaths: string[];
+  displayText: string;
+  attachmentFailure?: 'missing' | 'outside_allowed' | 'mixed';
+} {
   const validatedStructuredAttachments = (structuredAttachments ?? [])
     .map((attachment) => resolveAttachmentPath(attachment, workspaceRootOverride))
     .filter((attachment): attachment is string => attachment !== null);
@@ -340,14 +351,30 @@ export function buildAttachmentResult(
       ...validatedStructuredAttachments,
     ]),
   ];
+  const unattachedMarkers = inspectUnattachedMediaMarkers(
+    result,
+    workspaceRootOverride,
+    structuredAttachments
+  );
+  const attachmentFailure =
+    unattachedMarkers.hasMissing && unattachedMarkers.hasOutsideAllowedExisting
+      ? 'mixed'
+      : unattachedMarkers.hasMissing
+        ? 'missing'
+        : unattachedMarkers.hasOutsideAllowedExisting
+          ? 'outside_allowed'
+          : undefined;
   if (filePaths.length > 0) {
-    return { filePaths, displayText: stripFilePaths(result) };
+    return { filePaths, displayText: stripFilePaths(result), attachmentFailure };
   }
-  const unattachedMarkers = inspectUnattachedMediaMarkers(result, workspaceRootOverride);
   if (unattachedMarkers.hasMissing) {
     const stripped = stripFilePaths(result);
     const notice = getMissingMediaNotice();
-    return { filePaths, displayText: stripped ? `${stripped}\n\n${notice}` : notice };
+    return {
+      filePaths,
+      displayText: stripped ? `${stripped}\n\n${notice}` : notice,
+      attachmentFailure,
+    };
   }
   if (unattachedMarkers.hasOutsideAllowedExisting) {
     const stripped = stripFilePaths(result);
@@ -356,6 +383,7 @@ export function buildAttachmentResult(
       displayText: stripped
         ? `${stripped}\n\n${OUTSIDE_ALLOWED_MEDIA_NOTICE}`
         : OUTSIDE_ALLOWED_MEDIA_NOTICE,
+      attachmentFailure,
     };
   }
   return { filePaths, displayText: result };

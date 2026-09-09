@@ -346,6 +346,26 @@ describe('config', () => {
     expect(() => loadConfig()).toThrow('Invalid AGENT_BACKEND');
   });
 
+  it('loads a supported global agent effort', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'codex';
+    process.env.AGENT_MODEL = 'gpt-test';
+    process.env.AGENT_EFFORT = 'xhigh';
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().agent.effort).toBe('xhigh');
+  });
+
+  it('rejects a global effort unsupported by the selected backend in strict mode', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    process.env.AGENT_BACKEND = 'local-llm';
+    process.env.AGENT_EFFORT = 'high';
+    process.env.XANGI_CONFIG_STRICT = 'true';
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(() => loadConfig()).toThrow('AGENT_EFFORT');
+  });
+
   it('should enable scheduler and startup by default', async () => {
     process.env.DISCORD_TOKEN = 'test-token';
     delete process.env.SCHEDULER_ENABLED;

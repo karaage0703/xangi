@@ -109,6 +109,7 @@ interface OpenAIMessage {
 }
 
 interface OpenAIChatResponse {
+  model?: string;
   choices: Array<{
     message: {
       role: string;
@@ -127,6 +128,25 @@ interface OpenAIChatResponse {
     completion_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
   };
+}
+
+async function* responseLines(response: Response): AsyncGenerator<string> {
+  if (!response.body) throw new Error('No response body for streaming');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      yield* lines;
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMessage[] {
@@ -231,61 +251,100 @@ export class LLMClient {
     return this.baseUrl.includes('11434') || this.baseUrl.includes('ollama');
   }
 
-  private async chatOllamaNative(
+  private ollamaRequest(
     messages: LLMMessage[],
-    options?: LLMChatOptions
-  ): Promise<LLMChatResponse> {
-    const ollamaMessages = toOllamaMessages(messages);
-
+    options: LLMChatOptions | undefined,
+    stream: boolean
+  ): Record<string, unknown> {
+    const requestMessages = toOllamaMessages(messages);
     if (options?.systemPrompt) {
-      ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });
+      requestMessages.unshift({ role: 'system', content: options.systemPrompt });
     }
-
+    const temperature = this.resolveTemperature(options?.temperature);
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: ollamaMessages,
-      stream: false,
+      messages: requestMessages,
+      stream,
       think: false,
-    };
-
-    applyOllamaTools(body, options);
-
-    {
-      const t = this.resolveTemperature(options?.temperature);
-      body.options = {
+      options: {
         num_predict: options?.maxTokens ?? this.defaultMaxTokens,
         ...(this.numCtx && { num_ctx: this.numCtx }),
-        ...(t !== undefined && { temperature: t }),
-      };
-    }
+        ...(temperature !== undefined && { temperature }),
+      },
+    };
+    applyOllamaTools(body, options);
+    return body;
+  }
 
+  private openAIRequest(
+    messages: LLMMessage[],
+    options: LLMChatOptions | undefined,
+    stream: boolean
+  ): { body: Record<string, unknown>; headers: Record<string, string> } {
+    const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
+    if (options?.systemPrompt) {
+      requestMessages.unshift({ role: 'system', content: options.systemPrompt });
+    }
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: requestMessages,
+      stream,
+      max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
+    };
+    const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
+    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+    applyOpenAITools(body, options);
+    const temperature = this.resolveTemperature(options?.temperature);
+    if (temperature !== undefined) body.temperature = temperature;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+    return { body, headers };
+  }
+
+  private async fetchChatResponse(
+    path: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string>,
+    label: string,
+    signal?: AbortSignal
+  ): Promise<Response> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-    if (options?.signal) {
-      if (options.signal.aborted) controller.abort();
-      else options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
-    let response: Response;
     try {
-      response = await this.fetchWithTransientRetry(
-        `${this.baseUrl}/api/chat`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        },
-        'Ollama chat'
+      return await this.fetchWithTransientRetry(
+        `${this.baseUrl}${path}`,
+        { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
+        label
       );
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  private async chatOllamaNative(
+    messages: LLMMessage[],
+    options?: LLMChatOptions
+  ): Promise<LLMChatResponse> {
+    const body = this.ollamaRequest(messages, options, false);
+
+    const response = await this.fetchChatResponse(
+      '/api/chat',
+      body,
+      { 'Content-Type': 'application/json' },
+      'Ollama chat',
+      options?.signal
+    );
 
     if (!response.ok) {
       throw new Error(`Ollama API error ${response.status}: ${await response.text()}`);
     }
 
     const data = (await response.json()) as {
+      model?: string;
       message: {
         role: string;
         content: string;
@@ -298,6 +357,7 @@ export class LLMClient {
       eval_count?: number;
     };
 
+    if (typeof data.model === 'string') options?.onModel?.(data.model);
     const toolCalls: LLMToolCall[] = [];
     if (data.message.tool_calls) {
       for (const tc of data.message.tool_calls) {
@@ -328,53 +388,15 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): Promise<LLMChatResponse> {
-    const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
+    const { body, headers } = this.openAIRequest(messages, options, false);
 
-    if (options?.systemPrompt) {
-      requestMessages.unshift({ role: 'system', content: options.systemPrompt });
-    }
-
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages: requestMessages,
-      stream: false,
-      max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
-    };
-    const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
-    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-
-    applyOpenAITools(body, options);
-
-    {
-      const t = this.resolveTemperature(options?.temperature);
-      if (t !== undefined) body.temperature = t;
-    }
-
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-    // 外部からのAbortSignalも連携
-    if (options?.signal) {
-      if (options.signal.aborted) controller.abort();
-      else options.signal.addEventListener('abort', () => controller.abort(), { once: true });
-    }
-    let response: Response;
-    try {
-      response = await this.fetchWithTransientRetry(
-        `${this.baseUrl}/v1/chat/completions`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        },
-        'OpenAI-compatible chat'
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const response = await this.fetchChatResponse(
+      '/v1/chat/completions',
+      body,
+      headers,
+      'OpenAI-compatible chat',
+      options?.signal
+    );
 
     if (!response.ok) {
       throw new Error(`LLM API error ${response.status}: ${await response.text()}`);
@@ -384,6 +406,7 @@ export class LLMClient {
     const choice = data.choices[0];
     if (!choice) throw new Error('No choices in LLM response');
 
+    if (typeof data.model === 'string') options?.onModel?.(data.model);
     const toolCalls: LLMToolCall[] = [];
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
@@ -448,34 +471,7 @@ export class LLMClient {
       return;
     }
 
-    const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
-
-    if (options?.systemPrompt) {
-      requestMessages.unshift({ role: 'system', content: options.systemPrompt });
-    }
-
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages: requestMessages,
-      stream: true,
-      max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
-    };
-    const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
-    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-
-    // tools / tool_choice — chatOpenAI と同等。streaming でも tool calling 機構を有効にする。
-    // tools 未指定の streaming だと、LLM が tool 呼びたい場面で擬似 tool_call 文字列を
-    // テキストで吐く format drift が発生する（Gemma 4 等の OpenAI 互換モデルで実測）。
-    // 最終応答用には toolChoice='none' を呼び出し側で指定して text 応答を強制する。
-    applyOpenAITools(body, options);
-
-    {
-      const t = this.resolveTemperature(options?.temperature);
-      if (t !== undefined) body.temperature = t;
-    }
-
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+    const { body, headers } = this.openAIRequest(messages, options, true);
 
     const response = await this.fetchWithTransientRetry(
       `${this.baseUrl}/v1/chat/completions`,
@@ -492,43 +488,26 @@ export class LLMClient {
       throw new Error(`LLM API error ${response.status}: ${await response.text()}`);
     }
 
-    if (!response.body) throw new Error('No response body for streaming');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
     let hasContent = false;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
-          if (trimmed.startsWith('data: ')) {
-            try {
-              const chunk = JSON.parse(trimmed.slice(6)) as {
-                choices: Array<{ delta: { content?: string; reasoning?: string } }>;
-              };
-              const delta = chunk.choices[0]?.delta;
-              if (delta?.content) {
-                hasContent = true;
-                yield delta.content;
-              }
-            } catch {
-              // skip malformed chunks
-            }
+    for await (const line of responseLines(response)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const chunk = JSON.parse(trimmed.slice(6)) as {
+            model?: string;
+            choices: Array<{ delta: { content?: string; reasoning?: string } }>;
+          };
+          if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) {
+            hasContent = true;
+            yield delta.content;
           }
+        } catch {
+          // skip malformed chunks
         }
       }
-    } finally {
-      reader.releaseLock();
     }
 
     // Thinking model でcontentが空だった場合、non-streamingにフォールバック
@@ -550,29 +529,7 @@ export class LLMClient {
     messages: LLMMessage[],
     options?: LLMChatOptions
   ): AsyncGenerator<string> {
-    const ollamaMessages = toOllamaMessages(messages);
-
-    if (options?.systemPrompt) {
-      ollamaMessages.unshift({ role: 'system', content: options.systemPrompt });
-    }
-
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages: ollamaMessages,
-      stream: true,
-      think: false,
-    };
-
-    applyOllamaTools(body, options);
-
-    {
-      const t = this.resolveTemperature(options?.temperature);
-      body.options = {
-        num_predict: options?.maxTokens ?? this.defaultMaxTokens,
-        ...(this.numCtx && { num_ctx: this.numCtx }),
-        ...(t !== undefined && { temperature: t }),
-      };
-    }
+    const body = this.ollamaRequest(messages, options, true);
 
     const response = await this.fetchWithTransientRetry(
       `${this.baseUrl}/api/chat`,
@@ -588,38 +545,21 @@ export class LLMClient {
       throw new Error(`Ollama API error ${response.status}: ${await response.text()}`);
     }
 
-    if (!response.body) throw new Error('No response body for streaming');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const chunk = JSON.parse(line) as {
-              message?: { content?: string };
-              done?: boolean;
-            };
-            if (chunk.message?.content) {
-              yield chunk.message.content;
-            }
-          } catch {
-            // skip malformed chunks
-          }
+    for await (const line of responseLines(response)) {
+      if (!line.trim()) continue;
+      try {
+        const chunk = JSON.parse(line) as {
+          model?: string;
+          message?: { content?: string };
+          done?: boolean;
+        };
+        if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
+        if (chunk.message?.content) {
+          yield chunk.message.content;
         }
+      } catch {
+        // skip malformed chunks
       }
-    } finally {
-      reader.releaseLock();
     }
   }
 }

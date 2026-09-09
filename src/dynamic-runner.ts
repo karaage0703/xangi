@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import { realpathSync } from 'fs';
 import { resolve as resolvePath } from 'path';
 import type {
@@ -21,7 +22,11 @@ import {
   getSessionEntry,
   setProviderSessionId,
   setProviderSessionMode,
+  recordSessionModelExecution,
 } from './sessions.js';
+import { normalizeModelId, observeExecutionModel, type ModelExecution } from './model-execution.js';
+import { attachResponseModelExecution } from './transcript-logger.js';
+import { readCodexTurnModels } from './codex-model-evidence.js';
 import type { ChatPlatform } from './prompts/index.js';
 import {
   appendUserPromptSubmitContext,
@@ -66,6 +71,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
 
   /** チャンネル別に生成したランナー（デフォルトと異なるバックエンドの場合） */
   private channelRunners = new Map<string, { runner: AgentRunner; key: string }>();
+  private activeRunnerUses = new Map<AgentRunner, number>();
+  private retiredRunners = new Set<AgentRunner>();
 
   constructor(config: Config, resolver: BackendResolver) {
     super();
@@ -76,9 +83,11 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     this.userPromptSubmitHooks = createReloadingUserPromptSubmitHookRunner(this.workdir);
 
     // デフォルトランナーを作成
-    this.defaultRunner = createAgentRunner(config.agent.backend, config.agent.config, {
-      platform: this.platform,
-    });
+    this.defaultRunner = this.createRunnerFor(
+      this.resolver.getDefault(),
+      this.platform,
+      this.workdir
+    );
     this.attachTimeoutBubble(this.defaultRunner);
 
     console.log(
@@ -130,7 +139,6 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
 
     if (
       resolverKey === defaultKey &&
-      !resolved.effort &&
       platformKey === defaultPlatformKey &&
       requestedWorkdir === defaultWorkdir &&
       !forceDedicated
@@ -142,7 +150,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
 
     // 既存のチャンネルランナーがあり、キーが一致すればそれを使う
     const existing = this.channelRunners.get(channelId);
-    const channelRunnerKey = `${resolverKey}:${platformKey}:${resolved.effort ?? ''}:${requestedWorkdir}`;
+    const channelRunnerKey = `${resolverKey}:${platformKey}:${requestedWorkdir}`;
     if (existing && existing.key === channelRunnerKey) {
       return existing.runner;
     }
@@ -198,22 +206,22 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   }
 
   private makeKey(resolved: ResolvedBackend): string {
-    return `${resolved.backend}:${resolved.model ?? 'default'}`;
+    return `${resolved.backend}:${resolved.model ?? 'default'}:${resolved.effort ?? 'default'}`;
   }
 
   private destroyChannelRunner(channelId: string): void {
     const existing = this.channelRunners.get(channelId);
     if (existing) {
       existing.runner.destroy?.(channelId);
-      // RunnerManagerならshutdownも呼ぶ
-      if (
-        'shutdown' in existing.runner &&
-        typeof (existing.runner as RunnerManager).shutdown === 'function'
-      ) {
-        (existing.runner as RunnerManager).shutdown();
-      }
+      this.shutdownRunner(existing.runner);
       this.channelRunners.delete(channelId);
       console.log(`[dynamic-runner] Destroyed channel runner for ${channelId}`);
+    }
+  }
+
+  private shutdownRunner(runner: AgentRunner): void {
+    if ('shutdown' in runner && typeof (runner as RunnerManager).shutdown === 'function') {
+      (runner as RunnerManager).shutdown();
     }
   }
 
@@ -221,33 +229,19 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    const startedAt = Date.now();
-    const channelId = options?.channelId;
-    const settingsChannelId = options?.settingsChannelId ?? channelId;
-    const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
-    this.recordResolvedSessionMode(options, resolved);
-    const runner = this.getRunner(
-      options?.runnerKey ?? channelId,
-      resolved,
-      options?.platform,
-      options?.workdir,
-      options?.runnerKey !== undefined && options.runnerKey !== channelId
-    );
-
-    // effort / localLlmMode をオプションに注入（resolved 由来）
-    const runOptions = this.injectResolvedFields(
-      this.dropMismatchedProviderSession(options, resolved),
-      resolved
-    );
-
-    const enrichedPrompt = runOptions?.internalTask
-      ? prompt
-      : await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
+      await this.prepareExecution(prompt, options);
+    this.retainRunner(runner);
     try {
       const result = await runner.run(enrichedPrompt, runOptions);
       this.recordResolvedBackend(runOptions, resolved, result);
+      await this.finishModelExecution(runOptions, execution, result);
       return result;
+    } catch (error) {
+      if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
+      throw error;
     } finally {
+      this.releaseRunner(runner);
       if (runOptions?.appSessionId) {
         addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
       }
@@ -262,27 +256,9 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const startedAt = Date.now();
-    const channelId = options?.channelId;
-    const settingsChannelId = options?.settingsChannelId ?? channelId;
-    const resolved = this.resolver.resolve(settingsChannelId, this.getRequestDefault(options));
-    this.recordResolvedSessionMode(options, resolved);
-    const runner = this.getRunner(
-      options?.runnerKey ?? channelId,
-      resolved,
-      options?.platform,
-      options?.workdir,
-      options?.runnerKey !== undefined && options.runnerKey !== channelId
-    );
-
-    const runOptions = this.injectResolvedFields(
-      this.dropMismatchedProviderSession(options, resolved),
-      resolved
-    );
-
-    const enrichedPrompt = runOptions?.internalTask
-      ? prompt
-      : await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
+      await this.prepareExecution(prompt, options);
+    this.retainRunner(runner);
     const recorder =
       runOptions?.appSessionId && CLI_TRAJECTORY_BACKENDS.has(resolved.backend)
         ? new ToolTrajectoryStreamRecorder(
@@ -296,18 +272,126 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
             }
           )
         : undefined;
+    const observedCallbacks: StreamCallbacks = {
+      ...callbacks,
+      onModel: (model) => {
+        if (execution.status !== 'running') return;
+        if (observeExecutionModel(execution, model))
+          this.persistModelExecution(runOptions, execution);
+        callbacks.onModel?.(model);
+      },
+      onModelSelection: (selection) => {
+        if (execution.status !== 'running' || selection !== 'Auto') return;
+        execution.modelSelection = selection;
+        execution.updatedAt = new Date().toISOString();
+        this.persistModelExecution(runOptions, execution);
+        callbacks.onModelSelection?.(selection);
+      },
+      // Complete consumers only after the result and model snapshot have been persisted.
+      onComplete: undefined,
+    };
     try {
       const result = await runner.runStream(
         enrichedPrompt,
-        recorder?.callbacks(callbacks) ?? callbacks,
+        recorder?.callbacks(observedCallbacks) ?? observedCallbacks,
         runOptions
       );
       this.recordResolvedBackend(runOptions, resolved, result);
+      await this.finishModelExecution(runOptions, execution, result);
+      callbacks.onComplete?.(result);
       return result;
+    } catch (error) {
+      if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
+      throw error;
     } finally {
+      this.releaseRunner(runner);
       if (runOptions?.appSessionId) {
         addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
       }
+    }
+  }
+
+  private async prepareExecution(prompt: string, options?: RunOptions) {
+    const startedAt = Date.now();
+    const channelId = options?.channelId;
+    const resolved = this.resolver.resolve(
+      options?.settingsChannelId ?? channelId,
+      this.getRequestDefault(options)
+    );
+    const runner = this.getRunner(
+      options?.runnerKey ?? channelId,
+      resolved,
+      options?.platform,
+      options?.workdir,
+      options?.runnerKey !== undefined && options.runnerKey !== channelId
+    );
+    const runOptions = this.injectResolvedFields(
+      this.dropMismatchedProviderSession(options, resolved),
+      resolved
+    );
+    this.recordResolvedSessionMode(runOptions, resolved);
+    const enrichedPrompt = runOptions?.internalTask
+      ? prompt
+      : await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    const configuredModel = normalizeModelId(resolved.model);
+    const execution: ModelExecution = {
+      turnId: randomUUID(),
+      backend: resolved.backend,
+      configuredModel,
+      observedModels: [],
+      source: configuredModel ? 'configuration' : 'unknown',
+      startedAt: new Date(startedAt).toISOString(),
+      updatedAt: new Date(startedAt).toISOString(),
+      status: 'running',
+      providerSessionId: runOptions?.sessionId,
+    };
+    this.persistModelExecution(runOptions, execution);
+    return { startedAt, resolved, runner, runOptions, enrichedPrompt, execution };
+  }
+
+  private persistModelExecution(options: RunOptions | undefined, execution: ModelExecution): void {
+    if (!options?.appSessionId || options.internalTask) return;
+    if (!this.sessionWorkdirMatches(options, options.appSessionId)) return;
+    recordSessionModelExecution(options.appSessionId, execution);
+  }
+
+  private async finishModelExecution(
+    options: RunOptions | undefined,
+    execution: ModelExecution,
+    result?: RunResult
+  ): Promise<void> {
+    if (execution.backend === 'codex' && result?.sessionId && !result.model) {
+      const models = await readCodexTurnModels({
+        providerSessionId: result.sessionId,
+        cwd: options?.workdir ?? this.workdir,
+        startedAt: execution.startedAt,
+        finishedAt: new Date().toISOString(),
+      });
+      for (const model of models) observeExecutionModel(execution, model);
+    }
+    if (result?.modelSelection === 'Auto') execution.modelSelection = 'Auto';
+    const latestObserved = execution.effectiveModel;
+    for (const model of result?.models ?? []) observeExecutionModel(execution, model);
+    // A deduplicated result.models list cannot reconstruct A → B → A ordering.
+    observeExecutionModel(execution, result?.model ?? latestObserved);
+    if (result && execution.effectiveModel) {
+      result.model = execution.effectiveModel;
+      result.models = [...execution.observedModels];
+    }
+    execution.status = result ? 'completed' : 'failed';
+    execution.updatedAt = new Date().toISOString();
+    if (result?.sessionId) execution.providerSessionId = result.sessionId;
+    this.persistModelExecution(options, execution);
+    if (
+      options?.appSessionId &&
+      !options.internalTask &&
+      this.sessionWorkdirMatches(options, options.appSessionId)
+    ) {
+      attachResponseModelExecution(
+        options.workdir ?? this.workdir,
+        options.appSessionId,
+        execution
+      );
     }
   }
 
@@ -393,7 +477,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     resolved: ResolvedBackend,
     result: RunResult
   ): void {
-    if (!options?.appSessionId || !result.sessionId) return;
+    if (!options?.appSessionId || !result.sessionId || options.internalTask) return;
     if (!this.sessionWorkdirMatches(options, options.appSessionId)) {
       console.warn(
         `[dynamic-runner] Not storing provider session for ${options.appSessionId}; ` +
@@ -425,7 +509,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     options: RunOptions | undefined,
     resolved: ResolvedBackend
   ): void {
-    if (!options?.appSessionId) return;
+    if (!options?.appSessionId || options.internalTask) return;
+    if (!this.sessionWorkdirMatches(options, options.appSessionId)) return;
     setProviderSessionMode(
       options.appSessionId,
       resolved.backend,
@@ -535,6 +620,43 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     console.log(`[dynamic-runner] Backend switched for channel ${channelId}`);
   }
 
+  /** Swap the default runner without interrupting turns already using the previous one. */
+  switchDefaultBackend(): void {
+    const resolved = this.resolver.getDefault();
+    const previous = this.defaultRunner;
+    const nextRunner = this.createRunnerFor(resolved, this.platform, this.workdir);
+    this.attachTimeoutBubble(nextRunner);
+    this.config.agent.backend = resolved.backend;
+    this.config.agent.config.model = resolved.model;
+    this.config.agent.effort = resolved.effort;
+    this.defaultRunner = nextRunner;
+    this.retireRunner(previous);
+    console.log(
+      `[dynamic-runner] Global default switched to ${getBackendDisplayName(resolved.backend)}` +
+        (resolved.model ? ` (${resolved.model})` : '') +
+        (resolved.effort ? ` effort=${resolved.effort}` : '')
+    );
+  }
+
+  private retainRunner(runner: AgentRunner): void {
+    this.activeRunnerUses.set(runner, (this.activeRunnerUses.get(runner) ?? 0) + 1);
+  }
+
+  private releaseRunner(runner: AgentRunner): void {
+    const remaining = (this.activeRunnerUses.get(runner) ?? 1) - 1;
+    if (remaining > 0) {
+      this.activeRunnerUses.set(runner, remaining);
+      return;
+    }
+    this.activeRunnerUses.delete(runner);
+    if (this.retiredRunners.delete(runner)) this.shutdownRunner(runner);
+  }
+
+  private retireRunner(runner: AgentRunner): void {
+    if ((this.activeRunnerUses.get(runner) ?? 0) > 0) this.retiredRunners.add(runner);
+    else this.shutdownRunner(runner);
+  }
+
   /**
    * チャンネルの現在のバックエンド設定を取得
    */
@@ -571,21 +693,12 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   shutdown(): void {
     for (const [channelId, entry] of this.channelRunners.entries()) {
       entry.runner.destroy?.(channelId);
-      if (
-        'shutdown' in entry.runner &&
-        typeof (entry.runner as RunnerManager).shutdown === 'function'
-      ) {
-        (entry.runner as RunnerManager).shutdown();
-      }
+      this.shutdownRunner(entry.runner);
     }
+    for (const runner of this.retiredRunners) this.shutdownRunner(runner);
+    this.retiredRunners.clear();
     this.channelRunners.clear();
-
-    if (
-      'shutdown' in this.defaultRunner &&
-      typeof (this.defaultRunner as RunnerManager).shutdown === 'function'
-    ) {
-      (this.defaultRunner as RunnerManager).shutdown();
-    }
+    this.shutdownRunner(this.defaultRunner);
   }
 }
 

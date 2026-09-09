@@ -1,4 +1,53 @@
-import { useEffect, useId, useRef, type FormEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  type FormEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject,
+  type SyntheticEvent,
+} from 'react';
+
+function useModalDialog(
+  open: boolean,
+  busy: boolean,
+  onCancel: () => void,
+  focusRef?: RefObject<HTMLInputElement | null>
+) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const backdropPointerDownRef = useRef(false);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      const frame = requestAnimationFrame(() => {
+        if (!dialog.open) dialog.showModal();
+        focusRef?.current?.focus();
+        focusRef?.current?.select();
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    if (!open && dialog.open) dialog.close();
+  }, [focusRef, open]);
+  return {
+    ref,
+    onCancel: (event: SyntheticEvent<HTMLDialogElement>) => {
+      event.preventDefault();
+      if (!busy) onCancel();
+    },
+    onPointerDown: (event: PointerEvent<HTMLDialogElement>) => {
+      backdropPointerDownRef.current = event.target === event.currentTarget;
+    },
+    onClick: (event: MouseEvent<HTMLDialogElement>) => {
+      const clickedBackdrop =
+        event.target === event.currentTarget && backdropPointerDownRef.current;
+      backdropPointerDownRef.current = false;
+      if (clickedBackdrop && !busy) onCancel();
+    },
+  };
+}
 
 export function ConfirmDialog({
   open,
@@ -21,42 +70,16 @@ export function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const backdropPointerDownRef = useRef(false);
   const titleId = useId();
   const descriptionId = useId();
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      const frame = requestAnimationFrame(() => {
-        if (!dialog.open) dialog.showModal();
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
+  const dialog = useModalDialog(open, busy, onCancel);
 
   return (
     <dialog
-      ref={dialogRef}
+      {...dialog}
       className="confirm-dialog"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) onCancel();
-      }}
-      onPointerDown={(event) => {
-        backdropPointerDownRef.current = event.target === event.currentTarget;
-      }}
-      onClick={(event) => {
-        const clickedBackdrop =
-          event.target === event.currentTarget && backdropPointerDownRef.current;
-        backdropPointerDownRef.current = false;
-        if (clickedBackdrop && !busy) onCancel();
-      }}
     >
       <div className="confirm-dialog-body">
         <h2 id={titleId}>{title}</h2>
@@ -104,26 +127,11 @@ export function TextInputDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const backdropPointerDownRef = useRef(false);
   const titleId = useId();
   const inputId = useId();
   const errorId = useId();
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      const frame = requestAnimationFrame(() => {
-        if (!dialog.open) dialog.showModal();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
+  const dialog = useModalDialog(open, busy, onCancel, inputRef);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -132,23 +140,10 @@ export function TextInputDialog({
 
   return (
     <dialog
-      ref={dialogRef}
+      {...dialog}
       className="confirm-dialog text-input-dialog"
       aria-labelledby={titleId}
       aria-describedby={error ? errorId : undefined}
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) onCancel();
-      }}
-      onPointerDown={(event) => {
-        backdropPointerDownRef.current = event.target === event.currentTarget;
-      }}
-      onClick={(event) => {
-        const clickedBackdrop =
-          event.target === event.currentTarget && backdropPointerDownRef.current;
-        backdropPointerDownRef.current = false;
-        if (clickedBackdrop && !busy) onCancel();
-      }}
     >
       <form onSubmit={submit}>
         <div className="confirm-dialog-body">

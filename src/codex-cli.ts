@@ -1,8 +1,10 @@
+import { readCodexTurnModels } from './codex-model-evidence.js';
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
+import { logResponse } from './transcript-logger.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { updateSessionContextUsage } from './sessions.js';
 import { readCodexContextUsage } from './usage-monitor.js';
@@ -16,6 +18,7 @@ export interface CodexOptions extends BaseRunnerOptions {
  * Codex CLI 0.98.0 の JSONL イベント型定義
  */
 interface CodexEvent {
+  model?: string;
   type: string;
   thread_id?: string;
   session_id?: string;
@@ -252,10 +255,7 @@ export class CodexRunner extends CliRunnerBase {
 
     this.logExecution('Executing', options);
 
-    // トランスクリプトログ: 送信プロンプトを記録
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, prompt);
-    }
+    this.logPromptTranscript(prompt, options);
 
     const collectOpts = {
       exitErrorDetail: (stdout: string) => {
@@ -283,8 +283,11 @@ export class CodexRunner extends CliRunnerBase {
     }
 
     let sessionId = '';
+    const models = new ProviderModels();
     let usage: RunResult['usage'];
     this.forEachJsonlEvent(stdout, (event) => {
+      if (['thread.started', 'turn.started', 'turn.completed'].includes(event.type))
+        models.add(event.model);
       const sid = this.extractSessionId(event);
       if (sid) sessionId = sid;
       usage = this.extractUsage(event) ?? usage;
@@ -296,7 +299,7 @@ export class CodexRunner extends CliRunnerBase {
       logResponse(this.workdir, options.appSessionId, { result, sessionId, usage });
     }
 
-    return usage ? { result, sessionId, usage } : { result, sessionId };
+    return { result, sessionId, ...(usage ? { usage } : {}), ...models.result() };
   }
 
   private extractResult(output: string): string {
@@ -326,10 +329,7 @@ export class CodexRunner extends CliRunnerBase {
 
     this.logExecution('Streaming', options);
 
-    // トランスクリプトログ: 送信プロンプトを記録
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, prompt);
-    }
+    this.logPromptTranscript(prompt, options);
 
     const onComplete = (result: RunResult) => {
       // トランスクリプトログ: 応答を記録
@@ -354,40 +354,69 @@ export class CodexRunner extends CliRunnerBase {
       }
     };
 
+    let streaming = true;
+    const scopedCallbacks = {
+      ...callbacks,
+      onModel: (model: string) => {
+        if (streaming) callbacks.onModel?.(model);
+      },
+    };
     try {
-      return await this.executeStreamCore(args, callbacks, {
-        channelId: options?.channelId,
-        notifyOnError: false,
+      return await this.executeStreamWithResumeRetry(args, scopedCallbacks, options, {
+        isStaleError: (error) => this.isStaleResumeError(error),
+        args: () => this.buildArgs(prompt, { ...options, sessionId: undefined }),
+        warning: (id) =>
+          `[codex] Resume failed for stale thread ${id.slice(0, 8)}..., retrying with a new session`,
         onComplete,
       });
-    } catch (error) {
-      if (!options?.sessionId || !this.isStaleResumeError(error)) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        callbacks.onError?.(err);
-        throw error;
-      }
-      console.warn(
-        `[codex] Resume failed for stale thread ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryArgs = this.buildArgs(prompt, { ...options, sessionId: undefined });
-      return this.executeStreamCore(retryArgs, callbacks, {
-        channelId: options?.channelId,
-        onComplete,
-      });
+    } finally {
+      streaming = false;
     }
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let errorMessage: string | undefined;
     let usage: RunResult['usage'];
     const emittedToolIds = new Set<string>();
     let backendReady = false;
+    const startedAt = new Date().toISOString();
+    let finalized = false;
+    let evidencePending = false;
+    let lastEvidenceRead = 0;
+    const refreshModelEvidence = () => {
+      if (
+        finalized ||
+        !sessionId ||
+        !this.workdir ||
+        evidencePending ||
+        Date.now() - lastEvidenceRead < 5000
+      )
+        return;
+      evidencePending = true;
+      lastEvidenceRead = Date.now();
+      void readCodexTurnModels({
+        providerSessionId: sessionId,
+        cwd: this.workdir,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      })
+        .then((observed) => {
+          if (!finalized) for (const model of observed) models.add(model);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          evidencePending = false;
+        });
+    };
 
     return {
       handleEvent: (json, phase) => {
         const event = json as CodexEvent;
+        if (['thread.started', 'turn.started', 'turn.completed'].includes(event.type))
+          models.add(event.model);
 
         if (!backendReady && event.type === 'thread.started') {
           backendReady = true;
@@ -401,6 +430,7 @@ export class CodexRunner extends CliRunnerBase {
         // セッションID抽出
         const sid = this.extractSessionId(event);
         if (sid) sessionId = sid;
+        refreshModelEvidence();
 
         // エラーイベント抽出（利用上限到達などの本当の理由）
         const errMsg = this.extractErrorMessage(event);
@@ -465,9 +495,14 @@ export class CodexRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () =>
-        usage ? { result: fullText, sessionId, usage } : { result: fullText, sessionId },
-      exitErrorDetail: () => errorMessage,
+      finalize: () => {
+        finalized = true;
+        return { result: fullText, sessionId, ...(usage ? { usage } : {}), ...models.result() };
+      },
+      exitErrorDetail: () => {
+        finalized = true;
+        return errorMessage;
+      },
     };
   }
 }

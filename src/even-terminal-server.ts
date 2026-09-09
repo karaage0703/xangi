@@ -31,6 +31,7 @@ import { flowFromHostPlatform } from './inter-instance-chat/index.js';
 import { isLocalOrPrivate } from './pet-inbox-server.js';
 import { readSessionMessages } from './transcript-logger.js';
 import { truncateSessionTitle } from './session-title.js';
+import { readJsonObjectBody, sendJson } from './web-http.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGES_PER_SESSION = 500;
@@ -198,36 +199,6 @@ function isAuthorized(req: IncomingMessage): boolean {
   return authHeader === `Bearer ${token}` || queryToken === token;
 }
 
-function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let buf = '';
-    let aborted = false;
-    req.on('data', (chunk: Buffer) => {
-      if (aborted) return;
-      buf += chunk.toString('utf-8');
-      if (buf.length > MAX_BODY_BYTES) {
-        aborted = true;
-        reject(new Error(`Body too large (max ${MAX_BODY_BYTES} bytes)`));
-        req.destroy();
-      }
-    });
-    req.on('end', () => {
-      if (aborted) return;
-      try {
-        resolve(buf ? (JSON.parse(buf) as Record<string, unknown>) : {});
-      } catch {
-        reject(new Error('Invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
 function eventToTerminalMessage(event: PublishedEvent): Record<string, unknown> | null {
   switch (event.type) {
     case 'turn.started':
@@ -360,15 +331,15 @@ async function handlePrompt(
 ): Promise<void> {
   let body: Record<string, unknown>;
   try {
-    body = await readJsonBody(req);
+    body = await readJsonObjectBody(req, MAX_BODY_BYTES);
   } catch (e) {
-    jsonResponse(res, 400, { error: e instanceof Error ? e.message : 'Invalid request body' });
+    sendJson(res, 400, { error: e instanceof Error ? e.message : 'Invalid request body' });
     return;
   }
 
   const text = String(body.text || '').trim();
   if (!text) {
-    jsonResponse(res, 400, { error: "Missing 'text' field" });
+    sendJson(res, 400, { error: "Missing 'text' field" });
     return;
   }
 
@@ -382,17 +353,17 @@ async function handlePrompt(
 
   const entry = getSessionEntry(appSessionId);
   if (!entry) {
-    jsonResponse(res, 404, { error: `Session ${appSessionId} not found` });
+    sendJson(res, 404, { error: `Session ${appSessionId} not found` });
     return;
   }
   if (entry.platform !== 'web') {
-    jsonResponse(res, 409, {
+    sendJson(res, 409, {
       error: `Session ${appSessionId} is not a web session (platform: ${entry.platform})`,
     });
     return;
   }
   if (busy.has(appSessionId)) {
-    jsonResponse(res, 409, { error: 'Session is busy' });
+    sendJson(res, 409, { error: 'Session is busy' });
     return;
   }
 
@@ -432,7 +403,7 @@ async function handlePrompt(
 
   if (startsReservedEmptySession) startTurn();
 
-  jsonResponse(res, 202, { ok: true, sessionId: appSessionId, provider });
+  sendJson(res, 202, { ok: true, sessionId: appSessionId, provider });
 
   if (createdNewSession) {
     const connected = await waitForTerminalClient(appSessionId, 2500);
@@ -498,7 +469,7 @@ async function handlePrompt(
 function handleEvents(req: IncomingMessage, res: ServerResponse, parsedUrl: URL): void {
   const sessionId = parsedUrl.searchParams.get('sessionId') || '';
   if (!sessionId) {
-    jsonResponse(res, 400, { error: "Missing 'sessionId' query parameter" });
+    sendJson(res, 400, { error: "Missing 'sessionId' query parameter" });
     return;
   }
 
@@ -614,7 +585,7 @@ export async function handleEvenTerminalRequest(
 
   if (!isAuthorized(req)) {
     terminalLog(`401 ${requestSummary(req, parsedUrl)}`);
-    jsonResponse(res, 401, { error: 'Unauthorized' });
+    sendJson(res, 401, { error: 'Unauthorized' });
     return true;
   }
 
@@ -625,12 +596,12 @@ export async function handleEvenTerminalRequest(
     const limit = Number(parsedUrl.searchParams.get('limit')) || 10;
     const responseSessions = listTerminalSessions(provider, limit);
     terminalLog(`sessions response count=${responseSessions.length} provider=${provider}`);
-    jsonResponse(res, 200, { sessions: responseSessions });
+    sendJson(res, 200, { sessions: responseSessions });
     return true;
   }
 
   if (path === '/api/info' && req.method === 'GET') {
-    jsonResponse(res, 200, {
+    sendJson(res, 200, {
       account: {},
       model:
         process.env.AGENT_MODEL ||
@@ -644,7 +615,7 @@ export async function handleEvenTerminalRequest(
   }
 
   if (path === '/api/update-check' && req.method === 'GET') {
-    jsonResponse(res, 200, {
+    sendJson(res, 200, {
       currentVersion: process.env.npm_package_version || 'xangi',
       newestVersion: null,
       updateAvailable: false,
@@ -661,7 +632,7 @@ export async function handleEvenTerminalRequest(
     }
     const history = getCombinedTerminalHistory(sessionId).slice(-limit);
     terminalLog(`history response session=${sessionId} count=${history.length} state=${s.status}`);
-    jsonResponse(res, 200, { history });
+    sendJson(res, 200, { history });
     return true;
   }
 
@@ -678,7 +649,7 @@ export async function handleEvenTerminalRequest(
   if (path === '/api/messages' && req.method === 'GET') {
     const sessionId = parsedUrl.searchParams.get('sessionId') || '';
     if (!sessionId) {
-      jsonResponse(res, 400, { error: "Missing 'sessionId'" });
+      sendJson(res, 400, { error: "Missing 'sessionId'" });
       return true;
     }
     const after = Number(parsedUrl.searchParams.get('after')) || 0;
@@ -690,7 +661,7 @@ export async function handleEvenTerminalRequest(
     terminalLog(
       `messages response session=${sessionId} after=${after} count=${messages.length} state=${s.status}`
     );
-    jsonResponse(res, 200, {
+    sendJson(res, 200, {
       messages,
       state: s.status,
       sessionId,
@@ -702,12 +673,12 @@ export async function handleEvenTerminalRequest(
   if (path === '/api/status' && req.method === 'GET') {
     const sessionId = parsedUrl.searchParams.get('sessionId') || '';
     if (!sessionId) {
-      jsonResponse(res, 400, { error: "Missing 'sessionId'" });
+      sendJson(res, 400, { error: "Missing 'sessionId'" });
       return true;
     }
     const s = getTerminalSession(sessionId);
     terminalLog(`status response session=${sessionId} state=${s.status}`);
-    jsonResponse(res, 200, { state: s.status, sessionId, provider });
+    sendJson(res, 200, { state: s.status, sessionId, provider });
     return true;
   }
 
@@ -715,7 +686,7 @@ export async function handleEvenTerminalRequest(
     ['/api/permission-response', '/api/question-response', '/api/interrupt'].includes(path) &&
     req.method === 'POST'
   ) {
-    jsonResponse(res, 200, { ok: true, ignored: true });
+    sendJson(res, 200, { ok: true, ignored: true });
     return true;
   }
 

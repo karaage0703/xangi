@@ -131,10 +131,7 @@ download_and_run() {
 
 install_tool() {
   case "$1" in
-    codex)
-      command -v npm >/dev/null 2>&1 || show_node_guide 'Codex' 'codex'
-      npm install -g @openai/codex
-      ;;
+    codex) download_and_run 'https://chatgpt.com/codex/install.sh' ;;
     opencode) download_and_run 'https://opencode.ai/install' ;;
     claude-code) download_and_run 'https://claude.ai/install.sh' ;;
     cursor) download_and_run 'https://cursor.com/install' ;;

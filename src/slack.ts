@@ -1,13 +1,15 @@
-import { App, LogLevel } from '@slack/bolt';
+import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
 import { buildCompletionSummary, DEFAULT_COMPLETION_DISPLAY } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
+import { discoverBackendModels } from './backend-models.js';
 import { processManager } from './process-manager.js';
 import type { Skill } from './skills.js';
 import { formatSkillList } from './skills.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
+import { recoverAttachmentOnce } from './attachment-recovery.js';
 import {
   getSlackChannelAutoReply,
   loadReplySuggestionsEnabled,
@@ -94,6 +96,10 @@ export function slackConversationKey(channelId: string, threadTs?: string): stri
   return threadTs ? `${channelId}:${threadTs}` : channelId;
 }
 
+function isSlackUserAllowed(allowedUsers: readonly string[] | undefined, userId?: string): boolean {
+  return !userId || allowedUsers?.includes('*') === true || allowedUsers?.includes(userId) === true;
+}
+
 export type SlackDeleteReactionTarget = {
   channelId: string;
   messageTs: string;
@@ -112,7 +118,7 @@ export function resolveSlackDeleteReactionTarget(
   if (slackConfig.reactionDeleteEnabled === false) return null;
   const userId = event.user;
   if (!userId) return null;
-  if (!slackConfig.allowedUsers?.includes('*') && !slackConfig.allowedUsers?.includes(userId)) {
+  if (!isSlackUserAllowed(slackConfig.allowedUsers, userId)) {
     return null;
   }
   const reaction = event.reaction;
@@ -197,7 +203,7 @@ export async function handleSlackNewAction(
   const channelId = body.channel?.id;
   if (!channelId) return;
   const userId = body.user?.id;
-  if (!allowedUsers?.includes('*') && userId && !allowedUsers?.includes(userId)) return;
+  if (!isSlackUserAllowed(allowedUsers, userId)) return;
 
   closeSlackConversationFromAction(body, agentRunner);
   if (body.message) {
@@ -221,6 +227,89 @@ function markSlackMessageProcessed(channelId: string, ts: string): boolean {
   processedSlackMessages.add(key);
   setTimeout(() => processedSlackMessages.delete(key), 5 * 60 * 1000).unref?.();
   return true;
+}
+
+interface SlackInboundFile {
+  url_private_download?: string;
+  name?: string;
+}
+
+async function downloadSlackAttachments(
+  files: SlackInboundFile[] | undefined,
+  botToken: string | undefined
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (const file of files ?? []) {
+    if (!file.url_private_download) continue;
+    try {
+      paths.push(
+        await downloadFile(file.url_private_download, file.name || 'file', {
+          Authorization: `Bearer ${botToken}`,
+        })
+      );
+    } catch (error) {
+      console.error(`[slack] Failed to download attachment: ${file.name}`, error);
+    }
+  }
+  return paths;
+}
+
+async function processSlackInbound(options: {
+  text: string;
+  files?: SlackInboundFile[];
+  channelId: string;
+  messageTs: string;
+  sourceThreadTs?: string;
+  say: SayFn;
+  client: WebClient;
+  agentRunner: AgentRunner;
+  config: Config;
+  deduplicate?: () => boolean;
+}): Promise<void> {
+  const attachments = await downloadSlackAttachments(options.files, options.config.slack.botToken);
+  if (!options.text && attachments.length === 0) return;
+  const text = buildPromptWithAttachments(
+    options.text || '添付ファイルを確認してください',
+    attachments
+  );
+  const threadTs = shouldReplyInSlackThread(options.config.slack, options.channelId)
+    ? options.sourceThreadTs || options.messageTs
+    : undefined;
+  const conversationKey = slackConversationKey(options.channelId, threadTs);
+  const reply = (message: string) =>
+    options.say({ text: message, ...(threadTs && { thread_ts: threadTs }) });
+
+  if (['!new', 'new', '/new'].includes(text)) {
+    sessions.delete(conversationKey);
+    await reply('🆕 新しいセッションを開始しました');
+    return;
+  }
+  if (['!stop', 'stop', '/stop'].includes(text)) {
+    const managed = await processManager.stopAndWait(conversationKey);
+    const stopped = managed || options.agentRunner.cancel?.(conversationKey) || false;
+    await reply(stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません');
+    return;
+  }
+  if (text === '!delete' || text === 'delete' || text.startsWith('!delete ')) {
+    const arg = text.replace(/^!?delete\s*/, '').trim();
+    await reply(await deleteMessage(options.client, options.channelId, arg));
+    return;
+  }
+  if (options.deduplicate && !options.deduplicate()) return;
+
+  await options.client.reactions
+    .add({ channel: options.channelId, timestamp: options.messageTs, name: 'eyes' })
+    .catch((error) => console.error('[slack] Failed to add reaction:', error.message || error));
+  await processMessage(
+    options.channelId,
+    conversationKey,
+    threadTs,
+    text,
+    options.messageTs,
+    options.client,
+    options.agentRunner,
+    options.config
+  );
 }
 
 export function buildSlackCompletionNotification(input: {
@@ -440,7 +529,7 @@ const busySlackConversations = new Set<string>();
 const processedSlackMessages = new Set<string>();
 
 const SLACK_BACKEND_COMMAND_USAGE =
-  '/backend show | /backend set <backend> [--model <model>] [--effort <effort>] | /backend reset';
+  '/backend show [--scope channel|global] | /backend set <backend> [--model <model>] [--effort <effort>] [--scope channel|global] | /backend reset [--scope channel|global]';
 
 function resetSlackBackendSessions(channelId: string, agentRunner: AgentRunner): void {
   const runKeys = new Set([channelId]);
@@ -465,24 +554,28 @@ export async function executeSlackBackendCommand(options: {
   channelId: string;
   resolver: BackendResolver;
   agentRunner: AgentRunner;
+  modelDiscovery?: typeof discoverBackendModels;
 }): Promise<string> {
-  const { text, channelId, resolver, agentRunner } = options;
+  const {
+    text,
+    channelId,
+    resolver,
+    agentRunner,
+    modelDiscovery = discoverBackendModels,
+  } = options;
   const args = text.trim() ? text.trim().split(/\s+/) : [];
   const action = args.shift()?.toLowerCase() || 'show';
 
   if (!['show', 'set', 'reset'].includes(action)) {
     throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
   }
-  if (action !== 'set' && args.length > 0) {
-    throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
-  }
-
   const backend =
     action === 'set' ? (args.shift()?.toLowerCase() as AgentBackend | undefined) : undefined;
   if (action === 'set' && !backend) throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
 
   let model: string | undefined;
   let effort: EffortLevel | undefined;
+  let scope: 'channel' | 'global' = 'channel';
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === '--model') {
@@ -494,15 +587,33 @@ export async function executeSlackBackendCommand(options: {
       if (!effort) throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
     } else if (arg.startsWith('--effort=')) {
       effort = arg.slice('--effort='.length) as EffortLevel;
+    } else if (arg === '--scope') {
+      const value = args[++index];
+      if (value !== 'channel' && value !== 'global') {
+        throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
+      }
+      scope = value;
+    } else if (arg.startsWith('--scope=')) {
+      const value = arg.slice('--scope='.length);
+      if (value !== 'channel' && value !== 'global') {
+        throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
+      }
+      scope = value;
     } else {
       throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
     }
   }
+  if (action !== 'set' && (model || effort)) {
+    throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
+  }
   const result = await executeRuntimeSettingsCommand(
-    { name: 'backend', action, backend, model, effort, channelId, platform: 'slack' },
-    { resolver }
+    { name: 'backend', action, backend, model, effort, scope, channelId, platform: 'slack' },
+    { resolver, agentRunner, modelDiscovery }
   );
-  if (action !== 'show') resetSlackBackendSessions(channelId, agentRunner);
+  if (action !== 'show') {
+    if (scope === 'global') sessions.clear();
+    else resetSlackBackendSessions(channelId, agentRunner);
+  }
   return result;
 }
 
@@ -750,7 +861,7 @@ export async function handleSlackRestartCommand(options: {
 
   await ack();
 
-  if (!allowedUsers?.includes('*') && !allowedUsers?.includes(userId)) {
+  if (!isSlackUserAllowed(allowedUsers, userId)) {
     await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
     return;
   }
@@ -897,6 +1008,14 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+  const rejectUnauthorizedCommand = async (
+    userId: string,
+    respond: (response: { text: string; response_type: 'ephemeral' }) => Promise<unknown>
+  ): Promise<boolean> => {
+    if (isSlackUserAllowed(config.slack.allowedUsers, userId)) return false;
+    await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
+    return true;
+  };
 
   if (options.externalChatUrlResolvers) {
     options.externalChatUrlResolvers.slack = async ({ contextKey, platformMessageId }) => {
@@ -917,11 +1036,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (!channelId) return;
     const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      userId &&
-      !config.slack.allowedUsers?.includes(userId)
-    ) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
       return;
     }
     const managedProcessStopped = await processManager.stopAndWait(runKey);
@@ -938,11 +1053,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (!channelId) return;
     const runKey = slackRunKeyFromActionBody(body) ?? channelId;
     const userId = body.user?.id;
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      userId &&
-      !config.slack.allowedUsers?.includes(userId)
-    ) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
       return;
     }
     // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
@@ -975,7 +1086,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const channelId = body.channel?.id;
     const userId = body.user?.id;
     if (!channelId || !userId) return;
-    if (!config.slack.allowedUsers?.includes('*') && !config.slack.allowedUsers?.includes(userId)) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
       return;
     }
     const message =
@@ -1020,7 +1131,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const message =
       'message' in body ? (body.message as { ts?: string; thread_ts?: string }) : undefined;
     if (!channelId || !userId || !message?.ts) return;
-    if (!config.slack.allowedUsers?.includes('*') && !config.slack.allowedUsers?.includes(userId)) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
       return;
     }
     const messageKey = slackMessageKey(channelId, message.ts);
@@ -1069,10 +1180,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       const channelId = body.channel?.id;
       const userId = body.user?.id;
       if (!channelId || !userId) return;
-      if (
-        !config.slack.allowedUsers?.includes('*') &&
-        !config.slack.allowedUsers?.includes(userId)
-      ) {
+      if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
         return;
       }
       const value = 'value' in action ? action.value : undefined;
@@ -1143,101 +1251,35 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     if (!userId) return;
 
     // 許可リストチェック
-    if (!config.slack.allowedUsers?.includes('*') && !config.slack.allowedUsers?.includes(userId)) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
       console.log(`[slack] Unauthorized user: ${userId}`);
       return;
     }
 
-    let text = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+    const text = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
 
-    // 添付ファイルをダウンロード
-    const attachmentPaths: string[] = [];
     const files = (event as unknown as Record<string, unknown>).files as
-      Array<{ url_private_download?: string; name?: string }> | undefined;
-    if (files && files.length > 0) {
-      for (const file of files) {
-        if (file.url_private_download) {
-          try {
-            const filePath = await downloadFile(file.url_private_download, file.name || 'file', {
-              Authorization: `Bearer ${config.slack.botToken}`,
-            });
-            attachmentPaths.push(filePath);
-          } catch (err) {
-            console.error(`[slack] Failed to download attachment: ${file.name}`, err);
-          }
-        }
-      }
-    }
-
-    if (!text && attachmentPaths.length === 0) return;
-    text = buildPromptWithAttachments(text || '添付ファイルを確認してください', attachmentPaths);
-
-    const channelId = event.channel;
-    const threadTs = shouldReplyInSlackThread(config.slack, channelId)
-      ? event.thread_ts || event.ts
-      : undefined;
-    const conversationKey = slackConversationKey(channelId, threadTs);
-
-    // セッションクリアコマンド
-    if (['!new', 'new', '/new'].includes(text)) {
-      sessions.delete(conversationKey);
-      await say({
-        text: '🆕 新しいセッションを開始しました',
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 停止コマンド
-    if (['!stop', 'stop', '/stop'].includes(text)) {
-      const managedProcessStopped = await processManager.stopAndWait(conversationKey);
-      const stopped = managedProcessStopped || agentRunner.cancel?.(conversationKey) || false;
-      await say({
-        text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 削除コマンド
-    if (text === '!delete' || text === 'delete' || text.startsWith('!delete ')) {
-      const arg = text.replace(/^!?delete\s*/, '').trim();
-      const result = await deleteMessage(client, channelId, arg);
-      await say({
-        text: result,
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 👀 リアクション追加
-    if (!markSlackMessageProcessed(channelId, event.ts)) {
-      console.log(
-        `[slack] Skipping duplicate app_mention event: channel=${channelId}, ts=${event.ts}`
-      );
-      return;
-    }
-
-    await client.reactions
-      .add({
-        channel: channelId,
-        timestamp: event.ts,
-        name: 'eyes',
-      })
-      .catch((err) => {
-        console.error('[slack] Failed to add reaction:', err.message || err);
-      });
-
-    await processMessage(
-      channelId,
-      conversationKey,
-      threadTs,
+      SlackInboundFile[] | undefined;
+    await processSlackInbound({
       text,
-      event.ts,
+      files,
+      channelId: event.channel,
+      messageTs: event.ts,
+      sourceThreadTs: event.thread_ts,
+      say,
       client,
       agentRunner,
-      config
-    );
+      config,
+      deduplicate: () => {
+        const fresh = markSlackMessageProcessed(event.channel, event.ts);
+        if (!fresh) {
+          console.log(
+            `[slack] Skipping duplicate app_mention event: channel=${event.channel}, ts=${event.ts}`
+          );
+        }
+        return fresh;
+      },
+    });
   });
 
   // DMの処理 + autoReplyChannels
@@ -1349,108 +1391,28 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
 
     // 許可リストチェック
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(messageEvent.user)
-    ) {
+    if (!isSlackUserAllowed(config.slack.allowedUsers, messageEvent.user)) {
       console.log(`[slack] Unauthorized user: ${messageEvent.user}`);
       return;
     }
 
-    let text = messageEvent.text || '';
-
-    // 添付ファイルをダウンロード
-    const dmAttachmentPaths: string[] = [];
-    if (messageEvent.files && messageEvent.files.length > 0) {
-      for (const file of messageEvent.files) {
-        if (file.url_private_download) {
-          try {
-            const filePath = await downloadFile(file.url_private_download, file.name || 'file', {
-              Authorization: `Bearer ${config.slack.botToken}`,
-            });
-            dmAttachmentPaths.push(filePath);
-          } catch (err) {
-            console.error(`[slack] Failed to download attachment: ${file.name}`, err);
-          }
-        }
-      }
-    }
-
-    if (!text && dmAttachmentPaths.length === 0) return;
-    text = buildPromptWithAttachments(text || '添付ファイルを確認してください', dmAttachmentPaths);
-
-    const channelId = messageEvent.channel;
-    const threadTs = shouldReplyInSlackThread(config.slack, channelId)
-      ? messageEvent.thread_ts || messageEvent.ts
-      : undefined;
-    const conversationKey = slackConversationKey(channelId, threadTs);
-
-    // セッションクリアコマンド
-    if (['!new', 'new', '/new'].includes(text)) {
-      sessions.delete(conversationKey);
-      await say({
-        text: '🆕 新しいセッションを開始しました',
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 停止コマンド
-    if (['!stop', 'stop', '/stop'].includes(text)) {
-      const managedProcessStopped = await processManager.stopAndWait(conversationKey);
-      const stopped = managedProcessStopped || agentRunner.cancel?.(conversationKey) || false;
-      await say({
-        text: stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません',
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 削除コマンド
-    if (text === '!delete' || text === 'delete' || text.startsWith('!delete ')) {
-      const arg = text.replace(/^!?delete\s*/, '').trim();
-      const result = await deleteMessage(client, channelId, arg);
-      await say({
-        text: result,
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      return;
-    }
-
-    // 👀 リアクション追加
-    await client.reactions
-      .add({
-        channel: channelId,
-        timestamp: messageEvent.ts,
-        name: 'eyes',
-      })
-      .catch((err) => {
-        console.error('[slack] Failed to add reaction:', err.message || err);
-      });
-
-    await processMessage(
-      channelId,
-      conversationKey,
-      threadTs,
-      text,
-      messageEvent.ts,
+    await processSlackInbound({
+      text: messageEvent.text || '',
+      files: messageEvent.files,
+      channelId: messageEvent.channel,
+      messageTs: messageEvent.ts,
+      sourceThreadTs: messageEvent.thread_ts,
+      say,
       client,
       agentRunner,
-      config
-    );
+      config,
+    });
   });
 
   // /new コマンド
   app.command('/new', async ({ command, ack, respond }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     sessions.delete(command.channel_id);
     await respond({ text: '🆕 新しいセッションを開始しました' });
@@ -1461,14 +1423,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // /delete <ts> → 指定のメッセージ（tsまたはメッセージリンクから抽出）
   app.command('/delete', async ({ command, ack, respond, client }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     const result = await deleteMessage(client, command.channel_id, command.text.trim());
     await respond({ text: result, response_type: 'ephemeral' });
@@ -1477,14 +1432,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // /skill コマンド
   app.command('/skill', async ({ command, ack, respond, client }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     const text = command.text.trim();
     const args = text ? text.split(/\s+/) : [];
@@ -1511,14 +1459,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // /settings コマンド
   app.command('/settings', async ({ command, ack, respond }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     const settings = loadSettings();
     await respond({ text: formatSettings(settings) });
@@ -1527,14 +1468,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // /models [backend] コマンド
   app.command('/models', async ({ command, ack, respond }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     try {
       const result = await executeModelsCommand(command.text.trim() || undefined, resolver);
@@ -1551,14 +1485,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // /backend show|set|reset コマンド
   app.command('/backend', async ({ command, ack, respond }) => {
     await ack();
-
-    if (
-      !config.slack.allowedUsers?.includes('*') &&
-      !config.slack.allowedUsers?.includes(command.user_id)
-    ) {
-      await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-      return;
-    }
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
 
     try {
       const result = await executeSlackBackendCommand({
@@ -1903,6 +1830,23 @@ export async function processMessage(
         session.finish();
       }
     }
+
+    const attachmentRecovery = await recoverAttachmentOnce(
+      agentRunner,
+      { result, sessionId: newSessionId, attachments: structuredAttachments },
+      {
+        skipPermissions,
+        channelId: runKey,
+        settingsChannelId: channelId,
+        appSessionId,
+        workdir: tWorkdir,
+        platform: 'slack',
+      },
+      tWorkdir
+    );
+    result = attachmentRecovery.runResult.result;
+    newSessionId = attachmentRecovery.runResult.sessionId;
+    structuredAttachments = attachmentRecovery.runResult.attachments;
 
     sessions.set(conversationKey, newSessionId);
     // transcript の最後の user / assistant エントリに Slack の messageTs を

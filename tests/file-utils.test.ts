@@ -358,9 +358,15 @@ describe('buildAttachmentResult', () => {
   });
 
   it('rejects structured attachments outside the selected workspace roots', () => {
-    const { filePaths, displayText } = buildAttachmentResult('生成した', ['/etc/hosts'], workspace);
+    const { filePaths, displayText, attachmentFailure } = buildAttachmentResult(
+      '生成した',
+      ['/etc/hosts'],
+      workspace
+    );
     expect(filePaths).toEqual([]);
-    expect(displayText).toBe('生成した');
+    expect(displayText).toContain('生成した');
+    expect(displayText).toContain('送信が許可された保存先の外');
+    expect(attachmentFailure).toBe('outside_allowed');
   });
 
   it('appends the failure notice when a phantom MEDIA path resolves to nothing', () => {

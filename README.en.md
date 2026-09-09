@@ -79,6 +79,7 @@ See the [usage guide](docs/en/usage.md#first-install-without-git) for installati
 - Web Chat: initially open `http://127.0.0.1:18888`
 - Discord, Slack, Telegram, or LINE: message the configured bot
 - Health check: `xangi doctor`
+- AI-guided error investigation and repair: `xangi rescue`
 - Web UI URLs and reachability: `xangi tool web_status`
 - Version check: `xangi --version`
 - Connection settings: `xangi settings`

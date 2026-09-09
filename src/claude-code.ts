@@ -1,3 +1,4 @@
+import { ProviderModels, observeClaudeModel } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
 import { stripToolCallArtifacts, finalizeDisplayText } from './tool-call-sanitize.js';
@@ -43,8 +44,11 @@ export function extractClaudeContextUsage(
 }
 
 interface ClaudeStreamEvent {
+  model?: string;
+  subtype?: string;
+  parent_tool_use_id?: string | null;
   type?: string;
-  message?: { content?: Array<{ type?: string; text?: string }> };
+  message?: { model?: string; content?: Array<{ type?: string; text?: string }> };
   session_id?: string;
   is_error?: boolean;
   result?: string;
@@ -160,20 +164,26 @@ export class ClaudeCodeRunner extends CliRunnerBase {
       stdout = await this.collectOutput(retryArgs, options?.channelId);
     }
     const response = this.parseResponse(stdout);
+    const contextUsage = extractClaudeContextUsage(response);
 
     // トランスクリプトログ: 応答を記録
     if (options?.appSessionId && this.workdir) {
       logResponse(this.workdir, options.appSessionId, {
         result: response.result,
         sessionId: response.session_id,
+        usage: response.usage,
+        total_cost_usd: response.total_cost_usd,
       });
     }
 
+    const models = new ProviderModels();
+    observeClaudeModel(models, response);
     const result: RunResult = {
+      ...models.result(),
       // 非ストリーミング経路でも tool-call 構文の除去 + 空→正直な fallback を適用
       result: finalizeDisplayText(response.result),
       sessionId: response.session_id,
-      usage: extractClaudeContextUsage(response),
+      usage: contextUsage,
     };
     this.persistContextUsage(options?.appSessionId, result);
     return result;
@@ -220,32 +230,18 @@ export class ClaudeCodeRunner extends CliRunnerBase {
 
     this.logExecution('Streaming', options);
 
-    try {
-      const result = await this.executeStreamCore(args, callbacks, {
-        channelId: options?.channelId,
-        notifyOnError: false,
-      });
-      this.persistContextUsage(options?.appSessionId, result);
-      return result;
-    } catch (error) {
-      if (!options?.sessionId || !this.isStaleResumeError(error)) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        callbacks.onError?.(err);
-        throw error;
-      }
-      console.warn(
-        `[claude-code] Resume failed for stale session ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryArgs = this.buildArgs(prompt, 'stream-json', { ...options, sessionId: undefined });
-      const result = await this.executeStreamCore(retryArgs, callbacks, {
-        channelId: options?.channelId,
-      });
-      this.persistContextUsage(options?.appSessionId, result);
-      return result;
-    }
+    const result = await this.executeStreamWithResumeRetry(args, callbacks, options, {
+      isStaleError: (error) => this.isStaleResumeError(error),
+      args: () => this.buildArgs(prompt, 'stream-json', { ...options, sessionId: undefined }),
+      warning: (id) =>
+        `[claude-code] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
+    });
+    this.persistContextUsage(options?.appSessionId, result);
+    return result;
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let usage: RunResult['usage'];
@@ -253,6 +249,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     return {
       handleEvent: (json, phase) => {
         const event = json as ClaudeStreamEvent;
+        observeClaudeModel(models, event);
 
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {
@@ -285,7 +282,12 @@ export class ClaudeCodeRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () => ({ result: finalizeDisplayText(fullText), sessionId, usage }),
+      finalize: () => ({
+        result: finalizeDisplayText(fullText),
+        sessionId,
+        usage,
+        ...models.result(),
+      }),
     };
   }
 

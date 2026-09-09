@@ -1,8 +1,14 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { UpdateSchedulerAdapter, UpdateSchedulerStatus } from './update-scheduler.js';
 import { systemdPathValue } from './linux.js';
+import {
+  defaultCommandRunner as defaultCommands,
+  systemdValue,
+  validatedInterval,
+  writeAtomic,
+  type CommandRunner,
+} from './common.js';
 
 export interface SystemdUpdateSchedulerOptions {
   serviceName: string;
@@ -14,28 +20,11 @@ export interface SystemdUpdateSchedulerOptions {
   intervalSeconds?: number;
 }
 
-export interface LinuxUpdateCommandRunner {
-  run(command: string, args: string[], allowFailure?: boolean): string;
-  status(command: string, args: string[]): { status: number | null; output: string };
-}
-
-function systemdValue(value: string): string {
-  if ([...value].some((character) => character.charCodeAt(0) < 32)) {
-    throw new Error('systemd unit values may not contain control characters');
-  }
-  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`;
-}
+export type LinuxUpdateCommandRunner = CommandRunner;
 
 function unitName(value: string, suffix: 'service' | 'timer'): string {
   if (!new RegExp(`^[A-Za-z0-9_.@-]+\\.${suffix}$`).test(value)) {
     throw new Error(`Invalid systemd ${suffix} name: ${value}`);
-  }
-  return value;
-}
-
-function validatedInterval(value = 21_600): number {
-  if (!Number.isSafeInteger(value) || value < 300 || value > 2_592_000) {
-    throw new Error('Update interval must be an integer between 300 and 2592000 seconds');
   }
   return value;
 }
@@ -74,33 +63,6 @@ export function renderSystemdUpdateTimer(options: SystemdUpdateSchedulerOptions)
     'WantedBy=timers.target',
     '',
   ].join('\n');
-}
-
-function run(command: string, args: string[], allowFailure = false): string {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
-  const output = String(result.stdout ?? '') + String(result.stderr ?? '');
-  if (!allowFailure && (result.status ?? 1) !== 0) {
-    throw new Error(output.trim() || `${command} ${args.join(' ')} failed`);
-  }
-  return output.trim();
-}
-
-const defaultCommands: LinuxUpdateCommandRunner = {
-  run,
-  status(command, args) {
-    const result = spawnSync(command, args, { encoding: 'utf8' });
-    return {
-      status: result.status,
-      output: (String(result.stdout ?? '') + String(result.stderr ?? '')).trim(),
-    };
-  },
-};
-
-function writeAtomic(path: string, content: string): void {
-  const temporary = `${path}.tmp-${process.pid}`;
-  writeFileSync(temporary, content, { mode: 0o644 });
-  chmodSync(temporary, 0o644);
-  renameSync(temporary, path);
 }
 
 export function createLinuxUpdateScheduler(

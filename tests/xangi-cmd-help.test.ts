@@ -23,6 +23,7 @@ describe('xangi tool help', () => {
     expect(formatXangiCmdHelp('settings')).toContain('xangi tool runtime_settings');
     expect(formatXangiCmdHelp('models')).toContain('返った正確なID');
     expect(formatXangiCmdHelp('runtime_settings')).toContain('明示依頼');
+    expect(formatXangiCmdHelp('runtime_settings')).toContain('--scope <channel|global>');
     expect(formatXangiCmdHelp('trigger')).toContain('定刻確認はschedule');
     expect(formatXangiCmdHelp('system_restart')).toContain('復帰後に状態');
     expect(formatXangiCmdHelp('progress')).toContain('xangi tool progress_card');

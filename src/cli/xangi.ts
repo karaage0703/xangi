@@ -33,6 +33,8 @@ import { installConfiguredWorkspaceTemplate } from '../installer/workspace-templ
 import { runToolCommand } from './tool-command.js';
 import { extensionCmd } from './extension-cmd.js';
 import { configureOpenCodeSetup } from '../setup/opencode-config.js';
+import { workerCmd } from './worker-cmd.js';
+import { rescueCmd } from './rescue-cmd.js';
 
 type ProviderLabel = 'claude' | 'codex';
 
@@ -115,6 +117,7 @@ Usage:
   xangi chat [--session ID]
   xangi status --session ID
   xangi doctor [--dir XANGI_CHECKOUT] [--url WEB_CHAT_URL]
+  xangi rescue [--dir XANGI_CHECKOUT]
   xangi setup
   xangi setup --apply --backend BACKEND --workspace PATH --workspace-mode MODE --web-chat-access ACCESS
   xangi setup --complete
@@ -124,6 +127,8 @@ Usage:
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi settings
   xangi extension <link|unlink|list|start|stop|restart|status|doctor|update> [ID|MANIFEST]
+  xangi worker install --pair CODE [--workspace PATH]
+  xangi worker <run|start|stop|restart|status|uninstall>
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -523,6 +528,11 @@ export async function run(argv = process.argv): Promise<void> {
     return;
   }
 
+  if (parsed.command === 'worker') {
+    console.log(await workerCmd(parsed.positionals[0] || 'help', parsed.flags));
+    return;
+  }
+
   if (parsed.command === 'doctor') {
     const baseUrl = stringFlag(parsed.flags, 'url');
     console.log(
@@ -534,6 +544,43 @@ export async function run(argv = process.argv): Promise<void> {
               runtimeInfoUrl: new URL('/api/sessions', `${baseUrl.replace(/\/+$/, '')}/`).href,
             }
           : {}),
+      })
+    );
+    return;
+  }
+
+  if (parsed.command === 'rescue') {
+    const currentPlatform = platform();
+    if (currentPlatform !== 'darwin' && currentPlatform !== 'linux') {
+      throw new Error(
+        `xangi rescueはmacOSとLinux/WSL2に対応しています（検出: ${currentPlatform}）`
+      );
+    }
+    const layout = resolveAppLayout({
+      platform: currentPlatform,
+      arch: arch(),
+      homeDir: homedir(),
+      xdgDataHome: process.env.XDG_DATA_HOME,
+      xdgConfigHome: process.env.XDG_CONFIG_HOME,
+      xdgStateHome: process.env.XDG_STATE_HOME,
+    });
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const checkoutDir = stringFlag(parsed.flags, 'dir');
+    const managedLauncher = join(layout.appRoot, 'bin', 'xangi');
+    const checkoutLauncher = join(moduleDir, '..', '..', 'bin', 'xangi');
+    const managedInstallation = !checkoutDir && existsSync(managedLauncher);
+    const selectedLauncher = managedInstallation ? managedLauncher : checkoutLauncher;
+    const documentationRoot = managedInstallation
+      ? join(layout.appRoot, 'current')
+      : join(moduleDir, '..', '..');
+    console.log(
+      await rescueCmd({
+        layout,
+        homeDir: homedir(),
+        launcherCommand: launcherCommand(selectedLauncher),
+        documentationRoot,
+        installationKind: managedInstallation ? 'managed' : 'checkout',
+        checkoutDir,
       })
     );
     return;

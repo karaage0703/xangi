@@ -173,7 +173,7 @@ describe('validateChannelOverrides', () => {
 
   it('effort / Local LLM設定の不正値はエントリ除外', () => {
     const raw = JSON.stringify({
-      '111': { backend: 'codex', effort: 'ultra' },
+      '111': { backend: 'codex', effort: 'extreme' },
       '222': { backend: 'local-llm', localLlmMode: 'lite' },
       '223': { backend: 'local-llm', localLlmReasoningEffort: 'instant' },
       '333': { backend: 'grok' },
@@ -191,6 +191,7 @@ describe('validateChannelOverrides', () => {
       '444': { backend: 'grok', effort: 'max' },
       '555': { backend: 'cursor', effort: 'low' },
       '666': { backend: 'cursor', model: 'claude-opus-4-8', effort: 'high' },
+      '777': { backend: 'cursor', model: 'auto', effort: 'high' },
     });
     const { overrides, issues } = validateChannelOverrides(raw);
 
@@ -199,7 +200,21 @@ describe('validateChannelOverrides', () => {
       '444': { backend: 'grok', effort: 'max' },
       '666': { backend: 'cursor', model: 'claude-opus-4-8', effort: 'high' },
     });
-    expect(issues).toHaveLength(3);
+    expect(issues).toHaveLength(4);
+  });
+
+  it('Codexの拡張effort値を保持する', () => {
+    const raw = JSON.stringify({
+      '111': { backend: 'codex', effort: 'xhigh' },
+      '222': { backend: 'codex', effort: 'ultra' },
+    });
+    const { overrides, issues } = validateChannelOverrides(raw);
+
+    expect(overrides).toEqual({
+      '111': { backend: 'codex', effort: 'xhigh' },
+      '222': { backend: 'codex', effort: 'ultra' },
+    });
+    expect(issues).toEqual([]);
   });
 
   it('チャンネル ID が数値でない場合は警告するが読み込む', () => {

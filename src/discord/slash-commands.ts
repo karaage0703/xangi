@@ -17,7 +17,7 @@ import {
   type LocalLlmReasoningEffort,
 } from '../local-llm/reasoning-effort.js';
 import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
-import { getSupportedEffortLevels } from '../backend-effort.js';
+import { getSupportedEffortLevelsForModel } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { formatAgentErrorForUser } from '../errors.js';
@@ -39,6 +39,7 @@ import { buildAiSessionTitleSource, generateAiSessionTitle } from '../ai-session
 import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { buildAttachmentResult } from '../file-utils.js';
+import { recoverAttachmentOnce } from '../attachment-recovery.js';
 import {
   Scheduler,
   parseScheduleInput,
@@ -78,7 +79,10 @@ import { discoverBackendModels, type BackendModelDiscovery } from '../backend-mo
 import { StreamSession } from '../stream-session.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
-import { executeRuntimeSettingsCommand } from '../runtime-settings-command.js';
+import {
+  executeRuntimeSettingsCommand,
+  type RuntimeSettingName,
+} from '../runtime-settings-command.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../session-workspace.js';
 
@@ -271,7 +275,20 @@ export function buildSlashCommands(
     new SlashCommandBuilder()
       .setName('backend')
       .setDescription('バックエンド/モデルの切り替え')
-      .addSubcommand((sub) => sub.setName('show').setDescription('現在のバックエンド設定を表示'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('show')
+          .setDescription('現在のバックエンド設定を表示')
+          .addStringOption((opt) =>
+            opt
+              .setName('scope')
+              .setDescription('設定範囲（省略時はこのチャンネル）')
+              .addChoices(
+                { name: 'このチャンネル', value: 'channel' },
+                { name: '全体の既定値', value: 'global' }
+              )
+          )
+      )
       .addSubcommand((sub) =>
         sub
           .setName('set')
@@ -292,8 +309,30 @@ export function buildSlashCommands(
               .setDescription('effortレベル（対応バックエンド用）')
               .setAutocomplete(true)
           )
+          .addStringOption((opt) =>
+            opt
+              .setName('scope')
+              .setDescription('設定範囲（省略時はこのチャンネル）')
+              .addChoices(
+                { name: 'このチャンネル', value: 'channel' },
+                { name: '全体の既定値', value: 'global' }
+              )
+          )
       )
-      .addSubcommand((sub) => sub.setName('reset').setDescription('デフォルトに戻す'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('reset')
+          .setDescription('デフォルトに戻す')
+          .addStringOption((opt) =>
+            opt
+              .setName('scope')
+              .setDescription('設定範囲（省略時はこのチャンネル）')
+              .addChoices(
+                { name: 'このチャンネル', value: 'channel' },
+                { name: '全体のモデル指定を解除', value: 'global' }
+              )
+          )
+      )
       .toJSON(),
   ];
 
@@ -583,13 +622,11 @@ export async function getDiscordAutocompleteChoices(
   }
 
   if (input.focusedName === 'effort') {
-    let discovery: BackendModelDiscovery | undefined;
-    if (input.model) discovery = await discoverModels(input.backend);
-    const selectedModel = discovery?.models.find((model) => model.id === input.model);
-    const efforts = getSupportedEffortLevels(input.backend).filter(
-      (effort) =>
-        !selectedModel?.supportedEfforts?.length || selectedModel.supportedEfforts.includes(effort)
-    );
+    const discovery = await discoverModels(input.backend);
+    const selectedModel = input.model
+      ? discovery.models.find((model) => model.id === input.model)
+      : discovery.models.find((model) => model.isDefault);
+    const efforts = getSupportedEffortLevelsForModel(input.backend, selectedModel);
     return filterAutocompleteChoices(
       [
         { name: 'デフォルト', value: 'none' },
@@ -742,6 +779,20 @@ export async function handleSkillCommand(
       discordProcessingMessages.delete(channelId);
     }
 
+    const attachmentRecovery = await recoverAttachmentOnce(
+      agentRunner,
+      runResult,
+      {
+        skipPermissions,
+        channelId,
+        settingsChannelId,
+        appSessionId,
+        workdir: workspace?.path,
+        platform: 'discord',
+      },
+      workspace?.path
+    );
+    runResult = attachmentRecovery.runResult;
     setSession(channelId, runResult.sessionId);
     const extracted = sanitizeReplySuggestionOutput(
       runResult.result,
@@ -1190,6 +1241,30 @@ export function createInteractionHandler(
         parentId?: string | null;
       }
     );
+    const replyWithRuntimeSetting = async (
+      name: RuntimeSettingName,
+      value: string,
+      targetChannelId = settingsChannelId,
+      parentChannelId?: string
+    ) =>
+      interaction.reply(
+        await executeRuntimeSettingsCommand(
+          {
+            name,
+            action: value === 'default' ? 'reset' : value === 'show' ? 'show' : 'set',
+            value,
+            channelId: targetChannelId,
+            parentChannelId,
+            platform: 'discord',
+          },
+          { config, resolver }
+        )
+      );
+    const rejectDisabledCommand = async (enabled: boolean | undefined) => {
+      if (enabled) return false;
+      await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
+      return true;
+    };
 
     if (interaction.commandName === 'workspace') {
       const subcommand = interaction.options.getSubcommand();
@@ -1338,18 +1413,7 @@ export function createInteractionHandler(
     if (interaction.commandName === 'notify') {
       const mode = interaction.options.getString('mode', true) as
         DiscordCompletionNotifyMode | 'default' | 'show';
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'notify',
-            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
-            value: mode,
-            channelId: settingsChannelId,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
-      );
+      await replyWithRuntimeSetting('notify', mode);
       return;
     }
 
@@ -1362,6 +1426,7 @@ export function createInteractionHandler(
         const modelValue =
           sub === 'set' ? (interaction.options.getString('model') ?? undefined) : undefined;
         const rawEffort = sub === 'set' ? interaction.options.getString('effort') : undefined;
+        const scope = interaction.options.getString('scope') ?? 'channel';
         const effortValue =
           rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
         const result = await executeRuntimeSettingsCommand(
@@ -1371,12 +1436,14 @@ export function createInteractionHandler(
             backend: backendValue,
             model: modelValue,
             effort: effortValue,
+            scope,
             channelId: settingsChannelId,
+            contextKey: interaction.channelId,
             platform: 'discord',
           },
-          { config, resolver, modelDiscovery: discoverModels }
+          { config, resolver, modelDiscovery: discoverModels, agentRunner }
         );
-        if (sub !== 'show') agentRunner.switchBackend(settingsChannelId);
+        if (sub !== 'show' && scope === 'channel') agentRunner.switchBackend?.(settingsChannelId);
         await interaction.editReply(result);
       } catch (error) {
         await interaction.editReply(formatAgentErrorForUser(error));
@@ -1395,51 +1462,25 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'autoreply') {
-      if (!config.discord.allowAutoreplyCommand) {
-        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
-        return;
-      }
+      if (await rejectDisabledCommand(config.discord.allowAutoreplyCommand)) return;
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'autoreply',
-            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
-            value: mode,
-            // autoreply はスレッド単位で設定できるよう、親チャンネルIDへ丸めない。
-            // 他の設定コマンドは従来どおり settingsChannelId (親チャンネル) を対象にする。
-            channelId,
-            parentChannelId: settingsChannelId !== channelId ? settingsChannelId : undefined,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
+      await replyWithRuntimeSetting(
+        'autoreply',
+        mode,
+        channelId,
+        settingsChannelId !== channelId ? settingsChannelId : undefined
       );
       return;
     }
 
     if (interaction.commandName === 'replysuggestions') {
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'replysuggestions',
-            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
-            value: mode,
-            channelId: settingsChannelId,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
-      );
+      await replyWithRuntimeSetting('replysuggestions', mode);
       return;
     }
 
     if (interaction.commandName === 'respondtobots') {
-      if (!config.discord.allowRespondToBotsCommand) {
-        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
-        return;
-      }
+      if (await rejectDisabledCommand(config.discord.allowRespondToBotsCommand)) return;
       await interaction.reply(
         await executeRuntimeSettingsCommand(
           {
@@ -1456,54 +1497,23 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'threadmode') {
-      if (!config.discord.allowThreadModeCommand) {
-        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
-        return;
-      }
+      if (await rejectDisabledCommand(config.discord.allowThreadModeCommand)) return;
 
       const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'threadmode',
-            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
-            value: mode,
-            channelId: settingsChannelId,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
-      );
+      await replyWithRuntimeSetting('threadmode', mode);
       return;
     }
 
     if (interaction.commandName === 'llmmode') {
-      if (!config.discord.allowLlmModeCommand) {
-        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
-        return;
-      }
+      if (await rejectDisabledCommand(config.discord.allowLlmModeCommand)) return;
       const mode = interaction.options.getString('mode', true) as
         'agent' | 'chat' | 'default' | 'show';
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'llmmode',
-            action: mode === 'default' ? 'reset' : mode === 'show' ? 'show' : 'set',
-            value: mode,
-            channelId: settingsChannelId,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
-      );
+      await replyWithRuntimeSetting('llmmode', mode);
       return;
     }
 
     if (interaction.commandName === 'llmeffort') {
-      if (!config.discord.allowLlmEffortCommand) {
-        await interaction.reply({ content: 'このコマンドは無効です', ephemeral: true });
-        return;
-      }
+      if (await rejectDisabledCommand(config.discord.allowLlmEffortCommand)) return;
       const level = interaction.options.getString('level', true) as
         LocalLlmReasoningEffort | 'default' | 'show';
       const override = resolver.getChannelOverride(settingsChannelId);

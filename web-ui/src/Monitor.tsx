@@ -1,3 +1,4 @@
+import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -79,6 +80,8 @@ interface UsageProvider {
 }
 
 export interface MonitorSession {
+  modelExecution?: ModelExecution;
+  modelHistory?: ModelExecution[];
   id: string;
   title?: string;
   platform?: string;
@@ -1094,7 +1097,7 @@ export function Monitor() {
                   </div>
                   <div>
                     <dt>モデル</dt>
-                    <dd>{selected.backend ? selected.backend.model || 'デフォルト' : '-'}</dd>
+                    <dd>{modelExecutionLabel(selected.modelExecution, selected.backend)}</dd>
                   </div>
                   <div>
                     <dt>effort</dt>
@@ -1103,6 +1106,7 @@ export function Monitor() {
                 </dl>
               </section>
 
+              <ModelHistory history={selected.modelHistory} />
               <details className="monitor-technical-details">
                 <summary>内部ID</summary>
                 <dl>

@@ -56,6 +56,41 @@ function flagsToArgs(flags: Record<string, string>): string[] {
   return args;
 }
 
+function stringFlags(
+  args: Record<string, unknown>,
+  keys: string[],
+  initial: Record<string, string> = {}
+): Record<string, string> {
+  for (const key of keys) if (args[key] !== undefined) initial[key] = String(args[key]);
+  return initial;
+}
+
+function currentChannelEnv(channelId?: string): Record<string, string> | undefined {
+  return channelId ? { XANGI_CHANNEL_ID: channelId } : undefined;
+}
+
+function runFlagCommand(
+  command: string,
+  args: Record<string, unknown>,
+  keys: string[] = [],
+  initial: Record<string, string> = {},
+  channelId?: string
+): Promise<ToolResult> {
+  return runXangiCmd(
+    [command, ...flagsToArgs(stringFlags(args, keys, initial))],
+    currentChannelEnv(channelId)
+  );
+}
+
+function commandExecutor(
+  command: string,
+  keys: string[] = [],
+  useCurrentChannel = false
+): ToolHandler['execute'] {
+  return (args, context) =>
+    runFlagCommand(command, args, keys, {}, useCurrentChannel ? context.channelId : undefined);
+}
+
 // ─── Discord Tools ──────────────────────────────────────────────────
 
 const discordHistoryHandler: ToolHandler = {
@@ -70,14 +105,7 @@ const discordHistoryHandler: ToolHandler = {
       offset: { type: 'string', description: 'オフセット（古いメッセージに遡る）' },
     },
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = {};
-    if (args.channel) flags.channel = String(args.channel);
-    if (args.count) flags.count = String(args.count);
-    if (args.offset) flags.offset = String(args.offset);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['discord_history', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('discord_history', ['channel', 'count', 'offset'], true),
 };
 
 const discordMessageHandler: ToolHandler = {
@@ -92,12 +120,7 @@ const discordMessageHandler: ToolHandler = {
     },
     required: ['message-id'],
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = { 'message-id': String(args['message-id']) };
-    if (args.channel) flags.channel = String(args.channel);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['discord_message', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('discord_message', ['message-id', 'channel'], true),
 };
 
 const discordSendHandler: ToolHandler = {
@@ -111,15 +134,7 @@ const discordSendHandler: ToolHandler = {
     },
     required: ['channel', 'message'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd([
-      'discord_send',
-      '--channel',
-      String(args.channel),
-      '--message',
-      String(args.message),
-    ]);
-  },
+  execute: commandExecutor('discord_send', ['channel', 'message']),
 };
 
 const discordChannelsHandler: ToolHandler = {
@@ -132,9 +147,7 @@ const discordChannelsHandler: ToolHandler = {
     },
     required: ['guild'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd(['discord_channels', '--guild', String(args.guild)]);
-  },
+  execute: commandExecutor('discord_channels', ['guild']),
 };
 
 const discordSearchHandler: ToolHandler = {
@@ -148,15 +161,7 @@ const discordSearchHandler: ToolHandler = {
     },
     required: ['channel', 'keyword'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd([
-      'discord_search',
-      '--channel',
-      String(args.channel),
-      '--keyword',
-      String(args.keyword),
-    ]);
-  },
+  execute: commandExecutor('discord_search', ['channel', 'keyword']),
 };
 
 const discordEditHandler: ToolHandler = {
@@ -171,17 +176,7 @@ const discordEditHandler: ToolHandler = {
     },
     required: ['channel', 'message-id', 'content'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd([
-      'discord_edit',
-      '--channel',
-      String(args.channel),
-      '--message-id',
-      String(args['message-id']),
-      '--content',
-      String(args.content),
-    ]);
-  },
+  execute: commandExecutor('discord_edit', ['channel', 'message-id', 'content']),
 };
 
 const discordDeleteHandler: ToolHandler = {
@@ -195,15 +190,7 @@ const discordDeleteHandler: ToolHandler = {
     },
     required: ['channel', 'message-id'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd([
-      'discord_delete',
-      '--channel',
-      String(args.channel),
-      '--message-id',
-      String(args['message-id']),
-    ]);
-  },
+  execute: commandExecutor('discord_delete', ['channel', 'message-id']),
 };
 
 const discordThreadLeaveHandler: ToolHandler = {
@@ -218,11 +205,7 @@ const discordThreadLeaveHandler: ToolHandler = {
     },
     required: ['user'],
   },
-  async execute(args): Promise<ToolResult> {
-    const cmd = ['discord_thread_leave', '--user', String(args.user)];
-    if (args.channel) cmd.push('--channel', String(args.channel));
-    return runXangiCmd(cmd);
-  },
+  execute: commandExecutor('discord_thread_leave', ['user', 'channel']),
 };
 
 // ─── Schedule Tools ─────────────────────────────────────────────────
@@ -234,9 +217,7 @@ const scheduleListHandler: ToolHandler = {
     type: 'object',
     properties: {},
   },
-  async execute(): Promise<ToolResult> {
-    return runXangiCmd(['schedule_list']);
-  },
+  execute: commandExecutor('schedule_list'),
 };
 
 function schedulePlatformEnv(platform?: ChatPlatform): Record<string, string> | undefined {
@@ -302,14 +283,7 @@ const scheduleUpdateHandler: ToolHandler = {
     },
     required: ['id'],
   },
-  async execute(args): Promise<ToolResult> {
-    const flags: Record<string, string> = { id: String(args.id) };
-    if (args.input !== undefined) flags.input = String(args.input);
-    if (args.message !== undefined) flags.message = String(args.message);
-    if (args.channel !== undefined) flags.channel = String(args.channel);
-    if (args.platform !== undefined) flags.platform = String(args.platform);
-    return runXangiCmd(['schedule_update', ...flagsToArgs(flags)]);
-  },
+  execute: commandExecutor('schedule_update', ['id', 'input', 'message', 'channel', 'platform']),
 };
 
 const scheduleRemoveHandler: ToolHandler = {
@@ -322,9 +296,7 @@ const scheduleRemoveHandler: ToolHandler = {
     },
     required: ['id'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd(['schedule_remove', '--id', String(args.id)]);
-  },
+  execute: commandExecutor('schedule_remove', ['id']),
 };
 
 const scheduleToggleHandler: ToolHandler = {
@@ -337,9 +309,7 @@ const scheduleToggleHandler: ToolHandler = {
     },
     required: ['id'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd(['schedule_toggle', '--id', String(args.id)]);
-  },
+  execute: commandExecutor('schedule_toggle', ['id']),
 };
 
 // ─── Media Tool ─────────────────────────────────────────────────────
@@ -355,15 +325,7 @@ const mediaSendHandler: ToolHandler = {
     },
     required: ['channel', 'file'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd([
-      'media_send',
-      '--channel',
-      String(args.channel),
-      '--file',
-      String(args.file),
-    ]);
-  },
+  execute: commandExecutor('media_send', ['channel', 'file']),
 };
 
 // ─── System Tools ───────────────────────────────────────────────────
@@ -376,9 +338,7 @@ const systemRestartHandler: ToolHandler = {
     type: 'object',
     properties: {},
   },
-  async execute(): Promise<ToolResult> {
-    return runXangiCmd(['system_restart']);
-  },
+  execute: commandExecutor('system_restart'),
 };
 
 const webStatusHandler: ToolHandler = {
@@ -388,9 +348,7 @@ const webStatusHandler: ToolHandler = {
     type: 'object',
     properties: {},
   },
-  async execute(): Promise<ToolResult> {
-    return runXangiCmd(['web_status']);
-  },
+  execute: commandExecutor('web_status'),
 };
 
 const extensionUninstallHandler: ToolHandler = {
@@ -404,9 +362,7 @@ const extensionUninstallHandler: ToolHandler = {
     },
     required: ['id'],
   },
-  async execute(args): Promise<ToolResult> {
-    return runXangiCmd(['extension_uninstall', '--id', String(args.id)]);
-  },
+  execute: commandExecutor('extension_uninstall', ['id']),
 };
 
 function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandler {
@@ -439,6 +395,11 @@ function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandl
         backend: { type: 'string', description: 'backend設定時のbackend' },
         model: { type: 'string', description: 'backend設定時のmodel' },
         effort: { type: 'string', description: 'backend設定時のeffort' },
+        scope: {
+          type: 'string',
+          description: 'backend設定の範囲（既定: channel）',
+          enum: ['channel', 'global'],
+        },
         channel: { type: 'string', description: '設定対象チャンネルID' },
         platform: {
           type: 'string',
@@ -449,13 +410,14 @@ function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandl
       required: ['name', 'action'],
     },
     async execute(args, context): Promise<ToolResult> {
-      const flags: Record<string, string> = {
-        name: String(args.name),
-        action: String(args.action),
-      };
-      for (const key of ['value', 'backend', 'model', 'effort', 'channel', 'platform']) {
-        if (args[key] !== undefined) flags[key] = String(args[key]);
-      }
+      const flags = stringFlags(
+        args,
+        ['value', 'backend', 'model', 'effort', 'scope', 'channel', 'platform'],
+        {
+          name: String(args.name),
+          action: String(args.action),
+        }
+      );
       const env: Record<string, string> = {};
       if (context.channelId) env.XANGI_CHANNEL_ID = context.channelId;
       if (defaultPlatform) env.XANGI_PLATFORM = defaultPlatform;
@@ -486,14 +448,7 @@ const webHistoryHandler: ToolHandler = {
       'max-chars': { type: 'string', description: '1メッセージあたり最大文字数（デフォルト500）' },
     },
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = {};
-    if (args.count) flags.count = String(args.count);
-    if (args.session) flags.session = String(args.session);
-    if (args['max-chars']) flags['max-chars'] = String(args['max-chars']);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['web_history', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('web_history', ['count', 'session', 'max-chars'], true),
 };
 
 const progressCardHandler: ToolHandler = {
@@ -547,13 +502,7 @@ const slackHistoryHandler: ToolHandler = {
       count: { type: 'string', description: '取得件数（デフォルト10、最大100）' },
     },
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = {};
-    if (args.channel) flags.channel = String(args.channel);
-    if (args.count) flags.count = String(args.count);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['slack_history', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('slack_history', ['channel', 'count'], true),
 };
 
 const slackSendHandler: ToolHandler = {
@@ -568,13 +517,7 @@ const slackSendHandler: ToolHandler = {
     },
     required: ['message'],
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = { message: String(args.message) };
-    if (args.channel) flags.channel = String(args.channel);
-    if (args['thread-ts']) flags['thread-ts'] = String(args['thread-ts']);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['slack_send', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('slack_send', ['message', 'channel', 'thread-ts'], true),
 };
 
 const slackChannelsHandler: ToolHandler = {
@@ -590,12 +533,7 @@ const slackChannelsHandler: ToolHandler = {
       limit: { type: 'string', description: '取得件数（デフォルト100、最大1000）' },
     },
   },
-  async execute(args): Promise<ToolResult> {
-    const flags: Record<string, string> = {};
-    if (args.types) flags.types = String(args.types);
-    if (args.limit) flags.limit = String(args.limit);
-    return runXangiCmd(['slack_channels', ...flagsToArgs(flags)]);
-  },
+  execute: commandExecutor('slack_channels', ['types', 'limit']),
 };
 
 const slackSearchHandler: ToolHandler = {
@@ -610,13 +548,7 @@ const slackSearchHandler: ToolHandler = {
     },
     required: ['keyword'],
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = { keyword: String(args.keyword) };
-    if (args.channel) flags.channel = String(args.channel);
-    if (args.count) flags.count = String(args.count);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['slack_search', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('slack_search', ['keyword', 'channel', 'count'], true),
 };
 
 const slackEditHandler: ToolHandler = {
@@ -631,15 +563,7 @@ const slackEditHandler: ToolHandler = {
     },
     required: ['message-ts', 'content'],
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = {
-      'message-ts': String(args['message-ts']),
-      content: String(args.content),
-    };
-    if (args.channel) flags.channel = String(args.channel);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['slack_edit', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('slack_edit', ['message-ts', 'content', 'channel'], true),
 };
 
 const slackDeleteHandler: ToolHandler = {
@@ -653,14 +577,7 @@ const slackDeleteHandler: ToolHandler = {
     },
     required: ['message-ts'],
   },
-  async execute(args, context): Promise<ToolResult> {
-    const flags: Record<string, string> = {
-      'message-ts': String(args['message-ts']),
-    };
-    if (args.channel) flags.channel = String(args.channel);
-    const env = context.channelId ? { XANGI_CHANNEL_ID: context.channelId } : undefined;
-    return runXangiCmd(['slack_delete', ...flagsToArgs(flags)], env);
-  },
+  execute: commandExecutor('slack_delete', ['message-ts', 'channel'], true),
 };
 
 // ─── Export ─────────────────────────────────────────────────────────

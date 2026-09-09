@@ -16,6 +16,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { sendJson } from '../web-http.js';
 import {
   getInterChatConfig,
   sendMessage,
@@ -49,13 +50,8 @@ function readBody(req: IncomingMessage, maxBytes = 64 * 1024): Promise<string> {
   });
 }
 
-function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-cache',
-  });
-  res.end(JSON.stringify(body));
-}
+const jsonResponse = (res: ServerResponse, status: number, body: unknown): void =>
+  sendJson(res, status, body, { 'Cache-Control': 'no-cache' });
 
 /**
  * 戻り値:

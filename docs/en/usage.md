@@ -300,6 +300,9 @@ xangi setup
 # Diagnose config and service health without printing secrets
 xangi doctor
 
+# Ask an AI agent independent of the xangi service to investigate, repair, and verify errors
+xangi rescue
+
 # Print Web UI URLs, bind settings, and Chat/Workspace reachability for the running instance as JSON
 xangi tool web_status
 
@@ -328,7 +331,7 @@ To set up only an AI coding tool without installing xangi, run this one-liner:
 bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
 ```
 
-Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, `antigravity`, `github-copilot`, or `opencode`. Use `check` for a read-only status check. If Codex's Node.js and npm prerequisites are missing, the script guides you to install nvm, close and reopen the terminal, and then run `command -v nvm` followed by `nvm install --lts`.
+Replace the last argument with `codex`, `claude-code`, `cursor`, `grok`, `antigravity`, `github-copilot`, or `opencode`. Use `check` for a read-only status check. Codex uses [OpenAI's official standalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started) and does not require Node.js or npm. If the Node.js and npm prerequisites for GitHub Copilot CLI are missing, the script displays the nvm installation guide.
 
 For OpenCode, `setup-ai-tools.sh opencode` installs the official CLI and opens OpenCode's authentication flow. The subsequent `xangi setup` lets you keep the existing OpenCode configuration and credentials or configure a local OpenAI-compatible endpoint. The local option stores a private, xangi-owned `opencode.json` without overwriting the normal OpenCode configuration, then applies it through `OPENCODE_CONFIG` and `AGENT_MODEL` only when xangi runs.
 
@@ -577,12 +580,16 @@ You can switch the backend, model, and effort level per channel.
 | `/backend set antigravity --effort high`         | Run Antigravity with high effort          |
 | `/backend set github-copilot --effort high`      | Run GitHub Copilot CLI with high effort   |
 | `/backend reset`                                 | Reset to the default (.env settings)      |
+| `/backend show scope:global`                     | Show the process-wide backend/model/effort default |
+| `/backend set codex model:gpt-5.6-sol effort:medium scope:global` | Change the process-wide default for subsequent turns |
+| `/backend reset scope:global`                    | Clear the explicit process-wide model and effort |
 
 Switching always starts a new session (conversation history is not carried over).
 It is available on both Discord and Slack. For Slack, register `/backend` in the app settings
-with the Usage Hint `show|set <backend> [--model <model>] [--effort <effort>]|reset`.
+with the Usage Hint `show|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset`.
 The setting is persisted in `CHANNEL_OVERRIDES` by channel ID and applies to threads in that
 channel from the next message without restarting xangi.
+`scope:global` (`--scope global` on Slack) updates `AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT` and the live default runner together. An effort is saved only when the selected model supports it. Active turns finish on their previous runner; subsequent turns use the new default. Explicit channel overrides remain unchanged.
 
 `/models [backend]` is shared by Discord, Slack, Web, Telegram, and LINE. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
 
@@ -604,6 +611,7 @@ For natural-language setting changes, the agent uses `runtime_settings` rather t
 ```bash
 xangi tool runtime_settings --name autoreply --action set --value on
 xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.4 --effort high
+xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.6-sol --effort medium --scope global
 xangi tool runtime_settings --name llmmode --action set --value chat
 ```
 
@@ -646,7 +654,9 @@ Web Projects also select a registered workspace. A new Web session snapshots the
 
 #### effort Option
 
-Claude Code, Codex, OpenCode, Grok, and GitHub Copilot CLI support per-channel `low` / `medium` / `high` / `max` effort. Antigravity supports `low` / `medium` / `high`. xangi passes the selected effort to each CLI's effective arguments. For Cursor, specify both an explicit model and an effort; xangi converts them to Cursor's parameterized model syntax (for example, `claude-opus-4-8[effort=high]`). Cursor's `auto[effort=...]` form is invalid, so xangi rejects Cursor effort without an explicit model. A model unavailable on the current Cursor plan may still fail at runtime. Local LLM reasoning effort is separate from CLI backend effort and is configured with `/llmeffort`; xangi sends it as the top-level OpenAI-compatible `reasoning_effort` field. Supported values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, and the selected endpoint must implement the value. `default` removes the channel override and falls back to `LOCAL_LLM_REASONING_EFFORT` or the provider default. xangi rejects `max` for Antigravity without saving it. Because Claude Code persistent mode requires a process restart, switching resets the session.
+Effort choices are the intersection of the backend CLI range and any discovered model-specific metadata. Codex uses app-server `supportedReasoningEfforts`, GitHub Copilot uses the same metadata from its official SDK, OpenCode uses the variants returned by `models --verbose`, and Grok uses the CLI-generated model cache. When a Cursor or Antigravity model ID already includes `low`, `medium`, `high`, `xhigh`, `max`, or another standard effort, xangi offers only that value and does not send a duplicate CLI override. Cursor `auto` cannot have an effort. Claude Code has no machine-readable model catalog, so xangi displays its current CLI-wide range: `low`, `medium`, `high`, `xhigh`, and `max`.
+
+When model-specific metadata is unavailable, xangi falls back to the backend range. Codex supports `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; OpenCode and Cursor use the superset `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Grok and GitHub Copilot use `low`, `medium`, `high`, `xhigh`, and `max`; and Antigravity uses `low`, `medium`, and `high`. OpenCode variant names depend on the model, provider, and user configuration, so models with verbose metadata expose only standard effort names that actually exist. Local LLM reasoning effort is separate from CLI backend effort and is configured with `/llmeffort`; xangi sends it as the top-level OpenAI-compatible `reasoning_effort` field. Supported values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, and the selected endpoint must implement the value. `default` removes the channel override and falls back to `LOCAL_LLM_REASONING_EFFORT` or the provider default. Because Claude Code persistent mode requires a process restart, switching resets the session.
 
 ## Autonomous AI Operations
 
@@ -1366,11 +1376,15 @@ Shared completion-display settings:
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
 | `AGENT_BACKEND`                 | Built-in backend ID or an ID declared by a linked extension                                                                    | `claude-code`             |
 | `AGENT_MODEL`                   | Model to use                                                                                                                   | -                         |
+| `AGENT_EFFORT`                  | Global default effort supported by the selected backend and model                                                              | -                         |
 | `WORKSPACE_PATH`                | Working directory (local execution)                                                                                            | process startup directory |
 | `XANGI_WORKSPACE`               | Host-side workspace path (Docker execution)                                                                                    | `./workspace`             |
 | `SKIP_PERMISSIONS`              | Skip permissions by default (avoids deadlocks for non-interactive chat platforms)                                              | `true`                    |
 | `TIMEOUT_MS`                    | Initial request timeout (milliseconds)                                                                                         | `1800000`                 |
 | `XANGI_TOOL_SERVER_PORT`        | Fixed port for the internal tool server. When unset, the previous port is reused (auto-assign if busy)                         | reuse last port           |
+| `XANGI_REMOTE_WORKERS_CONFIG`   | Absolute path to the registered remote-worker JSON file; enabled only with a worker port                                      | unset                     |
+| `XANGI_REMOTE_WORKER_HOST`      | Dedicated remote-worker WebSocket bind host; explicitly use `0.0.0.0` for Tailnet access                                     | `127.0.0.1`               |
+| `XANGI_REMOTE_WORKER_PORT`      | Dedicated remote-worker WebSocket port, separate from the internal Tool Server                                                | unset                     |
 | `XANGI_CONFIG_STRICT`           | Escalate invalid env values (non-numeric, out of range, enum typos) to startup errors. Default is warn + fall back to defaults | `false`                   |
 | `TIMEOUT_MAX_MS`                | Absolute upper limit for timeout extension (milliseconds)                                                                      | `36000000`                |
 | `TIMEOUT_EXTEND_ENABLED`        | Enable / disable the `延長` button                                                                                             | `true`                    |
@@ -1529,7 +1543,7 @@ curl -i "$XANGI_TOOL_SERVER/github-token"
 
 The OpenCode backend runs `opencode run --format json --agent build` and translates its JSON events into xangi streaming output and tool history. With the default `SKIP_PERMISSIONS=true`, xangi passes `--auto` for unattended execution. Set `SKIP_PERMISSIONS=false` for untrusted workspaces.
 
-`AGENT_MODEL` is passed to `--model` in OpenCode's `provider/model` form. Per-channel effort is passed as `--variant low|medium|high|max`, and the provider session is passed through `--session`, so later turns in the same xangi session resume the OpenCode conversation. For a custom provider, define model variants whose names match the effort values you intend to use. xangi also treats an OpenCode JSON `error` event as failure even when the process exits with status 0.
+`AGENT_MODEL` is passed to `--model` in OpenCode's `provider/model` form. Per-channel effort is passed through `--variant` using the standard `none|minimal|low|medium|high|xhigh|max` names that actually exist for the selected model, and the provider session is passed through `--session`, so later turns in the same xangi session resume the OpenCode conversation. For a custom provider, define model variants whose names match the effort values you intend to use. xangi also treats an OpenCode JSON `error` event as failure even when the process exits with status 0.
 
 OpenCode itself loads workspace `AGENTS.md` files and `.agents/skills`. For a custom provider or OpenAI-compatible endpoint, set `OPENCODE_CONFIG` to the absolute path of its configuration file. When you select a local OpenAI-compatible endpoint in `xangi setup`, xangi generates this config together with `low`, `medium`, `high`, and `max` variants.
 
@@ -1710,3 +1724,19 @@ xangi **skips permission confirmations by default** (`SKIP_PERMISSIONS=true`). B
 
 1. Run the `/new` command in the affected channel to reset the session
 2. If that doesn't resolve it, restart xangi (`./bin/xangi service restart`)
+
+Remote workers support `xangi worker install --pair`, `restart`, and `status` on macOS and Linux/WSL2. Linux/WSL2 requires a systemd user manager. See [remote workers](remote-workers.md).
+
+### Execution model and history
+
+`runtime_settings backend --action show` and Web Chat `/backend show` distinguish the settings for the next run from the current conversation's most recent execution evidence. `default` delegates model selection to the backend; a configured name or alias alone does not confirm the model actually used.
+
+Every backend records the configured model, reported model names, evidence source, start/update times, and completion or failure for each turn. Provider-reported names are confirmed; configuration-only values remain unconfirmed; unavailable names remain unknown. Multiple models reported during one run are retained.
+
+Open **モデル実行履歴** (model execution history) in the Web Chat conversation or Monitor details to inspect individual turns. Historical sessions without evidence remain unknown and never inherit today's defaults. This does not automatically reconstruct runs made before this feature was installed.
+
+For historical Codex runs with retained rollout files, run `npx tsx scripts/recover-codex-model-history.ts --sessions /data/sessions.json --transcripts /data/logs/sessions --session APP_SESSION_ID` to inspect recovery candidates as JSON (dry-run by default; use `--codex-home DIR` for a custom location). Evidence must match the original workspace path, provider session, and timestamps. Stop the target xangi runtime before adding `--apply-offline`. Application uses a backup and atomic rename to update only `modelHistory`, leaving session timestamps, titles, activity, and transcripts unchanged. Runs without matching evidence remain unknown.
+
+The normal execution summary shows the model and a short server-local timestamp (for example, `2026/09/09 00:24`), without confirmation/completion labels or a channel ID. Configuration-only values remain explicitly unconfirmed.
+
+Grok reads native primary-turn model evidence matched to the exact session, working directory and execution interval. GitHub Copilot also reads response-message model metadata. When Cursor reports Auto without disclosing the underlying model, selection is stored and shown as Auto with the underlying model unknown. Historical settings or cached model hints are never substituted for actual model evidence.

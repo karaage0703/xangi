@@ -1,3 +1,6 @@
+import { getActiveSessionId, getSessionEntry } from './sessions.js';
+import { formatModelExecution, latestModelExecution } from './model-execution-display.js';
+import type { AgentRunner } from './agent-runner.js';
 import type { AgentBackend, Config, DiscordCompletionNotifyMode, EffortLevel } from './config.js';
 import type { BackendResolver, LocalLlmMode } from './backend-resolver.js';
 import {
@@ -11,7 +14,8 @@ import {
 } from './settings.js';
 import {
   getSupportedEffortLevels,
-  requiresExplicitModelForEffort,
+  getSupportedEffortLevelsForModel,
+  hasUsableModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
 import { getBackendDisplayName } from './agent-runner.js';
@@ -38,13 +42,17 @@ export interface RuntimeSettingsRequest {
   effort?: string;
   channelId?: string;
   parentChannelId?: string;
+  appSessionId?: string;
+  contextKey?: string;
   platform?: string;
+  scope?: string;
 }
 
 export interface RuntimeSettingsDependencies {
   config?: Config;
   resolver: BackendResolver;
   modelDiscovery?: typeof discoverBackendModels;
+  agentRunner?: AgentRunner;
 }
 
 function requireConfig(dependencies: RuntimeSettingsDependencies): Config {
@@ -108,23 +116,109 @@ function platformGuard(
 async function executeBackend(
   request: RuntimeSettingsRequest,
   resolver: BackendResolver,
-  discover?: typeof discoverBackendModels
+  discover?: typeof discoverBackendModels,
+  agentRunner?: AgentRunner
 ): Promise<string> {
-  const channelId = requireChannel(request);
+  const scope = request.scope?.toLowerCase() || 'channel';
+  if (!['channel', 'global'].includes(scope)) {
+    throw new ValidationError('runtime_settings backend: --scope must be one of: channel, global');
+  }
+  const channelId = scope === 'channel' ? requireChannel(request) : undefined;
   const action = requireAction(request, ['show', 'set', 'reset']);
+  if (scope === 'global') {
+    if (action === 'show') {
+      const current = resolver.getDefault();
+      return [
+        '全体の既定バックエンド設定',
+        `- backend: ${getBackendDisplayName(current.backend)}`,
+        `- model: ${current.model ?? 'default（バックエンドに委任）'}`,
+        `- effort: ${current.effort ?? 'default（バックエンドに委任）'}`,
+        '- scope: global',
+      ].join('\n');
+    }
+    if (!agentRunner?.switchDefaultBackend) {
+      throw new ValidationError('runtime_settings backend: global switching is unavailable');
+    }
+    const current = resolver.getDefault();
+    if (action === 'reset') {
+      resolver.setDefault(current.backend, undefined, undefined);
+    } else {
+      const backend = request.backend as AgentBackend | undefined;
+      if (!backend || !resolver.isBackendSelectable(backend)) {
+        const selectableBackends = resolver.getSelectableBackends();
+        throw new ValidationError(
+          backend
+            ? `バックエンド '${backend}' は現在利用できません。利用可能: ${selectableBackends.join(', ')}`
+            : `runtime_settings backend: --backend must be one of: ${selectableBackends.join(', ')}`
+        );
+      }
+      let selectedModel;
+      if ((request.model || request.effort) && discover) {
+        const discovery = await discover(backend);
+        if (
+          discovery.status === 'available' &&
+          !discovery.models.some((model) => model.id === request.model)
+        ) {
+          throw new ValidationError(
+            `runtime_settings backend: model '${request.model}' was not found in the current ${backend} model list`
+          );
+        }
+        if (discovery.status === 'available') {
+          selectedModel = request.model
+            ? discovery.models.find((model) => model.id === request.model)
+            : discovery.models.find((model) => model.isDefault);
+        }
+      }
+      const effort = request.effort as EffortLevel | undefined;
+      if (effort && !supportsEffort(backend, effort)) {
+        throw new ValidationError(
+          `runtime_settings backend: ${backend} supports effort: ${getSupportedEffortLevels(backend).join(', ') || 'none'}`
+        );
+      }
+      if (effort && selectedModel) {
+        const supportedEfforts = getSupportedEffortLevelsForModel(backend, selectedModel);
+        if (!supportedEfforts.includes(effort)) {
+          throw new ValidationError(
+            `runtime_settings backend: model '${selectedModel.id}' supports effort: ${supportedEfforts.join(', ') || 'none'}`
+          );
+        }
+      }
+      if (effort && !hasUsableModelForEffort(backend, request.model)) {
+        throw new ValidationError(
+          `runtime_settings backend: ${backend} requires an explicit non-auto model for effort`
+        );
+      }
+      resolver.setDefault(backend, request.model, effort);
+    }
+    agentRunner.switchDefaultBackend();
+    const updated = resolver.getDefault();
+    return [
+      '全体の既定バックエンド設定を保存しました。次のturnから適用されます。',
+      `- backend: ${getBackendDisplayName(updated.backend)}`,
+      `- model: ${updated.model ?? '(default)'}`,
+      `- effort: ${updated.effort ?? '(default)'}`,
+      '- channel override: 維持',
+      '- 実行中のturn: 変更なし',
+    ].join('\n');
+  }
   if (action === 'show') {
-    const resolved = resolver.resolve(channelId);
+    const resolved = resolver.resolve(channelId!);
+    const sessionId =
+      request.appSessionId ??
+      (request.contextKey ? getActiveSessionId(request.contextKey) : undefined);
+    const entry = sessionId ? getSessionEntry(sessionId) : undefined;
+    const execution = latestModelExecution(entry);
     return [
       '現在のバックエンド設定',
       `- backend: ${getBackendDisplayName(resolved.backend)}`,
-      ...(resolved.model ? [`- model: ${resolved.model}`] : []),
+      `- model (設定): ${resolved.model ?? 'default（バックエンドに委任）'}`,
+      `- 直近の実行: ${formatModelExecution(execution, entry?.agent)}`,
       ...(resolved.effort ? [`- effort: ${resolved.effort}`] : []),
-      `- source: ${resolver.getChannelOverride(channelId) ? 'channel override' : 'default'}`,
-      `- channel: ${channelId}`,
+      `- source: ${resolver.getChannelOverride(channelId!) ? 'channel override' : 'default'}`,
     ].join('\n');
   }
   if (action === 'reset') {
-    resolver.deleteChannelOverride(channelId);
+    resolver.deleteChannelOverride(channelId!);
     return `バックエンド設定をデフォルト (${resolver.getDefault().backend}) に戻しました。次のturnから適用されます。`;
   }
 
@@ -137,15 +231,22 @@ async function executeBackend(
         : `runtime_settings backend: --backend must be one of: ${selectableBackends.join(', ')}`
     );
   }
-  if (request.model && discover) {
+  let selectedModel;
+  if ((request.model || request.effort) && discover) {
     const discovery = await discover(backend);
     if (
+      request.model &&
       discovery.status === 'available' &&
       !discovery.models.some((model) => model.id === request.model)
     ) {
       throw new ValidationError(
         `runtime_settings backend: model '${request.model}' was not found in the current ${backend} model list`
       );
+    }
+    if (discovery.status === 'available') {
+      selectedModel = request.model
+        ? discovery.models.find((model) => model.id === request.model)
+        : discovery.models.find((model) => model.isDefault);
     }
   }
   const effort = request.effort as EffortLevel | undefined;
@@ -154,12 +255,20 @@ async function executeBackend(
       `runtime_settings backend: ${backend} supports effort: ${getSupportedEffortLevels(backend).join(', ') || 'none'}`
     );
   }
-  if (effort && requiresExplicitModelForEffort(backend) && !request.model) {
+  if (effort && selectedModel) {
+    const supportedEfforts = getSupportedEffortLevelsForModel(backend, selectedModel);
+    if (!supportedEfforts.includes(effort)) {
+      throw new ValidationError(
+        `runtime_settings backend: model '${selectedModel.id}' supports effort: ${supportedEfforts.join(', ') || 'none'}`
+      );
+    }
+  }
+  if (effort && !hasUsableModelForEffort(backend, request.model)) {
     throw new ValidationError(
       `runtime_settings backend: ${backend} requires an explicit model for effort`
     );
   }
-  resolver.setChannelOverride(channelId, { backend, model: request.model, effort });
+  resolver.setChannelOverride(channelId!, { backend, model: request.model, effort });
   return [
     'バックエンド設定を保存しました。新しいセッションを開始します。次のturnから適用されます。',
     `- backend: ${getBackendDisplayName(backend)}`,
@@ -328,7 +437,12 @@ export async function executeRuntimeSettingsCommand(
   }
 
   if (name === 'backend') {
-    return executeBackend(request, dependencies.resolver, dependencies.modelDiscovery);
+    return executeBackend(
+      request,
+      dependencies.resolver,
+      dependencies.modelDiscovery,
+      dependencies.agentRunner
+    );
   }
   if (name === 'llmmode') {
     if (

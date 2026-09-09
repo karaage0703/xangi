@@ -61,7 +61,7 @@ describe('CodexRunner buildArgs', () => {
     options?: {
       sessionId?: string;
       skipPermissions?: boolean;
-      effort?: 'low' | 'medium' | 'high' | 'max';
+      effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     }
   ) {
     const { spawn, getMockProcess } = await import('child_process');
@@ -126,11 +126,11 @@ describe('CodexRunner buildArgs', () => {
 
   it('should pass effort as model_reasoning_effort config', async () => {
     const runner = new CodexRunner({});
-    const { args } = await getSpawnArgs(runner, 'hello', { effort: 'max' });
+    const { args } = await getSpawnArgs(runner, 'hello', { effort: 'ultra' });
 
     const configIndex = args.indexOf('--config');
     expect(configIndex).toBeGreaterThan(-1);
-    expect(args[configIndex + 1]).toBe('model_reasoning_effort="max"');
+    expect(args[configIndex + 1]).toBe('model_reasoning_effort="ultra"');
   });
 
   it('should place effort config before resume subcommand', async () => {

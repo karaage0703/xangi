@@ -177,6 +177,8 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 describe('even-terminal compatibility API', () => {
   let dataDir: string;
   let server: TestServer;
+  const originalAgentBackend = process.env.AGENT_BACKEND;
+  const originalAgentModel = process.env.AGENT_MODEL;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -185,6 +187,7 @@ describe('even-terminal compatibility API', () => {
     process.env.WORKSPACE_PATH = dataDir;
     process.env.XANGI_EVEN_TERMINAL_TOKEN = 'secret';
     process.env.AGENT_BACKEND = 'local-llm';
+    delete process.env.AGENT_MODEL;
     process.env.LOCAL_LLM_MODEL = 'gemma-test';
     const { initSessions } = await import('../src/sessions.js');
     initSessions(dataDir);
@@ -199,7 +202,10 @@ describe('even-terminal compatibility API', () => {
     delete process.env.XANGI_EVEN_TERMINAL_BACKEND;
     delete process.env.XANGI_EVEN_TERMINAL_MODEL;
     delete process.env.XANGI_EVEN_TERMINAL_LOCAL_LLM_MODE;
-    delete process.env.AGENT_BACKEND;
+    if (originalAgentBackend === undefined) delete process.env.AGENT_BACKEND;
+    else process.env.AGENT_BACKEND = originalAgentBackend;
+    if (originalAgentModel === undefined) delete process.env.AGENT_MODEL;
+    else process.env.AGENT_MODEL = originalAgentModel;
     delete process.env.LOCAL_LLM_MODEL;
     if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
   });

@@ -13,45 +13,12 @@
  *   mtime ベースのフォールバックは入れない (Discord/Slack runner から呼ばれた
  *   とき、別ペインの会話を引っ張ってきて context を汚染する事故があったため)。
  */
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-
-interface Entry {
-  role?: string;
-  content?: unknown;
-  createdAt?: string;
-}
-
-function getSessionsDirs(): string[] {
-  const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
-  return [...new Set([join(dataDir, 'logs', 'sessions'), join(workdir, 'logs', 'sessions')])];
-}
-
-function fmtContent(content: unknown, maxChars: number): string {
-  let text: string;
-  if (typeof content === 'string') {
-    text = content;
-  } else if (Array.isArray(content)) {
-    text = content
-      .map((x) => {
-        if (typeof x === 'string') return x;
-        if (x && typeof x === 'object') {
-          const obj = x as { text?: string };
-          return obj.text ?? JSON.stringify(x);
-        }
-        return String(x);
-      })
-      .join(' ');
-  } else if (content && typeof content === 'object') {
-    const obj = content as { result?: string };
-    text = obj.result ?? JSON.stringify(content);
-  } else {
-    text = String(content ?? '');
-  }
-  text = text.replace(/\r?\n/g, ' ');
-  return text.length > maxChars ? text.slice(0, maxChars) + '…' : text;
-}
+import {
+  formatHistory,
+  getSessionsDirs,
+  readHistoryEntries,
+  sessionHistoryPath,
+} from './session-history.js';
 
 interface WebHistoryFlags {
   count?: string;
@@ -83,37 +50,13 @@ export function webHistoryCmd(flags: Record<string, string>): string {
   }
 
   const name = `${currentSession}.jsonl`;
-  const path = getSessionsDirs()
-    .map((dir) => join(dir, name))
-    .find(existsSync);
+  const path = sessionHistoryPath(currentSession);
   if (!path) {
     return `(session ${name} not found in ${getSessionsDirs().join(' or ')})`;
   }
 
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch {
-    return `(failed to read ${name})`;
-  }
-
-  const msgs: Entry[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      msgs.push(JSON.parse(trimmed) as Entry);
-    } catch {
-      // ignore malformed lines
-    }
-  }
-
-  const tail = msgs.slice(-count);
-  const lines = [`# session: ${name}`];
-  for (const m of tail) {
-    const ts = m.createdAt ?? '';
-    const role = m.role ?? '?';
-    lines.push(`[${ts}] [${role}] ${fmtContent(m.content, maxChars)}`);
-  }
-  return lines.join('\n');
+  const entries = readHistoryEntries(path);
+  return entries
+    ? formatHistory(entries, `# session: ${name}`, count, maxChars)
+    : `(failed to read ${name})`;
 }

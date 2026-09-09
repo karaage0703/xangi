@@ -1,9 +1,12 @@
+import { getSessionEntry } from './sessions.js';
+import { formatModelExecution, latestModelExecution } from './model-execution-display.js';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
 import type { BackendResolver, ChannelOverride } from './backend-resolver.js';
 import {
   getSupportedEffortLevels,
-  requiresExplicitModelForEffort,
+  getSupportedEffortLevelsForModel,
+  hasUsableModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
 import type { Scheduler } from './scheduler.js';
@@ -240,13 +243,13 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
       description: model.description,
     })),
   ];
-  const selectedModel = discoveredModels.find((model) => model.id === ctx.selectedModel);
+  const selectedModel =
+    discoveredModels.find((model) => model.id === ctx.selectedModel) ??
+    (ctx.selectedModel === undefined
+      ? discoveredModels.find((model) => model.isDefault)
+      : undefined);
   const supportedEfforts = ctx.selectedBackend
-    ? getSupportedEffortLevels(ctx.selectedBackend).filter(
-        (effort) =>
-          !selectedModel?.supportedEfforts?.length ||
-          selectedModel.supportedEfforts.includes(effort)
-      )
+    ? getSupportedEffortLevelsForModel(ctx.selectedBackend, selectedModel)
     : [];
   const scheduleChoices =
     ctx.appSessionId && ctx.scheduler
@@ -293,7 +296,7 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
             type: 'string',
             choices: modelChoices,
           });
-          if (ctx.selectedModel !== undefined && supportedEfforts.length > 0) {
+          if (supportedEfforts.length > 0) {
             set.options.push({
               name: 'effort',
               description: 'effort',
@@ -388,6 +391,7 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
 
   if (subcommand === 'show') {
     const resolved = resolver.resolve(channelId, ctx.backendDefault);
+    const entry = ctx.appSessionId ? getSessionEntry(ctx.appSessionId) : undefined;
     const source = resolver.getChannelOverride(channelId)
       ? 'Webセッション設定'
       : ctx.backendDefault
@@ -399,6 +403,7 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
         '## 現在のバックエンド設定',
         `- バックエンド: \`${getBackendDisplayName(resolved.backend)}\``,
         `- モデル: ${resolved.model ? `\`${resolved.model}\`` : 'デフォルト'}`,
+        `- 直近の実行: ${formatModelExecution(latestModelExecution(entry), entry?.agent)}`,
         `- effort: ${resolved.effort ? `\`${resolved.effort}\`` : 'デフォルト'}`,
         `- ソース: ${source}`,
       ].join('\n'),
@@ -444,24 +449,23 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
       `${backend} の effort は ${getSupportedEffortLevels(backend).join(', ') || '未対応'} です`
     );
   }
-  if (effort && requiresExplicitModelForEffort(backend) && !model) {
+  if (effort && !hasUsableModelForEffort(backend, model)) {
     throw new Error(`${backend} で effort を指定するにはモデルも指定してください`);
   }
 
-  if (model) {
+  if (model || effort) {
     const discovery = await (ctx.discoverModels ?? discoverBackendModels)(backend);
-    if (discovery.status !== 'available') {
+    if (model && discovery.status !== 'available') {
       throw new Error(discovery.message || `${backend}のモデル一覧を取得できません`);
     }
-    const selected = discovery.models.find((candidate) => candidate.id === model);
-    if (!selected) throw new Error(`モデル \`${model}\` は現在の候補にありません`);
-    if (
-      effort &&
-      selected.supportedEfforts?.length &&
-      !selected.supportedEfforts.includes(effort)
-    ) {
+    const selected = model
+      ? discovery.models.find((candidate) => candidate.id === model)
+      : discovery.models.find((candidate) => candidate.isDefault);
+    if (model && !selected) throw new Error(`モデル \`${model}\` は現在の候補にありません`);
+    const supportedEfforts = getSupportedEffortLevelsForModel(backend, selected);
+    if (effort && !supportedEfforts.includes(effort)) {
       throw new Error(
-        `モデル \`${model}\` のeffortは ${selected.supportedEfforts.join(', ')} です`
+        `モデル \`${selected?.id ?? model}\` のeffortは ${supportedEfforts.join(', ') || '未対応'} です`
       );
     }
   }

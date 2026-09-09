@@ -1,8 +1,7 @@
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
 import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { updateSessionContextUsage } from './sessions.js';
@@ -24,6 +23,10 @@ interface CopilotToolRequest {
 interface CopilotStreamEvent {
   type?: string;
   data?: {
+    model?: string;
+    initiator?: string;
+    interactionType?: string;
+    parentToolCallId?: string;
     messageId?: string;
     deltaContent?: string;
     content?: string;
@@ -55,13 +58,6 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     this.systemPrompt = buildSystemPrompt(options?.platform);
     this.permissionMode = options?.copilotPermissionMode ?? 'read-only';
     this.maxAiCredits = options?.copilotMaxAiCredits;
-  }
-
-  private buildFullPrompt(rawPrompt: string): string {
-    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${promptWithRuntime}`
-      : promptWithRuntime;
   }
 
   private buildArgs(fullPrompt: string, options?: RunOptions): string[] {
@@ -134,13 +130,11 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = this.buildArgs(fullPrompt, options);
 
     this.logExecution('Streaming', options);
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    this.logPromptTranscript(fullPrompt, options);
 
     const onComplete = (result: RunResult) => {
       if (
@@ -154,38 +148,20 @@ export class GitHubCopilotRunner extends CliRunnerBase {
           source: 'copilot-sdk',
         });
       }
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
-      }
+      this.logResponseTranscript(result, options);
     };
 
-    try {
-      return await this.executeStreamCore(args, callbacks, {
-        channelId: options?.channelId,
-        notifyOnError: false,
-        onComplete,
-      });
-    } catch (error) {
-      if (!options?.sessionId || !this.isStaleResumeError(error)) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        callbacks.onError?.(err);
-        throw error;
-      }
-      console.warn(
-        `[github-copilot] Resume failed for stale session ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryArgs = this.buildArgs(fullPrompt, { ...options, sessionId: undefined });
-      return this.executeStreamCore(retryArgs, callbacks, {
-        channelId: options?.channelId,
-        onComplete,
-      });
-    }
+    return this.executeStreamWithResumeRetry(args, callbacks, options, {
+      isStaleError: (error) => this.isStaleResumeError(error),
+      args: () => this.buildArgs(fullPrompt, { ...options, sessionId: undefined }),
+      warning: (id) =>
+        `[github-copilot] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
+      onComplete,
+    });
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let errorDetail: string | undefined;
@@ -197,6 +173,16 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     return {
       handleEvent: (json) => {
         const event = json as CopilotStreamEvent;
+        if (
+          // Current CLI emits the response model on assistant.message; usage
+          // events are optional and absent from many JSON streams.
+          (event.type === 'assistant.message' || event.type === 'assistant.usage') &&
+          !event.data?.initiator &&
+          !event.data?.parentToolCallId &&
+          (!event.data?.interactionType ||
+            ['conversation-agent', 'conversation-user'].includes(event.data.interactionType))
+        )
+          models.add(event.data?.model);
         if (
           event.type === 'session.usage_info' &&
           typeof event.data?.currentTokens === 'number' &&
@@ -277,7 +263,7 @@ export class GitHubCopilotRunner extends CliRunnerBase {
       finalize: () => {
         if (errorDetail) throw new Error(errorDetail);
         if (!sessionId) throw new Error('GitHub Copilot CLI stream ended without a result event');
-        return { result: fullText, sessionId, usage: contextUsage };
+        return { result: fullText, sessionId, usage: contextUsage, ...models.result() };
       },
       exitErrorDetail: () => errorDetail,
     };

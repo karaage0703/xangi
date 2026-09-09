@@ -1,3 +1,4 @@
+import { ProviderModels } from './provider-model.js';
 import { randomUUID } from 'node:crypto';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import type { AgentConfig } from './config.js';
@@ -5,6 +6,8 @@ import { resolveExtensionAgentBackend, type ResolvedExtensionAgentBackend } from
 import { logPrompt, logResponse } from './transcript-logger.js';
 
 interface ExtensionAgentResponse {
+  model?: string;
+  models?: string[];
   schemaVersion?: number;
   result?: string;
   sessionId?: string;
@@ -50,6 +53,9 @@ export class ExtensionAgentRunner implements AgentRunner {
     callbacks.onBackendReady?.();
     try {
       const result = await this.execute(prompt, options);
+      const models = new ProviderModels(callbacks.onModel);
+      for (const model of result.models ?? []) models.add(model);
+      models.add(result.model);
       callbacks.onText?.(result.result, result.result);
       callbacks.onComplete?.(result);
       return result;
@@ -109,7 +115,11 @@ export class ExtensionAgentRunner implements AgentRunner {
       if (payload.schemaVersion !== 1 || typeof payload.result !== 'string') {
         throw new Error(`${current.displayName} returned an invalid agent response`);
       }
+      const models = new ProviderModels();
+      if (Array.isArray(payload.models)) for (const model of payload.models) models.add(model);
+      models.add(payload.model);
       const runResult: RunResult = {
+        ...models.result(),
         result: payload.result,
         sessionId: payload.sessionId ?? `${current.id}:${options?.channelId ?? randomUUID()}`,
         sessionMode: 'stateless',

@@ -65,3 +65,14 @@ export function buildDiscordChannelContextLine(params: {
   if (!channelName) return null;
   return `[チャンネル: #${channelName} (ID: ${conversationChannelId})]`;
 }
+
+export function prependDiscordTimestamp(
+  prompt: string,
+  enabled: boolean,
+  date = new Date()
+): string {
+  if (!enabled) return prompt;
+  const now = date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+  const day = date.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', weekday: 'short' });
+  return `[現在時刻: ${now}(${day})]\n${prompt}`;
+}

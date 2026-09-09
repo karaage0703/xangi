@@ -83,6 +83,13 @@ describe('buildXangiCommands', () => {
     expect(buildXangiCommands('web')).not.toContain('Markdown表を描画しない');
   });
 
+  it('ファイル送信前に添付許可パスへ置くよう案内する', () => {
+    const prompt = buildXangiCommands('discord');
+
+    expect(prompt).toContain('WORKSPACE_PATH配下または/tmpに置き');
+    expect(prompt).toContain('MEDIA:/absolute/path');
+  });
+
   it('LINEとTelegramの出力制約だけを簡潔に注入する', () => {
     const line = buildXangiCommands('line');
     const telegram = buildXangiCommands('telegram');

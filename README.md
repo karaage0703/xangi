@@ -79,6 +79,7 @@ xangi doctor
 - Web Chat: 初回は`http://127.0.0.1:18888`
 - Discord、Slack、Telegram、LINE: セットアップしたbotへメッセージを送信
 - 状態確認: `xangi doctor`
+- AIによるエラー調査・復旧: `xangi rescue`
 - Web UIアクセス先・疎通確認: `xangi tool web_status`
 - バージョン確認: `xangi --version`
 - 接続情報の変更: `xangi settings`

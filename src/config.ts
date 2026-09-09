@@ -4,6 +4,7 @@ import type { ChatPlatform } from './prompts/index.js';
 import { EnvValidator } from './config-validate.js';
 import { listExtensionAgentBackends } from './extensions.js';
 import { featureControlsFromEnv, type FeatureControls } from './feature-controls.js';
+import { hasUsableModelForEffort, supportsEffort } from './backend-effort.js';
 
 export const BUILTIN_AGENT_BACKENDS = [
   'claude-code',
@@ -32,6 +33,15 @@ export type DiscordCompletionNotifyMode = 'off' | 'message' | 'mention';
 
 const DEFAULT_COMPLETION_NOTIFY_AFTER_MS = 10_000;
 
+function parseCsv(value: string | undefined): string[] {
+  return (
+    value
+      ?.split(',')
+      .map((item) => item.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
 export interface AgentConfig {
   model?: string;
   timeoutMs?: number;
@@ -49,7 +59,17 @@ export interface AgentConfig {
   idleTimeoutMs?: number;
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export const EFFORT_LEVELS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type { LocalLlmReasoningEffort } from './local-llm/reasoning-effort.js';
 
 export interface Config {
@@ -219,6 +239,7 @@ export interface Config {
   };
   agent: {
     backend: AgentBackend;
+    effort?: EffortLevel;
     config: AgentConfig;
     platform?: ChatPlatform;
     /** 切り替え許可バックエンド一覧（未設定=全て許可） */
@@ -257,31 +278,11 @@ export function loadConfig(): Config {
   const discordAllowedUser = process.env.DISCORD_ALLOWED_USER;
   const slackAllowedUser = process.env.SLACK_ALLOWED_USER;
   const lineAllowedUser = process.env.LINE_ALLOWED_USER;
-  const discordAllowedUsers = discordAllowedUser
-    ? discordAllowedUser
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
-  const slackAllowedUsers = slackAllowedUser
-    ? slackAllowedUser
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
-  const lineAllowedUsers = lineAllowedUser
-    ? lineAllowedUser
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
+  const discordAllowedUsers = parseCsv(discordAllowedUser);
+  const slackAllowedUsers = parseCsv(slackAllowedUser);
+  const lineAllowedUsers = parseCsv(lineAllowedUser);
   const telegramAllowedUser = process.env.TELEGRAM_ALLOWED_USER;
-  const telegramAllowedUsers = telegramAllowedUser
-    ? telegramAllowedUser
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
+  const telegramAllowedUsers = parseCsv(telegramAllowedUser);
 
   const availableBackends = getAllAgentBackends();
   const backend = process.env.AGENT_BACKEND || 'claude-code';
@@ -326,6 +327,35 @@ export function loadConfig(): Config {
     maxProcesses: v.int('MAX_PROCESSES', 10, { min: 1, max: 100 }),
     idleTimeoutMs: v.int('IDLE_TIMEOUT_MS', 30 * 60 * 1000, { min: 1000 }), // 30分
   };
+
+  let agentEffort: EffortLevel | undefined;
+  const rawAgentEffort = process.env.AGENT_EFFORT?.trim().toLowerCase();
+  if (rawAgentEffort) {
+    if (!(EFFORT_LEVELS as readonly string[]).includes(rawAgentEffort)) {
+      v.issue(
+        'AGENT_EFFORT',
+        rawAgentEffort,
+        `許可される値は ${EFFORT_LEVELS.join(' / ')} です。provider既定を使用します`
+      );
+    } else {
+      const effort = rawAgentEffort as EffortLevel;
+      if (!supportsEffort(backend, effort)) {
+        v.issue(
+          'AGENT_EFFORT',
+          rawAgentEffort,
+          `backend '${backend}' はこのeffortに対応していません。provider既定を使用します`
+        );
+      } else if (!hasUsableModelForEffort(backend, agentConfig.model)) {
+        v.issue(
+          'AGENT_EFFORT',
+          rawAgentEffort,
+          `backend '${backend}' では明示modelが必要です。provider既定を使用します`
+        );
+      } else {
+        agentEffort = effort;
+      }
+    }
+  }
 
   // ALLOWED_BACKENDS パース（未設定なら全 backend 許可、typo は警告して除外）
   const allowedBackends: AgentBackend[] = v.enumList('ALLOWED_BACKENDS', availableBackends) ?? [
@@ -406,10 +436,7 @@ export function loadConfig(): Config {
       replySuggestions: process.env.DISCORD_REPLY_SUGGESTIONS === 'true',
       replySuggestionCount: v.int('DISCORD_REPLY_SUGGESTIONS_COUNT', 3, { min: 1, max: 5 }),
       allowAutoreplyCommand: process.env.ALLOW_AUTOREPLY_COMMAND !== 'false', // デフォルトON
-      respondToBots:
-        process.env.RESPOND_TO_BOTS?.split(',')
-          .map((s) => s.trim())
-          .filter(Boolean) || [],
+      respondToBots: parseCsv(process.env.RESPOND_TO_BOTS),
       respondToBotsEnabled: process.env.RESPOND_TO_BOTS_ENABLED === 'true', // デフォルトOFF
       respondToBotsMaxConsecutive: v.int('RESPOND_TO_BOTS_MAX_CONSECUTIVE', 3), // デフォルト3回、0以下は制限無効
       allowRespondToBotsCommand: process.env.ALLOW_RESPOND_TO_BOTS_COMMAND !== 'false', // デフォルトON
@@ -422,15 +449,9 @@ export function loadConfig(): Config {
       botToken: slackBotToken,
       appToken: slackAppToken,
       allowedUsers: slackAllowedUsers,
-      autoReplyChannels:
-        process.env.SLACK_AUTO_REPLY_CHANNELS?.split(',')
-          .map((s) => s.trim())
-          .filter(Boolean) || [],
+      autoReplyChannels: parseCsv(process.env.SLACK_AUTO_REPLY_CHANNELS),
       replyInThread: process.env.SLACK_REPLY_IN_THREAD !== 'false',
-      replyInChannels:
-        process.env.SLACK_REPLY_IN_CHANNELS?.split(',')
-          .map((s) => s.trim())
-          .filter(Boolean) || [],
+      replyInChannels: parseCsv(process.env.SLACK_REPLY_IN_CHANNELS),
       completionNotifyAfterMs: v.int(
         'SLACK_COMPLETION_NOTIFY_AFTER_MS',
         DEFAULT_COMPLETION_NOTIFY_AFTER_MS,
@@ -441,9 +462,9 @@ export function loadConfig(): Config {
       replySuggestions: process.env.SLACK_REPLY_SUGGESTIONS === 'true',
       replySuggestionCount: v.int('SLACK_REPLY_SUGGESTIONS_COUNT', 3, { min: 1, max: 5 }),
       reactionDeleteEnabled: process.env.SLACK_REACTION_DELETE_ENABLED !== 'false',
-      deleteReactions: process.env.SLACK_DELETE_REACTIONS?.split(',')
-        .map((s) => s.trim())
-        .filter(Boolean) || ['wastebasket', 'x'],
+      deleteReactions: process.env.SLACK_DELETE_REACTIONS
+        ? parseCsv(process.env.SLACK_DELETE_REACTIONS)
+        : ['wastebasket', 'x'],
     },
     web: {
       replySuggestions: process.env.WEB_REPLY_SUGGESTIONS === 'true',
@@ -463,9 +484,7 @@ export function loadConfig(): Config {
       idleResetEnabled: process.env.LINE_IDLE_RESET_ENABLED !== 'false',
       idleResetHours: v.float('LINE_IDLE_RESET_HOURS', 4, { min: 0 }),
       resetTextPatterns: process.env.LINE_RESET_TEXT_PATTERNS
-        ? process.env.LINE_RESET_TEXT_PATTERNS.split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? parseCsv(process.env.LINE_RESET_TEXT_PATTERNS)
         : undefined, // line.ts 側で default パターンに fallback
     },
     telegram: {
@@ -473,19 +492,13 @@ export function loadConfig(): Config {
       botToken: telegramBotToken,
       allowedUsers: telegramAllowedUsers,
       allowedBots: process.env.TELEGRAM_ALLOWED_BOTS
-        ? process.env.TELEGRAM_ALLOWED_BOTS.split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? parseCsv(process.env.TELEGRAM_ALLOWED_BOTS)
         : [],
       allowedChats: process.env.TELEGRAM_ALLOWED_CHATS
-        ? process.env.TELEGRAM_ALLOWED_CHATS.split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? parseCsv(process.env.TELEGRAM_ALLOWED_CHATS)
         : [],
       autoReplyChats: process.env.TELEGRAM_AUTO_REPLY_CHATS
-        ? process.env.TELEGRAM_AUTO_REPLY_CHATS.split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? parseCsv(process.env.TELEGRAM_AUTO_REPLY_CHATS)
         : [],
       mode: v.enumOf('TELEGRAM_MODE', ['polling', 'webhook'] as const, 'polling'),
       webhookPort: v.int('TELEGRAM_WEBHOOK_PORT', 8766, { min: 1, max: 65535 }),
@@ -512,13 +525,12 @@ export function loadConfig(): Config {
         max: 5000,
       }),
       resetTextPatterns: process.env.TELEGRAM_RESET_TEXT_PATTERNS
-        ? process.env.TELEGRAM_RESET_TEXT_PATTERNS.split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? parseCsv(process.env.TELEGRAM_RESET_TEXT_PATTERNS)
         : ['/reset', '/new', '/clear'],
     },
     agent: {
       backend,
+      effort: agentEffort,
       config: agentConfig,
       platform,
       allowedBackends,
