@@ -90,6 +90,20 @@ type StreamOutputCapability = 'unknown' | 'stream-json' | 'legacy';
 type SlashCommandCapabilityProbeResult = 'supported' | 'unsupported' | 'unknown';
 
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
+const PRINT_TIMEOUT_NOTICE =
+  '時間上限に達したため、この回答は未完了です。続きが必要な場合は同じ会話で依頼してください。';
+
+function hasPartialOutputTimeout(stderr: string): boolean {
+  return /^\[agy\] print timeout after \S+ with turn in progress; returning partial output\s*$/m.test(
+    stderr
+  );
+}
+
+function withPrintTimeoutNotice(text: string, stderr: string): string {
+  return hasPartialOutputTimeout(stderr)
+    ? [text, PRINT_TIMEOUT_NOTICE].filter(Boolean).join('\n\n')
+    : text;
+}
 const WORKSPACE_WRITE_SYSTEM_GUIDANCE = `## Antigravity workspace file writes
 When calling write_to_file for a normal file in the current workspace, omit ArtifactMetadata entirely. ArtifactMetadata is reserved for Antigravity's internal artifact directory, not workspace files.`;
 const WORKSPACE_WRITE_RECOVERY_PROMPT = `The preceding write_to_file call failed because ArtifactMetadata was attached to a normal workspace path. Continue the same task from that failed write only. Retry that write without the ArtifactMetadata field and preserve the requested workspace path. Do not repeat completed tool calls or external side effects. Then finish the task normally.`;
@@ -136,8 +150,10 @@ export class AntigravityRunner extends CliRunnerBase {
     this.systemPrompt = [buildSystemPrompt(options?.platform), WORKSPACE_WRITE_SYSTEM_GUIDANCE]
       .filter(Boolean)
       .join('\n\n');
-    this.printTimeout =
-      process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${Math.ceil(this.timeoutMs / 1000)}s`;
+    // Reserve startup/shutdown time without consuming most of a short request's budget.
+    const marginMs = Math.min(30_000, this.timeoutMs * 0.1);
+    const printTimeoutMs = Math.max(1, Math.floor(this.timeoutMs - marginMs));
+    this.printTimeout = process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${printTimeoutMs / 1000}s`;
     this.disableSlashCommands = process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS !== 'false';
   }
 
@@ -568,6 +584,8 @@ export class AntigravityRunner extends CliRunnerBase {
     let errorDetail: string | undefined;
     let lastToolError: string | undefined;
     let sawResult = false;
+    let emptySuccess = false;
+    let deniedActions: unknown;
     let sawNativeEvent = false;
     let backendReady = false;
     const emittedToolSteps = new Set<string>();
@@ -653,12 +671,12 @@ export class AntigravityRunner extends CliRunnerBase {
             return phase === 'stream' ? new Error(errorDetail) : undefined;
           }
 
-          const response = this.withDeniedActions(result);
+          deniedActions = result.denied_actions;
+          const response = typeof result.response === 'string' ? result.response : '';
+          emptySuccess = !response;
           if (!response) {
-            errorDetail =
-              lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response';
-            if (isAntigravityWorkspaceArtifactPathError(errorDetail)) return undefined;
-            return phase === 'stream' ? new Error(errorDetail) : undefined;
+            // stderr can arrive after this result. Decide at close whether this is a timeout.
+            return undefined;
           }
 
           if (response.startsWith(fullText)) {
@@ -673,7 +691,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () => {
+      finalize: (stderr = '') => {
         if (!sawNativeEvent) {
           this.streamOutputCapability = 'legacy';
           const result = rawOutput.trim();
@@ -689,9 +707,21 @@ export class AntigravityRunner extends CliRunnerBase {
         if (errorDetail) {
           throw new AntigravityConversationError(errorDetail, sessionId);
         }
-        return { result: fullText, sessionId };
+        const denialNotice = this.withDeniedActions({ denied_actions: deniedActions });
+        if (!hasPartialOutputTimeout(stderr) && !denialNotice && (emptySuccess || !fullText)) {
+          throw new AntigravityConversationError(
+            lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response',
+            sessionId
+          );
+        }
+        const result = withPrintTimeoutNotice(
+          this.withDeniedActions({ response: fullText, denied_actions: deniedActions }),
+          stderr
+        );
+        if (result !== fullText) callbacks.onText?.(result.slice(fullText.length), result);
+        return { result, sessionId };
       },
-      exitErrorDetail: () => errorDetail,
+      exitErrorDetail: () => errorDetail ?? (emptySuccess ? lastToolError : undefined),
       wrapExitError: (error) =>
         sessionId && isAntigravityWorkspaceArtifactPathError(error)
           ? new AntigravityConversationError(error.message, sessionId, { cause: error })
@@ -739,7 +769,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
       this.outputCapability = 'json';
       if (response.status === 'SUCCESS') {
-        const result = this.withDeniedActions(response);
+        const result = withPrintTimeoutNotice(this.withDeniedActions(response), stderr);
         if (!result) {
           throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
         }
