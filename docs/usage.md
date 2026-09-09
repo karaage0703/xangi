@@ -302,6 +302,9 @@ xangi setup
 # config / service healthの診断（秘密値は表示しない）
 xangi doctor
 
+# xangi本体とは独立したAIにエラー調査・修正・再確認を任せる
+xangi rescue
+
 # 実行中instanceのWeb UIアクセス先・bind・Chat/Workspace疎通をJSONで表示
 xangi tool web_status
 
@@ -330,7 +333,7 @@ AIコーディングツールだけをセットアップする場合は、xangi�
 bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
 ```
 
-最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`から選びます。状態確認だけなら`check`を指定します。Codexに必要なNode.jsとnpmが無い場合は、nvmを導入したあとTerminalをいったん閉じ、新しいTerminalで`command -v nvm`、`nvm install --lts`の順に実行するガイドを表示します。
+最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`から選びます。状態確認だけなら`check`を指定します。Codexは[OpenAI公式のstandalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started)から導入するため、Node.jsとnpmは不要です。GitHub Copilot CLIの導入に必要なNode.jsとnpmが無い場合は、nvmの導入手順を表示します。
 
 OpenCodeは`setup-ai-tools.sh opencode`で公式installerから導入し、OpenCode自身の認証画面を開きます。その後の`xangi setup`で、既存のOpenCode設定・認証を使うか、OpenAI互換ローカルLLMを使うかを選べます。ローカルLLMを選ぶとbase URL、model ID、context/output上限を確認し、xangiのconfig directoryへ専用`opencode.json`をmode 0600で保存します。通常のOpenCode設定は上書きせず、xangi実行時だけ`OPENCODE_CONFIG`と`AGENT_MODEL`を適用します。
 
@@ -595,11 +598,15 @@ docker build -t myapp . && \
 | `/backend set grok --effort max`                            | Grokをmax effortで実行                 |
 | `/backend set antigravity --effort high`                    | Antigravityをhigh effortで実行         |
 | `/backend reset`                                            | デフォルト（.env設定）に戻す           |
+| `/backend show scope:global`                                | 全体の既定backend・modelを表示         |
+| `/backend set codex model:gpt-5.6-sol effort:medium scope:global` | 全体の既定を次のturnから変更      |
+| `/backend reset scope:global`                               | 全体の明示model・effort指定を解除       |
 
 切り替え時は自動的に新しいセッションが開始されます（会話履歴は引き継がれません）。
 Discord と Slack の両方で利用できます。Slack では App 設定に `/backend` を登録し、
-Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>]|reset` にしてください。
+Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset` にしてください。
 設定はチャンネルID単位で `CHANNEL_OVERRIDES` へ永続化され、同じチャンネル内のスレッドにも再起動なしで次のメッセージから反映されます。
+`scope:global`（Slackでは`--scope global`）は`AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT`と稼働中の既定ランナーを同時更新します。effortは選択モデルが対応する値だけ保存できます。実行中turnは旧ランナーで完了し、次のturnから全体へ反映されます。明示的なチャンネルoverrideは維持されます。
 
 `/models [backend]` は Discord、Slack、Web、Telegram、LINE で共通です。引数を省略すると `ALLOWED_BACKENDS` に含まれる全バックエンド、指定するとそのバックエンドだけを表示します。閲覧専用で、現在のバックエンドやモデル設定は変更しません。
 
@@ -621,6 +628,7 @@ AIへの自然言語指示から設定を変える場合は、任意のスラッ
 ```bash
 xangi tool runtime_settings --name autoreply --action set --value on
 xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.4 --effort high
+xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.6-sol --effort medium --scope global
 xangi tool runtime_settings --name llmmode --action set --value chat
 ```
 
@@ -661,7 +669,9 @@ Web UIではProject画面の「Workspaceを追加」から、xangi processがア
 
 #### effort オプション
 
-Claude Code、Codex、OpenCode、Grok、GitHub Copilot CLIでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMの段階指定はCLI backendの`effort`とは別に`/llmeffort`で設定し、OpenAI互換APIのトップレベル`reasoning_effort`へ送ります。対応値は`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`で、接続先が値を実装している必要があります。`default`はチャンネル設定を削除し、`LOCAL_LLM_REASONING_EFFORT`またはprovider既定へ戻します。Antigravityで`max`を指定した場合は設定を保存せずエラーを返します。Claude Codeのpersistentモードでは切り替え時にセッションがリセットされます。
+effort候補はbackendのCLI対応範囲と、取得できたモデル固有情報の積集合です。Codexはapp-serverの`supportedReasoningEfforts`、GitHub Copilotは公式SDKの同名metadata、OpenCodeは`models --verbose`のvariant一覧、GrokはCLI生成のmodel cacheを使って候補を絞ります。Cursor / AntigravityでモデルID自体に`low` / `medium` / `high` / `xhigh` / `max`等が含まれる場合は、その値だけを候補にし、同じeffortをCLI引数へ重ねません。Cursorの`auto`にはeffortを設定できません。Claude Codeは機械可読なモデル一覧を提供しないため、現行CLI全体の`low` / `medium` / `high` / `xhigh` / `max`を表示します。
+
+モデル固有情報を取得できない場合はbackend範囲へfallbackします。Codexは`low` / `medium` / `high` / `xhigh` / `max` / `ultra`、OpenCode / Cursorは`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`、GrokとGitHub Copilotは`low` / `medium` / `high` / `xhigh` / `max`、Antigravityは`low` / `medium` / `high`です。OpenCodeのvariant名はモデル・provider・利用者設定ごとに異なるため、verbose metadataが取得できたモデルでは実在する標準effort名だけを表示します。Local LLMの段階指定はCLI backendの`effort`とは別に`/llmeffort`で設定し、OpenAI互換APIのトップレベル`reasoning_effort`へ送ります。対応値は`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`で、接続先が値を実装している必要があります。`default`はチャンネル設定を削除し、`LOCAL_LLM_REASONING_EFFORT`またはprovider既定へ戻します。Claude Codeのpersistentモードでは切り替え時にセッションがリセットされます。
 
 ## AIによる自律操作
 
@@ -1387,11 +1397,15 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `AGENT_BACKEND`                 | 組み込み、またはリンク済み拡張が宣言したバックエンドID                                                                  | `claude-code`                |
 | `AGENT_MODEL`                   | 使用するモデル                                                                                                          | -                            |
+| `AGENT_EFFORT`                  | 全体の既定effort（選択backend・modelが対応する値）                                                                       | -                            |
 | `WORKSPACE_PATH`                | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
 | `XANGI_WORKSPACE`               | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
 | `SKIP_PERMISSIONS`              | デフォルトで許可スキップ（非対話実行で待ち状態を防ぐため既定有効。明示的に `false` で無効化）                           | `true`                       |
 | `TIMEOUT_MS`                    | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `1800000`                    |
 | `XANGI_TOOL_SERVER_PORT`        | 内部ツールサーバーの固定ポート。未設定時は前回ポートを再利用（使用中なら自動割り当て）                                  | 前回ポート再利用             |
+| `XANGI_REMOTE_WORKERS_CONFIG`   | remote worker登録JSONの絶対path。portと同時設定した場合だけ有効                                                        | 未設定                       |
+| `XANGI_REMOTE_WORKER_HOST`      | worker専用WebSocketのbind先。Tailnetから接続する場合は`0.0.0.0`を明示                                                 | `127.0.0.1`                  |
+| `XANGI_REMOTE_WORKER_PORT`      | worker専用WebSocket port。内部tool serverとは分離                                                                      | 未設定                       |
 | `XANGI_CONFIG_STRICT`           | 環境変数の不正値（数値でない・範囲外・enum typo 等）を起動エラーに格上げ。デフォルトは警告 + デフォルト値フォールバック | `false`                      |
 | `TIMEOUT_MAX_MS`                | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`                   |
 | `TIMEOUT_EXTEND_ENABLED`        | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                       |
@@ -1556,7 +1570,7 @@ curl -i "$XANGI_TOOL_SERVER/github-token"
 
 OpenCode backend は `opencode run --format json --agent build` を使用し、JSONイベントをxangiのストリーミング応答とtool履歴へ変換します。`SKIP_PERMISSIONS=true`（既定）では非対話実行用の`--auto`を渡します。信頼できないworkspaceでは`SKIP_PERMISSIONS=false`を指定してください。
 
-`AGENT_MODEL` はOpenCodeの`provider/model`形式で`--model`へ渡します。チャンネルのeffortは`--variant low|medium|high|max`へ、provider sessionは`--session`へ渡すため、xangiの同一セッションで会話をresumeできます。custom providerでは、使用するeffort名と同じmodel variantをOpenCode設定に定義してください。OpenCodeが終了コード0と同時にJSONの`error`イベントを返す場合も、xangiは成功扱いにせずエラーを通知します。
+`AGENT_MODEL` はOpenCodeの`provider/model`形式で`--model`へ渡します。チャンネルのeffortは選択モデルの`none|minimal|low|medium|high|xhigh|max`のうち実在する標準variantを`--variant`へ、provider sessionは`--session`へ渡すため、xangiの同一セッションで会話をresumeできます。custom providerでは、使用するeffort名と同じmodel variantをOpenCode設定に定義してください。OpenCodeが終了コード0と同時にJSONの`error`イベントを返す場合も、xangiは成功扱いにせずエラーを通知します。
 
 workspaceの`AGENTS.md`と`.agents/skills`の読み込みはOpenCode自身へ委譲します。custom providerやOpenAI互換endpointを使う場合は、設定ファイルの絶対pathを`OPENCODE_CONFIG`に指定できます。`xangi setup`でOpenAI互換ローカルLLMを選ぶと、この設定ファイルと`low` / `medium` / `high` / `max` variantを自動生成します。
 
@@ -1738,3 +1752,19 @@ xangi は **デフォルトで AI の許可確認をスキップ**します（`S
 
 1. 該当チャンネルで `/new` コマンドを実行してセッションをリセットする
 2. それでも解消しない場合は、xangiを再起動する（`./bin/xangi service restart`）
+
+Remote workerはmacOSとLinux/WSL2で`xangi worker install --pair`・`restart`・`status`を利用できます。Linux/WSL2ではsystemd user managerが必要です。詳細は[remote workers](remote-workers.md)を参照してください。
+
+### 実行モデルの確認と履歴
+
+`runtime_settings backend --action show` と Web Chat の `/backend show` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。`default` はバックエンドへの委任です。設定名やエイリアスだけでは実際のモデルを確認したことにはなりません。
+
+全バックエンドの実行ごとに、当時の指定モデル、確認できたモデル名、確認元、開始・更新時刻、完了・失敗状態を保存します。プロバイダーから取得できた名前は「確認済み」、設定しか取得できなければ「設定値・実行未確認」、取得できなければ「不明」です。同じ実行中に複数モデルが報告された場合もすべて表示します。
+
+Web Chat の会話内と Monitor の詳細にある「モデル実行履歴」で、turn ごとの記録を確認できます。過去の会話に記録がなければ「記録なし」と表示し、現在のデフォルト設定で過去のモデルを補完しません。導入前の実行を自動で復元する機能ではありません。
+
+Codexの過去モデルに限り、元のrolloutが残っていれば `npx tsx scripts/recover-codex-model-history.ts --sessions /data/sessions.json --transcripts /data/logs/sessions --session APP_SESSION_ID` で復元候補をJSON表示できます（既定はdry-run、`--codex-home DIR`で保存先指定）。元のworkspace path、provider session、時刻が一致する証拠だけを採用します。適用する場合は対象xangiを停止してから `--apply-offline` を追加します。バックアップとatomic renameを使い `modelHistory` だけを更新し、会話の更新日時・タイトル・活動状態・トランスクリプトは変更しません。証拠のない実行は不明のままです。
+
+通常の実行表示はモデル名と短いローカル日時（例: `2026/09/09 00:24`）に絞り、確認済み・完了の文言とchannel IDは省きます。設定値しか分からない場合の未確認注記は残ります。
+
+Grokは実行したセッション・作業ディレクトリ・時間範囲に一致するネイティブのprimary turn記録からモデルを取得します。GitHub Copilotは応答メッセージのモデル情報も取得します。CursorのAuto実行で内部モデルが公開されない場合は、`Auto（自動選択・内部モデル不明）`と表示・保存します。過去の設定やキャッシュされたモデル候補を実モデルとして補完しません。

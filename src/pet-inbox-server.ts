@@ -49,6 +49,7 @@ import {
 } from './reply-suggestions.js';
 import { loadReplySuggestionsEnabled } from './settings.js';
 import { truncateSessionTitle } from './session-title.js';
+import { readJsonObjectBody, sendJson } from './web-http.js';
 
 const MAX_TEXT_LENGTH = 8000;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -137,36 +138,6 @@ export function isLocalOrPrivate(remoteAddress: string | undefined): boolean {
   return false;
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let buf = '';
-    let aborted = false;
-    req.on('data', (chunk: Buffer) => {
-      if (aborted) return;
-      buf += chunk.toString('utf-8');
-      if (buf.length > MAX_BODY_BYTES) {
-        aborted = true;
-        reject(new Error(`Body too large (max ${MAX_BODY_BYTES} bytes)`));
-        req.destroy();
-      }
-    });
-    req.on('end', () => {
-      if (aborted) return;
-      try {
-        resolve(buf ? (JSON.parse(buf) as Record<string, unknown>) : {});
-      } catch {
-        reject(new Error('Invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
-}
-
 function webContextKey(appSessionId: string): string {
   return `${WEB_CHAT_CONTEXT_PREFIX}${appSessionId}`;
 }
@@ -189,7 +160,7 @@ export async function handlePetInboxRequest(
   if (req.method !== 'POST' || !isInboxPath(url)) return false;
 
   if (!isInboxEnabled(url)) {
-    jsonResponse(res, 503, {
+    sendJson(res, 503, {
       error: 'inbox is disabled',
       hint:
         url === '/api/pet/inbox'
@@ -204,14 +175,14 @@ export async function handlePetInboxRequest(
   if (token) {
     const authHeader = (req.headers.authorization || '').trim();
     if (authHeader !== `Bearer ${token}`) {
-      jsonResponse(res, 401, {
+      sendJson(res, 401, {
         error: 'Unauthorized',
         hint: `Provide Authorization: Bearer <${envName}>`,
       });
       return true;
     }
   } else if (!isLocalOrPrivate(req.socket.remoteAddress)) {
-    jsonResponse(res, 403, {
+    sendJson(res, 403, {
       error: 'Forbidden',
       hint:
         'Public IP requests require XANGI_PET_INBOX_TOKEN to be set. ' +
@@ -223,19 +194,19 @@ export async function handlePetInboxRequest(
   // body parse
   let body: Record<string, unknown>;
   try {
-    body = await readJsonBody(req);
+    body = await readJsonObjectBody(req, MAX_BODY_BYTES);
   } catch (e) {
-    jsonResponse(res, 400, { error: e instanceof Error ? e.message : 'Invalid request body' });
+    sendJson(res, 400, { error: e instanceof Error ? e.message : 'Invalid request body' });
     return true;
   }
 
   const text = String(body.text ?? '').trim();
   if (!text) {
-    jsonResponse(res, 400, { error: 'text is required' });
+    sendJson(res, 400, { error: 'text is required' });
     return true;
   }
   if (text.length > MAX_TEXT_LENGTH) {
-    jsonResponse(res, 400, { error: `text too long (max ${MAX_TEXT_LENGTH} chars)` });
+    sendJson(res, 400, { error: `text too long (max ${MAX_TEXT_LENGTH} chars)` });
     return true;
   }
   const label = sourceLabel(url, body.source);
@@ -250,17 +221,17 @@ export async function handlePetInboxRequest(
   }
   const entry = getSessionEntry(appSessionId);
   if (!entry) {
-    jsonResponse(res, 404, { error: `Session ${appSessionId} not found` });
+    sendJson(res, 404, { error: `Session ${appSessionId} not found` });
     return true;
   }
   if (entry.platform !== 'web') {
-    jsonResponse(res, 409, {
+    sendJson(res, 409, {
       error: `Session ${appSessionId} is not a web session (platform: ${entry.platform})`,
     });
     return true;
   }
   if (busy.has(appSessionId)) {
-    jsonResponse(res, 409, { error: 'Session is busy' });
+    sendJson(res, 409, { error: 'Session is busy' });
     return true;
   }
 
@@ -289,7 +260,7 @@ export async function handlePetInboxRequest(
 
   // 202 を即返す。応答は events SSE 経由で pet 側に届く。
   const { instanceId } = getEventsConfig();
-  jsonResponse(res, 202, {
+  sendJson(res, 202, {
     accepted: true,
     instance_id: instanceId,
     thread_id: threadId,

@@ -33,6 +33,20 @@ interface ExtensionsResponse {
   issues: Array<{ code: string; message: string }>;
 }
 
+interface ExtensionSetupResponse {
+  sessionId: string;
+  prompt: string;
+  displayMessage: string;
+}
+
+function openSetupSession(result: ExtensionSetupResponse): void {
+  window.sessionStorage.setItem(
+    extensionSetupStorageKey(result.sessionId),
+    JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
+  );
+  window.location.assign(sessionPath(result.sessionId));
+}
+
 function statusLabel(extension: ExtensionEntry): string {
   if (!extension.statusKnown) return '状態不明';
   if (extension.healthy) return '利用可能';
@@ -82,81 +96,30 @@ export function Extensions() {
   }, [load]);
 
   const requestRepositorySetup = async (url: string) => {
-    const result = await requestJson<{
-      sessionId: string;
-      prompt: string;
-      displayMessage: string;
-    }>('/api/extensions/repositories', {
+    const result = await requestJson<ExtensionSetupResponse>('/api/extensions/repositories', {
       method: 'POST',
       body: JSON.stringify({ url }),
     });
-    window.sessionStorage.setItem(
-      extensionSetupStorageKey(result.sessionId),
-      JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
-    );
-    window.location.assign(sessionPath(result.sessionId));
+    openSetupSession(result);
   };
 
-  const requestSetup = async (extension: ExtensionEntry) => {
+  const requestExtensionAction = async (
+    extension: ExtensionEntry,
+    action: 'setup' | 'uninstall' | 'update'
+  ) => {
     setActionId(extension.id);
     setError('');
     try {
-      if (!extension.installed && extension.setupRepositoryUrl) {
+      if (action === 'setup' && !extension.installed && extension.setupRepositoryUrl) {
         await requestRepositorySetup(extension.setupRepositoryUrl);
         return;
       }
-      const result = await requestJson<{
-        sessionId: string;
-        prompt: string;
-        displayMessage: string;
-      }>(`/api/extensions/${encodeURIComponent(extension.id)}/setup`, { method: 'POST' });
-      window.sessionStorage.setItem(
-        extensionSetupStorageKey(result.sessionId),
-        JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
+      openSetupSession(
+        await requestJson<ExtensionSetupResponse>(
+          `/api/extensions/${encodeURIComponent(extension.id)}/${action}`,
+          { method: 'POST' }
+        )
       );
-      window.location.assign(sessionPath(result.sessionId));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setActionId(undefined);
-    }
-  };
-
-  const removeExtension = async (extension: ExtensionEntry) => {
-    setActionId(extension.id);
-    setError('');
-    try {
-      const result = await requestJson<{
-        sessionId: string;
-        prompt: string;
-        displayMessage: string;
-      }>(`/api/extensions/${encodeURIComponent(extension.id)}/uninstall`, { method: 'POST' });
-      window.sessionStorage.setItem(
-        extensionSetupStorageKey(result.sessionId),
-        JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
-      );
-      window.location.assign(sessionPath(result.sessionId));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setActionId(undefined);
-    }
-  };
-
-  const requestUpdate = async (extension: ExtensionEntry) => {
-    setActionId(extension.id);
-    setError('');
-    try {
-      const result = await requestJson<{
-        sessionId: string;
-        prompt: string;
-        displayMessage: string;
-      }>(`/api/extensions/${encodeURIComponent(extension.id)}/update`, { method: 'POST' });
-      window.sessionStorage.setItem(
-        extensionSetupStorageKey(result.sessionId),
-        JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
-      );
-      window.location.assign(sessionPath(result.sessionId));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -332,7 +295,7 @@ export function Extensions() {
                       <button
                         className="extension-install"
                         type="button"
-                        onClick={() => void requestSetup(extension)}
+                        onClick={() => void requestExtensionAction(extension, 'setup')}
                         disabled={!extension.actionsAvailable || Boolean(actionId)}
                       >
                         {busy ? '準備中…' : 'セットアップ'}
@@ -342,7 +305,7 @@ export function Extensions() {
                       <button
                         className="extension-install"
                         type="button"
-                        onClick={() => void requestUpdate(extension)}
+                        onClick={() => void requestExtensionAction(extension, 'update')}
                         disabled={!extension.actionsAvailable || Boolean(actionId)}
                       >
                         {busy ? '確認中…' : '更新を確認'}
@@ -353,8 +316,8 @@ export function Extensions() {
                       type="button"
                       onClick={() =>
                         void (extension.installed
-                          ? removeExtension(extension)
-                          : requestSetup(extension))
+                          ? requestExtensionAction(extension, 'uninstall')
+                          : requestExtensionAction(extension, 'setup'))
                       }
                       disabled={!extension.actionsAvailable || Boolean(actionId)}
                     >

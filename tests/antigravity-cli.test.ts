@@ -357,6 +357,13 @@ describe('AntigravityRunner', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('high');
   });
 
+  it('does not duplicate an effort already encoded in the model ID', async () => {
+    const runner = new AntigravityRunner({ model: 'gemini-3.8-flash-high' });
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'high' });
+
+    expect(args).not.toContain('--effort');
+  });
+
   it('passes account hiding env by default', async () => {
     const runner = new AntigravityRunner({});
     const { env } = await getSpawnArgs(runner, 'run');
@@ -373,6 +380,28 @@ describe('AntigravityRunner', () => {
     mockProcess.emit('close', 0);
 
     await expect(promise).resolves.toEqual({ result: 'json answer', sessionId: 'conv-1' });
+  });
+
+  it('preserves native model evidence through non-stream completion', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+    const mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'SUCCESS',
+          response: 'ok',
+          conversation_id: 'conv-model',
+          model: 'native-model',
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({
+      model: 'native-model',
+      models: ['native-model'],
+    });
   });
 
   it('replaces a supplied session id with the JSON conversation id', async () => {
@@ -863,7 +892,12 @@ describe('AntigravityRunner', () => {
         )
       );
     }
-    const result = { status: 'SUCCESS', response, conversation_id: 'partial-conversation' };
+    const result = {
+      status: 'SUCCESS',
+      response,
+      conversation_id: 'partial-conversation',
+      model: 'gemini-3.5-pro',
+    };
     proc.stdout.emit(
       'data',
       Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
@@ -874,6 +908,8 @@ describe('AntigravityRunner', () => {
     proc.emit('close', 0);
     const answer = await promise;
     expect(answer.sessionId).toBe('partial-conversation');
+    expect(answer.model).toBe('gemini-3.5-pro');
+    expect(answer.models).toEqual(['gemini-3.5-pro']);
     expect(answer.result.startsWith(response)).toBe(true);
     expect(answer.result).toContain('時間上限に達したため、この回答は未完了です。');
     expect(await getProcesses()).toHaveLength(1);
@@ -1084,6 +1120,37 @@ describe('AntigravityRunner', () => {
     expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
     expect(answer.result.match(/Partial answer/g)).toHaveLength(1);
     expect(answer.result).toContain('RunCommand');
+  });
+
+  it('keeps streamed text when an empty final response reports denied actions', async () => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const promise = runner.runStream('write file', { onText });
+    const proc = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: { step_type: 'agent_response', text_delta: 'Partial answer\n' },
+      },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: '',
+          denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+        },
+      },
+    ];
+    proc.stdout.emit(
+      'data',
+      Buffer.from(events.map((value) => JSON.stringify(value)).join('\n') + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
+    expect(answer.result).toBe(
+      'Partial answer\n\n\n権限がないため実行されなかった操作があります: RunCommand'
+    );
   });
 
   it('keeps a tool error non-fatal when Agy later returns an answer', async () => {

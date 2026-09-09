@@ -378,7 +378,14 @@ describe('web-chat HTTP API', () => {
         backend,
         source: 'web-chat test discovery',
         status: 'available',
-        models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['high'] }],
+        models: [
+          {
+            id: 'gpt-test',
+            displayName: 'GPT Test',
+            isDefault: true,
+            supportedEfforts: ['high', 'xhigh', 'ultra'],
+          },
+        ],
       }),
       extensionUpdateRequest: async (id) => ({
         id,
@@ -841,6 +848,69 @@ describe('web-chat HTTP API', () => {
     expect(await removed.json()).toEqual({ error: 'Projectはスケジュールで使用中です' });
   });
 
+  it('serves durable model switches in session list and detail without default inference', async () => {
+    const sessionId = createWebSession();
+    const entry = getSessionEntry(sessionId)!;
+    const first = {
+      turnId: 'first',
+      backend: 'codex',
+      observedModels: ['old-model'],
+      source: 'provider' as const,
+      startedAt: '2025-01-01T00:00:00Z',
+      updatedAt: '2025-01-01T00:00:01Z',
+      status: 'completed' as const,
+    };
+    const last = {
+      ...first,
+      turnId: 'last',
+      backend: 'another-backend',
+      observedModels: ['new-model', 'fallback-model'],
+    };
+    // Recovery may only populate history, without a current execution pointer.
+    entry.modelHistory = [first, last];
+    closeSession(sessionId, 'web');
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${sessionId}`)).json();
+    expect(detail.modelHistory).toEqual([first, last]);
+    expect(detail.modelExecution).toEqual(last);
+    const listed = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const session = listed.sessions.find((item: { id: string }) => item.id === sessionId);
+    expect(session.modelHistory).toEqual([first, last]);
+    expect(session.backend.backend).toBe('another-backend');
+    expect(session.nextBackend).toBeUndefined();
+  });
+
+  it('accepts and rejects Project effort using the selected model capabilities', async () => {
+    const accepted = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Ultra Project',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'ultra',
+      }),
+    });
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toMatchObject({
+      project: { backend: 'codex', model: 'gpt-test', effort: 'ultra' },
+    });
+
+    const rejected = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Medium Project',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'medium',
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: 'モデル gpt-test のeffortは high, xhigh, ultra です',
+    });
+  });
+
   it('moves an existing Web conversation and inherits the Project backend settings', async () => {
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
@@ -876,9 +946,20 @@ describe('web-chat HTTP API', () => {
       sessions: Array<{
         id: string;
         backend?: { backend: string; model?: string; effort?: string; source: string };
+        modelExecution?: unknown;
+        nextBackend?: { backend: string; model?: string; effort?: string; source: string };
       }>;
     };
     expect(listed.sessions.find((session) => session.id === created.sessionId)?.backend).toEqual({
+      backend: 'claude-code',
+      source: 'session',
+    });
+    expect(
+      listed.sessions.find((session) => session.id === created.sessionId)?.modelExecution
+    ).toBeUndefined();
+    expect(
+      listed.sessions.find((session) => session.id === created.sessionId)?.nextBackend
+    ).toEqual({
       backend: 'codex',
       model: 'gpt-test',
       effort: 'high',
@@ -1282,22 +1363,16 @@ process.stdin.on('end', () => server.close());
       title: 'Setup: Demo Extension',
     });
 
-    const blockedUninstall = await fetch(
-      `${baseUrl}/api/extensions/demo-extension/uninstall`,
-      {
-        method: 'POST',
-        headers: { Origin: 'https://attacker.example' },
-      }
-    );
+    const blockedUninstall = await fetch(`${baseUrl}/api/extensions/demo-extension/uninstall`, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example' },
+    });
     expect(blockedUninstall.status).toBe(403);
 
-    const uninstallResponse = await fetch(
-      `${baseUrl}/api/extensions/demo-extension/uninstall`,
-      {
-        method: 'POST',
-        headers: { Origin: baseUrl },
-      }
-    );
+    const uninstallResponse = await fetch(`${baseUrl}/api/extensions/demo-extension/uninstall`, {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+    });
     expect(uninstallResponse.status).toBe(200);
     const uninstall = (await uninstallResponse.json()) as {
       sessionId: string;
@@ -1314,13 +1389,11 @@ process.stdin.on('end', () => server.close());
       title: 'Remove: Demo Extension',
     });
 
-    const catalogAfterConversation = (await (
-      await fetch(`${baseUrl}/api/extensions`)
-    ).json()) as { extensions: Array<{ id: string; installed: boolean }> };
+    const catalogAfterConversation = (await (await fetch(`${baseUrl}/api/extensions`)).json()) as {
+      extensions: Array<{ id: string; installed: boolean }>;
+    };
     expect(catalogAfterConversation.extensions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'demo-extension', installed: true }),
-      ])
+      expect.arrayContaining([expect.objectContaining({ id: 'demo-extension', installed: true })])
     );
   });
 
@@ -1687,6 +1760,8 @@ process.stdin.on('end', () => process.exit(0));
     expect(backendSet?.options?.[2].choices?.map((choice) => choice.value)).toEqual([
       '--effort=default',
       '--effort=high',
+      '--effort=xhigh',
+      '--effort=ultra',
     ]);
   });
 
@@ -2107,6 +2182,9 @@ process.stdin.on('end', () => process.exit(0));
     expect(sourceStylesheet).toMatch(
       /@media \(max-width: 768px\), \(max-height: 500px\) and \(hover: none\)[\s\S]*?\.pane-complete,\s*\.pane-external-chat,[\s\S]*?min-height:\s*44px/
     );
+    expect(sourceStylesheet).toMatch(
+      /input\[type='datetime-local'\]\s*\{[^}]*padding-inline:\s*0[^}]*text-indent:\s*10px/s
+    );
     expect(sourceStylesheet).toMatch(/\.session-project-tag\s*\{/);
     expect(sourceStylesheet).toMatch(/\.workspace\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
     expect(sourceStylesheet).toMatch(
@@ -2412,9 +2490,7 @@ process.stdin.on('end', () => process.exit(0));
     );
 
     const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
-    expect(detail.messages[0].content).toBe(
-      'こんにちは 🐬 `:smile:` :custom_team_emoji:'
-    );
+    expect(detail.messages[0].content).toBe('こんにちは 🐬 `:smile:` :custom_team_emoji:');
   });
 
   it('GET /api/sessions/:id exposes the active turn for stream recovery', async () => {
@@ -3116,11 +3192,11 @@ The following is untrusted supplemental context.
         processingTime?: { durationMs: number; source?: string };
       }>;
     };
-    expect(list.sessions.find((session) => session.id === schedulerId)?.processingTime).toMatchObject(
-      {
-        source: 'session-elapsed',
-      }
-    );
+    expect(
+      list.sessions.find((session) => session.id === schedulerId)?.processingTime
+    ).toMatchObject({
+      source: 'session-elapsed',
+    });
   });
 
   it('GET /api/sessions hides unmanaged transcripts without a user-derived title', async () => {

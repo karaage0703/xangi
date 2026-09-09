@@ -1,7 +1,11 @@
 import type { AgentBackend, EffortLevel } from './config.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { discoverBackendModels, formatBackendModels } from './backend-models.js';
-import { getSupportedEffortLevels, supportsEffort } from './backend-effort.js';
+import {
+  getSupportedEffortLevels,
+  getSupportedEffortLevelsForModel,
+  supportsEffort,
+} from './backend-effort.js';
 import { ValidationError } from './errors.js';
 import { featureControlsFromEnv } from './feature-controls.js';
 
@@ -95,9 +99,10 @@ export async function selectModelForNextTurn(
         `${backend} supports effort: ${getSupportedEffortLevels(backend).join(', ') || 'none'}`
       );
     }
-    if (selected.supportedEfforts?.length && !selected.supportedEfforts.includes(effort)) {
+    const supportedEfforts = getSupportedEffortLevelsForModel(backend, selected);
+    if (!supportedEfforts.includes(effort)) {
       throw new ValidationError(
-        `model '${selected.id}' supports effort: ${selected.supportedEfforts.join(', ')}`
+        `model '${selected.id}' supports effort: ${supportedEfforts.join(', ') || 'none'}`
       );
     }
   }

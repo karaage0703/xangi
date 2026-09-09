@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebClient } from '@slack/web-api';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
-import type { Config } from '../src/config.js';
+import type { AgentBackend, Config, EffortLevel } from '../src/config.js';
 import {
   clearSessions,
   createWebSession,
@@ -396,13 +396,21 @@ function processMessageWithoutMinimumDisplayDelay(
 
 function createBackendResolverStub(defaultBackend = 'claude-code') {
   const overrides = new Map<string, ChannelOverride>();
+  let currentDefault = {
+    backend: defaultBackend as AgentBackend,
+    model: undefined as string | undefined,
+    effort: undefined as EffortLevel | undefined,
+  };
   const resolver = {
     resolve: vi.fn((channelId: string) => ({
       backend: overrides.get(channelId)?.backend ?? defaultBackend,
       model: overrides.get(channelId)?.model,
       effort: overrides.get(channelId)?.effort,
     })),
-    getDefault: vi.fn(() => ({ backend: defaultBackend })),
+    getDefault: vi.fn(() => currentDefault),
+    setDefault: vi.fn((backend: AgentBackend, model?: string, effort?: EffortLevel) => {
+      currentDefault = { backend, model, effort };
+    }),
     getChannelOverride: vi.fn((channelId: string) => overrides.get(channelId)),
     setChannelOverride: vi.fn((channelId: string, override: ChannelOverride) => {
       overrides.set(channelId, override);
@@ -462,6 +470,12 @@ describe('Slack /backend command', () => {
       channelId: AUTO_REPLY_CHANNEL,
       resolver,
       agentRunner,
+      modelDiscovery: vi.fn().mockResolvedValue({
+        backend: 'cursor',
+        source: 'test source',
+        status: 'available',
+        models: [{ id: 'cursor-model', supportedEfforts: ['low', 'medium', 'high'] }],
+      }),
     });
 
     expect(resolver.setChannelOverride).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL, {
@@ -487,6 +501,30 @@ describe('Slack /backend command', () => {
 
     expect(resolver.deleteChannelOverride).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL);
     expect(switchBackend).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL);
+  });
+
+  it('parses global scope and switches the process-wide default runner', async () => {
+    const { resolver } = createBackendResolverStub();
+    const switchDefaultBackend = vi.fn();
+    const switchBackend = vi.fn();
+
+    const result = await executeSlackBackendCommand({
+      text: 'set codex --model gpt-new --effort medium --scope global',
+      channelId: AUTO_REPLY_CHANNEL,
+      resolver,
+      agentRunner: { switchDefaultBackend, switchBackend } as unknown as AgentRunner,
+      modelDiscovery: vi.fn().mockResolvedValue({
+        backend: 'codex',
+        source: 'test source',
+        status: 'available',
+        models: [{ id: 'gpt-new', supportedEfforts: ['low', 'medium', 'high'] }],
+      }),
+    });
+
+    expect(resolver.setDefault).toHaveBeenCalledWith('codex', 'gpt-new', 'medium');
+    expect(switchDefaultBackend).toHaveBeenCalledOnce();
+    expect(switchBackend).not.toHaveBeenCalled();
+    expect(result).toContain('全体の既定');
   });
 
   it('rejects a backend outside ALLOWED_BACKENDS without changing state', async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { resolveEnvFilePath, updateEnvKeyValue } from '../src/env-persist.js';
+import { resolveEnvFilePath, updateEnvKeyValue, updateEnvKeyValues } from '../src/env-persist.js';
 
 describe('resolveEnvFilePath', () => {
   const savedXangiEnvPath = process.env.XANGI_ENV_PATH;
@@ -30,6 +30,45 @@ describe('resolveEnvFilePath', () => {
   it('XANGI_ENV_PATH が空文字なら fallback (Falsy 判定)', () => {
     process.env.XANGI_ENV_PATH = '';
     expect(resolveEnvFilePath()).toBe(join(process.cwd(), '.env'));
+  });
+});
+
+describe('updateEnvKeyValues', () => {
+  it('updates the backend and removes an explicit model in one write', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-env-persist-many-'));
+    const envPath = join(workdir, '.env');
+    const previous = process.env.XANGI_ENV_PATH;
+    try {
+      writeFileSync(envPath, 'OTHER=keep\nAGENT_BACKEND=codex\nAGENT_MODEL=gpt-old\n');
+      process.env.XANGI_ENV_PATH = envPath;
+
+      expect(
+        updateEnvKeyValues({ AGENT_BACKEND: 'claude-code', AGENT_MODEL: undefined }).ok
+      ).toBe(true);
+      expect(readFileSync(envPath, 'utf8')).toBe('OTHER=keep\nAGENT_BACKEND=claude-code\n');
+    } finally {
+      if (previous === undefined) delete process.env.XANGI_ENV_PATH;
+      else process.env.XANGI_ENV_PATH = previous;
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects newline injection without modifying the file', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-env-persist-newline-'));
+    const envPath = join(workdir, '.env');
+    const previous = process.env.XANGI_ENV_PATH;
+    try {
+      writeFileSync(envPath, 'AGENT_MODEL=gpt-old\n');
+      process.env.XANGI_ENV_PATH = envPath;
+
+      const result = updateEnvKeyValues({ AGENT_MODEL: 'gpt-new\nINJECTED=value' });
+      expect(result.ok).toBe(false);
+      expect(readFileSync(envPath, 'utf8')).toBe('AGENT_MODEL=gpt-old\n');
+    } finally {
+      if (previous === undefined) delete process.env.XANGI_ENV_PATH;
+      else process.env.XANGI_ENV_PATH = previous;
+      rmSync(workdir, { recursive: true, force: true });
+    }
   });
 });
 

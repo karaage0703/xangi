@@ -26,6 +26,7 @@ import { executeModelsCommand, selectModelForNextTurn } from './models-command.j
 import { formatXangiCmdHelp } from './cli/xangi-cmd-help.js';
 import { webStatusCmd } from './web-status.js';
 import type { Config } from './config.js';
+import type { AgentRunner } from './agent-runner.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
 import type { Scheduler } from './scheduler.js';
@@ -34,17 +35,20 @@ import { executeExtensionRequest } from './extension-request.js';
 import { updateExtension } from './extension-update.js';
 import { finalizeDevelopmentExtensionUninstall } from './extension-catalog.js';
 import { executeProgressCardCommand } from './progress-card-command.js';
+import { RemoteWorkerGateway, executeRemoteWorkerCommand } from './remote-worker/gateway.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
 let backendResolver: BackendResolver | null = null;
 let runtimeConfig: Config | null = null;
+let runtimeAgentRunner: AgentRunner | null = null;
 let scheduleManager: Scheduler | null = null;
 let modelDiscovery: typeof discoverBackendModels = discoverBackendModels;
 let webStatusCommand: typeof webStatusCmd = webStatusCmd;
 let extensionUpdateCommand: typeof updateExtension = updateExtension;
 let extensionUninstallCommand: typeof finalizeDevelopmentExtensionUninstall =
   finalizeDevelopmentExtensionUninstall;
+let remoteWorkerGateway: RemoteWorkerGateway | null = null;
 
 interface ToolRequest {
   command: string;
@@ -132,15 +136,24 @@ async function executeCommand(
         backend: flags.backend,
         model: flags.model,
         effort: flags.effort,
+        scope: flags.scope,
         channelId: flags.channel ?? context?.channelId,
         platform: flags.platform ?? context?.platform,
+        contextKey: context?.channelId,
       },
-      { config: runtimeConfig, resolver: backendResolver, modelDiscovery }
+      {
+        config: runtimeConfig,
+        resolver: backendResolver,
+        modelDiscovery,
+        agentRunner: runtimeAgentRunner ?? undefined,
+      }
     );
   } else if (command === 'web_status') {
     return webStatusCommand();
   } else if (command === 'progress_card') {
     return executeProgressCardCommand(flags, context);
+  } else if (command === 'remote_worker') {
+    return executeRemoteWorkerCommand(remoteWorkerGateway, flags);
   } else if (command === 'extension_runtime') {
     if (!runtimeConfig) {
       throw new ValidationError('extension_runtime is not available on this instance');
@@ -305,6 +318,7 @@ export function startToolServer(options?: {
   eventTrigger?: EventTrigger | null;
   backendResolver?: BackendResolver | null;
   config?: Config | null;
+  agentRunner?: AgentRunner | null;
   scheduler?: Scheduler | null;
   modelDiscovery?: typeof discoverBackendModels;
   webStatusCommand?: typeof webStatusCmd;
@@ -314,6 +328,7 @@ export function startToolServer(options?: {
   eventTrigger = options?.eventTrigger ?? null;
   backendResolver = options?.backendResolver ?? null;
   runtimeConfig = options?.config ?? null;
+  runtimeAgentRunner = options?.agentRunner ?? null;
   scheduleManager = options?.scheduler ?? null;
   modelDiscovery = options?.modelDiscovery ?? discoverBackendModels;
   webStatusCommand = options?.webStatusCommand ?? webStatusCmd;
@@ -430,6 +445,18 @@ export function startToolServer(options?: {
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
+  const remoteWorkersConfig = process.env.XANGI_REMOTE_WORKERS_CONFIG;
+  const remoteWorkerPort = Number(process.env.XANGI_REMOTE_WORKER_PORT || '');
+  if (remoteWorkersConfig && Number.isInteger(remoteWorkerPort) && remoteWorkerPort > 0) {
+    remoteWorkerGateway = new RemoteWorkerGateway(remoteWorkersConfig);
+    remoteWorkerGateway.listen(
+      remoteWorkerPort,
+      process.env.XANGI_REMOTE_WORKER_HOST || '127.0.0.1'
+    );
+  } else {
+    remoteWorkerGateway = null;
+  }
+
   // 前回ポートを優先し、使用中 (EADDRINUSE) なら自動割り当てにフォールバック
   const preferred = resolvePreferredToolServerPort();
   let fellBack = false;
@@ -463,11 +490,15 @@ export function startToolServer(options?: {
  * Tool Serverを停止
  */
 export function stopToolServer(): void {
+  remoteWorkerGateway?.close();
+  remoteWorkerGateway = null;
   if (server) {
     server.close();
     server = null;
     delete process.env.XANGI_TOOL_SERVER;
   }
   runtimeConfig = null;
+  runtimeAgentRunner = null;
+  backendResolver = null;
   scheduleManager = null;
 }

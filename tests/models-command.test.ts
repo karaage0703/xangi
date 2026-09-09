@@ -90,6 +90,28 @@ describe('/models common command', () => {
     expect(result).toContain('次のturnから適用');
   });
 
+  it('selects xhigh and ultra when the discovered Codex model advertises them', async () => {
+    const resolver = createResolver(['codex']);
+    const discover = vi.fn(async (): Promise<BackendModelDiscovery> => ({
+      backend: 'codex',
+      source: 'test source',
+      status: 'available',
+      models: [{ id: 'gpt-frontier', supportedEfforts: ['xhigh', 'ultra'] }],
+    }));
+
+    await selectModelForNextTurn(
+      { backend: 'codex', model: 'gpt-frontier', effort: 'ultra', channelId: 'channel-1' },
+      resolver,
+      discover
+    );
+
+    expect(resolver.setChannelOverride).toHaveBeenCalledWith('channel-1', {
+      backend: 'codex',
+      model: 'gpt-frontier',
+      effort: 'ultra',
+    });
+  });
+
   it('rejects a model that is not in the dynamic discovery result', async () => {
     const resolver = createResolver(['codex']);
     const discover = vi.fn(async (): Promise<BackendModelDiscovery> => ({

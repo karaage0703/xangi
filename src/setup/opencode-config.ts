@@ -1,7 +1,7 @@
-import { chmod, mkdir, open, rename, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import readline from 'node:readline/promises';
 import type { AppLayout } from '../installer/types.js';
+import { writePrivateJsonFile } from './private-json-file.js';
 
 export interface OpenCodeSetupResult {
   configPath?: string;
@@ -81,21 +81,7 @@ export function buildOpenCodeCompatibleConfig(options: {
 }
 
 async function writeConfig(path: string, value: Record<string, unknown>): Promise<void> {
-  const temporary = `${path}.tmp-${process.pid}`;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try {
-      await file.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, path);
-    await chmod(path, 0o600);
-  } finally {
-    await unlink(temporary).catch(() => undefined);
-  }
+  await writePrivateJsonFile(path, value);
 }
 
 export async function configureOpenCodeSetup(

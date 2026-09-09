@@ -127,6 +127,8 @@ flowchart LR
 
 ### macOS・Linux・WSL2セットアップ・更新コア
 
+- Remote workerは内部Tool Serverと分離した専用WebSocketへ外向き接続する。事前登録したworkerをfile-backed tokenで認証し、version付きcapabilityを申告する。MVPはsystem情報、worker側workspace/command allowlistで制限したshell非経由argv実行、read-only USB列挙だけを提供する。device書込み、serial制御、自動配置、public network transportはdevice別approvalとTLSを設計するまで含めない
+- Remote workerの常駐管理はmacOSでlaunchd、Linux/WSL2でsystemd user serviceを使い分ける。pairing・0600設定保存は共通化し、restartでは認証情報を保持する。Linuxのuser managerをpairing前に検査する。
 - `installer/layout.ts` はapp versionsとworkspace/state/configを分離する。将来のWindows adapterも同じlogical layoutを使う
 - `installer/manifest.ts` と `updater.ts` はEd25519、SHA-256、update lock、staging、atomic current切替を担当する。初回installのservice起動時はhealth確認と失敗時rollbackを行う
 - `installer/platform/darwin.ts` はLaunchAgentだけを担当し、OS固有処理を共通updaterから分離する
@@ -279,9 +281,11 @@ class TimeoutController extends EventEmitter {
 BackendResolverの優先順位:
 
 1. `/backend set` で設定されたchannelOverrides（メモリ上、`.env`のCHANNEL_OVERRIDESに永続化。Discord スレッドでは親チャンネルIDで解決）
-2. `.env` のデフォルト（`AGENT_BACKEND`, `AGENT_MODEL`）
+2. `.env` のデフォルト（`AGENT_BACKEND`, `AGENT_MODEL`, `AGENT_EFFORT`）
 
-`backend-effort.ts`がbackendごとの対応effortを一元管理する。`/backend set`と`CHANNEL_OVERRIDES`読み込み時に組み合わせを検証し、非対応値は保存・適用しない。解決済みeffortは各runnerが実CLI引数へ変換する。
+`backend-effort.ts`がbackendごとの対応effortを一元管理する。モデル取得結果に`supportedEfforts`がある場合は、backendと選択モデル（モデル未指定時は取得結果のデフォルトモデル）の積集合を候補表示と対話的な保存時検証に使う。Codexはapp-server、GitHub Copilotは公式SDK、OpenCodeは`models --verbose`のvariant metadata、GrokはCLI生成のmodel cacheを使う。Cursor / AntigravityはeffortがモデルIDに含まれる項目を検出し、別のeffortを重ねて表示・送信しない。`supportedEfforts: []`は明示的な非対応として扱い、backend既定値へfallbackしない。Claude Codeは機械可読なモデル一覧を持たないため、CLI全体の対応範囲を使う。`CHANNEL_OVERRIDES`読み込み時はbackend単位で非対応値を除外し、解決済みeffortは各runnerが実CLI引数へ変換する。
+
+`scope:global`の変更はbackend・model・effortを1組として`.env`と`BackendResolver`へ保存し、既定runnerを差し替える。実行中turnが参照する旧runnerは完了まで保持し、新しいturnだけが更新後の設定を使う。backendまたはmodelを明示したchannel overrideはglobal effortを継承せず、そのchannelでeffortも明示した場合だけ適用する。
 
 ### システムプロンプト（base-runner.ts）
 
@@ -1026,6 +1030,8 @@ src/
 ├── line.ts             # LINE Bot統合（Webhook + 署名検証）
 ├── telegram.ts         # Telegram Bot統合（polling / webhook + 監視ルール）
 ├── web-chat.ts         # WebチャットUI（HTTPサーバー）
+├── web-http.ts         # Web共通HTTP境界（Origin検証、body読込、Range対応ファイル配信）
+├── web-file-security.ts # Web添付・配信pathのrealpath境界検証
 ├── agent-runner.ts     # AI CLIインターフェース
 ├── base-runner.ts      # システムプロンプト生成
 ├── bubble-events-runner.ts # Runner実行を応答ライフサイクルイベント発火付きでラップ
@@ -1174,3 +1180,9 @@ src/
 1. `AgentRunner` インターフェースを実装
 2. `config.ts` にバックエンド設定を追加
 3. `index.ts` で初期化処理を追加
+
+### 実行モデルの永続化
+
+`SessionEntry.modelExecution` は直近turn、`modelHistory` はturn IDごとの実行スナップショットを保持する。各スナップショットには `backend`、`configuredModel`、最後に確認した `effectiveModel`、確認したモデル名集合 `observedModels`、`source`（provider / configuration / unknown）、開始・更新時刻、状態、provider session IDを保存する。開始時、モデル通知時、成功・失敗終了時に更新し、終了記録はトランスクリプトにも付加する。
+
+`agent.model` はresume判定用の指定値であり、実測モデルで上書きしない。CLIやプロバイダーによるalias解決・fallbackは実行スナップショットで表現する。UIは最後の実測モデルを先頭にし、同turnの他の確認モデルも表示する。過去の設定やモデルを現在のresolverから補完しない。古い `agent.model` は設定値・実行未確認、証拠のないモデルは不明とする。復元済みの `modelHistory` だけが存在する場合はその最新記録を表示する。Webの次回設定は別の `nextBackend` として扱い、Discordでは設定対象の親チャンネルと実行記録を参照するthreadのcontext keyを分離する。

@@ -165,6 +165,73 @@ describe('BackendResolver localLlmMode', () => {
     expect(envContent).toContain('"localLlmMode":"agent"');
   });
 
+  it('全体defaultを即時更新して.envへ永続化し、channel overrideを維持する', () => {
+    const previousBackend = process.env.AGENT_BACKEND;
+    const previousModel = process.env.AGENT_MODEL;
+    const previousEffort = process.env.AGENT_EFFORT;
+    try {
+      const resolver = new BackendResolver(makeConfig());
+      resolver.setChannelOverride('ch1', { backend: 'local-llm', model: 'local-model' });
+
+      resolver.setDefault('claude-code', 'claude-test', 'high');
+
+      expect(resolver.getDefault()).toEqual({
+        backend: 'claude-code',
+        model: 'claude-test',
+        effort: 'high',
+      });
+      expect(resolver.resolve('ch1')).toMatchObject({
+        backend: 'local-llm',
+        model: 'local-model',
+      });
+      const envContent = readFileSync(envFile, 'utf-8');
+      expect(envContent).toContain('AGENT_BACKEND=claude-code');
+      expect(envContent).toContain('AGENT_MODEL=claude-test');
+      expect(envContent).toContain('AGENT_EFFORT=high');
+
+      resolver.setDefault('claude-code');
+      expect(readFileSync(envFile, 'utf-8')).not.toContain('AGENT_MODEL=');
+      expect(readFileSync(envFile, 'utf-8')).not.toContain('AGENT_EFFORT=');
+    } finally {
+      if (previousBackend === undefined) delete process.env.AGENT_BACKEND;
+      else process.env.AGENT_BACKEND = previousBackend;
+      if (previousModel === undefined) delete process.env.AGENT_MODEL;
+      else process.env.AGENT_MODEL = previousModel;
+      if (previousEffort === undefined) delete process.env.AGENT_EFFORT;
+      else process.env.AGENT_EFFORT = previousEffort;
+    }
+  });
+
+  it('global effortは設定だけのchannelへ継承し、modelまたはbackend overrideでは解除する', () => {
+    const config = makeConfig();
+    config.agent.backend = 'codex';
+    config.agent.config.model = 'gpt-default';
+    config.agent.effort = 'high';
+    const resolver = new BackendResolver(config);
+
+    resolver.setChannelLocalLlmMode('settings-only', 'chat');
+    resolver.setChannelOverride('model-override', { model: 'gpt-other' });
+    resolver.setChannelOverride('backend-override', { backend: 'claude-code' });
+
+    expect(resolver.resolve('settings-only').effort).toBe('high');
+    expect(resolver.resolve('model-override').effort).toBeUndefined();
+    expect(resolver.resolve('backend-override').effort).toBeUndefined();
+  });
+
+  it('全体defaultの永続化に失敗した場合はメモリ上の値を変更しない', () => {
+    const resolver = new BackendResolver(makeConfig());
+    rmSync(envFile);
+
+    expect(() => resolver.setDefault('claude-code', 'claude-test')).toThrow(
+      '.env file not found'
+    );
+    expect(resolver.getDefault()).toEqual({
+      backend: 'local-llm',
+      model: undefined,
+      effort: undefined,
+    });
+  });
+
   it('Local LLM reasoning effortをチャンネル別に設定・解除・永続化できる', () => {
     const resolver = new BackendResolver(makeConfig());
     resolver.setChannelLocalLlmReasoningEffort('ch1', 'low');
@@ -229,6 +296,10 @@ describe('BackendResolver localLlmMode', () => {
       /requires an explicit model/
     );
     expect(resolver.getChannelOverride('ch1')).toBeUndefined();
+
+    expect(() =>
+      resolver.setChannelOverride('ch1', { backend: 'cursor', model: 'auto', effort: 'high' })
+    ).toThrow(/requires an explicit model/);
 
     expect(() =>
       resolver.setChannelOverride('ch1', {

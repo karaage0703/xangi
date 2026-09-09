@@ -44,6 +44,12 @@ export interface RunOptions {
 export interface RunResult {
   result: string;
   sessionId: string;
+  /** Main-conversation model reported by the provider, never a configured default. */
+  model?: string;
+  /** Provider-reported selection mode when the underlying model is undisclosed. */
+  modelSelection?: string;
+  /** All main-conversation models observed within this run, in observation order. */
+  models?: string[];
   /** Whether the backend can continue provider-side context across turns. */
   sessionMode?: 'stateful' | 'stateless';
   /**
@@ -122,6 +128,9 @@ export interface ExtendTimeoutResult {
 }
 
 export interface StreamCallbacks {
+  /** Provider-confirmed main-conversation model, including changes during a turn. */
+  onModel?: (model: string) => void;
+  onModelSelection?: (selection: string) => void;
   /** バックエンドがリクエストを受理し、セッション開始イベントを返した時 */
   onBackendReady?: () => void;
   onText?: (text: string, fullText: string) => void;
@@ -158,6 +167,10 @@ export interface AgentRunner {
    * - 成功: { ok: true, timeoutAt, remainingMs, timeoutMs }
    */
   extendTimeout?(channelId: string, additionalMs?: number): ExtendTimeoutResult;
+  /** Apply a channel backend/model change for the next turn. */
+  switchBackend?(channelId: string): void;
+  /** Rebuild the process-wide default runner while allowing active turns to finish. */
+  switchDefaultBackend?(): void;
 }
 
 /**

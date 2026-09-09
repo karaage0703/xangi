@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
 import { sanitizeSessionTitle, truncateSessionTitle } from './session-title.js';
+import type { ModelExecution } from './model-execution.js';
+export type { ModelExecution } from './model-execution.js';
 
 /**
  * セッション管理（appSessionId方式）
@@ -85,6 +87,10 @@ export interface SessionEntry {
   updatedAt: string;
   messageCount: number;
   agent?: AgentInfo;
+  /** Latest execution evidence; agent.model remains the requested model for resume matching. */
+  modelExecution?: ModelExecution;
+  /** Completed-turn snapshots; running entries are updated by turnId. */
+  modelHistory?: ModelExecution[];
   archived: boolean;
   /** 会話を通常継続するか。未設定の既存データはactiveByContextから安全に導出する。 */
   lifecycle?: SessionLifecycle;
@@ -375,6 +381,33 @@ export function getSession(channelId: string): string | undefined {
  */
 export const WEB_CHAT_CONTEXT_PREFIX = 'web-chat:';
 
+type NewSessionEntry = Pick<SessionEntry, 'title' | 'platform' | 'scope'> & Partial<SessionEntry>;
+
+function registerSession(
+  appId: string,
+  contextKey: string,
+  entry: NewSessionEntry,
+  options: { activate?: boolean; notify?: boolean } = {}
+): string {
+  const now = new Date().toISOString();
+  data.sessions[appId] = {
+    ...entry,
+    id: appId,
+    contextKey,
+    bootId: currentBootId,
+    createdAt: now,
+    updatedAt: now,
+    messageCount: 0,
+    archived: false,
+    lifecycle: 'open',
+    title: sanitizeSessionTitle(entry.title),
+  };
+  if (options.activate !== false) data.activeByContext[contextKey] = appId;
+  saveSessionsToFile();
+  if (options.notify) notifySessionChanges();
+  return appId;
+}
+
 /** WebのcontextKeyまたは生appSessionIdを、生appSessionIdへ正規化する。 */
 export function webAppSessionId(channelId: string): string {
   return channelId.startsWith(WEB_CHAT_CONTEXT_PREFIX)
@@ -395,8 +428,6 @@ export function createWebSession(
 ): string {
   const appId = generateAppSessionId();
   const ctxKey = `${WEB_CHAT_CONTEXT_PREFIX}${appId}`;
-  const now = new Date().toISOString();
-
   const resumedFrom = opts.resumedFromSessionId
     ? data.sessions[opts.resumedFromSessionId]
     : undefined;
@@ -405,28 +436,17 @@ export function createWebSession(
       ? resumedFrom.id
       : resumedFrom.externalSourceSessionId
     : undefined;
-  data.sessions[appId] = {
-    id: appId,
-    title: sanitizeSessionTitle(opts.title || ''),
+  return registerSession(appId, ctxKey, {
+    title: opts.title || '',
     platform: 'web',
-    contextKey: ctxKey,
     scope: 'interactive',
-    bootId: currentBootId,
-    createdAt: now,
-    updatedAt: now,
-    messageCount: 0,
     agent: opts.backend ? { backend: opts.backend } : undefined,
-    archived: false,
-    lifecycle: 'open',
     resumedFromSessionId: opts.resumedFromSessionId,
     externalSourceSessionId,
     workspaceId: opts.workspaceId ?? resumedFrom?.workspaceId,
     workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
     projectId: opts.projectId ?? resumedFrom?.projectId,
-  };
-  data.activeByContext[ctxKey] = appId;
-  saveSessionsToFile();
-  return appId;
+  });
 }
 
 /**
@@ -452,28 +472,15 @@ export function createSession(
   } & SessionSnapshotOptions = {}
 ): string {
   const appId = generateAppSessionId();
-  const now = new Date().toISOString();
-
-  data.sessions[appId] = {
-    id: appId,
-    title: sanitizeSessionTitle(opts.title || ''),
+  return registerSession(appId, contextKey, {
+    title: opts.title || '',
     platform: opts.platform || 'discord',
-    contextKey,
     scope: opts.scope || 'interactive',
-    bootId: currentBootId,
-    createdAt: now,
-    updatedAt: now,
-    messageCount: 0,
     agent: opts.backend ? { backend: opts.backend } : undefined,
-    archived: false,
-    lifecycle: 'open',
     workspaceId: opts.workspaceId,
     workspacePath: opts.workspacePath,
     projectId: opts.projectId,
-  };
-  data.activeByContext[contextKey] = appId;
-  saveSessionsToFile();
-  return appId;
+  });
 }
 
 /** activeByContextを変更せず、1回のスケジュール実行を独立Sessionとして登録する。 */
@@ -482,25 +489,18 @@ export function createSchedulerSession(
   contextKey: string,
   opts: { platform: string; title: string } & SessionSnapshotOptions
 ): string {
-  const now = new Date().toISOString();
-  data.sessions[appId] = {
-    id: appId,
-    title: sanitizeSessionTitle(opts.title),
-    platform: opts.platform,
+  return registerSession(
+    appId,
     contextKey,
-    scope: 'scheduler',
-    bootId: currentBootId,
-    createdAt: now,
-    updatedAt: now,
-    messageCount: 0,
-    archived: false,
-    lifecycle: 'open',
-    workspaceId: opts.workspaceId,
-    workspacePath: opts.workspacePath,
-  };
-  saveSessionsToFile();
-  notifySessionChanges();
-  return appId;
+    {
+      title: opts.title,
+      platform: opts.platform,
+      scope: 'scheduler',
+      workspaceId: opts.workspaceId,
+      workspacePath: opts.workspacePath,
+    },
+    { activate: false, notify: true }
+  );
 }
 
 /**
@@ -518,8 +518,8 @@ export function setProviderSessionId(
   if (!entry) return;
   entry.agent = {
     backend: backend || entry.agent?.backend || 'claude-code',
-    model: model ?? entry.agent?.model,
-    effort: effort ?? entry.agent?.effort,
+    model: backend ? model : (model ?? entry.agent?.model),
+    effort: backend ? effort : (effort ?? entry.agent?.effort),
     providerSessionId,
     sessionMode: sessionMode ?? entry.agent?.sessionMode,
   };
@@ -543,6 +543,23 @@ export function setProviderSessionMode(
   };
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
+}
+
+/** Persist before execution and whenever evidence changes, including failed turns. */
+export function recordSessionModelExecution(appSessionId: string, execution: ModelExecution): void {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return;
+  const snapshot: ModelExecution = { ...execution, observedModels: [...execution.observedModels] };
+  const history = (entry.modelHistory ??= []);
+  const index = history.findIndex((item) => item.turnId === execution.turnId);
+  if (index === -1) history.push(snapshot);
+  else history[index] = snapshot;
+  // An older concurrent request finishing later must not replace the newer current turn.
+  if (!entry.modelExecution || entry.modelExecution.startedAt <= snapshot.startedAt) {
+    entry.modelExecution = snapshot;
+  }
+  saveSessionsToFile();
+  notifySessionChanges();
 }
 
 /**

@@ -9,12 +9,12 @@
  * - 外部依存なし（zod 等は追加しない）
  */
 
-import type { AgentBackend, EffortLevel } from './config.js';
+import { EFFORT_LEVELS, type AgentBackend, type EffortLevel } from './config.js';
 import { LOCAL_LLM_REASONING_EFFORTS } from './local-llm/reasoning-effort.js';
 import { listExtensionAgentBackends } from './extensions.js';
 import {
   getSupportedEffortLevels,
-  requiresExplicitModelForEffort,
+  hasUsableModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
 
@@ -47,13 +47,18 @@ export class EnvValidator {
     this.issue(key, value, message);
   }
 
-  /** 整数 env。未設定なら def。数値でない / 範囲外なら警告して def */
-  int(key: string, def: number, opts: { min?: number; max?: number } = {}): number {
+  private number(
+    key: string,
+    def: number,
+    opts: { min?: number; max?: number },
+    valid: (value: number) => boolean,
+    invalidMessage: string
+  ): number {
     const raw = this.raw(key);
     if (raw === undefined) return def;
     const n = Number(raw);
-    if (!Number.isInteger(n)) {
-      this.addIssue(key, raw, `整数ではありません。デフォルト ${def} を使用します`);
+    if (!valid(n)) {
+      this.addIssue(key, raw, `${invalidMessage}。デフォルト ${def} を使用します`);
       return def;
     }
     if (opts.min !== undefined && n < opts.min) {
@@ -67,24 +72,14 @@ export class EnvValidator {
     return n;
   }
 
+  /** 整数 env。未設定なら def。数値でない / 範囲外なら警告して def */
+  int(key: string, def: number, opts: { min?: number; max?: number } = {}): number {
+    return this.number(key, def, opts, Number.isInteger, '整数ではありません');
+  }
+
   /** 小数 env。未設定なら def。数値でない / 範囲外なら警告して def */
   float(key: string, def: number, opts: { min?: number; max?: number } = {}): number {
-    const raw = this.raw(key);
-    if (raw === undefined) return def;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) {
-      this.addIssue(key, raw, `数値ではありません。デフォルト ${def} を使用します`);
-      return def;
-    }
-    if (opts.min !== undefined && n < opts.min) {
-      this.addIssue(key, raw, `${opts.min} 以上が必要です。デフォルト ${def} を使用します`);
-      return def;
-    }
-    if (opts.max !== undefined && n > opts.max) {
-      this.addIssue(key, raw, `${opts.max} 以下が必要です。デフォルト ${def} を使用します`);
-      return def;
-    }
-    return n;
+    return this.number(key, def, opts, Number.isFinite, '数値ではありません');
   }
 
   /** enum env（大文字小文字無視）。未設定なら def。許可外なら警告して def */
@@ -167,7 +162,6 @@ function validBackends(): string[] {
       .filter((id) => !(BUILTIN_BACKENDS as readonly string[]).includes(id)),
   ];
 }
-const VALID_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
 const VALID_LLM_MODES = ['agent', 'chat'] as const;
 
 function isRecognizedChannelId(channelId: string): boolean {
@@ -273,12 +267,12 @@ export function validateChannelOverrides(raw: string): {
       }
     }
     if (o.effort !== undefined) {
-      if (typeof o.effort === 'string' && (VALID_EFFORTS as readonly string[]).includes(o.effort)) {
+      if (typeof o.effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(o.effort)) {
         entry.effort = o.effort;
       } else {
         issues.push({
           channelId,
-          message: `effort '${String(o.effort)}' は不正です (${VALID_EFFORTS.join(' / ')})。このエントリは無視します`,
+          message: `effort '${String(o.effort)}' は不正です (${EFFORT_LEVELS.join(' / ')})。このエントリは無視します`,
         });
         valid = false;
       }
@@ -333,8 +327,7 @@ export function validateChannelOverrides(raw: string): {
       valid &&
       entry.backend &&
       entry.effort &&
-      requiresExplicitModelForEffort(entry.backend as AgentBackend) &&
-      !entry.model
+      !hasUsableModelForEffort(entry.backend as AgentBackend, entry.model)
     ) {
       issues.push({
         channelId,

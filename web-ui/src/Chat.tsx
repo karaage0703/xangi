@@ -1,3 +1,4 @@
+import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import {
   ChangeEvent,
   FormEvent,
@@ -16,6 +17,29 @@ import {
   parsePendingExtensionSetup,
 } from './extensionSetup';
 import { ConfirmDialog, TextInputDialog } from './ConfirmDialog';
+import { CommandPalette } from './CommandPalette';
+import {
+  MAX_PANES,
+  PANE_STATE_KEY,
+  nextPane,
+  restorePanes,
+  type PaneDescriptor,
+} from './chatPaneState';
+import {
+  backendLabel,
+  backendSourceLabel,
+  canComposeInSession,
+  dateGroup,
+  displayTime,
+  formatContextUsage,
+  formatRemaining,
+  isMobile,
+  jsonInit,
+  platformLabel,
+  relativeTime,
+  resolveDisplayedSessionTitle,
+  shouldShowContinuationActions,
+} from './chatPresentation';
 import {
   applyPublishedLiveEvent,
   decideStreamRecovery,
@@ -34,7 +58,6 @@ import {
   messageElementId,
   messageIdFromHash,
   messagePermalink,
-  sessionIdFromPathname,
   sessionPath,
 } from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
@@ -42,8 +65,6 @@ import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } f
 import { formatUploadBytes, uploadErrorMessage, uploadForm, uploadTooLargeMessage } from './upload';
 import { replaceUserPromptVisibleContent, splitUserPromptHookContexts } from './userPromptContext';
 
-const MAX_PANES = 8;
-const PANE_STATE_KEY = 'xangi_pane_state_v1';
 const PROJECT_STATE_KEY = 'xangi_active_project_v1';
 const SIDEBAR_COLLAPSED_KEY = 'xangi_sidebar_collapsed_v1';
 const SESSION_FILTER_KEY = 'xangi_session_filter_v1';
@@ -58,6 +79,14 @@ interface Activity extends LiveActivity {
 }
 
 interface Session {
+  nextBackend?: {
+    backend: string;
+    model?: string;
+    effort?: string;
+    source: 'session' | 'project' | 'default';
+  };
+  modelExecution?: ModelExecution;
+  modelHistory?: ModelExecution[];
   id: string;
   title: string;
   platform: string;
@@ -107,7 +136,12 @@ interface RegisteredWorkspace {
 
 interface ModelDiscoveryResponse {
   status: 'available' | 'unsupported' | 'unavailable';
-  models: Array<{ id: string; displayName?: string; supportedEfforts?: string[] }>;
+  models: Array<{
+    id: string;
+    displayName?: string;
+    isDefault?: boolean;
+    supportedEfforts?: string[];
+  }>;
   message?: string;
   supportedEfforts: string[];
 }
@@ -135,6 +169,8 @@ interface Message {
 }
 
 export interface SessionDetail {
+  modelExecution?: ModelExecution;
+  modelHistory?: ModelExecution[];
   id: string;
   title: string;
   platform?: string;
@@ -152,35 +188,12 @@ interface ExternalChatLink {
   url: string;
 }
 
-export function canComposeInSession(
-  detail: Pick<SessionDetail, 'lifecycle' | 'platform'> | null,
-  discordComposeEnabled: boolean
-): boolean {
-  if (!detail) return false;
-  if (detail.platform === 'discord') return discordComposeEnabled;
-  return detail.platform === 'web' && detail.lifecycle !== 'closed';
-}
-
-export function shouldShowContinuationActions(
-  detail: Pick<SessionDetail, 'lifecycle' | 'platform'> | null
-): boolean {
-  return Boolean(detail && (detail.lifecycle === 'closed' || detail.platform !== 'web'));
-}
-
-export function resolveDisplayedSessionTitle(
-  summaryTitle?: string,
-  detailTitle?: string
-): string | undefined {
-  return summaryTitle || detailTitle;
-}
-
-export function formatContextUsage(
-  usage?: Pick<NonNullable<Session['contextUsage']>, 'usedTokens' | 'contextWindow'>
-): string | undefined {
-  if (!usage || usage.contextWindow <= 0 || usage.usedTokens < 0) return undefined;
-  const percent = Math.min(100, Math.round((usage.usedTokens / usage.contextWindow) * 100));
-  return `${usage.usedTokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} (${percent}%)`;
-}
+export {
+  canComposeInSession,
+  formatContextUsage,
+  resolveDisplayedSessionTitle,
+  shouldShowContinuationActions,
+} from './chatPresentation';
 
 interface SessionsResponse {
   sessions: Session[];
@@ -199,35 +212,6 @@ type SessionLifecycleFilter = 'open' | 'closed' | 'all';
 interface SessionCompletionTarget {
   session: Session;
   paneKey?: string;
-}
-
-interface CommandChoice {
-  name: string;
-  value: string;
-  description?: string;
-}
-
-interface CommandOption {
-  name: string;
-  description: string;
-  type: 'subcommand' | 'string';
-  required?: boolean;
-  choices?: CommandChoice[];
-  options?: CommandOption[];
-}
-
-interface CommandDefinition {
-  name: string;
-  description: string;
-  usage: string;
-  options?: CommandOption[];
-}
-
-interface PaletteOption {
-  name: string;
-  description?: string;
-  hint?: string;
-  usage: string;
 }
 
 interface PendingFile {
@@ -250,358 +234,10 @@ function formatToolSummary(tool: Extract<TurnHistoryEntry, { kind: 'tool' }>): s
   return summary.startsWith(prefix) ? summary.slice(prefix.length) : summary;
 }
 
-interface PaneDescriptor {
-  key: string;
-  sessionId: string | null;
-}
-
 interface TimeoutState {
   timeoutAt?: number;
   maxTimeoutAt?: number;
   timeoutMs?: number;
-}
-
-let paneSequence = 0;
-
-function jsonInit(method: string, body?: unknown): RequestInit {
-  return {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  };
-}
-
-function platformLabel(platform?: string): string {
-  if (platform === 'web') return 'Web';
-  if (platform === 'discord') return 'Discord';
-  if (platform === 'slack') return 'Slack';
-  return platform || 'Log';
-}
-
-function backendLabel(backend?: Session['backend']): string {
-  if (!backend) return '';
-  return [backend.backend, backend.model, backend.effort].filter(Boolean).join(' · ');
-}
-
-function backendSourceLabel(source?: 'session' | 'project' | 'default'): string {
-  if (source === 'session') return '会話個別設定';
-  if (source === 'project') return 'Project設定';
-  return 'xangiデフォルト';
-}
-
-function relativeTime(value?: string): string {
-  if (!value) return '';
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
-  if (seconds < 60) return '今';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}分前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}時間前`;
-  return `${Math.floor(seconds / 86400)}日前`;
-}
-
-function dateGroup(value?: string): string {
-  if (!value) return '以前';
-  const date = new Date(value);
-  const today = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return '今日';
-  if (date.toDateString() === yesterday.toDateString()) return '昨日';
-  return date.toLocaleDateString('ja-JP');
-}
-
-function displayTime(value?: string): string {
-  if (!value) return '';
-  return new Date(value).toLocaleString('ja-JP', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatRemaining(timeoutAt?: number): string {
-  if (!timeoutAt) return '';
-  const seconds = Math.max(0, Math.ceil((timeoutAt - Date.now()) / 1000));
-  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(
-    2,
-    '0'
-  )}`;
-}
-
-function isMobile(): boolean {
-  return (
-    window.matchMedia?.('(max-width: 768px), (max-height: 500px) and (hover: none)').matches ??
-    false
-  );
-}
-
-function restorePanes(): { panes: PaneDescriptor[]; activeKey: string } {
-  const linkedSessionId = sessionIdFromPathname(window.location.pathname);
-  if (linkedSessionId) {
-    const pane = { key: `pane-${++paneSequence}`, sessionId: linkedSessionId };
-    return { panes: [pane], activeKey: pane.key };
-  }
-  try {
-    const parsed = JSON.parse(localStorage.getItem(PANE_STATE_KEY) || '{}') as {
-      sessions?: Array<string | null>;
-      activeIndex?: number;
-      ids?: Array<string | null>;
-      activeIdx?: number;
-    };
-    // `ids` / `activeIdx` は旧Web UIが同じstorage keyへ保存していた形式。
-    // 初回React表示で既存のペイン配置を失わないよう、その場で移行する。
-    const sessions = (parsed.sessions || parsed.ids)?.slice(0, MAX_PANES);
-    if (sessions?.length) {
-      const panes = sessions.map((sessionId) => ({
-        key: `pane-${++paneSequence}`,
-        sessionId,
-      }));
-      const savedActiveIndex = parsed.activeIndex ?? parsed.activeIdx ?? 0;
-      return {
-        panes,
-        activeKey: panes[Math.min(Math.max(0, savedActiveIndex), panes.length - 1)].key,
-      };
-    }
-  } catch {
-    // Corrupt storage intentionally falls back to an empty pane.
-  }
-  const pane = { key: `pane-${++paneSequence}`, sessionId: null };
-  return { panes: [pane], activeKey: pane.key };
-}
-
-function useCommandPalette(
-  value: string,
-  commands: CommandDefinition[]
-): { title: string; options: PaletteOption[]; emptyText?: string; done?: boolean } {
-  return useMemo(() => {
-    if (!value.startsWith('/')) return { title: '', options: [], done: true };
-    const trailingSpace = /\s$/.test(value);
-    const parts = value.trim().split(/\s+/);
-    const commandQuery = (parts.shift() || '').replace(/^\//, '').toLowerCase();
-    const command = commands.find((candidate) => candidate.name.toLowerCase() === commandQuery);
-    if (!command || (parts.length === 0 && !trailingSpace)) {
-      return {
-        title: 'コマンドを選択',
-        options: commands
-          .filter(
-            (candidate) =>
-              !commandQuery ||
-              candidate.name.toLowerCase().includes(commandQuery) ||
-              candidate.description.toLowerCase().includes(commandQuery)
-          )
-          .map((candidate) => ({
-            name: `/${candidate.name}`,
-            description: candidate.description,
-            hint: candidate.usage,
-            usage: `/${candidate.name} `,
-          })),
-      };
-    }
-
-    let prefix = `/${command.name}`;
-    let options = command.options || [];
-    const remaining = [...parts];
-    while (options.length > 0) {
-      const subcommands = options.filter((option) => option.type === 'subcommand');
-      if (subcommands.length > 0) {
-        const query = remaining[0] || '';
-        const selected = subcommands.find(
-          (option) => option.name.toLowerCase() === query.toLowerCase()
-        );
-        if (!selected || (remaining.length === 1 && !trailingSpace)) {
-          return {
-            title: `${command.name} の操作を選択`,
-            options: subcommands
-              .filter(
-                (option) =>
-                  !query ||
-                  option.name.toLowerCase().includes(query.toLowerCase()) ||
-                  option.description.toLowerCase().includes(query.toLowerCase())
-              )
-              .map((option) => ({
-                name: option.name,
-                description: option.description,
-                hint: option.name,
-                usage: `${prefix} ${option.name} `,
-              })),
-          };
-        }
-        prefix += ` ${selected.name}`;
-        remaining.shift();
-        options = selected.options || [];
-        if (options.length === 0) return { title: '', options: [], done: true };
-        continue;
-      }
-      const option = options[0];
-      const query = remaining[0] || '';
-      if (option.choices?.length) {
-        const choice = option.choices.find(
-          (candidate) => candidate.value.toLowerCase() === query.toLowerCase()
-        );
-        if (!choice || (remaining.length === 1 && !trailingSpace)) {
-          return {
-            title: option.description,
-            options: option.choices
-              .filter(
-                (candidate) =>
-                  !query ||
-                  candidate.value.toLowerCase().includes(query.toLowerCase()) ||
-                  candidate.name.toLowerCase().includes(query.toLowerCase())
-              )
-              .map((candidate) => ({
-                name: candidate.name,
-                description: candidate.description || option.description,
-                hint: candidate.value,
-                usage: `${prefix} ${candidate.value} `,
-              })),
-          };
-        }
-        prefix += ` ${choice.value}`;
-        remaining.shift();
-        options = options.slice(1);
-        if (options.length === 0) return { title: '', options: [], done: true };
-        continue;
-      }
-      if (!query) {
-        return {
-          title: option.description,
-          options: [],
-          emptyText: option.required
-            ? `${option.description}を入力してください`
-            : `必要なら${option.description}を入力。省略して送信できます`,
-        };
-      }
-      return { title: '', options: [], done: true };
-    }
-    return { title: '', options: [], done: true };
-  }, [commands, value]);
-}
-
-function CommandPalette({
-  sessionId,
-  value,
-  open,
-  onChange,
-  onClose,
-  onExecute,
-}: {
-  sessionId: string | null;
-  value: string;
-  open: boolean;
-  onChange: (value: string) => void;
-  onClose: () => void;
-  onExecute: (input: string) => Promise<void>;
-}) {
-  const [commands, setCommands] = useState<CommandDefinition[]>([]);
-  const [active, setActive] = useState(0);
-  const [error, setError] = useState('');
-  const [running, setRunning] = useState(false);
-  const state = useCommandPalette(value, commands);
-  const selectedBackend = value.match(/^\/backend\s+set\s+([^\s]+)/i)?.[1] || '';
-  const selectedModel = value.match(/(?:^|\s)--model=([^\s]+)/i)?.[1] || '';
-
-  const runCommand = useCallback(async () => {
-    if (running || !value.trim()) return;
-    setRunning(true);
-    setError('');
-    try {
-      await onExecute(value.trim());
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setRunning(false);
-    }
-  }, [onExecute, running, value]);
-
-  useEffect(() => {
-    if (!open) return;
-    const params = new URLSearchParams();
-    if (sessionId) params.set('appSessionId', sessionId);
-    if (selectedBackend) params.set('backend', selectedBackend);
-    if (selectedModel) params.set('model', selectedModel);
-    requestJson<{ commands: CommandDefinition[] }>(`/api/web-commands?${params}`)
-      .then((data) => setCommands(data.commands))
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [open, selectedBackend, selectedModel, sessionId]);
-
-  useEffect(() => setActive(0), [state.title, value]);
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key === 'ArrowDown' && state.options.length) {
-        event.preventDefault();
-        setActive((current) => (current + 1) % state.options.length);
-        return;
-      }
-      if (event.key === 'ArrowUp' && state.options.length) {
-        event.preventDefault();
-        setActive((current) => (current - 1 + state.options.length) % state.options.length);
-        return;
-      }
-      if ((event.key === 'Tab' || event.key === 'Enter') && state.options[active]) {
-        event.preventDefault();
-        onChange(state.options[active].usage);
-        return;
-      }
-      if (event.key === 'Enter' && state.done && value.trim().length > 1) {
-        event.preventDefault();
-        void runCommand();
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [active, onChange, onClose, open, runCommand, state.done, state.options, value]);
-  if (!open) return null;
-
-  return (
-    <div className="command-popover">
-      <div
-        className="command-palette"
-        role="listbox"
-        aria-label={state.title || 'コマンド候補'}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') onClose();
-          if (event.key === 'ArrowDown' && state.options.length) {
-            setActive((current) => (current + 1) % state.options.length);
-          }
-          if (event.key === 'ArrowUp' && state.options.length) {
-            setActive((current) => (current - 1 + state.options.length) % state.options.length);
-          }
-        }}
-      >
-        <p>{state.title || 'コマンドを実行'}</p>
-        {state.options.map((option, index) => (
-          <button
-            type="button"
-            role="option"
-            aria-selected={index === active}
-            className={index === active ? 'command-option active' : 'command-option'}
-            key={`${option.usage}-${index}`}
-            onMouseEnter={() => setActive(index)}
-            onClick={() => onChange(option.usage)}
-          >
-            <span>{option.name}</span>
-            <small>{option.description}</small>
-            <code>{option.hint}</code>
-          </button>
-        ))}
-        {state.options.length === 0 && !state.done && (
-          <div className="command-empty">{state.emptyText || '一致する候補がありません'}</div>
-        )}
-        {state.done && value.trim().length > 1 && (
-          <button type="button" className="command-run" disabled={running} onClick={runCommand}>
-            {running ? '実行中…' : `${value.trim()} を実行`}
-          </button>
-        )}
-      </div>
-      {error && <div className="command-error">{error}</div>}
-    </div>
-  );
 }
 
 function MessageView({
@@ -1621,47 +1257,63 @@ function ChatPane({
       role="tabpanel"
       aria-labelledby={`tab-${pane.key}`}
     >
-      <header className="pane-header">
-        <button
-          type="button"
-          className={sessionId ? 'pane-title' : 'pane-title empty'}
-          onClick={openRenameDialog}
-          disabled={!sessionId}
-        >
-          {resolveDisplayedSessionTitle(summary?.title, detail?.title) || '(empty)'}
-        </button>
-        {summary?.backend && (
-          <span
-            className={`pane-backend-badge source-${summary.backend.source}`}
-            title={`${backendLabel(summary.backend)}（${backendSourceLabel(summary.backend.source)}）`}
-          >
-            {backendLabel(summary.backend)}
-          </span>
-        )}
-        {externalChatLink && (
-          <a
-            className="pane-external-chat"
-            href={externalChatLink.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={`元の${platformLabel(externalChatLink.platform)}を開く`}
-          >
-            {platformLabel(externalChatLink.platform)} ↗
-          </a>
-        )}
-        {summary?.lifecycle !== 'closed' && sessionId && (
+      <div className="pane-heading">
+        <header className="pane-header">
           <button
             type="button"
-            className="pane-complete"
-            onClick={() => summary && onComplete(summary, pane.key)}
+            className={sessionId ? 'pane-title' : 'pane-title empty'}
+            onClick={openRenameDialog}
+            disabled={!sessionId}
           >
-            完了して閉じる
+            {resolveDisplayedSessionTitle(summary?.title, detail?.title) || '(empty)'}
           </button>
-        )}
-        <button type="button" className="pane-close" aria-label="ペインを閉じる" onClick={onClose}>
-          ×
-        </button>
-      </header>
+          {summary && (
+            <span
+              className={`pane-backend-badge source-${summary.backend?.source ?? 'session'}`}
+              title={modelExecutionLabel(summary.modelExecution, summary.backend)}
+            >
+              {modelExecutionLabel(summary.modelExecution, summary.backend)}
+            </span>
+          )}
+          {externalChatLink && (
+            <a
+              className="pane-external-chat"
+              href={externalChatLink.url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`元の${platformLabel(externalChatLink.platform)}を開く`}
+            >
+              {platformLabel(externalChatLink.platform)} ↗
+            </a>
+          )}
+          {summary?.lifecycle !== 'closed' && sessionId && (
+            <button
+              type="button"
+              className="pane-complete"
+              onClick={() => summary && onComplete(summary, pane.key)}
+            >
+              完了して閉じる
+            </button>
+          )}
+          <button
+            type="button"
+            className="pane-close"
+            aria-label="ペインを閉じる"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <div className="pane-model-info">
+          {sessionId && <ModelHistory history={detail?.modelHistory} />}
+          {summary?.nextBackend && (
+            <small>
+              次の実行設定: {backendLabel(summary.nextBackend)}（
+              {backendSourceLabel(summary.nextBackend.source)}）
+            </small>
+          )}
+        </div>
+      </div>
       <div
         className="pane-messages"
         ref={messagesRef}
@@ -1963,9 +1615,12 @@ function ChatPane({
       {sessionId && (summary?.backend || summary?.cwd || summary?.contextUsage) && (
         <footer className="pane-statusline" aria-label="セッション情報">
           {summary?.backend && (
-            <span className="pane-statusline-model" title={backendLabel(summary.backend)}>
+            <span
+              className="pane-statusline-model"
+              title={modelExecutionLabel(summary.modelExecution, summary.backend)}
+            >
               <span aria-hidden="true">◇</span>
-              {backendLabel(summary.backend)}
+              {modelExecutionLabel(summary.modelExecution, summary.backend)}
             </span>
           )}
           {summary?.cwd && (
@@ -2409,7 +2064,7 @@ export function Chat() {
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
-    const pane = { key: `pane-${++paneSequence}`, sessionId };
+    const pane = nextPane(sessionId);
     setPanes((current) => [...current, pane]);
     setActiveKey(pane.key);
     return pane;
@@ -3153,8 +2808,12 @@ export function Chat() {
                         >
                           <option value="">デフォルト</option>
                           {(
-                            projectModelOptions.find((model) => model.id === projectModel)
-                              ?.supportedEfforts || projectEffortOptions
+                            (projectModel
+                              ? projectModelOptions.find((model) => model.id === projectModel)
+                              : projectModelOptions.find((model) => model.isDefault)
+                            )?.supportedEfforts?.filter((effort) =>
+                              projectEffortOptions.includes(effort)
+                            ) || projectEffortOptions
                           ).map((effort) => (
                             <option key={effort} value={effort}>
                               {effort}

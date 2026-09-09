@@ -127,7 +127,7 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `/skill`    | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`）                   |
 | `/settings` | 現在の設定を表示                                                            |
 | `/models`   | 利用可能なモデル一覧を表示（Usage Hint: `[backend]`）                       |
-| `/backend`  | チャンネルのバックエンドを即時切替（Usage Hint: `show\|set\|reset ...`）  |
+| `/backend`  | チャンネル／全体のバックエンドを即時切替（Usage Hint: `show\|set <backend> [--model <model>] [--effort <effort>] [--scope channel\|global]\|reset`）  |
 | `/restart`  | xangiのgraceful restartを要求                                               |
 
 ⚠️ Socket Mode では Request URL は不要です。

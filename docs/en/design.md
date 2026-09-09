@@ -127,6 +127,8 @@ With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless set
 
 ### macOS, Linux, and WSL2 setup and update core
 
+- Remote workers connect outbound to a dedicated WebSocket listener, separate from the internal Tool Server. A pre-registered worker authenticates with a file-backed token and advertises versioned capabilities. The MVP exposes system information, shell-free argv execution constrained by worker-local workspace and command allowlists, and read-only USB discovery. Device writes, serial control, automatic placement, and public-network transport are excluded until they have per-device approvals and TLS
+- Remote worker lifecycle uses launchd on macOS and a systemd user service on Linux/WSL2. Pairing and private configuration persistence are shared; restart preserves credentials. Linux checks the user manager before consuming a pairing code.
 - `installer/layout.ts` separates application versions from workspace, state, and configuration. A future Windows adapter uses the same logical layout
 - `installer/manifest.ts` and `updater.ts` provide Ed25519 and SHA-256 verification, an update lock, staging, and atomic current switching. Initial service activation performs a health check and rolls back on failure
 - `installer/platform/darwin.ts` owns LaunchAgent behavior, keeping OS-specific lifecycle code outside the shared updater
@@ -281,9 +283,11 @@ Message received
 BackendResolver priority:
 
 1. channelOverrides set via `/backend set` (in-memory, persisted to CHANNEL_OVERRIDES in `.env`; Discord threads resolve through the parent channel ID)
-2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`)
+2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`, `AGENT_EFFORT`)
 
-`backend-effort.ts` centralizes the effort levels supported by each backend. `/backend set` and `CHANNEL_OVERRIDES` loading validate the backend/effort pair and never save or apply unsupported values. Each runner translates a resolved effort into effective CLI arguments.
+`backend-effort.ts` centralizes the effort levels supported by each backend. When model discovery returns `supportedEfforts`, the UI and interactive save-time validation use the intersection of the backend capabilities and the selected model capabilities (or the discovered default model when no model is specified). Codex uses app-server metadata, GitHub Copilot uses the official SDK, OpenCode uses variant metadata from `models --verbose`, and Grok uses the CLI-generated model cache. Cursor and Antigravity detect entries whose model ID already encodes effort and do not display or send a conflicting second value. An explicit `supportedEfforts: []` means unsupported and does not fall back to backend defaults. Claude Code has no machine-readable model catalog, so it uses the CLI-wide range. `CHANNEL_OVERRIDES` loading rejects values unsupported at the backend level. Each runner translates a resolved effort into effective CLI arguments.
+
+A `scope:global` change persists backend, model, and effort as one setting in `.env` and `BackendResolver`, then swaps the default runner. A runner already executing a turn remains alive until that turn completes; only subsequent turns use the new setting. A channel override that explicitly selects a backend or model does not inherit the global effort unless that channel also specifies an effort.
 
 ### System Prompt (base-runner.ts)
 
@@ -1029,6 +1033,8 @@ src/
 ├── line.ts             # LINE Bot integration (webhook + signature verification)
 ├── telegram.ts         # Telegram Bot integration (polling / webhook + monitoring rules)
 ├── web-chat.ts         # Web Chat UI (HTTP server)
+├── web-http.ts         # Shared Web HTTP boundary (Origin checks, body reads, Range file serving)
+├── web-file-security.ts # Realpath boundary checks for Web attachments and file serving
 ├── agent-runner.ts     # AI CLI interface
 ├── base-runner.ts      # System prompt generation
 ├── bubble-events-runner.ts # Wraps Runner execution with response lifecycle event emission
@@ -1178,3 +1184,9 @@ For details (environment variable reference, Docker operation methods, etc.), se
 1. Implement the `AgentRunner` interface
 2. Add backend configuration to `config.ts`
 3. Add initialization logic to `index.ts`
+
+### Durable execution models
+
+`SessionEntry.modelExecution` holds the latest turn and `modelHistory` holds snapshots keyed by turn ID. Each snapshot records `backend`, `configuredModel`, the last observed `effectiveModel`, the set of `observedModels`, evidence `source` (provider / configuration / unknown), start/update timestamps, status, and provider session ID. Persistence happens at startup, on model notifications, and on success or failure; final evidence is also attached to the transcript.
+
+`agent.model` remains the requested value used for resume compatibility, never overwritten with observations. Execution snapshots represent provider alias resolution and fallback. The UI leads with the last observed model and separately lists other models observed during the turn. Historical values never resolve against today's defaults. Legacy `agent.model` remains configuration-only evidence; missing evidence remains unknown. Recovered sessions with only `modelHistory` display their latest stored snapshot. Web exposes next-run configuration separately as `nextBackend`; Discord separates the parent settings channel from the thread context key used to retrieve execution evidence.

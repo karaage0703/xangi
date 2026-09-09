@@ -1,11 +1,13 @@
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
+import { inferEffortFromModelName } from './backend-effort.js';
 import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
-import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import { CliRunnerBase, mergeStreamText, type CliStreamParser } from './cli-runner-core.js';
 
 interface CursorJsonResponse {
+  model?: string;
   result?: string;
   response?: string;
   session_id?: string;
@@ -14,6 +16,7 @@ interface CursorJsonResponse {
 }
 
 interface CursorStreamEvent {
+  model?: string;
   type: string;
   subtype?: string;
   session_id?: string;
@@ -56,7 +59,7 @@ export class CursorRunner extends CliRunnerBase {
       args.push('--trust');
     }
 
-    if (options?.effort && !this.model) {
+    if (options?.effort && (!this.model || this.model === 'auto')) {
       throw new Error('Cursor effort requires an explicit model');
     }
     const model = this.model ?? 'auto';
@@ -74,6 +77,7 @@ export class CursorRunner extends CliRunnerBase {
   }
 
   private withEffort(model: string, effort: NonNullable<RunOptions['effort']>): string {
+    if (!model.includes('[') && inferEffortFromModelName(model) === effort) return model;
     const bracketStart = model.indexOf('[');
     const hasParameters = bracketStart > 0 && model.endsWith(']');
     const baseModel = hasParameters ? model.slice(0, bracketStart) : model;
@@ -108,9 +112,7 @@ export class CursorRunner extends CliRunnerBase {
 
     this.logExecution('Executing', options);
 
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    this.logPromptTranscript(fullPrompt, options);
 
     let stdout: string;
     try {
@@ -140,11 +142,12 @@ export class CursorRunner extends CliRunnerBase {
       throw new Error(this.extractErrorMessage(response) ?? 'Cursor CLI returned error');
     }
 
-    if (options?.appSessionId && this.workdir) {
-      logResponse(this.workdir, options.appSessionId, { result, sessionId });
-    }
+    this.logResponseTranscript({ result, sessionId }, options);
 
-    return { result, sessionId };
+    const models = new ProviderModels();
+    models.add(response.model);
+    const modelSelection = this.readModelSelection(response.model);
+    return { result, sessionId, ...models.result(), ...(modelSelection ? { modelSelection } : {}) };
   }
 
   /**
@@ -186,58 +189,43 @@ export class CursorRunner extends CliRunnerBase {
 
     this.logExecution('Streaming', options);
 
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    this.logPromptTranscript(fullPrompt, options);
+    const onComplete = (result: RunResult) => this.logResponseTranscript(result, options);
 
-    const onComplete = (result: RunResult) => {
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
-      }
-    };
-
-    try {
-      return await this.executeStreamCore(args, callbacks, {
-        channelId: options?.channelId,
-        notifyOnError: false,
-        onComplete,
-      });
-    } catch (error) {
-      // セッションresume失敗時は新規セッションでリトライ
-      if (!options?.sessionId || !this.isStaleResumeError(error)) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        callbacks.onError?.(err);
-        throw error;
-      }
-      console.warn(
-        `[cursor] Resume failed for stale session ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryArgs = [
+    return this.executeStreamWithResumeRetry(args, callbacks, options, {
+      isStaleError: (error) => this.isStaleResumeError(error),
+      args: () => [
         ...this.buildBaseArgs({ ...options, sessionId: undefined }),
         '-p',
         fullPrompt,
         '--output-format',
         'stream-json',
         '--stream-partial-output',
-      ];
-      return this.executeStreamCore(retryArgs, callbacks, {
-        channelId: options?.channelId,
-        onComplete,
-      });
-    }
+      ],
+      warning: (id) =>
+        `[cursor] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
+      onComplete,
+    });
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
+    let modelSelection: string | undefined;
     const emittedToolIds = new Set<string>();
 
     return {
       handleEvent: (json, phase) => {
         const event = json as CursorStreamEvent;
+        if (event.type === 'system' && event.subtype === 'init') {
+          const selection = this.readModelSelection(event.model);
+          if (selection && selection !== modelSelection) {
+            modelSelection = selection;
+            callbacks.onModelSelection?.(selection);
+          }
+        }
+        if (['system', 'assistant', 'result'].includes(event.type ?? '')) models.add(event.model);
 
         if (event.session_id) {
           sessionId = event.session_id;
@@ -246,7 +234,7 @@ export class CursorRunner extends CliRunnerBase {
         if (event.type === 'assistant') {
           const text = this.extractAssistantText(event);
           if (text) {
-            const applied = this.applyAssistantText(text, Boolean(event.timestamp_ms), fullText);
+            const applied = mergeStreamText(text, Boolean(event.timestamp_ms), fullText);
             fullText = applied.fullText;
             if (applied.emitText !== undefined) {
               callbacks.onText?.(applied.emitText, fullText);
@@ -279,36 +267,18 @@ export class CursorRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () => ({ result: fullText, sessionId }),
+      finalize: () => ({
+        result: fullText,
+        sessionId,
+        ...models.result(),
+        ...(modelSelection ? { modelSelection } : {}),
+      }),
     };
   }
 
-  private applyAssistantText(
-    text: string,
-    isDelta: boolean,
-    fullText: string
-  ): { fullText: string; emitText?: string } {
-    if (isDelta) {
-      if (text.startsWith(fullText)) {
-        const delta = text.slice(fullText.length);
-        return delta ? { fullText: text, emitText: delta } : { fullText };
-      }
-
-      return { fullText: `${fullText}${text}`, emitText: text };
-    }
-
-    // Cursor emits a final assistant event containing the complete response after
-    // token-level partial events. Treat it as canonical text, not another delta.
-    if (text === fullText || fullText.endsWith(text)) {
-      return { fullText };
-    }
-
-    if (text.startsWith(fullText)) {
-      const delta = text.slice(fullText.length);
-      return delta ? { fullText: text, emitText: delta } : { fullText };
-    }
-
-    return { fullText: text };
+  // Auto is a provider-reported routing mode, not an underlying model identity.
+  private readModelSelection(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().toLowerCase() === 'auto' ? 'Auto' : undefined;
   }
 
   private extractAssistantText(event: CursorStreamEvent): string {

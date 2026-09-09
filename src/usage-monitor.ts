@@ -143,6 +143,27 @@ function jsonLines(output: string): unknown[] {
   });
 }
 
+function codexAppServerInput(request: Record<string, unknown>): string {
+  return `${[
+    {
+      method: 'initialize',
+      id: 1,
+      params: {
+        clientInfo: {
+          name: 'xangi-usage-monitor',
+          title: 'xangi usage monitor',
+          version: '0.1.0',
+        },
+        capabilities: { experimentalApi: true },
+      },
+    },
+    { method: 'initialized', params: {} },
+    request,
+  ]
+    .map((value) => JSON.stringify(value))
+    .join('\n')}\n`;
+}
+
 export function parseCodexRateLimits(output: string): AccountUsageGroup[] {
   const envelope = jsonLines(output).find((value) => (value as { id?: number }).id === 3) as
     | { result?: { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> } }
@@ -546,25 +567,7 @@ export async function readAccountUsage(
   ]
 ): Promise<AccountUsageResponse> {
   if (cached && Date.now() - Date.parse(cached.updatedAt) < CACHE_MS) return cached;
-  const input =
-    [
-      {
-        method: 'initialize',
-        id: 1,
-        params: {
-          clientInfo: {
-            name: 'xangi-usage-monitor',
-            title: 'xangi usage monitor',
-            version: '0.1.0',
-          },
-          capabilities: { experimentalApi: true },
-        },
-      },
-      { method: 'initialized', params: {} },
-      { method: 'account/rateLimits/read', id: 3 },
-    ]
-      .map((value) => JSON.stringify(value))
-      .join('\n') + '\n';
+  const input = codexAppServerInput({ method: 'account/rateLimits/read', id: 3 });
   const codexReader = async (): Promise<AccountUsageProvider> => {
     const output = await runner(input, (value) =>
       jsonLines(value).some((item) => (item as { id?: number }).id === 3)
@@ -592,25 +595,11 @@ export async function readCodexContextUsage(
   threadId: string,
   runner: CommandRunner = runCodexAppServer
 ): Promise<{ usedTokens: number; contextWindow: number } | undefined> {
-  const input =
-    [
-      {
-        method: 'initialize',
-        id: 1,
-        params: {
-          clientInfo: {
-            name: 'xangi-usage-monitor',
-            title: 'xangi usage monitor',
-            version: '0.1.0',
-          },
-          capabilities: { experimentalApi: true },
-        },
-      },
-      { method: 'initialized', params: {} },
-      { method: 'thread/resume', id: 2, params: { threadId, excludeTurns: true } },
-    ]
-      .map((value) => JSON.stringify(value))
-      .join('\n') + '\n';
+  const input = codexAppServerInput({
+    method: 'thread/resume',
+    id: 2,
+    params: { threadId, excludeTurns: true },
+  });
   const output = await runner(input, (value) =>
     jsonLines(value).some((item) => (item as { id?: number }).id === 2)
   );

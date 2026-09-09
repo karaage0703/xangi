@@ -68,6 +68,7 @@ export async function runWithBubbleEvents(
       prompt,
       {
         onBackendReady: () => callbacks.onBackendReady?.(),
+        onModel: (model) => callbacks.onModel?.(model),
         onText: (chunk, fullText) => {
           const publicFullText = eventTextSanitizer ? eventTextSanitizer(fullText) : fullText;
           const publicChunk = eventTextSanitizer

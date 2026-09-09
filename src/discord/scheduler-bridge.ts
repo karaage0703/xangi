@@ -13,7 +13,7 @@ import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { DEFAULT_COMPLETION_DISPLAY } from '../completion-summary.js';
 import { createProcessingButtons, discordProcessingMessages } from './ui.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
-import { resolveDiscordSettingsChannelId } from './thread-context.js';
+import { prependDiscordTimestamp, resolveDiscordSettingsChannelId } from './thread-context.js';
 import { TurnLatencyRecorder } from '../turn-latency.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
 import { closeSession, createSchedulerSession, incrementMessageCount } from '../sessions.js';
@@ -101,13 +101,10 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
 
       try {
         // タイムスタンプをプロンプトの先頭に注入
-        let agentPrompt = prompt;
-        if (config.discord.injectTimestamp !== false) {
-          const d = new Date();
-          const now = d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-          const day = d.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', weekday: 'short' });
-          agentPrompt = `[現在時刻: ${now}(${day})]\n${agentPrompt}`;
-        }
+        const agentPrompt = prependDiscordTimestamp(
+          prompt,
+          config.discord.injectTimestamp !== false
+        );
 
         // スケジューラーは毎回新規セッション（stateless）
         // - Claude Code 経路: sessionId=undefined で `claude --resume` 無し

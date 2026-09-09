@@ -15,6 +15,7 @@ import { runWithBubbleEvents } from '../bubble-events-runner.js';
 import { getTurnHistory } from '../activity-store.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from '../file-utils.js';
+import { recoverAttachmentOnce } from '../attachment-recovery.js';
 import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
@@ -45,6 +46,7 @@ import { deriveThreadTitle } from './thread-title.js';
 import {
   buildDiscordChannelContextLine,
   getDiscordChannelTopic,
+  prependDiscordTimestamp,
   resolveConversationChannelId,
   resolveDiscordSettingsChannelId,
 } from './thread-context.js';
@@ -551,6 +553,23 @@ export async function processPrompt(
       }
     }
 
+    const attachmentRecovery = await recoverAttachmentOnce(
+      runner,
+      { result, sessionId: newSessionId, attachments: structuredAttachments },
+      {
+        skipPermissions,
+        channelId: conversationChannelId,
+        settingsChannelId,
+        appSessionId,
+        workdir: sessionWorkdir,
+        platform: 'discord',
+      },
+      sessionWorkdir
+    );
+    result = attachmentRecovery.runResult.result;
+    newSessionId = attachmentRecovery.runResult.sessionId;
+    structuredAttachments = attachmentRecovery.runResult.attachments;
+
     setSession(conversationChannelId, newSessionId);
     incrementMessageCount(appSessionId);
     // transcript の最後の user / assistant エントリに Discord の messageId を
@@ -967,8 +986,10 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       parentChannelId,
       false
     );
+    const hasActiveThreadSession =
+      parentChannelId !== null && !!getActiveSessionId(message.channel.id);
 
-    if (!isMentioned && !isDM && !isAutoReplyChannel) return;
+    if (!isMentioned && !isDM && !isAutoReplyChannel && !hasActiveThreadSession) return;
 
     if (
       !isFromAllowedBot &&
@@ -1042,12 +1063,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     }
 
     // タイムスタンプをプロンプトの先頭に注入
-    if (config.discord.injectTimestamp !== false) {
-      const d = new Date();
-      const now = d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-      const day = d.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', weekday: 'short' });
-      prompt = `[現在時刻: ${now}(${day})]\n${prompt}`;
-    }
+    prompt = prependDiscordTimestamp(prompt, config.discord.injectTimestamp !== false);
 
     const target = await resolveDiscordMessageTarget(message, channelId, config, settings);
     const runKey = target.conversationChannelId;
@@ -1113,14 +1129,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
           const topic = getDiscordChannelTopic(sourceChannel);
           if (topic) prompt += `\n\n[チャンネルルール（必ず従うこと）]\n${topic}`;
         }
-        if (config.discord.injectTimestamp !== false) {
-          const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-          const day = new Date().toLocaleDateString('ja-JP', {
-            timeZone: 'Asia/Tokyo',
-            weekday: 'short',
-          });
-          prompt = `[現在時刻: ${now}(${day})]\n${prompt}`;
-        }
+        prompt = prependDiscordTimestamp(prompt, config.discord.injectTimestamp !== false);
         const target: DiscordMessageTarget = {
           conversationChannelId: entry.contextKey,
           settingsChannelId,

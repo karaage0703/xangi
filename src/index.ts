@@ -245,6 +245,7 @@ async function main() {
     eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler, { dataDir }),
     backendResolver: resolver,
     config,
+    agentRunner,
     scheduler,
   });
 

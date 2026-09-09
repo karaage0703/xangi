@@ -117,11 +117,12 @@ const execToolHandler: ToolHandler = {
     }
 
     try {
+      const safeEnv = getSafeEnv();
       const { stdout, stderr } = await shellExec(command, {
         cwd,
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: { ...getSafeEnv(), ...getGitHubEnv(getSafeEnv()) },
+        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
       });
       return { success: true, output: [stdout, stderr].filter(Boolean).join('\n').trim() };
     } catch (err) {

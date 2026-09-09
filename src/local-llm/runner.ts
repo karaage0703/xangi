@@ -1,3 +1,4 @@
+import { ProviderModels } from '../provider-model.js';
 /**
  * ローカルLLMバックエンド — xangi本体に統合
  *
@@ -10,7 +11,7 @@ import { TimeoutController } from '../timeout-controller.js';
 import type { LocalLlmMode } from '../backend-resolver.js';
 import type { AgentConfig } from '../config.js';
 import { LOCAL_LLM_REASONING_EFFORTS, type LocalLlmReasoningEffort } from './reasoning-effort.js';
-import type { LLMMessage, LLMImageContent } from './types.js';
+import type { LLMMessage, LLMImageContent, LLMTool, LLMToolCall } from './types.js';
 import { LLMClient } from './llm-client.js';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
@@ -661,6 +662,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    */
   private readonly pendingAttachments = new Map<string, Set<string>>();
   /** channelごとの当該turn累積usage。Local LLMの複数agentic callを合算する。 */
+  private readonly pendingModels = new Map<string, ProviderModels>();
   private readonly pendingUsage = new Map<
     string,
     { inputTokens: number; cachedInputTokens: number; outputTokens: number }
@@ -946,50 +948,69 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     return this.pendingUsage.get(channelId);
   }
 
+  private prepareTurn(
+    rawPrompt: string,
+    options?: RunOptions
+  ): {
+    sessionId: string;
+    channelId: string;
+    appSid: string;
+    session: Session;
+    callFlags: ModeFlags;
+    systemPrompt: string;
+    llmTools: LLMTool[];
+    userMsg: LLMMessage;
+  } {
+    const sessionId = options?.sessionId || crypto.randomUUID();
+    this.cleanupSessions();
+    const channelId = options?.channelId || sessionId;
+    const appSid = options?.appSessionId || channelId;
+    const session = this.getOrCreateSession(sessionId, appSid);
+    session.lastTurnToolNames = [];
+    this.resetAttachments(channelId);
+    this.resetUsage(channelId);
+    this.pendingModels.set(channelId, new ProviderModels());
+    this.maybeEmitSessionStart(appSid, channelId);
+    this.bumpTurnIndex(appSid);
+
+    const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
+    const systemPrompt = this.buildSystemPrompt(callFlags);
+    const llmTools = callFlags.tools ? toLLMTools(getAllTools()) : [];
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
+    const userMsg = this.buildUserMessage(prompt);
+    session.messages.push(userMsg);
+    logPrompt(this.workdir, appSid, prompt);
+
+    return { sessionId, channelId, appSid, session, callFlags, systemPrompt, llmTools, userMsg };
+  }
+
   /** この channel に積まれた構造化添付（realpath）を配列で返す。 */
   private drainAttachments(channelId: string): string[] {
     return [...(this.pendingAttachments.get(channelId) ?? [])];
   }
 
+  private startTurnTimeout(channelId: string): AbortController {
+    const controller = new AbortController();
+    this.activeAbortControllers.set(channelId, controller);
+    this.timeoutController.start(channelId, () =>
+      this.activeAbortControllers.get(channelId)?.abort()
+    );
+    return controller;
+  }
+
+  private finishTurn(channelId: string): void {
+    this.activeAbortControllers.delete(channelId);
+    this.pendingAttachments.delete(channelId);
+    this.pendingUsage.delete(channelId);
+    this.pendingModels.delete(channelId);
+    this.timeoutController.clear(channelId, 'error');
+  }
+
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    const sessionId = options?.sessionId || crypto.randomUUID();
-    this.cleanupSessions();
+    const { sessionId, channelId, appSid, session, callFlags, systemPrompt, llmTools, userMsg } =
+      this.prepareTurn(rawPrompt, options);
 
-    // appSessionId を先に解決して getOrCreateSession に渡す
-    // （プロセス再起動時に jsonl から履歴復元するため）
-    const channelId = options?.channelId || sessionId;
-    const appSid = options?.appSessionId || channelId;
-
-    const session = this.getOrCreateSession(sessionId, appSid);
-    session.lastTurnToolNames = [];
-    this.resetAttachments(channelId);
-    this.resetUsage(channelId);
-    this.maybeEmitSessionStart(appSid, channelId);
-    this.bumpTurnIndex(appSid);
-    const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
-    const systemPrompt = this.buildSystemPrompt(callFlags);
-    const tools = callFlags.tools ? getAllTools() : [];
-    const llmTools = callFlags.tools ? toLLMTools(tools) : [];
-
-    // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
-    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
-
-    // ユーザーメッセージ追加（画像添付があればマルチモーダルメッセージにする）
-    const userMsg = this.buildUserMessage(prompt);
-    session.messages.push(userMsg);
-
-    // トランスクリプトにプロンプトを記録
-    logPrompt(this.workdir, appSid, prompt);
-
-    // AbortControllerをprocessManager相当として登録
-    const abortController = new AbortController();
-    this.activeAbortControllers.set(channelId, abortController);
-    // タイムアウト発火時は activeAbortControllers から「現在の」controller を取って abort。
-    // リトライで AbortController が差し替わっても適切に kick できる。
-    this.timeoutController.start(channelId, () => {
-      const ac = this.activeAbortControllers.get(channelId);
-      if (ac) ac.abort();
-    });
+    const abortController = this.startTurnTimeout(channelId);
 
     try {
       let result = await this.executeAgentLoop(
@@ -1031,7 +1052,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
-      logResponse(this.workdir, appSid, { result, sessionId });
+      logResponse(this.workdir, appSid, {
+        result,
+        sessionId,
+        usage: this.currentUsage(channelId),
+      });
 
       this.timeoutController.clear(channelId, 'completed');
       return {
@@ -1039,6 +1064,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         sessionId,
         attachments: this.drainAttachments(channelId),
         usage: this.currentUsage(channelId),
+        ...this.pendingModels.get(channelId)?.result(),
       };
     } catch (err) {
       // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
@@ -1076,10 +1102,14 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
           this.trimSession(session, appSid, channelId);
           session.updatedAt = Date.now();
-          logResponse(this.workdir, appSid, { result, sessionId });
+          logResponse(this.workdir, appSid, {
+            result,
+            sessionId,
+            usage: this.currentUsage(channelId),
+          });
 
           this.timeoutController.clear(channelId, 'completed');
-          return { result, sessionId };
+          return { result, sessionId, ...this.pendingModels.get(channelId)?.result() };
         } catch (retryErr) {
           const errorMsg = formatLlmError(retryErr);
           logError(
@@ -1087,7 +1117,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             appSid,
             `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
           );
-          return { result: errorMsg, sessionId };
+          return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
         }
       }
 
@@ -1097,13 +1127,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         appSid,
         `LLM chat error: ${err instanceof Error ? err.message : String(err)}`
       );
-      return { result: errorMsg, sessionId };
+      return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
     } finally {
-      this.activeAbortControllers.delete(channelId);
-      this.pendingAttachments.delete(channelId);
-      this.pendingUsage.delete(channelId);
-      // 'completed' 経路で既に clear 済みなら no-op。エラー or タイムアウトで未 clear なら 'error'。
-      this.timeoutController.clear(channelId, 'error');
+      this.finishTurn(channelId);
     }
   }
 
@@ -1112,42 +1138,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const sessionId = options?.sessionId || crypto.randomUUID();
-    this.cleanupSessions();
-
-    // appSessionId を先に解決して getOrCreateSession に渡す
-    // （プロセス再起動時に jsonl から履歴復元するため）
-    const channelId = options?.channelId || sessionId;
-    const appSid = options?.appSessionId || channelId;
-
-    const session = this.getOrCreateSession(sessionId, appSid);
-    session.lastTurnToolNames = [];
-    this.resetAttachments(channelId);
-    this.resetUsage(channelId);
-    this.maybeEmitSessionStart(appSid, channelId);
-    this.bumpTurnIndex(appSid);
-    const callFlags = this.resolveCallModeFlags(options?.localLlmMode);
-    const systemPrompt = this.buildSystemPrompt(callFlags);
+    const { sessionId, channelId, appSid, session, callFlags, systemPrompt, llmTools, userMsg } =
+      this.prepareTurn(rawPrompt, options);
+    this.pendingModels.set(channelId, new ProviderModels(callbacks.onModel));
     const finalSystemPrompt = callFlags.tools
       ? this.buildFinalResponseSystemPrompt(callFlags)
       : systemPrompt;
-    const tools = callFlags.tools ? getAllTools() : [];
-    const llmTools = callFlags.tools ? toLLMTools(tools) : [];
-
-    // runtime context (cwd/repo/container) を毎ターン user prompt 先頭に prepend
-    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
-
-    const userMsg = this.buildUserMessage(prompt);
-    session.messages.push(userMsg);
-
-    // トランスクリプトにプロンプトを記録
-    logPrompt(this.workdir, appSid, prompt);
-    const abortController = new AbortController();
-    this.activeAbortControllers.set(channelId, abortController);
-    this.timeoutController.start(channelId, () => {
-      const ac = this.activeAbortControllers.get(channelId);
-      if (ac) ac.abort();
-    });
+    const abortController = this.startTurnTimeout(channelId);
 
     try {
       let fullText = await this.executeStreamLoop(
@@ -1195,7 +1192,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
-      logResponse(this.workdir, appSid, { result: fullText, sessionId });
+      logResponse(this.workdir, appSid, {
+        result: fullText,
+        sessionId,
+        usage: this.currentUsage(channelId),
+      });
 
       this.timeoutController.clear(channelId, 'completed');
       const result: RunResult = {
@@ -1203,6 +1204,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         sessionId,
         attachments: this.drainAttachments(channelId),
         usage: this.currentUsage(channelId),
+        ...this.pendingModels.get(channelId)?.result(),
       };
       callbacks.onTraceEvent?.({ type: 'turn_completed', usage: result.usage });
       callbacks.onComplete?.(result);
@@ -1246,10 +1248,18 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           session.messages.push({ role: 'assistant', content: fullText });
           this.trimSession(session, appSid, channelId);
           session.updatedAt = Date.now();
-          logResponse(this.workdir, appSid, { result: fullText, sessionId });
+          logResponse(this.workdir, appSid, {
+            result: fullText,
+            sessionId,
+            usage: this.currentUsage(channelId),
+          });
 
           this.timeoutController.clear(channelId, 'completed');
-          const result: RunResult = { result: fullText, sessionId };
+          const result: RunResult = {
+            result: fullText,
+            sessionId,
+            ...this.pendingModels.get(channelId)?.result(),
+          };
           callbacks.onComplete?.(result);
           return result;
         } catch (retryErr) {
@@ -1257,7 +1267,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           const errorMsg = formatLlmError(retryErr);
           logError(this.workdir, appSid, `LLM stream retry failed: ${error.message}`);
           callbacks.onError?.(error);
-          return { result: errorMsg, sessionId };
+          return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
         }
       }
 
@@ -1265,12 +1275,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       const errorMsg = formatLlmError(err);
       logError(this.workdir, appSid, `LLM stream error: ${error.message}`);
       callbacks.onError?.(error);
-      return { result: errorMsg, sessionId };
+      return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
     } finally {
-      this.activeAbortControllers.delete(channelId);
-      this.pendingAttachments.delete(channelId);
-      this.pendingUsage.delete(channelId);
-      this.timeoutController.clear(channelId, 'error');
+      this.finishTurn(channelId);
     }
   }
 
@@ -1328,6 +1335,114 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * エージェントループ（run用）: ツール呼び出しを含む非ストリーミング実行
    * ツール無効時は1回のLLM呼び出しで完了する。
    */
+  private async executeToolCalls(
+    session: Session,
+    toolCalls: LLMToolCall[],
+    channelId: string,
+    logId: string,
+    round: number,
+    options: RunOptions | undefined,
+    mediaPaths: string[],
+    callbacks?: StreamCallbacks
+  ): Promise<void> {
+    const trajectory = this.trajectoryCommon(logId, options?.channelId, round);
+    const toolContext = {
+      workspace: this.workdir,
+      channelId: options?.channelId,
+      activateTools: (names: string[]) => {
+        for (const name of names) session.activeToolNames.add(name);
+        console.log(
+          `[local-llm] tool_search activated: ${names.join(', ')} (active: ${session.activeToolNames.size})`
+        );
+      },
+      attachFile: (path: string) => this.pendingAttachments.get(channelId)?.add(path),
+      trajectoryLogToolSearch: (event: {
+        query: string;
+        candidates: Array<{ name: string; type: 'tool' | 'skill'; score: number }>;
+        activated_tools: string[];
+        activated_skills?: string[];
+      }) => this.trajectoryLogger.logToolSearch(trajectory, event),
+    };
+
+    for (const toolCall of toolCalls) {
+      console.log(
+        `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
+      );
+      callbacks?.onToolUse?.(toolCall.name, toolCall.arguments);
+      const signature = toolCallSignature(toolCall.name, toolCall.arguments);
+      const loop = recordToolCallAndDetectLoop(session, signature);
+      const startedAt = Date.now();
+      let result;
+      if (loop.kind !== 'none') {
+        const repeats = loop.repeats ?? REPEATED_TOOL_CALL_THRESHOLD;
+        const error =
+          loop.kind === 'exact'
+            ? repeatedToolCallErrorMessage(toolCall.name, repeats)
+            : similarToolCallErrorMessage(toolCall.name, repeats);
+        console.warn(
+          `[local-llm] Tool call loop detected (${loop.kind}, ${repeats}x): ${signature.slice(0, 200)}`
+        );
+        this.trajectoryLogger.logLoopDetected(trajectory, {
+          loop_kind: loop.kind,
+          signature,
+          tool_name: toolCall.name,
+          action: 'blocked',
+          repeats,
+        });
+        result = { success: false, output: '', error };
+      } else {
+        (session.lastTurnToolNames ??= []).push(toolCall.name);
+        const cached = getCachedIdempotentResult(session, signature);
+        if (cached !== undefined) {
+          console.log(`[local-llm] Idempotent cache hit (skip exec): ${signature.slice(0, 200)}`);
+          this.trajectoryLogger.logLoopDetected(trajectory, {
+            loop_kind: 'idempotent_cache_hit',
+            signature,
+            tool_name: toolCall.name,
+            action: 'cached',
+          });
+          result = { success: true, output: cached };
+        } else {
+          result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
+          if (result.success) resetToolLoopHistoryAfterMutation(session, toolCall.name);
+          if (result.success && isIdempotentToolCall(toolCall.name, toolCall.arguments)) {
+            cacheIdempotentResult(session, signature, result.output);
+            this.trajectoryLogger.logRunnerEvent(trajectory, {
+              event: 'idempotent_cache_store',
+              details: { tool_name: toolCall.name },
+            });
+          }
+        }
+      }
+      const rawOutput = result.success
+        ? result.output
+        : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
+      const content = trimToolResult(rawOutput);
+      this.trajectoryLogger.logToolCall(trajectory, {
+        tool_call_id: toolCall.id,
+        tool_name: toolCall.name,
+        args: toolCall.arguments,
+        result: result.success ? rawOutput : undefined,
+        error: result.success ? undefined : rawOutput,
+        duration_ms: Date.now() - startedAt,
+        status: result.success ? 'success' : 'error',
+      });
+      if (!result.success)
+        logError(this.workdir, logId, `Tool ${toolCall.name} failed: ${rawOutput}`);
+      console.log(
+        `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${content.length} chars)`
+      );
+      session.messages.push({ role: 'tool', content, toolCallId: toolCall.id });
+      for (const match of rawOutput.matchAll(/^MEDIA:(.+)$/gm)) {
+        const path = match[1].trim();
+        if (!mediaPaths.includes(path)) {
+          mediaPaths.push(path);
+          console.log(`[local-llm] Media path detected from tool result: ${path}`);
+        }
+      }
+    }
+  }
+
   private async executeAgentLoop(
     session: Session,
     systemPrompt: string,
@@ -1346,6 +1461,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         response = await this.llm.chat(session.messages, {
           systemPrompt,
           signal: abortController.signal,
+          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         });
       } catch (err) {
@@ -1378,6 +1494,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           systemPrompt,
           tools: iterTools.length > 0 ? iterTools : undefined,
           signal: abortController.signal,
+          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         });
       } catch (err) {
@@ -1405,129 +1522,15 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         toolCalls: response.toolCalls,
       });
 
-      // tool_search からセッションの active set を拡張するための callback
-      const trajCommon = (round: number) => this.trajectoryCommon(logId, options?.channelId, round);
-      const toolContext = {
-        workspace: this.workdir,
-        channelId: options?.channelId,
-        activateTools: (names: string[]) => {
-          for (const n of names) session.activeToolNames.add(n);
-          console.log(
-            `[local-llm] tool_search activated: ${names.join(', ')} (active: ${session.activeToolNames.size})`
-          );
-        },
-        attachFile: (resolvedPath: string) => {
-          this.pendingAttachments.get(channelId)?.add(resolvedPath);
-        },
-        trajectoryLogToolSearch: (event: {
-          query: string;
-          candidates: Array<{ name: string; type: 'tool' | 'skill'; score: number }>;
-          activated_tools: string[];
-          activated_skills?: string[];
-        }) => {
-          this.trajectoryLogger.logToolSearch(trajCommon(toolRounds), event);
-        },
-      };
-
-      for (const toolCall of response.toolCalls) {
-        console.log(
-          `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
-        );
-
-        // 同一 / 類似 tool_call ループ検出 + 冪等キャッシュ短絡
-        const sig = toolCallSignature(toolCall.name, toolCall.arguments);
-        const loopResult = recordToolCallAndDetectLoop(session, sig);
-        let result;
-        const toolStart = Date.now();
-        if (loopResult.kind !== 'none') {
-          const repeats = loopResult.repeats ?? REPEATED_TOOL_CALL_THRESHOLD;
-          const errorMsg =
-            loopResult.kind === 'exact'
-              ? repeatedToolCallErrorMessage(toolCall.name, repeats)
-              : similarToolCallErrorMessage(toolCall.name, repeats);
-          console.warn(
-            `[local-llm] Tool call loop detected (${loopResult.kind}, ${repeats}x): ${sig.slice(0, 200)}`
-          );
-          this.trajectoryLogger.logLoopDetected(trajCommon(toolRounds), {
-            loop_kind: loopResult.kind,
-            signature: sig,
-            tool_name: toolCall.name,
-            action: 'blocked',
-            repeats,
-          });
-          result = {
-            success: false,
-            output: '',
-            error: errorMsg,
-          };
-        } else {
-          // Stop hook の tools_called 用に「実行された」ツール名を記録（キャッシュ HIT 含む）
-          (session.lastTurnToolNames ??= []).push(toolCall.name);
-          // 冪等キャッシュ HIT 判定: 計算/エンコード/ハッシュ系で同 signature を
-          // 2 回目以降叩こうとしたら 1 回目の結果を即返却 (exec スキップ)
-          const cached = getCachedIdempotentResult(session, sig);
-          if (cached !== undefined) {
-            console.log(`[local-llm] Idempotent cache hit (skip exec): ${sig.slice(0, 200)}`);
-            this.trajectoryLogger.logLoopDetected(trajCommon(toolRounds), {
-              loop_kind: 'idempotent_cache_hit',
-              signature: sig,
-              tool_name: toolCall.name,
-              action: 'cached',
-            });
-            result = { success: true, output: cached };
-          } else {
-            result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
-            if (result.success) resetToolLoopHistoryAfterMutation(session, toolCall.name);
-            // 冪等パターンなら結果をキャッシュ (次回以降 HIT させる)
-            if (result.success && isIdempotentToolCall(toolCall.name, toolCall.arguments)) {
-              cacheIdempotentResult(session, sig, result.output);
-              this.trajectoryLogger.logRunnerEvent(trajCommon(toolRounds), {
-                event: 'idempotent_cache_store',
-                details: { tool_name: toolCall.name },
-              });
-            }
-          }
-        }
-        const toolDuration = Date.now() - toolStart;
-        const rawOutput = result.success
-          ? result.output
-          : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
-        const toolResultContent = trimToolResult(rawOutput);
-
-        // tool-trajectory: tool_call 1 件分を記録
-        this.trajectoryLogger.logToolCall(trajCommon(toolRounds), {
-          tool_call_id: toolCall.id,
-          tool_name: toolCall.name,
-          args: toolCall.arguments,
-          result: result.success ? rawOutput : undefined,
-          error: result.success ? undefined : rawOutput,
-          duration_ms: toolDuration,
-          status: result.success ? 'success' : 'error',
-        });
-
-        if (!result.success) {
-          logError(this.workdir, logId, `Tool ${toolCall.name} failed: ${rawOutput}`);
-        }
-
-        console.log(
-          `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
-        );
-        session.messages.push({
-          role: 'tool',
-          content: toolResultContent,
-          toolCallId: toolCall.id,
-        });
-
-        // ツール結果からMEDIA:パスを収集
-        const mediaPattern = /^MEDIA:(.+)$/gm;
-        for (const mediaMatch of rawOutput.matchAll(mediaPattern)) {
-          const mediaPath = mediaMatch[1].trim();
-          if (!pendingMediaPaths.includes(mediaPath)) {
-            pendingMediaPaths.push(mediaPath);
-            console.log(`[local-llm] Media path detected from tool result: ${mediaPath}`);
-          }
-        }
-      }
+      await this.executeToolCalls(
+        session,
+        response.toolCalls,
+        channelId,
+        logId,
+        toolRounds,
+        options,
+        pendingMediaPaths
+      );
 
       toolRounds++;
       if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
@@ -1538,6 +1541,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           tools: iterTools.length > 0 ? iterTools : undefined,
           toolChoice: 'none',
           signal: abortController.signal,
+          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         });
         this.addUsage(channelId, summary);
@@ -1693,6 +1697,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             systemPrompt,
             tools: iterTools.length > 0 ? iterTools : undefined,
             signal: abortController.signal,
+            onModel: (model) => this.pendingModels.get(channelId)?.add(model),
             reasoningEffort: options?.localLlmReasoningEffort,
           });
         } catch (err) {
@@ -1715,130 +1720,16 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           toolCalls: response.toolCalls,
         });
 
-        const trajCommonStream = (round: number) =>
-          this.trajectoryCommon(logId, options?.channelId, round);
-        const toolContext = {
-          workspace: this.workdir,
-          channelId: options?.channelId,
-          activateTools: (names: string[]) => {
-            for (const n of names) session.activeToolNames.add(n);
-            console.log(
-              `[local-llm] tool_search activated: ${names.join(', ')} (active: ${session.activeToolNames.size})`
-            );
-          },
-          attachFile: (resolvedPath: string) => {
-            this.pendingAttachments.get(channelId)?.add(resolvedPath);
-          },
-          trajectoryLogToolSearch: (event: {
-            query: string;
-            candidates: Array<{ name: string; type: 'tool' | 'skill'; score: number }>;
-            activated_tools: string[];
-            activated_skills?: string[];
-          }) => {
-            this.trajectoryLogger.logToolSearch(trajCommonStream(toolRounds), event);
-          },
-        };
-        for (const toolCall of response.toolCalls) {
-          console.log(
-            `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
-          );
-
-          // Discordにツール実行中を通知
-          callbacks.onToolUse?.(toolCall.name, toolCall.arguments as Record<string, unknown>);
-
-          // 同一 / 類似 tool_call ループ検出 + 冪等キャッシュ短絡
-          const sig = toolCallSignature(toolCall.name, toolCall.arguments);
-          const loopResult = recordToolCallAndDetectLoop(session, sig);
-          let result;
-          const toolStart = Date.now();
-          if (loopResult.kind !== 'none') {
-            const repeats = loopResult.repeats ?? REPEATED_TOOL_CALL_THRESHOLD;
-            const errorMsg =
-              loopResult.kind === 'exact'
-                ? repeatedToolCallErrorMessage(toolCall.name, repeats)
-                : similarToolCallErrorMessage(toolCall.name, repeats);
-            console.warn(
-              `[local-llm] Tool call loop detected (${loopResult.kind}, ${repeats}x): ${sig.slice(0, 200)}`
-            );
-            this.trajectoryLogger.logLoopDetected(trajCommonStream(toolRounds), {
-              loop_kind: loopResult.kind,
-              signature: sig,
-              tool_name: toolCall.name,
-              action: 'blocked',
-              repeats,
-            });
-            result = {
-              success: false,
-              output: '',
-              error: errorMsg,
-            };
-          } else {
-            // Stop hook の tools_called 用に「実行された」ツール名を記録（キャッシュ HIT 含む）
-            (session.lastTurnToolNames ??= []).push(toolCall.name);
-            // 冪等キャッシュ HIT 判定: 計算/エンコード/ハッシュ系で同 signature を
-            // 2 回目以降叩こうとしたら 1 回目の結果を即返却 (exec スキップ)
-            const cached = getCachedIdempotentResult(session, sig);
-            if (cached !== undefined) {
-              console.log(`[local-llm] Idempotent cache hit (skip exec): ${sig.slice(0, 200)}`);
-              this.trajectoryLogger.logLoopDetected(trajCommonStream(toolRounds), {
-                loop_kind: 'idempotent_cache_hit',
-                signature: sig,
-                tool_name: toolCall.name,
-                action: 'cached',
-              });
-              result = { success: true, output: cached };
-            } else {
-              result = await executeTool(toolCall.name, toolCall.arguments, toolContext);
-              if (result.success) resetToolLoopHistoryAfterMutation(session, toolCall.name);
-              // 冪等パターンなら結果をキャッシュ (次回以降 HIT させる)
-              if (result.success && isIdempotentToolCall(toolCall.name, toolCall.arguments)) {
-                cacheIdempotentResult(session, sig, result.output);
-                this.trajectoryLogger.logRunnerEvent(trajCommonStream(toolRounds), {
-                  event: 'idempotent_cache_store',
-                  details: { tool_name: toolCall.name },
-                });
-              }
-            }
-          }
-          const toolDuration = Date.now() - toolStart;
-          const rawToolOutput = result.success
-            ? result.output
-            : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
-          const toolResultContent = trimToolResult(rawToolOutput);
-
-          // tool-trajectory: tool_call 1 件分を記録
-          this.trajectoryLogger.logToolCall(trajCommonStream(toolRounds), {
-            tool_call_id: toolCall.id,
-            tool_name: toolCall.name,
-            args: toolCall.arguments,
-            result: result.success ? rawToolOutput : undefined,
-            error: result.success ? undefined : rawToolOutput,
-            duration_ms: toolDuration,
-            status: result.success ? 'success' : 'error',
-          });
-
-          if (!result.success) {
-            logError(this.workdir, logId, `Tool ${toolCall.name} failed: ${rawToolOutput}`);
-          }
-          console.log(
-            `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${toolResultContent.length} chars)`
-          );
-          session.messages.push({
-            role: 'tool',
-            content: toolResultContent,
-            toolCallId: toolCall.id,
-          });
-
-          // ツール結果からMEDIA:パスを収集
-          const mediaPattern = /^MEDIA:(.+)$/gm;
-          for (const mediaMatch of rawToolOutput.matchAll(mediaPattern)) {
-            const mediaPath = mediaMatch[1].trim();
-            if (!pendingMediaPaths.includes(mediaPath)) {
-              pendingMediaPaths.push(mediaPath);
-              console.log(`[local-llm] Media path detected from tool result: ${mediaPath}`);
-            }
-          }
-        }
+        await this.executeToolCalls(
+          session,
+          response.toolCalls,
+          channelId,
+          logId,
+          toolRounds,
+          options,
+          pendingMediaPaths,
+          callbacks
+        );
         toolRounds++;
         if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
           console.warn(`[local-llm] Agent step limit reached (${this.agentStepLimit})`);
@@ -1882,6 +1773,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           tools: finalIterTools.length > 0 ? finalIterTools : undefined,
           toolChoice: 'none',
           signal: abortController.signal,
+          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         })) {
           const { release, dropped } = driftBuffer.feed(chunk);

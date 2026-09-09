@@ -348,7 +348,7 @@ describe('Discord thread run lock', () => {
     expect(runStream).toHaveBeenCalledTimes(2);
   });
 
-  it('autoreply無効かつメンションなしの投稿には処理中を表示しない', async () => {
+  it('activeな会話スレッドではautoreply無効でもメンションなしの後続投稿を処理する', async () => {
     saveSettings({
       discordAutoReplyChannels: { '123': false },
     });
@@ -407,11 +407,60 @@ describe('Discord thread run lock', () => {
     await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(1));
     await onMessageCreate(nonRequestMessage);
 
-    expect(nonRequestMessage.reply).not.toHaveBeenCalled();
+    expect(nonRequestMessage.reply).toHaveBeenCalledWith({
+      content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+      allowedMentions: { parse: [], repliedUser: false },
+    });
     expect(runStream).toHaveBeenCalledTimes(1);
 
     releaseFirst();
     await first;
+  });
+
+  it('activeなsessionがないスレッドではautoreply無効かつメンションなしの投稿を無視する', async () => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': false },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const runStream = vi.fn();
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({ client, config, agentRunner, workdir: tempDir! });
+    const message = createExistingThreadMessage({
+      messageId: 'unrelated-1',
+      content: 'メンションなしの会話',
+      threadId: 'unrelated-thread',
+      parentChannelId: '123',
+      starterContent: '無関係なスレッド',
+      client,
+    });
+
+    await handlers.get(Events.MessageCreate)!(message);
+
+    expect(message.reply).not.toHaveBeenCalled();
+    expect(runStream).not.toHaveBeenCalled();
   });
 
   it('親チャンネルのスレッドモードでは新規スレッドごとに同時実行できる', async () => {

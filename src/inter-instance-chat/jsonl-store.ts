@@ -157,6 +157,22 @@ export function readAll(
   return all;
 }
 
+function replaceMessages(path: string, messages: InterChatMessage[]): void {
+  const temporaryPath = `${path}.tmp`;
+  const body = messages.map((message) => JSON.stringify(message)).join('\n');
+  writeFileSync(temporaryPath, body ? `${body}\n` : '', { mode: 0o666 });
+  try {
+    renameSync(temporaryPath, path);
+  } catch {
+    writeFileSync(path, body ? `${body}\n` : '', { mode: 0o666 });
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 /**
  * 自分のファイルから TTL 外のメッセージを削除する（物理 compact）。
  * - 自分のファイルだけを書き換える（他インスタンスのファイルには触れない）
@@ -174,21 +190,7 @@ export function compactSelf(
   const kept = ttlSec > 0 ? all.filter((m) => now - m.ts <= ttlSec) : all;
   const removed = all.length - kept.length;
   if (removed === 0) return { kept: kept.length, removed: 0 };
-  const tmp = path + '.tmp';
-  const body = kept.map((m) => JSON.stringify(m)).join('\n') + (kept.length > 0 ? '\n' : '');
-  writeFileSync(tmp, body, { mode: 0o666 });
-  // rename atomic（Node の renameSync で十分、同一FS前提）
-  try {
-    renameSync(tmp, path);
-  } catch {
-    // 失敗時はフォールバックで上書き
-    writeFileSync(path, body, { mode: 0o666 });
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // ignore
-    }
-  }
+  replaceMessages(path, kept);
   return { kept: kept.length, removed };
 }
 
@@ -215,19 +217,7 @@ export function deleteMessageById(dir: string, selfInstanceId: string, msgId: st
   const kept = all.filter((m) => m.msg_id !== msgId);
   const removed = all.length - kept.length;
   if (removed === 0) return 0;
-  const tmp = path + '.tmp';
-  const body = kept.map((m) => JSON.stringify(m)).join('\n') + (kept.length > 0 ? '\n' : '');
-  writeFileSync(tmp, body, { mode: 0o666 });
-  try {
-    renameSync(tmp, path);
-  } catch {
-    writeFileSync(path, body, { mode: 0o666 });
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // ignore
-    }
-  }
+  replaceMessages(path, kept);
   return removed;
 }
 

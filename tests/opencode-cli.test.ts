@@ -23,6 +23,7 @@ vi.mock('child_process', () => {
       return mockProcess;
     }),
     getMockProcess: () => mockProcess,
+    execFile: vi.fn((_command, _args, _options, callback) => callback(null, JSON.stringify({}))),
   };
 });
 

@@ -1,6 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { writePrivateJsonFile } from './private-json-file.js';
 
 interface SecretDocument {
   schemaVersion: 1;
@@ -38,28 +37,7 @@ export class SecretStore {
       schemaVersion: 1,
       secrets: { ...current.secrets, ...values },
     };
-    const directory = dirname(this.path);
-    const temporaryPath = join(
-      directory,
-      `.${basename(this.path)}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
-    );
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    let temporaryCreated = false;
-    try {
-      const file = await open(temporaryPath, 'wx', 0o600);
-      temporaryCreated = true;
-      try {
-        await file.writeFile(`${JSON.stringify(document, null, 2)}\n`, 'utf8');
-        await file.sync();
-      } finally {
-        await file.close();
-      }
-      await rename(temporaryPath, this.path);
-      temporaryCreated = false;
-      await chmod(this.path, 0o600);
-    } finally {
-      if (temporaryCreated) await unlink(temporaryPath).catch(() => undefined);
-    }
+    await writePrivateJsonFile(this.path, document);
   }
 
   private async read(): Promise<SecretDocument> {

@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
+import type { ModelExecution } from './model-execution.js';
 
 /**
  * セッション単位のトランスクリプト（会話ログ）をJSONLファイルに保存する
@@ -27,6 +28,7 @@ export interface TranscriptEntry {
   content: string | Record<string, unknown>;
   createdAt: string;
   usage?: Record<string, unknown>;
+  modelExecution?: ModelExecution;
   edited?: boolean;
   editedAt?: string;
   /**
@@ -419,6 +421,23 @@ export function updateLatestMessageUsage(
   entry.usage = { ...entry.usage, ...usage };
   rewriteSessionFile(workdir, appSessionId, entries);
   return entry;
+}
+
+/** Attach execution evidence only to a response written during this turn. */
+export function attachResponseModelExecution(
+  workdir: string,
+  appSessionId: string,
+  execution: ModelExecution
+): void {
+  const entries = readSessionMessages(workdir, appSessionId);
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry.createdAt < execution.startedAt || entry.role === 'user') break;
+    if (entry.role !== 'assistant') continue;
+    entry.modelExecution = { ...execution, observedModels: [...execution.observedModels] };
+    rewriteSessionFile(workdir, appSessionId, entries);
+    return;
+  }
 }
 
 /**

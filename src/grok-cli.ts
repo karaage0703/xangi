@@ -1,9 +1,14 @@
+import { readGrokTurnModels } from './grok-model-evidence.js';
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
-import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import {
+  CliRunnerBase,
+  extractNestedText,
+  mergeStreamText,
+  type CliStreamParser,
+} from './cli-runner-core.js';
 import type { ChatPlatform } from './prompts/index.js';
 
 export interface GrokOptions extends BaseRunnerOptions {
@@ -11,6 +16,7 @@ export interface GrokOptions extends BaseRunnerOptions {
 }
 
 interface GrokJsonResponse {
+  model?: string;
   result?: string;
   text?: string;
   content?: string;
@@ -79,13 +85,6 @@ export class GrokRunner extends CliRunnerBase {
     return args;
   }
 
-  private buildFullPrompt(rawPrompt: string): string {
-    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${promptWithRuntime}`
-      : promptWithRuntime;
-  }
-
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
     const env = super.buildEnv(channelId);
     if (process.env.XAI_API_KEY) {
@@ -95,14 +94,13 @@ export class GrokRunner extends CliRunnerBase {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const startedAt = new Date().toISOString();
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = [...this.buildBaseArgs(options), '-p', fullPrompt, '--output-format', 'json'];
 
     this.logExecution('Executing', options);
 
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    this.logPromptTranscript(fullPrompt, options);
 
     const stdout = await this.collectOutput(args, options?.channelId, {
       exitErrorDetail: (output) => this.extractErrorFromOutput(output),
@@ -115,11 +113,18 @@ export class GrokRunner extends CliRunnerBase {
       throw new Error(this.extractErrorMessage(response) ?? 'Grok CLI returned error');
     }
 
-    if (options?.appSessionId && this.workdir) {
-      logResponse(this.workdir, options.appSessionId, { result, sessionId });
-    }
-
-    return { result, sessionId };
+    const models = new ProviderModels();
+    models.add(response.model);
+    for (const model of await readGrokTurnModels({
+      providerSessionId: sessionId || options?.sessionId || '',
+      cwd: this.workdir || process.cwd(),
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    }))
+      models.add(model);
+    const enriched = { result, sessionId, ...models.result() };
+    this.logResponseTranscript(enriched, options);
+    return enriched;
   }
 
   async runStream(
@@ -127,7 +132,8 @@ export class GrokRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const startedAt = new Date().toISOString();
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = [
       ...this.buildBaseArgs(options),
       '-p',
@@ -138,26 +144,30 @@ export class GrokRunner extends CliRunnerBase {
 
     this.logExecution('Streaming', options);
 
-    if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
-
-    const onComplete = (result: RunResult) => {
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
+    this.logPromptTranscript(fullPrompt, options);
+    const models = new ProviderModels(callbacks.onModel);
+    const result = await this.executeStreamCore(
+      args,
+      { ...callbacks, onModel: (model) => models.add(model), onComplete: undefined },
+      {
+        channelId: options?.channelId,
       }
-    };
-
-    return this.executeStreamCore(args, callbacks, {
-      channelId: options?.channelId,
-      onComplete,
-    });
+    );
+    for (const model of await readGrokTurnModels({
+      providerSessionId: result.sessionId || options?.sessionId || '',
+      cwd: this.workdir || process.cwd(),
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    }))
+      models.add(model);
+    const enriched = { ...result, ...models.result() };
+    this.logResponseTranscript(enriched, options);
+    callbacks.onComplete?.(enriched);
+    return enriched;
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let errorDetail: string | undefined;
@@ -166,6 +176,7 @@ export class GrokRunner extends CliRunnerBase {
     return {
       handleEvent: (json, phase) => {
         const event = json as GrokStreamEvent;
+        if (['system', 'assistant', 'result'].includes(event.type ?? '')) models.add(event.model);
         sessionId = this.extractSessionId(event) || sessionId;
 
         const err = this.extractErrorMessage(event);
@@ -183,7 +194,7 @@ export class GrokRunner extends CliRunnerBase {
 
         const text = this.extractText(event);
         if (text) {
-          const applied = this.applyText(text, this.isDeltaEvent(event), fullText);
+          const applied = mergeStreamText(text, this.isDeltaEvent(event), fullText);
           fullText = applied.fullText;
           if (applied.emitText !== undefined) {
             callbacks.onText?.(applied.emitText, fullText);
@@ -192,7 +203,7 @@ export class GrokRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () => ({ result: fullText, sessionId }),
+      finalize: () => ({ result: fullText, sessionId, ...models.result() }),
       exitErrorDetail: () => errorDetail,
     };
   }
@@ -222,26 +233,11 @@ export class GrokRunner extends CliRunnerBase {
       event.text,
       event.content,
       event.response,
-      this.extractTextFromUnknown(event.message),
-      this.extractTextFromUnknown((event as GrokStreamEvent).delta),
-      this.extractTextFromUnknown((event as GrokStreamEvent).data),
+      extractNestedText(event.message),
+      extractNestedText((event as GrokStreamEvent).delta),
+      extractNestedText((event as GrokStreamEvent).data),
     ]) {
       if (typeof value === 'string' && value) return value;
-    }
-    return '';
-  }
-
-  private extractTextFromUnknown(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (!value || typeof value !== 'object') return '';
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === 'string') return record.text;
-    if (typeof record.content === 'string') return record.content;
-    if (Array.isArray(record.content)) {
-      return record.content
-        .map((block) => this.extractTextFromUnknown(block))
-        .filter(Boolean)
-        .join('');
     }
     return '';
   }
@@ -281,29 +277,6 @@ export class GrokRunner extends CliRunnerBase {
     return (
       Boolean(event.delta) || type === 'text' || type.includes('delta') || type.includes('chunk')
     );
-  }
-
-  private applyText(
-    text: string,
-    isDelta: boolean,
-    fullText: string
-  ): { fullText: string; emitText?: string } {
-    if (isDelta) {
-      if (text.startsWith(fullText)) {
-        const delta = text.slice(fullText.length);
-        return delta ? { fullText: text, emitText: delta } : { fullText };
-      }
-      return { fullText: `${fullText}${text}`, emitText: text };
-    }
-
-    if (text === fullText || fullText.endsWith(text)) {
-      return { fullText };
-    }
-    if (text.startsWith(fullText)) {
-      const delta = text.slice(fullText.length);
-      return delta ? { fullText: text, emitText: delta } : { fullText };
-    }
-    return { fullText: text };
   }
 
   private extractToolUse(
