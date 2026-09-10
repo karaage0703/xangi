@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,11 @@ import { BackendResolver } from '../src/backend-resolver.js';
 import type { StreamCallbacks } from '../src/agent-runner.js';
 import type { Config } from '../src/config.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
-import { observeExecutionModel, type ModelExecution } from '../src/model-execution.js';
+import {
+  observeExecutionEffort,
+  observeExecutionModel,
+  type ModelExecution,
+} from '../src/model-execution.js';
 import { createSession, getSessionEntry, initSessions, setProviderSessionId, recordSessionModelExecution } from '../src/sessions.js';
 import { logPrompt, logResponse, readSessionMessages, resetTranscriptStorageForTests } from '../src/transcript-logger.js';
 
@@ -25,14 +29,93 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-function setup(backend: string, model?: string) {
+function setup(backend: string, model?: string, effort?: string) {
   const config = { agent: { backend, config: { workdir: dir, model }, platform: 'web' } } as Config;
-  const resolved = { backend, model };
+  const resolved = { backend, model, effort };
   const resolver = { resolve: () => resolved, getDefault: () => resolved } as unknown as BackendResolver;
   const manager = new DynamicRunnerManager(config, resolver);
   const appSessionId = createSession('thread', { platform: 'web', workspacePath: dir });
   return { manager, resolved, appSessionId, options: { channelId: 'thread', appSessionId, workdir: dir, platform: 'web' as const } };
 }
+
+it.each([
+  'codex',
+  'claude-code',
+  'cursor',
+  'grok',
+  'antigravity',
+  'github-copilot',
+  'opencode',
+])('stores the effort supplied for a %s execution snapshot', async (backend) => {
+  const { manager, appSessionId, options } = setup(backend, 'model', 'medium');
+  fake.run.mockResolvedValue({ result: 'ok', sessionId: 'provider', model: 'model' });
+  await manager.run('hello', options);
+  expect(getSessionEntry(appSessionId)?.modelExecution).toMatchObject({
+    configuredEffort: 'medium',
+    effortSource: 'configuration',
+  });
+});
+
+it.each([
+  'codex',
+  'claude-code',
+  'cursor',
+  'grok',
+  'antigravity',
+  'github-copilot',
+  'opencode',
+  'local-llm',
+  'custom-extension',
+])('stores provider-reported effort for %s through the common runner contract', async (backend) => {
+  const { manager, appSessionId, options } = setup(backend);
+  fake.run.mockResolvedValue({
+    result: 'ok',
+    sessionId: 'provider',
+    model: 'model',
+    effort: 'high',
+  });
+  await manager.run('hello', options);
+  expect(getSessionEntry(appSessionId)?.modelExecution).toMatchObject({
+    effectiveEffort: 'high',
+    effortSource: 'provider',
+  });
+});
+
+it('stores Codex provider-confirmed effort separately from the configured value', async () => {
+  const { manager, appSessionId, options } = setup('codex');
+  const providerSessionId = '01a0811b-1688-72c0-874c-afc5e6eaabeb';
+  const codexHome = join(dir, 'codex-home');
+  process.env.CODEX_HOME = codexHome;
+  fake.run.mockImplementation(async () => {
+    const now = new Date().toISOString();
+    const day = now.slice(0, 10).replaceAll('-', '/');
+    const directory = join(codexHome, 'sessions', day);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, `rollout-test-${providerSessionId}.jsonl`),
+      [
+        { type: 'session_meta', payload: { id: providerSessionId, cwd: dir } },
+        {
+          type: 'turn_context',
+          timestamp: now,
+          payload: { model: 'gpt-test', effort: 'medium', cwd: dir },
+        },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n')
+    );
+    return { result: 'ok', sessionId: providerSessionId, model: 'gpt-test' };
+  });
+  try {
+    await manager.run('hello', options);
+  } finally {
+    delete process.env.CODEX_HOME;
+  }
+  expect(getSessionEntry(appSessionId)?.modelExecution).toMatchObject({
+    effectiveEffort: 'medium',
+    effortSource: 'provider',
+  });
+});
 
 it.each(['codex', 'claude-code', 'cursor', 'grok', 'antigravity', 'github-copilot', 'opencode', 'local-llm', 'custom-extension'])('stores default model evidence for %s and preserves it after reload', async (backend) => {
   const { manager, appSessionId, options } = setup(backend);
@@ -123,6 +206,21 @@ it('rejects placeholder/control values and tracks a return to a previous model',
   for (const model of ['a', 'b', 'a']) expect(observeExecutionModel(snapshot, model)).toBe(true);
   expect(snapshot.effectiveModel).toBe('a');
   expect(snapshot.observedModels).toEqual(['a', 'b']);
+});
+
+it('rejects unknown effort evidence and stores normalized provider effort', () => {
+  const snapshot: ModelExecution = {
+    turnId: 'one',
+    backend: 'custom',
+    observedModels: [],
+    source: 'unknown',
+    status: 'running',
+    startedAt: '',
+    updatedAt: '',
+  };
+  expect(observeExecutionEffort(snapshot, 'turbo')).toBe(false);
+  expect(observeExecutionEffort(snapshot, ' MEDIUM ')).toBe(true);
+  expect(snapshot).toMatchObject({ effectiveEffort: 'medium', effortSource: 'provider' });
 });
 
 it('keeps the latest streaming model when the final result only supplies deduplicated models', async () => {

@@ -152,7 +152,7 @@ Web UIの「拡張」から外部機能を追加・管理できます。詳し�
 - [使い方ガイド](docs/usage.md) - コマンド、設定、Docker、Local LLM、複数instance、トラブルシューティング
 - [設計ドキュメント](docs/design.md) - アーキテクチャ、コンポーネント、データフロー
 - [外部イベントストリーム](docs/events.md) - SSEとdevice入力API
-- [インスタンス間チャット](docs/inter-instance-chat.md) - 複数instance間のメッセージ交換
+- [インスタンス間チャット](docs/inter-instance-chat.md) - 認証付きHTTPによる別マシン対応の指名問い合わせ
 
 ## 書籍
 

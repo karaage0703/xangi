@@ -413,6 +413,20 @@ describe('sessions', () => {
       expect(saved).not.toContain('\\ud83d');
       expect(saved).not.toContain('\\udcce');
     });
+
+    it('notifies Web and Monitor subscribers when a title changes', () => {
+      initSessions(testDir);
+      const appId = createSession('channel-title-notify', { platform: 'slack' });
+      let notifications = 0;
+      const unsubscribe = subscribeSessionChanges(() => {
+        notifications += 1;
+      });
+
+      updateSessionTitle(appId, 'AI title');
+      unsubscribe();
+
+      expect(notifications).toBe(1);
+    });
   });
 
   describe('setProviderSessionId', () => {

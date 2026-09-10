@@ -152,7 +152,7 @@ Add and manage external capabilities from Extensions in the Web UI. See [Extensi
 - [Usage guide](docs/en/usage.md) - Commands, configuration, Docker, Local LLMs, multiple instances, and troubleshooting
 - [Design document](docs/en/design.md) - Architecture, components, and data flow
 - [External event stream](docs/en/events.md) - SSE and device input APIs
-- [Inter-instance chat](docs/en/inter-instance-chat.md) - Messaging between xangi instances
+- [Inter-instance chat](docs/en/inter-instance-chat.md) - Authenticated directed requests across machines
 
 ## Book
 

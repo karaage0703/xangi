@@ -36,6 +36,7 @@ import { updateExtension } from './extension-update.js';
 import { finalizeDevelopmentExtensionUninstall } from './extension-catalog.js';
 import { executeProgressCardCommand } from './progress-card-command.js';
 import { RemoteWorkerGateway, executeRemoteWorkerCommand } from './remote-worker/gateway.js';
+import { interChatToolCmd } from './cli/inter-chat-cmd.js';
 
 let server: Server | null = null;
 let eventTrigger: EventTrigger | null = null;
@@ -152,6 +153,8 @@ async function executeCommand(
     return webStatusCommand();
   } else if (command === 'progress_card') {
     return executeProgressCardCommand(flags, context);
+  } else if (command.startsWith('inter_chat_')) {
+    return await interChatToolCmd(command, flags);
   } else if (command === 'remote_worker') {
     return executeRemoteWorkerCommand(remoteWorkerGateway, flags);
   } else if (command === 'extension_runtime') {

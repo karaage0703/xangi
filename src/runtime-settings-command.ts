@@ -212,8 +212,8 @@ async function executeBackend(
       '現在のバックエンド設定',
       `- backend: ${getBackendDisplayName(resolved.backend)}`,
       `- model (設定): ${resolved.model ?? 'default（バックエンドに委任）'}`,
+      `- effort (設定): ${resolved.effort ?? 'default（バックエンドに委任）'}`,
       `- 直近の実行: ${formatModelExecution(execution, entry?.agent)}`,
-      ...(resolved.effort ? [`- effort: ${resolved.effort}`] : []),
       `- source: ${resolver.getChannelOverride(channelId!) ? 'channel override' : 'default'}`,
     ].join('\n');
   }

@@ -28,6 +28,8 @@ describe('xangi tool help', () => {
     expect(formatXangiCmdHelp('system_restart')).toContain('復帰後に状態');
     expect(formatXangiCmdHelp('progress')).toContain('xangi tool progress_card');
     expect(formatXangiCmdHelp('progress_card')).toContain('--plan-json');
+    expect(formatXangiCmdHelp('inter_chat_ask')).toContain('--to <instance_id>');
+    expect(formatXangiCmdHelp('inter_chat_ask')).toContain('ユーザー承認');
   });
 
   it('未知のtopicやcommandを拒否する', () => {

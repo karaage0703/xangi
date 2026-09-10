@@ -9,6 +9,8 @@ const execution: ModelExecution = {
   configuredModel: 'auto',
   observedModels: ['model-before', 'model-after'],
   effectiveModel: 'model-after',
+  effectiveEffort: 'medium',
+  effortSource: 'provider',
   source: 'provider',
   startedAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:01Z',
@@ -17,14 +19,18 @@ const execution: ModelExecution = {
 
 describe('model execution presentation', () => {
   it('shows all provider models including switches, independently from configured aliases', () => {
-    expect(formatModelExecution(execution)).toMatch(/model-after（2026\/01\/01 \d{2}:\d{2}）/);
+    expect(formatModelExecution(execution)).toMatch(
+      /model-after \/ effort=medium（2026\/01\/01 \d{2}:\d{2}）/
+    );
+    expect(formatModelExecution(execution)).toContain('/ effort=medium');
     expect(formatModelExecution(execution)).not.toMatch(/プロバイダー確認済み|完了|T00:00/);
     expect(modelExecutionLabel(execution)).toContain('model-after（確認済み）');
+    expect(modelExecutionLabel(execution)).toContain('effort=medium（確認済み）');
   });
   it('leads with final model after A → B → A and separately lists other observations', () => {
     const returned = { ...execution, effectiveModel: 'model-before' };
     expect(modelExecutionLabel(returned)).toBe(
-      'example · model-before（確認済み） / 同turnで確認: model-after'
+      'example · model-before（確認済み） / effort=medium（確認済み） / 同turnで確認: model-after'
     );
     expect(formatModelExecution(returned)).toContain('example / model-before');
     expect(formatModelExecution(returned)).toContain('同turnで確認: model-after');
@@ -61,10 +67,31 @@ describe('model execution presentation', () => {
       })
     ).toContain('モデル不明');
   });
+  it('distinguishes configured effort from provider-confirmed effort and delegated defaults', () => {
+    expect(formatModelExecution(execution)).toContain('effort=medium');
+    expect(
+      formatModelExecution({
+        ...execution,
+        effectiveEffort: undefined,
+        configuredEffort: 'high',
+        effortSource: 'configuration',
+      })
+    ).toContain('effort=high（設定値・実行未確認）');
+    expect(
+      formatModelExecution({
+        ...execution,
+        effectiveEffort: undefined,
+        configuredEffort: undefined,
+        effortSource: undefined,
+      })
+    ).toContain('effort=default（バックエンドに委任・実効値不明）');
+  });
 });
 
 it('distinguishes Auto routing from absent model records', () => {
   const auto = { ...execution, modelSelection: 'Auto', effectiveModel: undefined, observedModels: [], source: 'unknown' as const };
   expect(formatModelExecution(auto)).toContain('Auto（自動選択・内部モデル不明）');
+  expect(formatModelExecution(auto)).toContain('effort=medium');
   expect(modelExecutionLabel(auto)).toContain('Auto（自動選択・内部モデル不明）');
+  expect(modelExecutionLabel(auto)).toContain('effort=medium');
 });

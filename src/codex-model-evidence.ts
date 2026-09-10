@@ -1,4 +1,4 @@
-import { normalizeModelId } from './model-execution.js';
+import { normalizeExecutionEffort, normalizeModelId } from './model-execution.js';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -12,6 +12,11 @@ export interface CodexModelEvidenceQuery {
   codexHome?: string;
 }
 
+export interface CodexTurnEvidence {
+  models: string[];
+  effort?: string;
+}
+
 const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2000;
 
@@ -23,14 +28,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * Only timestamped turn contexts belonging to the exact provider session and cwd
- * count as evidence. Old contexts, modelUsage and config defaults are ignored.
+ * count as model/effort evidence. Old contexts, modelUsage and current defaults are ignored.
  */
-export function parseCodexTurnModels(text: string, query: CodexModelEvidenceQuery): string[] {
+export function parseCodexTurnEvidence(
+  text: string,
+  query: CodexModelEvidenceQuery
+): CodexTurnEvidence {
   const start = Date.parse(query.startedAt);
   const end = Date.parse(query.finishedAt);
-  if (!query.cwd || !Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
+  if (!query.cwd || !Number.isFinite(start) || !Number.isFinite(end) || end < start)
+    return { models: [] };
   let linked = false;
   const models = new Set<string>();
+  let effort: string | undefined;
   for (const line of text.split('\n')) {
     let event: Record<string, unknown> | undefined;
     try {
@@ -47,7 +57,7 @@ export function parseCodexTurnModels(text: string, query: CodexModelEvidenceQuer
         typeof payload.cwd !== 'string' ||
         resolve(payload.cwd) !== resolve(query.cwd)
       )
-        return [];
+        return { models: [] };
       linked = true;
     }
     if (!linked || event.type !== 'turn_context') continue;
@@ -55,11 +65,17 @@ export function parseCodexTurnModels(text: string, query: CodexModelEvidenceQuer
     if (!Number.isFinite(time) || time < start || time > end) continue;
     if (typeof payload.cwd !== 'string' || resolve(payload.cwd) !== resolve(query.cwd)) continue;
     const model = normalizeModelId(payload.model);
-    if (!model) continue;
-    models.delete(model); // Keep the final element equal to the latest observed model.
-    models.add(model);
+    if (model) {
+      models.delete(model); // Keep the final element equal to the latest observed model.
+      models.add(model);
+    }
+    effort = normalizeExecutionEffort(payload.effort) ?? effort;
   }
-  return [...models];
+  return { models: [...models], effort };
+}
+
+export function parseCodexTurnModels(text: string, query: CodexModelEvidenceQuery): string[] {
+  return parseCodexTurnEvidence(text, query).models;
 }
 
 /** UUIDv7 contains the original session creation time, including resumed sessions. */
@@ -90,8 +106,10 @@ function candidateDays(query: CodexModelEvidenceQuery): string[] {
  * Missing, oversized or ambiguous evidence stays unknown. Directory discovery is
  * restricted to session creation/run days, never an unbounded history scan.
  */
-export async function readCodexTurnModels(query: CodexModelEvidenceQuery): Promise<string[]> {
-  if (!/^[a-zA-Z0-9-]{1,128}$/.test(query.providerSessionId)) return [];
+export async function readCodexTurnEvidence(
+  query: CodexModelEvidenceQuery
+): Promise<CodexTurnEvidence> {
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(query.providerSessionId)) return { models: [] };
   try {
     const root = await realpath(
       join(query.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions')
@@ -100,7 +118,7 @@ export async function readCodexTurnModels(query: CodexModelEvidenceQuery): Promi
     for (const day of candidateDays(query)) {
       const directory = join(root, day);
       const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-      if (entries.length > MAX_DIRECTORY_ENTRIES) return [];
+      if (entries.length > MAX_DIRECTORY_ENTRIES) return { models: [] };
       for (const entry of entries) {
         if (
           entry.isFile() &&
@@ -111,14 +129,18 @@ export async function readCodexTurnModels(query: CodexModelEvidenceQuery): Promi
         }
       }
     }
-    if (candidates.length !== 1) return [];
+    if (candidates.length !== 1) return { models: [] };
     const file = await realpath(candidates[0]);
-    if (!file.startsWith(`${root}${sep}`)) return [];
+    if (!file.startsWith(`${root}${sep}`)) return { models: [] };
     const metadata = await stat(file);
-    if (!metadata.isFile() || metadata.size > MAX_ROLLOUT_BYTES) return [];
-    return parseCodexTurnModels(await readFile(file, 'utf8'), query);
+    if (!metadata.isFile() || metadata.size > MAX_ROLLOUT_BYTES) return { models: [] };
+    return parseCodexTurnEvidence(await readFile(file, 'utf8'), query);
   } catch {
     // Provider evidence is optional and must not fail an otherwise successful run.
-    return [];
+    return { models: [] };
   }
+}
+
+export async function readCodexTurnModels(query: CodexModelEvidenceQuery): Promise<string[]> {
+  return (await readCodexTurnEvidence(query)).models;
 }

@@ -17,7 +17,7 @@ import { startWebChat } from './web-chat.js';
 import { startLineBot } from './line.js';
 import { startTelegramBot } from './telegram.js';
 import { getEventsConfig } from './events-emitter.js';
-import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
+import { getInterChatConfig } from './inter-instance-chat/index.js';
 import { registerDiscordTimeoutUi } from './discord/ui.js';
 import {
   buildSlashCommands,
@@ -169,7 +169,8 @@ async function main() {
   // 意図せずHTTP portが開かないようにする。
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
   const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
-  if (webChatEnabled || eventsServerEnabled) {
+  const interChatCfg = getInterChatConfig();
+  if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled) {
     startWebChat({
       agentRunner,
       historyPrefetch: config.historyPrefetch,
@@ -225,12 +226,6 @@ async function main() {
         console.log('[xangi] Telegram bot started');
       })
     );
-  }
-
-  // インスタンス間チャット起動 (INTER_INSTANCE_CHAT_ENABLED=true のときのみ実体起動)
-  const interChatCfg = getInterChatConfig();
-  if (interChatCfg.enabled) {
-    startInterInstanceChat();
   }
 
   // GitHub認証を初期化（秘密鍵をメモリに読み込む）

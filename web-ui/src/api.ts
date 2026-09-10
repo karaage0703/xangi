@@ -1,6 +1,5 @@
 import type { ChatSseDataMap, ChatSseEvent, ParsedSsePackets, Platform, SsePacket } from './types';
 
-export const AUTOTALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 const READ_RETRY_DELAYS_MS = [200, 800];
 
 export class ApiError extends Error {
@@ -157,18 +156,6 @@ export function stripMetadata(text: string): string {
     .replace(/^\[現在時刻: [^\]]*\]\n?/gm, '')
     .replace(/^\[チャンネルID: [^\]]*\]\n?/gm, '')
     .trim();
-}
-
-export function isAutoTalkInternalMessage(message: { role: string; content: unknown }): boolean {
-  return (
-    message.role === 'user' &&
-    typeof message.content === 'string' &&
-    message.content.startsWith(AUTOTALK_SENTINEL)
-  );
-}
-
-export function isVisibleTranscriptMessage(message: { role: string; content: unknown }): boolean {
-  return !isAutoTalkInternalMessage(message);
 }
 
 export function splitThreadId(threadId: string): { platform: string; contextKey: string } {

@@ -50,6 +50,8 @@ export interface RunResult {
   modelSelection?: string;
   /** All main-conversation models observed within this run, in observation order. */
   models?: string[];
+  /** Provider-confirmed effort for this run. */
+  effort?: string;
   /** Whether the backend can continue provider-side context across turns. */
   sessionMode?: 'stateful' | 'stateless';
   /**
@@ -131,6 +133,8 @@ export interface StreamCallbacks {
   /** Provider-confirmed main-conversation model, including changes during a turn. */
   onModel?: (model: string) => void;
   onModelSelection?: (selection: string) => void;
+  /** Provider-confirmed effort for this run. */
+  onEffort?: (effort: string) => void;
   /** バックエンドがリクエストを受理し、セッション開始イベントを返した時 */
   onBackendReady?: () => void;
   onText?: (text: string, fullText: string) => void;
