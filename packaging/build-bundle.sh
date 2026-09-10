@@ -77,7 +77,7 @@ NODE
 [[ -f "$project_root/README.md" ]] || { echo "Missing README.md" >&2; exit 2; }
 [[ -f "$project_root/README.en.md" ]] || { echo "Missing README.en.md" >&2; exit 2; }
 [[ -d "$project_root/docs" ]] || { echo "Missing docs directory" >&2; exit 2; }
-for web_asset in index.html monitor.html inter-chat.html; do
+for web_asset in index.html monitor.html; do
   [[ -f "$project_root/web/$web_asset" ]] || { echo "Missing web/$web_asset" >&2; exit 2; }
 done
 [[ -f "$project_root/web/app/index.html" ]] || { echo "Missing web/app/index.html" >&2; exit 2; }

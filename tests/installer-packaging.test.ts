@@ -54,7 +54,6 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await writeFile(join(project, 'docs', 'en', 'usage.md'), '# Usage\n');
   await writeFile(join(project, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(project, 'web', 'monitor.html'), '<main>Monitor</main>\n');
-  await writeFile(join(project, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
   await mkdir(join(project, 'web', 'app', 'assets'), { recursive: true });
   await writeFile(
     join(project, 'web', 'app', 'index.html'),

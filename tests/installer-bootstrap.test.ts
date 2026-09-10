@@ -60,7 +60,6 @@ async function fixture(
   await writeFile(join(payload, 'dist', 'cli', 'xangi-main.js'), '// fixture\n');
   await writeFile(join(payload, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(payload, 'web', 'monitor.html'), '<main>Monitor</main>\n');
-  await writeFile(join(payload, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
   await writeFile(
     join(payload, 'web', 'app', 'index.html'),
     '<script src="/app/assets/app.js"></script><link rel="stylesheet" href="/app/assets/app.css"><main>React Web Chat</main>\n'
