@@ -93,9 +93,12 @@ describe('CodexRunner buildArgs', () => {
     const { command, args } = await getSpawnArgs(runner, 'hello');
 
     expect(command).toBe('codex');
-    expect(args[0]).toBe('exec');
-    expect(args[1]).toBe('--json');
-    expect(args).toContain('--full-auto');
+    const execIndex = args.indexOf('exec');
+    expect(args[execIndex + 1]).toBe('--json');
+    expect(args).toContain('--sandbox');
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(args).toContain('--ask-for-approval');
+    expect(args[args.indexOf('--ask-for-approval') + 1]).toBe('never');
     expect(args).toContain('--skip-git-repo-check');
   });
 
@@ -107,11 +110,13 @@ describe('CodexRunner buildArgs', () => {
     expect(args).not.toContain('--full-auto');
   });
 
-  it('should use --full-auto when skipPermissions is false', async () => {
+  it('should use supported fail-closed flags when skipPermissions is false', async () => {
     const runner = new CodexRunner({ skipPermissions: false });
     const { args } = await getSpawnArgs(runner, 'hello');
 
-    expect(args).toContain('--full-auto');
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(args[args.indexOf('--ask-for-approval') + 1]).toBe('never');
+    expect(args).not.toContain('--full-auto');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
@@ -186,13 +191,26 @@ describe('CodexRunner buildArgs', () => {
     expect(lastArg).toContain('test prompt');
   });
 
-  it('should pass platform-specific xangi commands in the system prompt', async () => {
+  it('should include platform-specific xangi instructions only in a new session prompt', async () => {
     const runner = new CodexRunner({ platform: 'discord' });
     const { args } = await getSpawnArgs(runner, 'test prompt');
 
     const lastArg = args[args.length - 1];
+    expect(args.join('\n')).not.toContain('developer_instructions=');
+    expect(lastArg).toContain('test prompt');
+    expect(lastArg).toContain('<system-context>');
     expect(lastArg).toContain('Discord操作');
     expect(lastArg).not.toContain('Slack操作');
+  });
+
+  it('should omit fixed xangi instructions from a resumed session prompt', async () => {
+    const runner = new CodexRunner({ platform: 'discord' });
+    const { args } = await getSpawnArgs(runner, 'test prompt', { sessionId: 'abc-123' });
+
+    expect(args.join('\n')).not.toContain('developer_instructions=');
+    expect(args.at(-1)).toContain('test prompt');
+    expect(args.at(-1)).not.toContain('<system-context>');
+    expect(args.at(-1)).not.toContain('Discord操作');
   });
 
   it('should place prompt after resume and sessionId', async () => {
@@ -314,6 +332,10 @@ describe('CodexRunner エラー本文の救出', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(spawnMock.mock.calls[0][1]).toContain('resume');
     expect(spawnMock.mock.calls[1][1]).not.toContain('resume');
+    expect(spawnMock.mock.calls[0][1].at(-1)).toContain('hi');
+    expect(spawnMock.mock.calls[0][1].at(-1)).not.toContain('<system-context>');
+    expect(spawnMock.mock.calls[1][1].at(-1)).toContain('hi');
+    expect(spawnMock.mock.calls[1][1].at(-1)).toContain('<system-context>');
   });
 
   it('runStream: turn.failed イベントの error.message を救出する', async () => {

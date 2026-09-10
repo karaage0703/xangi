@@ -74,6 +74,10 @@ export class GrokRunner extends CliRunnerBase {
       args.push('--effort', options.effort);
     }
 
+    if (this.systemPrompt) {
+      args.push('--rules', this.systemPrompt);
+    }
+
     if (this.workdir) {
       args.push('--cwd', this.workdir);
     }
@@ -102,7 +106,7 @@ export class GrokRunner extends CliRunnerBase {
         })
       : 0;
     const startedAt = new Date().toISOString();
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, '');
     const args = [...this.buildBaseArgs(options), '-p', fullPrompt, '--output-format', 'json'];
 
     this.logExecution('Executing', options);
@@ -154,7 +158,7 @@ export class GrokRunner extends CliRunnerBase {
         })
       : 0;
     const startedAt = new Date().toISOString();
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, '');
     const args = [
       ...this.buildBaseArgs(options),
       '-p',

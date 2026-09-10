@@ -51,7 +51,7 @@ describe('OpenCodeRunner', () => {
     const { spawn, getMockProcess } = await import('child_process');
     const promise = runner.runStream('hello', {}, options);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const args = (spawn as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    const args = (spawn as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as string[];
     return { args, promise, process: (getMockProcess as () => any)() };
   }
 
@@ -73,7 +73,7 @@ describe('OpenCodeRunner', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('dspark/qwen3.8-27b');
     expect(args[args.indexOf('--variant') + 1]).toBe('high');
     expect(args[args.indexOf('--session') + 1]).toBe('ses_123');
-    expect(args.at(-1)).toContain('<system-context>');
+    expect(args.at(-1)).not.toContain('<system-context>');
     expect(args.at(-1)).toContain('hello');
 
     process.stdout.emit(
@@ -100,6 +100,27 @@ describe('OpenCodeRunner', () => {
     );
     process.emit('close', 0);
     await promise;
+  });
+
+  it('adds fixed xangi instructions only when starting a provider session', async () => {
+    const runner = new OpenCodeRunner({ platform: 'discord' });
+    const fresh = await start(runner);
+    expect(fresh.args.at(-1)).toContain('<system-context>');
+    fresh.process.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ type: 'step_start', sessionID: 'ses_new' }) + '\n')
+    );
+    fresh.process.emit('close', 0);
+    await fresh.promise;
+
+    const resumed = await start(runner, { sessionId: 'ses_new' });
+    expect(resumed.args.at(-1)).not.toContain('<system-context>');
+    resumed.process.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ type: 'step_start', sessionID: 'ses_new' }) + '\n')
+    );
+    resumed.process.emit('close', 0);
+    await resumed.promise;
   });
 
   it('streams text, tools, session ID, and aggregated usage', async () => {

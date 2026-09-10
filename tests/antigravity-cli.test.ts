@@ -321,6 +321,16 @@ describe('AntigravityRunner', () => {
     expect(prompt).toContain('not workspace files');
   });
 
+  it('omits fixed xangi instructions when resuming a provider session', async () => {
+    const runner = new AntigravityRunner({});
+    const { args } = await getSpawnArgs(runner, 'run', { sessionId: 'conv-existing' });
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('hello');
+    expect(prompt).not.toContain('ArtifactMetadata');
+    expect(prompt).not.toContain('<system-context>');
+  });
+
   it('allows overriding the Antigravity print timeout', async () => {
     process.env.ANTIGRAVITY_PRINT_TIMEOUT = '30s';
     const runner = new AntigravityRunner({});

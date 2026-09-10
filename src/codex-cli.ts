@@ -3,7 +3,6 @@ import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
 import { logResponse } from './transcript-logger.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { updateSessionContextUsage } from './sessions.js';
@@ -80,13 +79,20 @@ export class CodexRunner extends CliRunnerBase {
    * コマンド引数を構築（run/runStream 共通）
    */
   private buildArgs(prompt: string, options?: RunOptions): string[] {
-    const args: string[] = ['exec', '--json'];
-
     const skip = options?.skipPermissions ?? this.skipPermissions;
+    const args: string[] = [];
+    // --ask-for-approval is a top-level Codex option in 0.153.x and must
+    // precede the exec subcommand.
+    if (!skip) args.push('--ask-for-approval', 'never');
+    args.push('exec', '--json');
+
     if (skip) {
       args.push('--dangerously-bypass-approvals-and-sandbox');
     } else {
-      args.push('--full-auto');
+      // xangi is non-interactive, so approval prompts cannot be answered. Keep
+      // filesystem access sandboxed and fail closed for operations that would
+      // require an approval instead of using the removed --full-auto alias.
+      args.push('--sandbox', 'workspace-write');
     }
 
     // gitリポジトリ外でも動作するように
@@ -109,12 +115,7 @@ export class CodexRunner extends CliRunnerBase {
       args.push('resume', options.sessionId);
     }
 
-    // システムプロンプトをプロンプトに注入
-    const fullPrompt = this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${prompt}`
-      : prompt;
-
-    args.push(fullPrompt);
+    args.push(prompt);
 
     return args;
   }
@@ -250,7 +251,7 @@ export class CodexRunner extends CliRunnerBase {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
+    const prompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(prompt, options);
 
     this.logExecution('Executing', options);
@@ -278,7 +279,8 @@ export class CodexRunner extends CliRunnerBase {
       console.warn(
         `[codex] Resume failed for stale thread ${options.sessionId.slice(0, 8)}..., retrying with a new session`
       );
-      const retryArgs = this.buildArgs(prompt, { ...options, sessionId: undefined });
+      const retryPrompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt);
+      const retryArgs = this.buildArgs(retryPrompt, { ...options, sessionId: undefined });
       stdout = await this.collectOutput(retryArgs, options?.channelId, collectOpts);
     }
 
@@ -324,7 +326,7 @@ export class CodexRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
+    const prompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(prompt, options);
 
     this.logExecution('Streaming', options);
@@ -364,7 +366,11 @@ export class CodexRunner extends CliRunnerBase {
     try {
       return await this.executeStreamWithResumeRetry(args, scopedCallbacks, options, {
         isStaleError: (error) => this.isStaleResumeError(error),
-        args: () => this.buildArgs(prompt, { ...options, sessionId: undefined }),
+        args: () =>
+          this.buildArgs(this.buildTaggedPrompt(rawPrompt, this.systemPrompt), {
+            ...options,
+            sessionId: undefined,
+          }),
         warning: (id) =>
           `[codex] Resume failed for stale thread ${id.slice(0, 8)}..., retrying with a new session`,
         onComplete,
