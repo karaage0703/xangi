@@ -148,14 +148,14 @@ type MonitorFilter = 'chat' | 'web' | 'scheduler';
 export type MonitorTimeRange = '24h' | '7d' | '30d' | 'all';
 export type MonitorLane = 'running' | 'waiting' | 'completed';
 export type UsageDisplayMode = 'used' | 'remaining';
-export const DEFAULT_USAGE_DISPLAY_MODE: UsageDisplayMode = 'remaining';
+export const DEFAULT_USAGE_DISPLAY_MODE: UsageDisplayMode = 'used';
 
 const PAGE_SIZE = 200;
 const USAGE_VISIBILITY_KEY = 'xangi.monitor.hidden-usage-providers';
 export const USAGE_DISPLAY_MODE_KEY = 'xangi:monitor-usage-mode';
 
 export function resolveUsageDisplayMode(stored: string | null | undefined): UsageDisplayMode {
-  return stored === 'used' ? 'used' : 'remaining';
+  return stored === 'remaining' ? 'remaining' : DEFAULT_USAGE_DISPLAY_MODE;
 }
 
 const FILTERS: Array<{ value: MonitorFilter; label: string }> = [

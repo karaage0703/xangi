@@ -88,10 +88,11 @@ describe('Monitor account usage', () => {
     expect(usageDisplayPace(110, 'remaining')).toBe(0);
   });
 
-  it('defaults the usage display mode to remaining unless explicitly set to used', () => {
-    expect(DEFAULT_USAGE_DISPLAY_MODE).toBe('remaining');
-    expect(resolveUsageDisplayMode(null)).toBe('remaining');
-    expect(resolveUsageDisplayMode(undefined)).toBe('remaining');
+  it('keeps used as the default usage display mode unless remaining is explicitly selected', () => {
+    expect(DEFAULT_USAGE_DISPLAY_MODE).toBe('used');
+    expect(resolveUsageDisplayMode(null)).toBe('used');
+    expect(resolveUsageDisplayMode(undefined)).toBe('used');
+    expect(resolveUsageDisplayMode('invalid')).toBe('used');
     expect(resolveUsageDisplayMode('used')).toBe('used');
     expect(resolveUsageDisplayMode('remaining')).toBe('remaining');
   });
