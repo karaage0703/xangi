@@ -27,7 +27,6 @@ import { threadIdFor, turnIdFor, subscribeEvents } from './events-emitter.js';
 import type { PublishedEvent } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { getActivity } from './activity-store.js';
-import { flowFromHostPlatform } from './inter-instance-chat/index.js';
 import { isLocalOrPrivate } from './pet-inbox-server.js';
 import { readSessionMessages } from './transcript-logger.js';
 import { truncateSessionTitle } from './session-title.js';
@@ -393,7 +392,6 @@ async function handlePrompt(
     startedTurn = true;
     busy.add(appSessionId);
     setStatus(appSessionId, 'busy', provider);
-    flowFromHostPlatform(text, 'user');
     unsubscribe = subscribeEvents((event) => {
       if (event.thread_id !== threadId) return;
       const msg = eventToTerminalMessage(event);
@@ -434,7 +432,6 @@ async function handlePrompt(
             if (isEvenTerminalPlaceholderTitle(entry.title)) {
               updateSessionTitle(appSessionId, truncateSessionTitle(text));
             }
-            flowFromHostPlatform(completedResult.result, 'agent');
           },
           onError: (err) => {
             pushMessage(appSessionId, { type: 'error', message: err.message });

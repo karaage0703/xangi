@@ -36,7 +36,6 @@ import {
   removeSession,
   closeSession,
   getSessionLifecycle,
-  setAutoTalk,
   WEB_CHAT_CONTEXT_PREFIX,
   subscribeSessionChanges,
 } from './sessions.js';
@@ -73,8 +72,7 @@ import {
 } from './session-title.js';
 import { isSchedulerRunId } from './scheduler-run.js';
 import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
-import { flowFromHostPlatform, getInterChatConfig } from './inter-instance-chat/index.js';
-import { setupAutoTalk } from './inter-instance-chat/auto-talk.js';
+import { getInterChatConfig } from './inter-instance-chat/index.js';
 import { resolveAccessUrls, formatAccessUrls, primaryAccessUrl } from './access-urls.js';
 import { resolveWebChatHost, resolveWebChatPort } from './web-status.js';
 import { handleEventsStreamRequest } from './events-stream-server.js';
@@ -515,10 +513,9 @@ export function startWebChat(options: WebChatOptions): void {
         .filter((s) => s.startsWith('.'))
     : [];
 
-  const interChatEnabled = getInterChatConfig().enabled;
-
-  // 自走モード（auto-talk）の準備。inter-chat 有効時のみ実体起動。
-  const autoTalkHandle = interChatEnabled ? setupAutoTalk({ agentRunner }) : null;
+  const interChatConfig = getInterChatConfig();
+  const interChatEnabled = interChatConfig.enabled;
+  const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
 
   const buildSessionsResponse = (
     query: {
@@ -602,8 +599,6 @@ export function startWebChat(options: WebChatOptions): void {
         lifecycle,
         closedAt: s.closedAt,
         closeReason: s.closeReason,
-        autoTalk: s.autoTalk === true,
-        autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
         sessionMode:
           s.agent?.sessionMode ??
           (s.agent?.backend && resolveExtensionAgentBackend(s.agent.backend)
@@ -663,8 +658,6 @@ export function startWebChat(options: WebChatOptions): void {
           isActive: false,
           isCurrent: false,
           lifecycle: 'closed' as const,
-          autoTalk: false,
-          autoTalkActive: false,
           sessionMode: 'stateful' as const,
           timeoutAt: undefined,
           maxTimeoutAt: undefined,
@@ -891,10 +884,10 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // inter-instance-chat の HTML / API は専用ハンドラに委譲
-    if (url === '/inter-chat' || url === '/inter-chat/' || url.startsWith('/api/inter-chat')) {
+    // inter-instance-chat のHTTP APIは専用ハンドラに委譲
+    if (url.startsWith('/api/inter-chat')) {
       try {
-        const handled = await handleInterChatRequest(req, res);
+        const handled = await handleInterChatRequest(req, res, agentRunner, workdir);
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
@@ -1024,7 +1017,6 @@ export function startWebChat(options: WebChatOptions): void {
           uploadAccept: uploadAccept || null,
           uploadMaxBytes: uploadMaxBytes(),
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
-          interChatEnabled,
           allowedBackends: options.resolver?.getSelectableBackends() ?? [],
           completionShowElapsed: options.config?.completion.showElapsed ?? true,
         })
@@ -2302,53 +2294,6 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // POST /api/sessions/:id/autotalk — 自走モード ON/OFF
-    // body: { enabled: boolean }
-    if (url.match(/^\/api\/sessions\/[^/]+\/autotalk$/) && req.method === 'POST') {
-      const targetId = decodeURIComponent(
-        url.replace('/api/sessions/', '').replace('/autotalk', '')
-      );
-      const body = await readBody(req);
-      const enabled = body.enabled === true;
-      const entry = getSessionEntry(targetId);
-      if (!entry) {
-        sendJson(res, 404, { error: 'session not found' });
-        return;
-      }
-      if (entry.platform !== 'web') {
-        sendJson(res, 409, { error: 'autotalk is only available for web sessions' });
-        return;
-      }
-      const interCfg = getInterChatConfig();
-      if (!interCfg.enabled) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error:
-              'INTER_INSTANCE_CHAT_ENABLED=true が必要です（自走発話は inter-chat に流れます）',
-          })
-        );
-        return;
-      }
-      setAutoTalk(targetId, enabled);
-      if (autoTalkHandle) {
-        if (enabled) autoTalkHandle.enable(targetId);
-        else autoTalkHandle.disable(targetId);
-      }
-      console.log(`[web-chat] autotalk ${enabled ? 'ON' : 'OFF'} for session ${targetId}`);
-      invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          appSessionId: targetId,
-          autoTalk: enabled,
-          active: autoTalkHandle?.isActive(targetId) ?? false,
-        })
-      );
-      return;
-    }
-
     // POST /api/sessions/:id/close — 履歴を残してSessionを終了
     const closeSessionMatch = url.match(/^\/api\/sessions\/([^/]+)\/close$/);
     if (closeSessionMatch && req.method === 'POST') {
@@ -2380,7 +2325,6 @@ export function startWebChat(options: WebChatOptions): void {
       url.startsWith('/api/sessions/') &&
       !url.includes('/resume') &&
       !url.includes('/stop') &&
-      !url.includes('/autotalk') &&
       !url.includes('/messages/') &&
       req.method === 'DELETE'
     ) {
@@ -2713,9 +2657,6 @@ export function startWebChat(options: WebChatOptions): void {
 
           console.log(`[web-chat] Message (session ${appSessionId}): ${message.slice(0, 100)}`);
 
-          // INTER_INSTANCE_CHAT_ENABLED=true なら自分の jsonl にも流す（他 xangi へ伝播）
-          flowFromHostPlatform(message, 'user');
-
           const threadId = threadIdFor('web', appSessionId);
           const turnId = turnIdFor('web', `${Date.now()}`);
           const sessionTitle = getSessionEntry(appSessionId)?.title;
@@ -2893,9 +2834,6 @@ export function startWebChat(options: WebChatOptions): void {
                     updateSessionTitle(appSessionId, truncateSessionTitle(message));
                   }
                   invalidateSessionSnapshots();
-
-                  // INTER_INSTANCE_CHAT_ENABLED=true なら agent 応答も自分の jsonl に流す
-                  flowFromHostPlatform(stripReplySuggestionMarkup(completedResult.result), 'agent');
                 },
                 onError: (error) => {
                   sendSSE('error', { message: error.message });
@@ -2996,8 +2934,10 @@ export function startWebChat(options: WebChatOptions): void {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。
     if (uiEnabled) {
       console.log(`[web-chat] Chat UI: ${primaryAccessUrl(port, host)}`);
-    } else {
+    } else if (eventsServerEnabled) {
       console.log(`[xangi-events] Headless companion API: ${primaryAccessUrl(port, host)}`);
+    } else {
+      console.log(`[inter-instance-chat] HTTP API: ${primaryAccessUrl(port, host)}`);
     }
     // Tailscale が動いてれば LAN/Tailnet 経由のアクセス URL も出す（best-effort）。
     // host を loopback / 特定 IP に絞っている場合は到達できない経路を出さないよう、
@@ -3006,8 +2946,14 @@ export function startWebChat(options: WebChatOptions): void {
       .then((urls) => {
         if (uiEnabled) console.log(formatAccessUrls('web-chat', urls));
         // pull 型 events SSE の URL も併せて出す。consumer (pet 等) はこれに繋ぐ。
-        const eventsUrls = urls.map((u) => `${u}/api/events/stream`);
-        console.log(formatAccessUrls('xangi-events (SSE)', eventsUrls));
+        if (eventsServerEnabled) {
+          const eventsUrls = urls.map((u) => `${u}/api/events/stream`);
+          console.log(formatAccessUrls('xangi-events (SSE)', eventsUrls));
+        }
+        if (interChatEnabled) {
+          const interChatUrls = urls.map((u) => `${u}/api/inter-chat/ask`);
+          console.log(formatAccessUrls('inter-instance-chat', interChatUrls));
+        }
       })
       .catch(() => {
         // resolveAccessUrls 内で握り潰すが念のため

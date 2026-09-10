@@ -1,6 +1,6 @@
 # Remote workers (MVP)
 
-On macOS, `xangi worker restart` rebuilds the launchd command from the current CLI while preserving pairing credentials. TypeScript checkouts register an absolute loader URL. `status` requires a running launchd process with a PID; check Gateway connectivity separately with `xangi tool remote_worker --action list`.
+On macOS, `xangi worker start` bootstraps an unregistered LaunchAgent, uses `kickstart` for a registered but stopped agent, and leaves an already running worker untouched. `xangi worker restart` rebuilds the launchd command from the current CLI while preserving pairing credentials, then waits for launchd to finish removing the old service before registering it again. TypeScript checkouts register an absolute loader URL. `status` requires a running launchd process with a PID; check Gateway connectivity separately with `xangi tool remote_worker --action list`.
 
 Remote workers let xangi use compute resources and attached devices on macOS, Linux, and Windows. The worker opens an outbound WebSocket connection to the xangi Gateway, so the worker does not require an inbound port or SSH login.
 

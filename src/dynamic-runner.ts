@@ -24,9 +24,14 @@ import {
   setProviderSessionMode,
   recordSessionModelExecution,
 } from './sessions.js';
-import { normalizeModelId, observeExecutionModel, type ModelExecution } from './model-execution.js';
+import {
+  normalizeModelId,
+  observeExecutionEffort,
+  observeExecutionModel,
+  type ModelExecution,
+} from './model-execution.js';
 import { attachResponseModelExecution } from './transcript-logger.js';
-import { readCodexTurnModels } from './codex-model-evidence.js';
+import { readCodexTurnEvidence } from './codex-model-evidence.js';
 import type { ChatPlatform } from './prompts/index.js';
 import {
   appendUserPromptSubmitContext,
@@ -287,6 +292,12 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
         this.persistModelExecution(runOptions, execution);
         callbacks.onModelSelection?.(selection);
       },
+      onEffort: (effort) => {
+        if (execution.status !== 'running') return;
+        if (observeExecutionEffort(execution, effort))
+          this.persistModelExecution(runOptions, execution);
+        callbacks.onEffort?.(effort);
+      },
       // Complete consumers only after the result and model snapshot have been persisted.
       onComplete: undefined,
     };
@@ -334,10 +345,13 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       ? prompt
       : await this.applyUserPromptSubmitHooks(prompt, runOptions);
     const configuredModel = normalizeModelId(resolved.model);
+    const configuredEffort = runOptions?.effort ?? resolved.effort;
     const execution: ModelExecution = {
       turnId: randomUUID(),
       backend: resolved.backend,
       configuredModel,
+      configuredEffort,
+      effortSource: configuredEffort ? 'configuration' : undefined,
       observedModels: [],
       source: configuredModel ? 'configuration' : 'unknown',
       startedAt: new Date(startedAt).toISOString(),
@@ -360,20 +374,22 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     execution: ModelExecution,
     result?: RunResult
   ): Promise<void> {
-    if (execution.backend === 'codex' && result?.sessionId && !result.model) {
-      const models = await readCodexTurnModels({
+    if (execution.backend === 'codex' && result?.sessionId) {
+      const evidence = await readCodexTurnEvidence({
         providerSessionId: result.sessionId,
         cwd: options?.workdir ?? this.workdir,
         startedAt: execution.startedAt,
         finishedAt: new Date().toISOString(),
       });
-      for (const model of models) observeExecutionModel(execution, model);
+      for (const model of evidence.models) observeExecutionModel(execution, model);
+      observeExecutionEffort(execution, evidence.effort);
     }
     if (result?.modelSelection === 'Auto') execution.modelSelection = 'Auto';
     const latestObserved = execution.effectiveModel;
     for (const model of result?.models ?? []) observeExecutionModel(execution, model);
     // A deduplicated result.models list cannot reconstruct A → B → A ordering.
     observeExecutionModel(execution, result?.model ?? latestObserved);
+    observeExecutionEffort(execution, result?.effort);
     if (result && execution.effectiveModel) {
       result.model = execution.effectiveModel;
       result.models = [...execution.observedModels];

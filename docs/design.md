@@ -102,9 +102,11 @@ flowchart LR
 
 `http.createServer` ベースの軽量サーバー（Express 依存なし）。
 
-`WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。`XANGI_EVENTS_SERVER_ENABLED=true`だけを指定したheadless構成では同じサーバーを起動するが、health、イベントSSE、session参照、pet/device/terminal inboxだけを公開し、Web UI assetとその他のWeb APIは404にする。
+`WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。eventsまたはHTTP版inter-instance chatだけを指定したheadless構成でも同じサーバーを起動するが、必要な専用endpoint以外のWeb UI assetとWeb APIは404にする。
 
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
+- 指名問い合わせは既定でBearer認証付きHTTPを使い、`INTER_INSTANCE_CHAT_PEERS`から宛先を解決する。受信側は送信元ごとの通常Web sessionを再利用し、transcriptとprovider文脈を永続化する。別instanceの内容はユーザー承認として扱わない
+- 指名問い合わせの受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`で制限できる。未設定または`*`は正しい共有tokenを持つ全instanceを許可する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
@@ -1089,7 +1091,7 @@ src/
 │   ├── xangi.ts        #   人間向けターミナルCLIエントリーポイント
 │   ├── tool-command.ts #   tool-server用共通dispatcher
 │   └── xangi-cmd.ts    #   後方互換エントリーポイント
-├── inter-instance-chat/ # インスタンス間チャット（per-instance jsonl / auto-talk / 履歴ビューア）
+├── inter-instance-chat/ # インスタンス間チャット（認証付きHTTP / 通常session履歴）
 ├── local-llm/          # Local LLMアダプター
 │   ├── runner.ts       #   メインランナー（セッション管理・ツール実行ループ）
 │   ├── llm-client.ts   #   LLM APIクライアント（Ollama native + OpenAI互換）
@@ -1183,6 +1185,8 @@ src/
 
 ### 実行モデルの永続化
 
-`SessionEntry.modelExecution` は直近turn、`modelHistory` はturn IDごとの実行スナップショットを保持する。各スナップショットには `backend`、`configuredModel`、最後に確認した `effectiveModel`、確認したモデル名集合 `observedModels`、`source`（provider / configuration / unknown）、開始・更新時刻、状態、provider session IDを保存する。開始時、モデル通知時、成功・失敗終了時に更新し、終了記録はトランスクリプトにも付加する。
+`SessionEntry.modelExecution` は直近turn、`modelHistory` はturn IDごとの実行スナップショットを保持する。各スナップショットには `backend`、`configuredModel`、最後に確認した `effectiveModel`、確認したモデル名集合 `observedModels`、実行時の `configuredEffort`、providerが確認した `effectiveEffort`、各確認元、開始・更新時刻、状態、provider session IDを保存する。開始時、モデル・effort通知時、成功・失敗終了時に更新し、終了記録はトランスクリプトにも付加する。
+
+実効effortのprovider証拠はbackend固有の構造化記録から取得する。Codexは対象turnのrollout、Grokは実行前のbyte offset以降へ追記されたmain sessionの`chat_history.jsonl`、Antigravityはstreamで確認したモデルIDのeffort接尾辞を使用する。Copilotの`auto`などproviderが実効値を返さない実行は補完せず不明のまま保持する。
 
 `agent.model` はresume判定用の指定値であり、実測モデルで上書きしない。CLIやプロバイダーによるalias解決・fallbackは実行スナップショットで表現する。UIは最後の実測モデルを先頭にし、同turnの他の確認モデルも表示する。過去の設定やモデルを現在のresolverから補完しない。古い `agent.model` は設定値・実行未確認、証拠のないモデルは不明とする。復元済みの `modelHistory` だけが存在する場合はその最新記録を表示する。Webの次回設定は別の `nextBackend` として扱い、Discordでは設定対象の親チャンネルと実行記録を参照するthreadのcontext keyを分離する。

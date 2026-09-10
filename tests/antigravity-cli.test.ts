@@ -404,6 +404,29 @@ describe('AntigravityRunner', () => {
     });
   });
 
+  it('reports effort encoded by the provider-confirmed model', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+    const mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'SUCCESS',
+          response: 'ok',
+          conversation_id: 'conv-effort',
+          model: 'gemini-3.8-flash-low',
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toMatchObject({
+      model: 'gemini-3.8-flash-low',
+      effort: 'low',
+    });
+  });
+
   it('replaces a supplied session id with the JSON conversation id', async () => {
     const runner = new AntigravityRunner({});
     const promise = runner.run('hello', { sessionId: 'conv-old' });

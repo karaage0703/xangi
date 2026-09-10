@@ -198,7 +198,7 @@ describe('packaging/build-bundle.sh', () => {
     expect(entries).toContain(`${root}/bin/xangi-cmd`);
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
-    expect(entries).toContain(`${root}/web/inter-chat.html`);
+    expect(entries).not.toContain(`${root}/web/inter-chat.html`);
     expect(entries).toContain(`${root}/web/app/index.html`);
     expect(entries).toContain(`${root}/web/app/assets/app.js`);
     expect(entries).toContain(`${root}/web/app/assets/app.css`);

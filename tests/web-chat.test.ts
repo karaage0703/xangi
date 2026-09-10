@@ -56,6 +56,7 @@ import {
 import { stopManagedExtensions } from '../src/extensions.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 import type { ExternalChatUrlResolvers } from '../src/external-chat-link.js';
+import { _resetInterChatConfigForTest } from '../src/inter-instance-chat/index.js';
 
 describe('Web Chat continuation actions', () => {
   it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
@@ -464,6 +465,64 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('認証付きinter-chat依頼を通常Webセッションの履歴へ保存する', async () => {
+    process.env.INTER_INSTANCE_CHAT_ENABLED = 'true';
+    process.env.INTER_INSTANCE_CHAT_TOKEN = 'shared-test-secret';
+    process.env.XANGI_INSTANCE_ID = 'instance-b';
+    _resetInterChatConfigForTest();
+    runner.persistResults = true;
+
+    try {
+      const responsePromise = fetch(`${baseUrl}/api/inter-chat/ask`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer shared-test-secret',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'instance-a',
+          to: 'instance-b',
+          request_id: '123e4567-e89b-42d3-a456-426614174000',
+          text: '前回の続きも覚えていて',
+        }),
+      });
+
+      let contextKey = '';
+      await vi.waitFor(() => {
+        contextKey =
+          Array.from(runner.pending.keys()).find((key) => key.startsWith('web-chat:')) || '';
+        expect(contextKey).not.toBe('');
+      });
+      runner.release(contextKey);
+
+      const response = await responsePromise;
+      const body = (await response.json()) as { session_id: string; text: string };
+      expect(response.status).toBe(200);
+      expect(body.text).toBe('ok');
+      expect(getSessionEntry(body.session_id)).toMatchObject({
+        platform: 'web',
+        scope: 'interactive',
+        lifecycle: 'open',
+        interAgentPeerId: 'instance-a',
+      });
+      const history = readSessionMessages(testDir, body.session_id);
+      expect(history.some((message) => message.role === 'user')).toBe(true);
+      expect(history.some((message) => message.role === 'assistant')).toBe(true);
+      const detail = (await (
+        await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(body.session_id)}`)
+      ).json()) as { messages: Array<{ role: string; content: string }> };
+      expect(detail.messages[0]).toMatchObject({
+        role: 'user',
+        content: '前回の続きも覚えていて',
+      });
+    } finally {
+      delete process.env.INTER_INSTANCE_CHAT_ENABLED;
+      delete process.env.INTER_INSTANCE_CHAT_TOKEN;
+      delete process.env.XANGI_INSTANCE_ID;
+      _resetInterChatConfigForTest();
+    }
   });
 
   it('creates an Agent Run with an isolated session and persists its result manifest', async () => {
@@ -2127,7 +2186,6 @@ process.stdin.on('end', () => process.exit(0));
 
   it('serves the React shell and exposes inter-chat state through config', async () => {
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
-      interChatEnabled?: boolean;
       allowedBackends?: string[];
       uploadMaxBytes?: number;
       completionShowElapsed?: boolean;
@@ -2135,7 +2193,6 @@ process.stdin.on('end', () => process.exit(0));
     const html = await (await fetch(baseUrl)).text();
     const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
 
-    expect(config.interChatEnabled).toBe(false);
     expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
     expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
     expect(config.completionShowElapsed).toBe(true);

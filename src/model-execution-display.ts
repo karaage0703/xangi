@@ -18,12 +18,17 @@ export function formatModelExecution(
     return configured?.model
       ? `${configured.backend} / ${configured.model}（当時の設定値・実行未確認）`
       : '不明（実行モデルの記録なし）';
+  const effort = execution.effectiveEffort
+    ? `effort=${execution.effectiveEffort}`
+    : execution.configuredEffort
+      ? `effort=${execution.configuredEffort}（設定値・実行未確認）`
+      : 'effort=default（バックエンドに委任・実効値不明）';
   if (
     !execution.effectiveModel &&
     !execution.observedModels.length &&
     execution.modelSelection === 'Auto'
   )
-    return `${execution.backend} / Auto（自動選択・内部モデル不明）`;
+    return `${execution.backend} / Auto（自動選択・内部モデル不明） / ${effort}`;
   const model =
     execution.effectiveModel || execution.observedModels.at(-1) || execution.configuredModel;
   const evidence =
@@ -45,5 +50,5 @@ export function formatModelExecution(
         hour12: false,
       });
   const details = [evidence, time].filter(Boolean).join('、');
-  return `${execution.backend} / ${model || '不明'}${details ? `（${details}）` : ''}${additional.length ? ` / 同turnで確認: ${additional.join(', ')}` : ''}`;
+  return `${execution.backend} / ${model || '不明'} / ${effort}${details ? `（${details}）` : ''}${additional.length ? ` / 同turnで確認: ${additional.join(', ')}` : ''}`;
 }
