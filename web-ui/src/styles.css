@@ -3625,6 +3625,34 @@ video.media-preview {
   font-size: 11px;
 }
 
+.monitor-usage-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.monitor-usage-mode-toggle {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.monitor-usage-mode-button {
+  padding: 4px 8px;
+}
+
+.monitor-usage-mode-button + .monitor-usage-mode-button {
+  border-left: 1px solid var(--border);
+}
+
+.monitor-usage-mode-button.active {
+  color: var(--surface);
+  background: var(--accent);
+}
+
 .monitor-usage-providers {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
