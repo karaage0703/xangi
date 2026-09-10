@@ -124,11 +124,13 @@ describe('usage monitor parsers', () => {
             {
               label: '5時間',
               usedPercent: 5,
+              windowDurationMins: 300,
               resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
             },
             {
               label: '週次',
               usedPercent: 9.64064,
+              windowDurationMins: 10_080,
               resetsAt: Date.parse('2026-09-01T00:00:00.000Z') / 1000,
             },
           ],
@@ -141,16 +143,45 @@ describe('usage monitor parsers', () => {
             {
               label: '5時間',
               usedPercent: 0,
+              windowDurationMins: 300,
               resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
             },
             {
               label: '週次',
               usedPercent: 0,
+              windowDurationMins: 10_080,
               resetsAt: Date.parse('2026-09-02T00:00:00.000Z') / 1000,
             },
           ],
         },
       ],
+    });
+  });
+
+  it('maps window durations for known Antigravity quota buckets', () => {
+    const { groups } = parseAntigravityStatus({
+      quota: {
+        'gemini-5h': { remaining_fraction: 1 },
+        'gemini-weekly': { remaining_fraction: 1 },
+        '3p-5h': { remaining_fraction: 1 },
+        '3p-weekly': { remaining_fraction: 1 },
+      },
+    });
+
+    expect(
+      Object.fromEntries(
+        groups.flatMap((group) =>
+          group.windows.map((window) => [
+            `${group.id}:${window.label}`,
+            window.windowDurationMins,
+          ])
+        )
+      )
+    ).toEqual({
+      'gemini:5時間': 300,
+      'gemini:週次': 10_080,
+      'third-party:5時間': 300,
+      'third-party:週次': 10_080,
     });
   });
 

@@ -319,30 +319,40 @@ export function parseAntigravityStatus(payload: unknown): {
   const status = payload as AntigravityStatusPayload;
   const knownQuotaBuckets: Record<
     string,
-    { groupId: string; groupLabel: string; windowLabel: string; order: number }
+    {
+      groupId: string;
+      groupLabel: string;
+      windowLabel: string;
+      windowDurationMins: number;
+      order: number;
+    }
   > = {
     'gemini-5h': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     'gemini-weekly': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
     '3p-5h': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     '3p-weekly': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
   };
@@ -363,6 +373,8 @@ export function parseAntigravityStatus(payload: unknown): {
       usedPercent: Number(
         Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
       ),
+      windowDurationMins:
+        known?.windowDurationMins ?? (/week/i.test(id) ? 10_080 : /5h/i.test(id) ? 300 : undefined),
       resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
     };
     if (!known) {
