@@ -88,7 +88,10 @@ describe('GrokRunner', () => {
     expect(command).toBe('grok');
     expect(args).toContain('--no-auto-update');
     expect(args).toContain('--always-approve');
+    expect(args).toContain('--rules');
+    expect(args[args.indexOf('--rules') + 1]).toContain('XANGI_COMMANDS');
     expect(args).toContain('-p');
+    expect(args[args.indexOf('-p') + 1]).not.toContain('<system-context>');
     expect(args[args.indexOf('--output-format') + 1]).toBe('json');
   });
 

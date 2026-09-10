@@ -134,6 +134,15 @@ describe('CursorRunner', () => {
     expect(prompt).not.toContain('## Slack固有ルール');
   });
 
+  it('omits fixed xangi instructions when resuming a provider session', async () => {
+    const runner = new CursorRunner({ platform: 'discord' });
+    const { args } = await getSpawnArgs(runner, 'run', { sessionId: 'chat-123' });
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('hello');
+    expect(prompt).not.toContain('## Discord固有ルール');
+  });
+
   it('uses auto model by default to avoid Cursor CLI global model drift', async () => {
     const runner = new CursorRunner({});
     const { args } = await getSpawnArgs(runner, 'stream');

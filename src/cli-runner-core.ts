@@ -156,9 +156,13 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
     console.log(`[${this.logPrefix}] ${kind} in ${this.workdir || 'default dir'}${sessionInfo}`);
   }
 
-  protected buildTaggedPrompt(rawPrompt: string, systemPrompt: string): string {
+  protected buildTaggedPrompt(
+    rawPrompt: string,
+    systemPrompt: string,
+    includeSystemPrompt = true
+  ): string {
     const prompt = prependRuntimeContext(rawPrompt, this.workdir);
-    return systemPrompt
+    return includeSystemPrompt && systemPrompt
       ? `<system-context>\n${systemPrompt}\n</system-context>\n\n${prompt}`
       : prompt;
   }

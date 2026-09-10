@@ -394,7 +394,7 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
 
     this.logExecution('Executing', options);
 
@@ -509,7 +509,7 @@ export class AntigravityRunner extends CliRunnerBase {
       return this.runPseudoStream(prompt, callbacks, options, attemptOptions);
     }
 
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
     this.logExecution('Streaming', options);
 
     if (attemptOptions.recordPrompt !== false) this.logPromptTranscript(fullPrompt, options);

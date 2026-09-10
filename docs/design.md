@@ -299,6 +299,7 @@ xangiがAI CLIに注入するシステムプロンプトを管理：
   - ユーザー向けslash commandは各platformの `/help` とcommand metadataを正本にする
   - platform未指定時は固有ルールを注入せず、Discord / Slackの操作説明を混在させない
 - **プラットフォーム識別** — 各メッセージに `[プラットフォーム: Discord]` or `[プラットフォーム: Slack]` を注入。AIが適切なコマンドを使い分け
+- **固定指示の重複防止** — ネイティブなsystem指示口があるCLIはその経路を使う。user promptへの埋め込みが必要なCLIはプロバイダーセッションの初回だけ固定指示を渡し、resume時には複製しない。stale sessionから新規セッションへ戻す場合は固定指示も再投入する
 
 #### Runtime context 注入（runtime-context.ts）
 
@@ -320,9 +321,12 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | CLI         | 自動読み込みファイル     | 注入方法                                                                                          |
 | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
 | Claude Code | `CLAUDE.md`              | `--append-system-prompt`（一回限り）                                                              |
-| Codex CLI   | `AGENTS.md`              | `<system-context>` タグで埋め込み                                                                 |
-| OpenCode    | `AGENTS.md`              | CLI側で自動読み込み。`.agents/skills`もOpenCodeへ委譲                                             |
-| Cursor CLI  | `AGENTS.md`              | CLI側で自動読み込み（xangi側の注入なし）                                                          |
+| Codex CLI   | `AGENTS.md`              | CLI側で自動読み込み。xangi固定指示はプロバイダーセッションの初回user promptだけに注入             |
+| OpenCode    | `AGENTS.md`              | CLI側で自動読み込み。`.agents/skills`もOpenCodeへ委譲。xangi固定指示は初回user promptだけに注入   |
+| Cursor CLI  | `AGENTS.md`              | CLI側で自動読み込み。xangi固定指示は初回user promptだけに注入                                     |
+| Grok CLI    | CLI固有                  | xangi固定指示はネイティブの`--rules`でsystem promptへ追加                                         |
+| Copilot CLI | CLI固有                  | xangi固定指示はプロバイダーセッションの初回user promptだけに注入                                  |
+| Antigravity | CLI固有                  | xangi固定指示はプロバイダーセッションの初回user promptだけに注入                                  |
 | Local LLM   | `AGENTS.md`, `MEMORY.md` | システムプロンプトに直接埋め込み（`CLAUDE.md` は通常 `AGENTS.md` のシンボリックリンクのため除外） |
 
 ### AI CLIアダプター

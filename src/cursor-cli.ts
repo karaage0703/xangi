@@ -91,9 +91,9 @@ export class CursorRunner extends CliRunnerBase {
     return `${baseModel}[${parameters.join(',')}]`;
   }
 
-  private buildFullPrompt(rawPrompt: string): string {
+  private buildFullPrompt(rawPrompt: string, includeSystemPrompt = true): string {
     const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
+    return includeSystemPrompt && this.systemPrompt
       ? `${this.systemPrompt}\n\n---\n\n${promptWithRuntime}`
       : promptWithRuntime;
   }
@@ -107,7 +107,7 @@ export class CursorRunner extends CliRunnerBase {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildFullPrompt(prompt, !options?.sessionId);
     const args = [...this.buildBaseArgs(options), '-p', fullPrompt, '--output-format', 'json'];
 
     this.logExecution('Executing', options);
@@ -128,7 +128,7 @@ export class CursorRunner extends CliRunnerBase {
       const retryArgs = [
         ...this.buildBaseArgs({ ...options, sessionId: undefined }),
         '-p',
-        fullPrompt,
+        this.buildFullPrompt(prompt),
         '--output-format',
         'json',
       ];
@@ -177,7 +177,7 @@ export class CursorRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildFullPrompt(prompt, !options?.sessionId);
     const args = [
       ...this.buildBaseArgs(options),
       '-p',
@@ -197,7 +197,7 @@ export class CursorRunner extends CliRunnerBase {
       args: () => [
         ...this.buildBaseArgs({ ...options, sessionId: undefined }),
         '-p',
-        fullPrompt,
+        this.buildFullPrompt(prompt),
         '--output-format',
         'stream-json',
         '--stream-partial-output',

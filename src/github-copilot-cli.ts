@@ -130,7 +130,7 @@ export class GitHubCopilotRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(fullPrompt, options);
 
     this.logExecution('Streaming', options);
@@ -153,7 +153,11 @@ export class GitHubCopilotRunner extends CliRunnerBase {
 
     return this.executeStreamWithResumeRetry(args, callbacks, options, {
       isStaleError: (error) => this.isStaleResumeError(error),
-      args: () => this.buildArgs(fullPrompt, { ...options, sessionId: undefined }),
+      args: () =>
+        this.buildArgs(this.buildTaggedPrompt(prompt, this.systemPrompt), {
+          ...options,
+          sessionId: undefined,
+        }),
       warning: (id) =>
         `[github-copilot] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
       onComplete,

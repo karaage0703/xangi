@@ -96,7 +96,7 @@ export class OpenCodeRunner extends CliRunnerBase {
     options?: RunOptions
   ): Promise<RunResult> {
     const startedAt = Date.now();
-    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(fullPrompt, options);
 
     this.logExecution('Streaming', options);
@@ -109,7 +109,11 @@ export class OpenCodeRunner extends CliRunnerBase {
       options,
       {
         isStaleError: (error) => this.isStaleSessionError(error),
-        args: () => this.buildArgs(fullPrompt, { ...options, sessionId: undefined }),
+        args: () =>
+          this.buildArgs(this.buildTaggedPrompt(prompt, this.systemPrompt), {
+            ...options,
+            sessionId: undefined,
+          }),
         warning: (id) =>
           `[opencode] Resume failed for stale session ${id.slice(0, 8)}..., retrying with a new session`,
       }
