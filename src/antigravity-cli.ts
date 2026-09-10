@@ -706,7 +706,14 @@ export class AntigravityRunner extends CliRunnerBase {
           stderr
         );
         if (result !== fullText) callbacks.onText?.(result.slice(fullText.length), result);
-        return { result, sessionId, ...models.result() };
+        const modelEvidence = models.result();
+        const effort = inferEffortFromModelName(modelEvidence.model ?? '');
+        return {
+          result,
+          sessionId,
+          ...modelEvidence,
+          ...(effort ? { effort } : {}),
+        };
       },
       exitErrorDetail: () => errorDetail ?? (emptySuccess ? lastToolError : undefined),
       wrapExitError: (error) =>
@@ -765,10 +772,13 @@ export class AntigravityRunner extends CliRunnerBase {
         }
         const models = new ProviderModels();
         models.add(response.model);
+        const modelEvidence = models.result();
+        const effort = inferEffortFromModelName(modelEvidence.model ?? '');
         return {
           result,
           sessionId: response.conversation_id ?? priorSessionId ?? '',
-          ...models.result(),
+          ...modelEvidence,
+          ...(effort ? { effort } : {}),
         };
       }
       if (response.status === 'ERROR') {

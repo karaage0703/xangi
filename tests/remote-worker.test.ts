@@ -205,11 +205,59 @@ describe('remote worker macOS installation', () => {
     const registrations = join(root, 'workers.json');
     const bin = join(root, 'bin');
     const launchctl = join(bin, 'launchctl');
+    const launchctlLog = join(root, 'launchctl.log');
+    const launchctlState = join(root, 'launchctl.state');
     const workerHome = join(root, 'worker-home');
     const launchAgents = join(root, 'LaunchAgents');
     writeFileSync(registrations, '[]\n', { mode: 0o600 });
     await import('node:fs/promises').then(({ mkdir }) => mkdir(bin));
-    writeFileSync(launchctl, '#!/bin/sh\nexit 0\n');
+    writeFileSync(
+      launchctl,
+      `#!/bin/sh
+printf '%s\\n' "$*" >> "$XANGI_TEST_LAUNCHCTL_LOG"
+case "$1" in
+  print)
+    [ -f "$XANGI_TEST_LAUNCHCTL_STATE" ] || exit 113
+    state="$(cat "$XANGI_TEST_LAUNCHCTL_STATE")"
+    case "$state" in
+      running)
+        printf 'state = running\\n pid = 123\\n'
+        ;;
+      inactive)
+        printf 'state = exited\\n pid = 0\\n'
+        ;;
+      removing:*)
+        count="\${state#removing:}"
+        if [ "$count" -le 0 ]; then
+          rm -f "$XANGI_TEST_LAUNCHCTL_STATE"
+          exit 113
+        fi
+        printf 'removing:%s' "$((count - 1))" > "$XANGI_TEST_LAUNCHCTL_STATE"
+        printf 'state = exited\\n pid = 0\\n'
+        ;;
+    esac
+    ;;
+  bootout)
+    if [ "\${XANGI_TEST_ASYNC_BOOTOUT:-0}" -gt 0 ]; then
+      printf 'removing:%s' "$XANGI_TEST_ASYNC_BOOTOUT" > "$XANGI_TEST_LAUNCHCTL_STATE"
+    else
+      rm -f "$XANGI_TEST_LAUNCHCTL_STATE"
+    fi
+    ;;
+  bootstrap)
+    if [ -f "$XANGI_TEST_LAUNCHCTL_STATE" ]; then
+      printf 'Bootstrap failed: 5: Input/output error\\n' >&2
+      exit 5
+    fi
+    printf running > "$XANGI_TEST_LAUNCHCTL_STATE"
+    ;;
+  kickstart)
+    printf running > "$XANGI_TEST_LAUNCHCTL_STATE"
+    ;;
+esac
+exit 0
+`
+    );
     chmodSync(launchctl, 0o755);
     const previous = {
       path: process.env.PATH,
@@ -217,12 +265,17 @@ describe('remote worker macOS installation', () => {
       agents: process.env.XANGI_WORKER_LAUNCH_AGENTS_DIR,
       cli: process.env.XANGI_WORKER_CLI,
       allow: process.env.XANGI_WORKER_ALLOW_NON_DARWIN,
+      launchctlLog: process.env.XANGI_TEST_LAUNCHCTL_LOG,
+      launchctlState: process.env.XANGI_TEST_LAUNCHCTL_STATE,
+      asyncBootout: process.env.XANGI_TEST_ASYNC_BOOTOUT,
     };
     process.env.PATH = `${bin}:${previous.path || ''}`;
     process.env.XANGI_WORKER_HOME = workerHome;
     process.env.XANGI_WORKER_LAUNCH_AGENTS_DIR = launchAgents;
     process.env.XANGI_WORKER_CLI = '/bin/true';
     process.env.XANGI_WORKER_ALLOW_NON_DARWIN = 'true';
+    process.env.XANGI_TEST_LAUNCHCTL_LOG = launchctlLog;
+    process.env.XANGI_TEST_LAUNCHCTL_STATE = launchctlState;
     const server: Server = createServer();
     const gateway = new RemoteWorkerGateway(registrations);
     gateway.attach(server);
@@ -246,6 +299,9 @@ describe('remote worker macOS installation', () => {
       restore('XANGI_WORKER_LAUNCH_AGENTS_DIR', previous.agents);
       restore('XANGI_WORKER_CLI', previous.cli);
       restore('XANGI_WORKER_ALLOW_NON_DARWIN', previous.allow);
+      restore('XANGI_TEST_LAUNCHCTL_LOG', previous.launchctlLog);
+      restore('XANGI_TEST_LAUNCHCTL_STATE', previous.launchctlState);
+      restore('XANGI_TEST_ASYNC_BOOTOUT', previous.asyncBootout);
     });
 
     await expect(installMacWorker(pairUri, root)).resolves.toContain('installed-mac');
@@ -257,10 +313,22 @@ describe('remote worker macOS installation', () => {
     const tokenBefore = readFileSync(layout.tokenPath, 'utf8');
     const configBefore = readFileSync(layout.configPath, 'utf8');
     writeFileSync(layout.plistPath, 'obsolete launch command');
+    process.env.XANGI_TEST_ASYNC_BOOTOUT = '2';
     expect(manageMacWorker('restart')).toContain('restarted');
+    delete process.env.XANGI_TEST_ASYNC_BOOTOUT;
     expect(readFileSync(layout.plistPath, 'utf8')).toContain('<string>/bin/true</string>');
     expect(readFileSync(layout.tokenPath, 'utf8')).toBe(tokenBefore);
     expect(readFileSync(layout.configPath, 'utf8')).toBe(configBefore);
+    const restartCalls = readFileSync(launchctlLog, 'utf8').trim().split('\n');
+    expect(restartCalls.filter((call) => call.startsWith('print ')).length).toBeGreaterThanOrEqual(3);
+    expect(restartCalls.at(-1)).toBe(`bootstrap gui/${process.getuid()} ${layout.plistPath}`);
+
+    writeFileSync(launchctlState, 'inactive');
+    expect(manageMacWorker('start')).toContain('started');
+    expect(readFileSync(launchctlLog, 'utf8')).toContain(
+      `kickstart -k gui/${process.getuid()}/dev.xangi.worker`
+    );
+    expect(manageMacWorker('start')).toContain('already running');
   });
 
   it('renders a launch agent that only starts worker mode', () => {

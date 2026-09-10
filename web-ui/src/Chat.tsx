@@ -53,7 +53,7 @@ import {
   type StreamRecovery,
 } from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
-import { sessionListStatus, sessionListStatusLabel, shouldShowAutoTalk } from './sessionList';
+import { sessionListStatus, sessionListStatusLabel } from './sessionList';
 import {
   messageElementId,
   messageIdFromHash,
@@ -68,7 +68,7 @@ import { replaceUserPromptVisibleContent, splitUserPromptHookContexts } from './
 const PROJECT_STATE_KEY = 'xangi_active_project_v1';
 const SIDEBAR_COLLAPSED_KEY = 'xangi_sidebar_collapsed_v1';
 const SESSION_FILTER_KEY = 'xangi_session_filter_v1';
-const AUTO_TALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
+const LEGACY_INTERNAL_PROMPT_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 
 interface Activity extends LiveActivity {
   toolLines?: string[];
@@ -96,8 +96,6 @@ interface Session {
   messageCount?: number;
   isActive: boolean;
   lifecycle?: 'open' | 'closed';
-  autoTalk?: boolean;
-  autoTalkActive?: boolean;
   timeoutAt?: number;
   maxTimeoutAt?: number;
   timeoutMs?: number;
@@ -638,7 +636,9 @@ function ChatPane({
         data.messages = data.messages.filter(
           (message) =>
             message.role !== 'error' &&
-            !(message.role === 'user' && message.content.startsWith(AUTO_TALK_SENTINEL))
+            !(
+              message.role === 'user' && message.content.startsWith(LEGACY_INTERNAL_PROMPT_SENTINEL)
+            )
         );
         setDetail((current) =>
           prepend && current ? { ...data, messages: [...data.messages, ...current.messages] } : data
@@ -1845,7 +1845,6 @@ export function Chat() {
     uploadAccept: null,
     uploadMaxBytes: 64 * 1024 * 1024,
     timeoutExtendEnabled: true,
-    interChatEnabled: false,
     allowedBackends: [],
     completionShowElapsed: true,
   });
@@ -2303,17 +2302,6 @@ export function Chat() {
     }
   }
 
-  async function toggleAutoTalk(session: Session) {
-    try {
-      await requestJson(`/api/sessions/${encodeURIComponent(session.id)}/autotalk`, {
-        ...jsonInit('POST', { enabled: !session.autoTalk }),
-      });
-      await loadSessions(0, query, false);
-    } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : String(cause));
-    }
-  }
-
   function requestSessionCompletion(session: Session, paneKey?: string) {
     if (session.isActive) {
       setSessionToComplete({ session, paneKey });
@@ -2527,7 +2515,6 @@ export function Chat() {
                         <small>
                           <span>
                             {platformLabel(session.platform)} · {relativeTime(session.updatedAt)}
-                            {session.autoTalk ? ' · 自走' : ''}
                             {' · '}
                             {sessionListStatusLabel(status)}
                           </span>
@@ -2570,15 +2557,6 @@ export function Chat() {
                           ▱
                         </button>
                       )}
-                      {shouldShowAutoTalk(config.interChatEnabled, session.platform) && (
-                        <button
-                          type="button"
-                          aria-label={session.autoTalk ? '自走を無効化' : '自走を有効化'}
-                          onClick={() => void toggleAutoTalk(session)}
-                        >
-                          {session.autoTalk ? '自' : '○'}
-                        </button>
-                      )}
                       <button
                         type="button"
                         aria-label="削除"
@@ -2603,13 +2581,6 @@ export function Chat() {
             </button>
           )}
         </nav>
-        <div className="sidebar-links">
-          {config.interChatEnabled && (
-            <a href="/inter-chat" target="_blank" rel="noopener noreferrer">
-              インスタンス間チャット
-            </a>
-          )}
-        </div>
       </aside>
       <section className="workspace">
         {projectViewOpen ? (

@@ -100,14 +100,14 @@ export interface SessionEntry {
   resumedFromSessionId?: string;
   /** Webへ引き継いだ会話のうち、Discord/Slack上の起点セッション。 */
   externalSourceSessionId?: string;
-  /** 自走モード（auto-talk）。true のとき、agent がランダム間隔で発話を続ける */
-  autoTalk?: boolean;
   /** セッション作成時に選択されたworkspace ID。 */
   workspaceId?: string;
   /** セッション作成時のcanonical path snapshot。resume時に再解決しない。 */
   workspacePath?: string;
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
+  /** xangi間HTTP会話で、このセッションに対応する送信元instance。 */
+  interAgentPeerId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
   contextUsage?: SessionContextUsage;
   /** このxangiセッション内で完了したturnの累積token使用量。 */
@@ -424,6 +424,7 @@ export function createWebSession(
     title?: string;
     backend?: string;
     resumedFromSessionId?: string;
+    interAgentPeerId?: string;
   } & SessionSnapshotOptions = {}
 ): string {
   const appId = generateAppSessionId();
@@ -446,6 +447,7 @@ export function createWebSession(
     workspaceId: opts.workspaceId ?? resumedFrom?.workspaceId,
     workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
     projectId: opts.projectId ?? resumedFrom?.projectId,
+    interAgentPeerId: opts.interAgentPeerId,
   });
 }
 
@@ -587,6 +589,7 @@ export function updateSessionTitle(appSessionId: string, title: string): void {
   entry.title = sanitizeSessionTitle(title);
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
+  notifySessionChanges();
 }
 
 /** Webセッションの所属Projectを変更する。undefinedでProjectなしへ戻す。 */
@@ -748,6 +751,7 @@ export function incrementMessageCount(appSessionId: string): void {
   entry.messageCount++;
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
+  notifySessionChanges();
 }
 
 /**
@@ -805,7 +809,6 @@ export function closeSession(appSessionId: string, reason: SessionCloseReason = 
   entry.lifecycle = 'closed';
   entry.closedAt = now;
   entry.closeReason = reason;
-  entry.autoTalk = false;
   entry.updatedAt = now;
   for (const [ctx, id] of Object.entries(data.activeByContext)) {
     if (id === appSessionId) delete data.activeByContext[ctx];
@@ -822,25 +825,6 @@ export function closeActiveSession(
 ): boolean {
   const appSessionId = data.activeByContext[contextKey];
   return appSessionId ? closeSession(appSessionId, reason) : false;
-}
-
-/**
- * セッションの autoTalk フラグを設定
- */
-export function setAutoTalk(appSessionId: string, enabled: boolean): boolean {
-  const entry = data.sessions[appSessionId];
-  if (!entry) return false;
-  entry.autoTalk = enabled;
-  entry.updatedAt = new Date().toISOString();
-  saveSessionsToFile();
-  return true;
-}
-
-/**
- * autoTalk=true の全セッション一覧
- */
-export function listAutoTalkSessions(): SessionEntry[] {
-  return Object.values(data.sessions).filter((s) => !s.archived && s.autoTalk === true);
 }
 
 /**

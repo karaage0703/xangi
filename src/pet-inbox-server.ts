@@ -11,8 +11,7 @@
  * - 送信先 = 「自 instance の xangi」固定。inter-instance ルーティングは将来検討。
  * - 応答は同期で返さない (202 Accepted)。pet 側は既存 events SSE を購読して
  *   turn.started / message.delta / turn.complete を受け取る (broadcast 設計の核を維持)。
- * - 既存 web セッションに追記する形でテキストを流すので、web-chat の `/inter-chat`
- *   ビューアにも履歴が残る。pet 入力と Web UI の入力は同じ会話文脈に混ざる。
+ * - 既存 web セッションに追記し、pet 入力と Web UI の入力を同じ会話文脈に残す。
  * - body に `appSessionId` を渡せば特定セッションへ追記。未指定なら最新の web
  *   セッションを再利用、無ければ新規作成。
  *
@@ -42,7 +41,6 @@ import {
 } from './sessions.js';
 import { threadIdFor, turnIdFor, getEventsConfig } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
-import { flowFromHostPlatform } from './inter-instance-chat/index.js';
 import {
   appendReplySuggestionInstruction,
   stripReplySuggestionMarkup,
@@ -271,8 +269,6 @@ export async function handlePetInboxRequest(
 
   busy.add(appSessionId);
   console.log(`[inbox:${label}] Message (session ${appSessionId}): ${text.slice(0, 100)}`);
-  flowFromHostPlatform(text, 'user');
-
   void (async () => {
     try {
       await runWithBubbleEvents(
@@ -287,7 +283,6 @@ export async function handlePetInboxRequest(
             if (!entry.title) {
               updateSessionTitle(appSessionId, truncateSessionTitle(text));
             }
-            flowFromHostPlatform(stripReplySuggestionMarkup(completedResult.result), 'agent');
           },
         },
         {

@@ -131,9 +131,33 @@ export function renderWorkerLaunchAgent(
 function runLaunchctl(args: string[], allowFailure = false): string {
   const result = spawnSync('launchctl', args, { encoding: 'utf8' });
   if (!allowFailure && result.status !== 0) {
-    throw new Error(result.stderr.trim() || `launchctl ${args[0]} failed`);
+    const detail = result.stderr.trim() || `launchctl ${args[0]} failed`;
+    throw new Error(`${detail}\nCommand: launchctl ${args.join(' ')}`);
   }
   return `${result.stdout}${result.stderr}`.trim();
+}
+
+const launchctlWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+function launchctlServiceStatus(service: string) {
+  return spawnSync('launchctl', ['print', service], { encoding: 'utf8' });
+}
+
+// Allow for launchd's termination grace period (5s on macOS) plus cleanup time.
+function waitForLaunchctlServiceRemoval(service: string, timeoutMs = 15_000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (launchctlServiceStatus(service).status === 0) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for launchd to remove ${service}`);
+    }
+    Atomics.wait(launchctlWaitBuffer, 0, 0, 50);
+  }
+}
+
+function replaceLaunchctlService(domain: string, service: string, plistPath: string): void {
+  runLaunchctl(['bootout', service], true);
+  waitForLaunchctlServiceRemoval(service);
+  runLaunchctl(['bootstrap', domain, plistPath]);
 }
 
 function launchctlDomain(): string {
@@ -231,8 +255,7 @@ export async function installMacWorker(pairUri: string, workspaceRoot: string): 
     }
   );
   const domain = launchctlDomain();
-  runLaunchctl(['bootout', `${domain}/${layout.label}`], true);
-  runLaunchctl(['bootstrap', domain, layout.plistPath]);
+  replaceLaunchctlService(domain, `${domain}/${layout.label}`, layout.plistPath);
   return `Remote worker installed: ${workerId}`;
 }
 
@@ -254,7 +277,16 @@ export function manageMacWorker(
         : 'Remote worker is stopped';
   }
   if (action === 'start') {
-    runLaunchctl(['bootstrap', domain, layout.plistPath]);
+    if (!existsSync(layout.configPath) || !existsSync(layout.plistPath)) {
+      throw new Error('worker is not installed');
+    }
+    const result = launchctlServiceStatus(service);
+    if (result.status === 0) {
+      if (workerProcessIsRunning(result.stdout)) return 'Remote worker is already running';
+      runLaunchctl(['kickstart', '-k', service]);
+    } else {
+      runLaunchctl(['bootstrap', domain, layout.plistPath]);
+    }
     return 'Remote worker started';
   }
   if (action === 'restart') {
@@ -268,11 +300,11 @@ export function manageMacWorker(
         mode: 0o644,
       }
     );
-    runLaunchctl(['bootout', service], true);
-    runLaunchctl(['bootstrap', domain, layout.plistPath]);
+    replaceLaunchctlService(domain, service, layout.plistPath);
     return 'Remote worker restarted';
   }
   runLaunchctl(['bootout', service], action === 'uninstall');
+  waitForLaunchctlServiceRemoval(service);
   if (action === 'stop') return 'Remote worker stopped';
   rmSync(layout.plistPath, { force: true });
   if (existsSync(layout.root)) rmSync(layout.root, { recursive: true, force: true });

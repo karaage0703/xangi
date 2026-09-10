@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GrokRunner } from '../src/grok-cli.js';
+import * as grokEvidence from '../src/grok-model-evidence.js';
 
 vi.mock('child_process', () => {
   const EventEmitter = require('events');
@@ -146,6 +147,29 @@ describe('GrokRunner', () => {
     await expect(promise).resolves.toEqual({
       result: 'final answer',
       sessionId: 'sess-abc',
+    });
+  });
+
+  it('returns the provider-confirmed effort from native session evidence', async () => {
+    const { getMockProcess } = await import('child_process');
+    vi.spyOn(grokEvidence, 'readGrokTurnEvidence').mockResolvedValueOnce({
+      models: ['grok-4.6'],
+      effort: 'high',
+    });
+    const runner = new GrokRunner({});
+
+    const promise = runner.run('hello');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const mockProcess = (getMockProcess as () => any)();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ output_text: 'ok', session_id: 'sess-effort' }))
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toMatchObject({
+      model: 'grok-4.6',
+      effort: 'high',
     });
   });
 
