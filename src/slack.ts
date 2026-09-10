@@ -2,6 +2,7 @@ import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
+import { startAiSessionTitle } from './ai-session-title.js';
 import { buildCompletionSummary, DEFAULT_COMPLETION_DISPLAY } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { discoverBackendModels } from './backend-models.js';
@@ -44,7 +45,9 @@ import {
   ensureSession,
   getActiveSessionId,
   getProviderSessionId,
+  getSessionEntry,
   incrementMessageCount,
+  updateSessionTitle,
 } from './sessions.js';
 import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
 import {
@@ -66,6 +69,7 @@ import { prependReferencedMessages } from './session-reference.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
 import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
 import { slackPermalinkTarget, type ExternalChatUrlResolvers } from './external-chat-link.js';
+import { truncateSessionTitle } from './session-title.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
@@ -1682,8 +1686,32 @@ export async function processMessage(
     if (replySuggestionsEnabled) {
       prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
     }
+    let aiTitleStarted = false;
+    const prefixTitle = truncateSessionTitle(text);
+    const startTitleIfNeeded = () => {
+      if (aiTitleStarted || config.sessionTitle?.mode !== 'ai') return;
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.title) return;
+      aiTitleStarted = startAiSessionTitle({
+        runner: agentRunner,
+        appSessionId,
+        userText: text,
+        runOptions: {
+          settingsChannelId: channelId,
+          platform: 'slack',
+          workdir: tWorkdir,
+        },
+        onTitle: (title) => {
+          const current = getSessionEntry(appSessionId);
+          if (!current || (current.title && current.title !== prefixTitle)) return;
+          updateSessionTitle(appSessionId, title);
+        },
+      });
+    };
     const toolHistory: string[] = [];
     const captureCallbacks = {
+      onBackendReady: startTitleIfNeeded,
+      onText: startTitleIfNeeded,
       onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
         addToolHistory(toolHistory, toolName, toolInput);
       },
@@ -1814,7 +1842,10 @@ export async function processMessage(
           agentRunner,
           prompt,
           eventCtx,
-          { onToolUse: sessionCallbacks.onToolUse },
+          {
+            onBackendReady: sessionCallbacks.onBackendReady,
+            onToolUse: sessionCallbacks.onToolUse,
+          },
           {
             skipPermissions,
             sessionId,
@@ -1849,6 +1880,11 @@ export async function processMessage(
     structuredAttachments = attachmentRecovery.runResult.attachments;
 
     sessions.set(conversationKey, newSessionId);
+    incrementMessageCount(appSessionId);
+    const existingEntry = getSessionEntry(appSessionId);
+    if (existingEntry && !existingEntry.title && prefixTitle) {
+      updateSessionTitle(appSessionId, prefixTitle);
+    }
     // transcript の最後の user / assistant エントリに Slack の messageTs を
     // 紐付ける (PR ③、Discord と同じ post-hoc attach 戦略)。
     try {

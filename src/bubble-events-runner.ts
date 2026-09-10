@@ -3,8 +3,7 @@
  * turn.complete / turn.aborted / agent.error) を漏れなく発火するラッパー。
  *
  * 経緯: events.* は元々 web-chat / Discord / Slack の各呼び出し元で個別に
- * wiring されており、auto-talk では呼び忘れていたため xangi-pets に
- * バブルが届かなかった。共通化することで全 call site が同じ events 配信契約に
+ * wiring されていた。共通化することで全 call site が同じ events 配信契約に
  * 従うようになる。
  *
  * 約束:

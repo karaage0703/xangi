@@ -1,4 +1,4 @@
-import { readGrokTurnModels } from './grok-model-evidence.js';
+import { getGrokChatHistorySize, readGrokTurnEvidence } from './grok-model-evidence.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
@@ -94,6 +94,13 @@ export class GrokRunner extends CliRunnerBase {
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    const priorSessionId = options?.sessionId ?? '';
+    const chatHistoryOffset = priorSessionId
+      ? await getGrokChatHistorySize({
+          providerSessionId: priorSessionId,
+          cwd: this.workdir || process.cwd(),
+        })
+      : 0;
     const startedAt = new Date().toISOString();
     const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = [...this.buildBaseArgs(options), '-p', fullPrompt, '--output-format', 'json'];
@@ -115,14 +122,21 @@ export class GrokRunner extends CliRunnerBase {
 
     const models = new ProviderModels();
     models.add(response.model);
-    for (const model of await readGrokTurnModels({
-      providerSessionId: sessionId || options?.sessionId || '',
+    const evidenceSessionId = sessionId || priorSessionId;
+    const evidence = await readGrokTurnEvidence({
+      providerSessionId: evidenceSessionId,
       cwd: this.workdir || process.cwd(),
       startedAt,
       finishedAt: new Date().toISOString(),
-    }))
-      models.add(model);
-    const enriched = { result, sessionId, ...models.result() };
+      chatHistoryOffset: evidenceSessionId === priorSessionId ? chatHistoryOffset : 0,
+    });
+    for (const model of evidence.models) models.add(model);
+    const enriched = {
+      result,
+      sessionId,
+      ...models.result(),
+      ...(evidence.effort ? { effort: evidence.effort } : {}),
+    };
     this.logResponseTranscript(enriched, options);
     return enriched;
   }
@@ -132,6 +146,13 @@ export class GrokRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const priorSessionId = options?.sessionId ?? '';
+    const chatHistoryOffset = priorSessionId
+      ? await getGrokChatHistorySize({
+          providerSessionId: priorSessionId,
+          cwd: this.workdir || process.cwd(),
+        })
+      : 0;
     const startedAt = new Date().toISOString();
     const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt);
     const args = [
@@ -153,14 +174,20 @@ export class GrokRunner extends CliRunnerBase {
         channelId: options?.channelId,
       }
     );
-    for (const model of await readGrokTurnModels({
-      providerSessionId: result.sessionId || options?.sessionId || '',
+    const evidenceSessionId = result.sessionId || priorSessionId;
+    const evidence = await readGrokTurnEvidence({
+      providerSessionId: evidenceSessionId,
       cwd: this.workdir || process.cwd(),
       startedAt,
       finishedAt: new Date().toISOString(),
-    }))
-      models.add(model);
-    const enriched = { ...result, ...models.result() };
+      chatHistoryOffset: evidenceSessionId === priorSessionId ? chatHistoryOffset : 0,
+    });
+    for (const model of evidence.models) models.add(model);
+    const enriched = {
+      ...result,
+      ...models.result(),
+      ...(evidence.effort ? { effort: evidence.effort } : {}),
+    };
     this.logResponseTranscript(enriched, options);
     callbacks.onComplete?.(enriched);
     return enriched;

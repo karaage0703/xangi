@@ -1326,7 +1326,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | -------------------- | ------------------------------------------------------ | ---------- |
 | `SESSION_TITLE_MODE` | `prefix`: 冒頭切り出し、`ai`: AIによる短いタイトル生成 | `ai`       |
 
-`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
+`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Web・SlackではWeb Chatのセッション名を更新します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
 
 ### 初回履歴先読み（Discord / Slack / Web 共通）
 
@@ -1453,7 +1453,9 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `WEB_CHAT_PORT`    | WebチャットUIのポート                                                                                                                                                                    | `18888`    |
 | `WEB_CHAT_HOST`    | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`  |
 
-Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、slash commandとskill GUIを提供する。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。HTTP版の指名問い合わせは送信元ごとの通常Web Sessionへ履歴とprovider文脈を保存する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+
+指名問い合わせは既定で`INTER_INSTANCE_CHAT_PEERS`に登録したURLへBearer認証付きHTTPで送る。受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`へカンマ区切りで指定でき、未設定または`*`は正しい共有tokenを持つ全instanceを許可する。
 
 Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプト、ワークスペース、既定のbackend / model / effortを設定できる。新規会話は作成時のProjectワークスペースを固定し、後からProject設定を変えても既存会話の作業ディレクトリは変わらない。既存のWeb会話を別Projectへ移しても、ワークスペースは安全のため元のスナップショットを維持する。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。Project作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`は生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連とワークスペースのスナップショットはセッション情報へ保存する。
 
@@ -1757,9 +1759,11 @@ Remote workerはmacOSとLinux/WSL2で`xangi worker install --pair`・`restart`�
 
 ### 実行モデルの確認と履歴
 
-`runtime_settings backend --action show` と Web Chat の `/backend show` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。`default` はバックエンドへの委任です。設定名やエイリアスだけでは実際のモデルを確認したことにはなりません。
+`runtime_settings backend --action show` と Web Chat の `/backend show` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。直近の実行には全バックエンド共通でeffort状態も表示します。providerが実効値を報告した場合はその値を、xangiが明示指定しただけの場合は未確認の設定値を、どちらも無い場合はバックエンド委任・実効値不明と表示します。設定名やエイリアスだけでは実際のモデルやeffortを確認したことにはなりません。
 
-全バックエンドの実行ごとに、当時の指定モデル、確認できたモデル名、確認元、開始・更新時刻、完了・失敗状態を保存します。プロバイダーから取得できた名前は「確認済み」、設定しか取得できなければ「設定値・実行未確認」、取得できなければ「不明」です。同じ実行中に複数モデルが報告された場合もすべて表示します。
+全バックエンドの実行ごとに、当時の指定モデルとeffort、確認できたモデル名とeffort、確認元、開始・更新時刻、完了・失敗状態を保存します。プロバイダーから取得できた値は「確認済み」、設定しか取得できなければ「設定値・実行未確認」、取得できなければ「不明」です。同じ実行中に複数モデルが報告された場合もすべて表示します。
+
+Codexは対象turnのrollout、Grokはmain sessionの実行履歴、Antigravityはstreamで確認したeffort付きモデルIDから実効effortを取得します。Copilotの`auto`など、providerが実効値を返さない場合は推測せず不明と表示します。
 
 Web Chat の会話内と Monitor の詳細にある「モデル実行履歴」で、turn ごとの記録を確認できます。過去の会話に記録がなければ「記録なし」と表示し、現在のデフォルト設定で過去のモデルを補完しません。導入前の実行を自動で復元する機能ではありません。
 

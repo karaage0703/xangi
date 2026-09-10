@@ -88,6 +88,8 @@ describe('runtime_settings', () => {
         backend: 'codex',
         observedModels: ['historical-model'],
         effectiveModel: 'historical-model',
+        effectiveEffort: 'medium',
+        effortSource: 'provider',
         source: 'provider',
         startedAt: '2025-01-01T00:00:00Z',
         updatedAt: '2025-01-01T00:00:01Z',
@@ -105,13 +107,26 @@ describe('runtime_settings', () => {
       { config, resolver }
     );
     expect(result).toContain('historical-model');
+    expect(result).toContain('effort=medium');
     expect(result).not.toContain('unrelated-parent-model');
     const unspecified = await executeRuntimeSettingsCommand(
       { name: 'backend', action: 'show', channelId: 'parent', platform: 'discord' },
       { config, resolver }
     );
     expect(unspecified).toContain('記録なし');
+    expect(unspecified).toContain('effort (設定): default（バックエンドに委任）');
     expect(unspecified).not.toContain('unrelated-parent-model');
+  });
+
+  it('always shows the resolved effort setting', async () => {
+    overrides.set('C123', { backend: 'codex', model: 'gpt-5.6-sol', effort: 'medium' });
+
+    const result = await executeRuntimeSettingsCommand(
+      { name: 'backend', action: 'show', channelId: 'C123', platform: 'discord' },
+      { config, resolver }
+    );
+
+    expect(result).toContain('effort (設定): medium');
   });
 
   it('switches to a model-less backend for the next turn', async () => {

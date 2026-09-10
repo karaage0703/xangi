@@ -3,6 +3,9 @@ export interface ModelExecution {
   backend: string;
   configuredModel?: string;
   effectiveModel?: string;
+  configuredEffort?: string;
+  effectiveEffort?: string;
+  effortSource?: 'provider' | 'configuration';
   modelSelection?: string;
   observedModels: string[];
   source: 'provider' | 'configuration' | 'unknown';
@@ -20,12 +23,17 @@ export function modelExecutionLabel(
     return configured?.model
       ? `${configured.backend} · ${configured.model}（当時の設定値・実行未確認）`
       : 'モデル不明（記録なし）';
+  const effort = execution.effectiveEffort
+    ? `effort=${execution.effectiveEffort}（確認済み）`
+    : execution.configuredEffort
+      ? `effort=${execution.configuredEffort}（設定値・実行未確認）`
+      : 'effort=default（バックエンドに委任・実効値不明）';
   if (
     !execution.effectiveModel &&
     !execution.observedModels.length &&
     execution.modelSelection === 'Auto'
   )
-    return `${execution.backend} / Auto（自動選択・内部モデル不明）`;
+    return `${execution.backend} / Auto（自動選択・内部モデル不明） / ${effort}`;
   const model =
     execution.effectiveModel || execution.observedModels.at(-1) || execution.configuredModel;
   const source =
@@ -35,7 +43,7 @@ export function modelExecutionLabel(
         ? '設定値・実行未確認'
         : '不明';
   const additional = execution.observedModels.filter((observed) => observed !== model);
-  return `${execution.backend} · ${model || 'モデル不明'}（${source}）${additional.length ? ` / 同turnで確認: ${additional.join(', ')}` : ''}`;
+  return `${execution.backend} · ${model || 'モデル不明'}（${source}） / ${effort}${additional.length ? ` / 同turnで確認: ${additional.join(', ')}` : ''}`;
 }
 
 export function executionStatusLabel(status: ModelExecution['status']): string {

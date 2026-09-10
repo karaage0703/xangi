@@ -4,6 +4,11 @@ export interface ModelExecution {
   backend: string;
   configuredModel?: string;
   effectiveModel?: string;
+  /** Effort supplied by xangi for this run. Missing means provider default. */
+  configuredEffort?: string;
+  /** Effort confirmed by provider execution evidence. */
+  effectiveEffort?: string;
+  effortSource?: 'provider' | 'configuration';
   modelSelection?: string;
   observedModels: string[];
   source: 'provider' | 'configuration' | 'unknown';
@@ -11,6 +16,33 @@ export interface ModelExecution {
   updatedAt: string;
   status: 'running' | 'completed' | 'failed';
   providerSessionId?: string;
+}
+
+const EXECUTION_EFFORTS = new Set([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+]);
+
+export function normalizeExecutionEffort(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const effort = value.trim().toLowerCase();
+  return EXECUTION_EFFORTS.has(effort) ? effort : undefined;
+}
+
+export function observeExecutionEffort(execution: ModelExecution, value: unknown): boolean {
+  const effort = normalizeExecutionEffort(value);
+  if (!effort) return false;
+  const changed = execution.effectiveEffort !== effort || execution.effortSource !== 'provider';
+  execution.effectiveEffort = effort;
+  execution.effortSource = 'provider';
+  if (changed) execution.updatedAt = new Date().toISOString();
+  return changed;
 }
 
 /** Model identifiers are metadata, never arbitrary provider response text. */

@@ -102,9 +102,11 @@ Based on `@slack/bolt`.
 
 Lightweight server based on `http.createServer` (no Express dependency).
 
-With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless setup with only `XANGI_EVENTS_SERVER_ENABLED=true` starts the same server but exposes only health, event SSE, session reads, and pet/device/terminal inbox routes; Web UI assets and unrelated Web APIs return 404.
+With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless setup enabled by events or HTTP inter-instance chat starts the same server but exposes only the required dedicated endpoints; Web UI assets and unrelated Web APIs return 404.
 
 - A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
+- Directed requests use bearer-authenticated HTTP by default and resolve targets through `INTER_INSTANCE_CHAT_PEERS`. The receiver reuses one regular Web session per sender, preserving transcripts and provider context, and never treats another instance's content as user authorization
+- `INTER_INSTANCE_CHAT_ALLOWED_PEERS` can restrict directed-request senders; when unset or `*`, any instance holding the shared token is allowed
 - Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops. Sessions originating from Discord or Slack resolve their original chat URL through a dedicated API and expose it in the Web Chat pane header. Web branches retain a source-session ID that remains available after history injection
 - Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
 - Attachment uploads use `XMLHttpRequest.upload` progress events to show the file name, position within a multi-file selection, and transfer percentage above the composer on both desktop and mobile
@@ -1092,7 +1094,7 @@ src/
 │   ├── xangi.ts        #   User-facing terminal CLI entry point
 │   ├── tool-command.ts #   Shared tool-server dispatcher
 │   └── xangi-cmd.ts    #   Backward-compatible entry point
-├── inter-instance-chat/ # Inter-instance chat (per-instance jsonl / auto-talk / history viewer)
+├── inter-instance-chat/ # Inter-instance chat (authenticated HTTP / session history)
 ├── local-llm/          # Local LLM adapter
 │   ├── runner.ts       #   Main runner (session management, tool execution loop)
 │   ├── llm-client.ts   #   LLM API client (Ollama native + OpenAI compatible)
@@ -1187,6 +1189,8 @@ For details (environment variable reference, Docker operation methods, etc.), se
 
 ### Durable execution models
 
-`SessionEntry.modelExecution` holds the latest turn and `modelHistory` holds snapshots keyed by turn ID. Each snapshot records `backend`, `configuredModel`, the last observed `effectiveModel`, the set of `observedModels`, evidence `source` (provider / configuration / unknown), start/update timestamps, status, and provider session ID. Persistence happens at startup, on model notifications, and on success or failure; final evidence is also attached to the transcript.
+`SessionEntry.modelExecution` holds the latest turn and `modelHistory` holds snapshots keyed by turn ID. Each snapshot records `backend`, `configuredModel`, the last observed `effectiveModel`, the set of `observedModels`, the run's `configuredEffort`, provider-confirmed `effectiveEffort`, their evidence sources, start/update timestamps, status, and provider session ID. Persistence happens at startup, on model or effort notifications, and on success or failure; final evidence is also attached to the transcript.
+
+Provider evidence for effective effort comes from backend-specific structured records. Codex uses the target turn's rollout, Grok reads main-session `chat_history.jsonl` records appended after the pre-run byte offset, and Antigravity uses the effort suffix of a model ID confirmed by its stream. Runs such as Copilot `auto` remain unknown when the provider does not report an effective value.
 
 `agent.model` remains the requested value used for resume compatibility, never overwritten with observations. Execution snapshots represent provider alias resolution and fallback. The UI leads with the last observed model and separately lists other models observed during the turn. Historical values never resolve against today's defaults. Legacy `agent.model` remains configuration-only evidence; missing evidence remains unknown. Recovered sessions with only `modelHistory` display their latest stored snapshot. Web exposes next-run configuration separately as `nextBackend`; Discord separates the parent settings channel from the thread context key used to retrieve execution evidence.

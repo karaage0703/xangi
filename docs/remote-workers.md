@@ -38,7 +38,7 @@ xangi worker status
 xangi worker uninstall
 ```
 
-`restart`は現在のCLIからlaunchd設定を再生成し、既存の認証情報を保持して起動します。Git checkout更新後も再ペアリングは不要です。TypeScriptから導入した場合は実行用loaderの絶対URLも登録します。`status`はlaunchdのrunning状態とPIDを確認しますが、Gatewayへの接続確認は`remote_worker --action list`で行ってください。
+`start`は未登録のLaunchAgentを登録し、登録済みで停止中なら`kickstart`で起動します。すでに実行中の場合は再起動しません。`restart`は現在のCLIからlaunchd設定を再生成し、既存の認証情報を保持して起動します。launchdの登録解除完了を待ってから再登録するため、削除中のserviceとの競合を避けます。Git checkout更新後も再ペアリングは不要です。TypeScriptから導入した場合は実行用loaderの絶対URLも登録します。`status`はlaunchdのrunning状態とPIDを確認しますが、Gatewayへの接続確認は`remote_worker --action list`で行ってください。
 
 手動設定も利用できます。tokenを生成し、xangi hostだけが読めるmode 0600のfileへ保存します。token自体を`.env`や会話、command lineへ書かないでください。
 

@@ -2,6 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
 import type { BackendResolver } from '../src/backend-resolver.js';
 import type { AgentBackend, Config } from '../src/config.js';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  _resetInterChatConfigForTest,
+  getInterChatConfig,
+} from '../src/inter-instance-chat/index.js';
 import type { AgentRunner } from '../src/agent-runner.js';
 
 /**
@@ -450,5 +457,27 @@ describe('tool-server HTTP status codes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  it('does not enable directed requests temporarily when the receiver is disabled', async () => {
+    process.env.INTER_INSTANCE_CHAT_ENABLED = 'false';
+    _resetInterChatConfigForTest();
+    try {
+      const response = await fetch(`${serverUrl}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: 'inter_chat_ask',
+          flags: { to: 'instance-b', text: 'hello' },
+          context: {},
+        }),
+      });
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain('requires INTER_INSTANCE_CHAT_ENABLED=true');
+    } finally {
+      delete process.env.INTER_INSTANCE_CHAT_ENABLED;
+      _resetInterChatConfigForTest();
+    }
   });
 });

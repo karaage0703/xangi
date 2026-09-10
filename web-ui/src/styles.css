@@ -3650,7 +3650,7 @@ video.media-preview {
 
 .monitor-usage-mode-button.active {
   color: var(--surface);
-  background: var(--accent);
+  background: var(--accent-ink);
 }
 
 .monitor-usage-providers {

@@ -1130,6 +1130,66 @@ describe('processMessage', () => {
     expect(lastUpdate.text).not.toContain('返信候補');
   });
 
+  it('generates an AI title for the Slack session and records the completed turn', async () => {
+    const client = {
+      chat: {
+        postMessage: vi.fn().mockResolvedValue({ ts: '1783402634.549099' }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const run = vi.fn().mockResolvedValue({
+      result: 'Slackセッションの短いタイトル',
+      sessionId: 'provider-title',
+    });
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onBackendReady?.();
+      callbacks.onText?.('ok', 'ok');
+      callbacks.onComplete?.({ result: 'ok', sessionId: 'provider-main' });
+      return { result: 'ok', sessionId: 'provider-main' };
+    });
+    const agentRunner = {
+      run,
+      runStream,
+      destroy: vi.fn(),
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      slack: { streaming: true, showThinking: true, replySuggestions: false },
+      sessionTitle: { mode: 'ai' },
+    } as Config;
+    const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+
+    await processMessageWithoutMinimumDisplayDelay(
+      AUTO_REPLY_CHANNEL,
+      runKey,
+      THREAD_TS,
+      'Slackの長い依頼を短いタイトルにしてください',
+      '1783402632.322829',
+      client,
+      agentRunner,
+      config
+    );
+
+    const appSessionId = getActiveSessionId(runKey);
+    expect(appSessionId).toBeDefined();
+    await vi.waitFor(() =>
+      expect(getSessionEntry(appSessionId!)?.title).toBe('Slackセッションの短いタイトル')
+    );
+    expect(getSessionEntry(appSessionId!)?.messageCount).toBe(1);
+    expect(run).toHaveBeenCalledWith(
+      expect.stringContaining('Slackの長い依頼を短いタイトルにしてください'),
+      expect.objectContaining({
+        channelId: `session-title:${appSessionId}`,
+        settingsChannelId: AUTO_REPLY_CHANNEL,
+        platform: 'slack',
+        internalTask: true,
+      })
+    );
+  });
+
   it('uses the same byte limit for completed Block Kit text and message splitting', async () => {
     const result = 'あ'.repeat(2000); // 6000 UTF-8 bytes
     const postMessage = vi
