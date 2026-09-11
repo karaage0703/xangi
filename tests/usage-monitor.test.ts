@@ -185,6 +185,34 @@ describe('usage monitor parsers', () => {
     });
   });
 
+  it('infers window durations only from delimited Antigravity quota bucket tokens', () => {
+    const { groups } = parseAntigravityStatus({
+      quota: {
+        'future-weekly': { remaining_fraction: 1 },
+        'future-5h': { remaining_fraction: 1 },
+        'future-15h': { remaining_fraction: 1 },
+        weekend: { remaining_fraction: 1 },
+      },
+    });
+
+    expect(
+      Object.fromEntries(
+        groups.map((group) => [
+          group.id,
+          {
+            label: group.windows[0]?.label,
+            windowDurationMins: group.windows[0]?.windowDurationMins,
+          },
+        ])
+      )
+    ).toEqual({
+      'future-weekly': { label: '週次', windowDurationMins: 10_080 },
+      'future-5h': { label: 'future-5h', windowDurationMins: 300 },
+      'future-15h': { label: 'future-15h', windowDurationMins: undefined },
+      weekend: { label: 'weekend', windowDurationMins: undefined },
+    });
+  });
+
   it('keeps unknown Antigravity quota buckets and ignores unavailable cost', () => {
     expect(
       parseAntigravityStatus({

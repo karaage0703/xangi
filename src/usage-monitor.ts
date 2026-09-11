@@ -369,12 +369,17 @@ export function parseAntigravityStatus(payload: unknown): {
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
     const known = knownQuotaBuckets[id];
     const window = {
-      label: known?.windowLabel ?? (/week/i.test(id) ? '週次' : id),
+      label: known?.windowLabel ?? (/(?:^|-)weekly(?:-|$)/i.test(id) ? '週次' : id),
       usedPercent: Number(
         Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
       ),
       windowDurationMins:
-        known?.windowDurationMins ?? (/week/i.test(id) ? 10_080 : /5h/i.test(id) ? 300 : undefined),
+        known?.windowDurationMins ??
+        (/(?:^|-)weekly(?:-|$)/i.test(id)
+          ? 10_080
+          : /(?:^|-)5h(?:-|$)/i.test(id)
+            ? 300
+            : undefined),
       resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
     };
     if (!known) {
