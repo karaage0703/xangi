@@ -116,6 +116,7 @@ flowchart LR
 - Web Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
+- `/settings`は`runtime-settings-command.ts`の7項目を共通dispatcher経由で変更する。チャンネル選択肢は接続済みDiscord clientのcacheまたはSlack `conversations.list`から名前を取得し、UIには名前を表示してIDを内部値として保存する。Slackのscope不足は`channels:read` / `groups:read`と再インストール手順へ変換する。選択中チャンネルの保存済みoverrideと実効値は専用GET APIから取得して各入力へ反映する。非秘密の起動設定は`web-startup-settings.ts`の型付きallowlistだけを既存`.env`へ保存する。接続tokenとAPIキーは既存`SecretStore`へ書き込み専用入力から保存でき、Webへは値でなく設定有無だけを返す。`backend-auth-status.ts`は対応する全AIエージェントCLIを列挙し、専用status、認証一覧、モデル一覧、または既存Copilot SDKのアカウント問い合わせで非対話にログイン状態を判定する。AI CLI更新は同モジュールの固定allowlistにある自己更新サブコマンドだけを`shell`なしで実行し、生出力を返さず更新後のversionだけを再取得する。秘密値やCLI出力は返さず、認証以外の失敗は未認証と断定せず判定不能にする。任意の環境変数は受け付けず、明示的な環境変数は引き続き保存値より優先する。変更APIはsame-origin mutationを強制し、画面は即時・次のturn・再起動後を別ラベルで表示する
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
@@ -345,7 +346,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
-`runtime-settings-command.ts` はチャットから変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
+`runtime-settings-command.ts` はチャットとWeb設定画面から変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`、Web UIの`/api/runtime-settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、共通dispatcherとWeb APIは`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 

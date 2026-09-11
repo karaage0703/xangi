@@ -15,6 +15,7 @@ describe('AppNavigation', () => {
     expect(DESTINATIONS.filter((destination) => destination.placement === 'secondary')).toEqual([
       expect.objectContaining({ id: 'schedules', href: '/schedules' }),
       expect.objectContaining({ id: 'extensions', href: '/extensions' }),
+      expect.objectContaining({ id: 'settings', href: '/settings' }),
     ]);
   });
 

@@ -15,6 +15,15 @@ interface SecretField {
 }
 
 export const SECRET_FIELDS: readonly SecretField[] = [
+  { name: 'ANTHROPIC_API_KEY', label: 'Anthropic APIキー（任意）', group: 'AIプロバイダー' },
+  { name: 'CURSOR_API_KEY', label: 'Cursor APIキー（任意）', group: 'AIプロバイダー' },
+  { name: 'XAI_API_KEY', label: 'xAI APIキー（任意）', group: 'AIプロバイダー' },
+  {
+    name: 'COPILOT_GITHUB_TOKEN',
+    label: 'GitHub Copilotトークン（任意）',
+    group: 'AIプロバイダー',
+  },
+  { name: 'LOCAL_LLM_API_KEY', label: 'Local LLM APIキー（任意）', group: 'AIプロバイダー' },
   { name: 'DISCORD_TOKEN', label: 'Botトークン', group: 'Discord' },
   {
     name: 'DISCORD_ALLOWED_USER',
@@ -251,7 +260,7 @@ function renderSavedPage(count: number): string {
   return `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>保存完了</title><style>${styles()}</style><main><h1>保存しました</h1><p>${count}件の接続設定を保存しました。このタブは閉じて構いません。</p></main></html>`;
 }
 
-function validateSettingValue(name: string, value: string): string {
+export function validateSettingValue(name: string, value: string): string {
   const allowedUserPatterns: Partial<Record<string, RegExp>> = {
     DISCORD_ALLOWED_USER: /^\d{1,20}$/,
     SLACK_ALLOWED_USER: /^[UW][A-Z0-9]+$/,
