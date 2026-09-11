@@ -309,7 +309,10 @@ export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsa
   return windows.length ? [{ id: 'copilot', label: 'GitHub Copilot', windows }] : [];
 }
 
-export function parseAntigravityStatus(payload: unknown): {
+export function parseAntigravityStatus(
+  payload: unknown,
+  now?: number
+): {
   groups: AccountUsageGroup[];
   conversationId?: string;
   conversationTitle?: string;
@@ -367,12 +370,13 @@ export function parseAntigravityStatus(payload: unknown): {
   for (const [id, quota] of Object.entries(status?.quota ?? {})) {
     if (typeof quota.remaining_fraction !== 'number') continue;
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
+    const expired = now !== undefined && Number.isFinite(resetMs) && resetMs <= now;
     const known = knownQuotaBuckets[id];
     const window = {
       label: known?.windowLabel ?? (/(?:^|-)weekly(?:-|$)/i.test(id) ? '週次' : id),
-      usedPercent: Number(
-        Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
-      ),
+      usedPercent: expired
+        ? 0
+        : Number(Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)),
       windowDurationMins:
         known?.windowDurationMins ??
         (/(?:^|-)weekly(?:-|$)/i.test(id)
@@ -380,7 +384,7 @@ export function parseAntigravityStatus(payload: unknown): {
           : /(?:^|-)5h(?:-|$)/i.test(id)
             ? 300
             : undefined),
-      resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+      resetsAt: Number.isFinite(resetMs) && !expired ? resetMs / 1000 : undefined,
     };
     if (!known) {
       fallbackGroups.push({
@@ -547,7 +551,7 @@ async function readAntigravityUsage(): Promise<AccountUsageProvider> {
   const dataDir =
     process.env.DATA_DIR || resolve(process.env.WORKSPACE_PATH || process.cwd(), '.xangi');
   const payload = JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'));
-  const parsed = parseAntigravityStatus(payload);
+  const parsed = parseAntigravityStatus(payload, Date.now());
   const groups = parsed.groups;
   applyAntigravitySessionUsage(parsed);
   if (!groups.length) throw new Error('Antigravity status payload has no quota');

@@ -185,6 +185,29 @@ describe('usage monitor parsers', () => {
     });
   });
 
+  it('clears stale Antigravity usage after its reported reset time', () => {
+    const { groups } = parseAntigravityStatus(
+      {
+        quota: {
+          'gemini-weekly': {
+            remaining_fraction: 0.7779,
+            reset_time: '2026-09-11T05:15:22.000Z',
+          },
+        },
+      },
+      Date.parse('2026-09-11T06:29:00.000Z')
+    );
+
+    expect(groups[0]?.windows).toEqual([
+      {
+        label: '週次',
+        usedPercent: 0,
+        windowDurationMins: 10_080,
+        resetsAt: undefined,
+      },
+    ]);
+  });
+
   it('infers window durations only from delimited Antigravity quota bucket tokens', () => {
     const { groups } = parseAntigravityStatus({
       quota: {
