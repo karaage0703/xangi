@@ -5,6 +5,7 @@ import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
 import { startSlackBot } from './slack.js';
+import { listDiscordSettingsChannels, type SettingsChannelListers } from './settings-channels.js';
 import { initSettings, loadSettings } from './settings.js';
 import { Scheduler, type Platform } from './scheduler.js';
 import { initSessions } from './sessions.js';
@@ -59,6 +60,7 @@ async function main() {
   const destinationLabelResolverRef: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   } = {};
+  const settingsChannelListers: SettingsChannelListers = {};
   const externalChatUrlResolvers: ExternalChatUrlResolvers = {};
   const platformStartupTasks: Promise<void>[] = [];
 
@@ -181,6 +183,7 @@ async function main() {
       skillsRef,
       discordRemoteInputRef,
       destinationLabelResolverRef,
+      settingsChannelListers,
       externalChatUrlResolvers,
       workspaceRegistry,
       uiEnabled: webChatEnabled,
@@ -263,6 +266,7 @@ async function main() {
       platform === 'discord'
         ? resolveCachedDiscordDestinationLabel(client, destinationId)
         : undefined;
+    settingsChannelListers.discord = () => listDiscordSettingsChannels(client);
     externalChatUrlResolvers.discord = async ({ contextKey }) => {
       const channel = await client.channels.fetch(contextKey).catch(() => null);
       if (!channel) return undefined;
@@ -376,6 +380,7 @@ async function main() {
         },
         scheduler,
         externalChatUrlResolvers,
+        settingsChannelListers,
       }).then(() => {
         console.log('[xangi] Slack bot started');
       })

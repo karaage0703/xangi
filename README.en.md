@@ -137,7 +137,7 @@ See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 
 ## Extensions
 
-Add and manage external capabilities from Extensions in the Web UI. See [Extension Integration](docs/en/usage.md#extension-integration) for details.
+Use Settings in the Web UI for every runtime control and the common non-secret startup settings, each with explicit apply timing. Select per-channel settings by name and inspect both saved and effective values. The page lists login status and version for every supported AI-agent CLI and can run its official self-update after confirmation. Write-only API-key inputs save to the existing local secret store without redisplaying stored values. Add or manage external capabilities from Extensions. See the [usage guide](docs/en/usage.md#web-chat-ui) and [Extension Integration](docs/en/usage.md#extension-integration) for details.
 
 - [xangi-search](https://github.com/karaage0703/xangi-search) - An extension for searching your workspace
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - An extension that brings xangi responses, expressions, and head movement to M5Stack devices

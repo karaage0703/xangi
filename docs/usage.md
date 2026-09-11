@@ -353,7 +353,7 @@ managed版の`xangi uninstall`は定期update、OS service、xangi本体の順�
 
 開発checkoutの`./bin/xangi`は、`git pull`後もGit管理外の古い`dist/`を実行しないよう、`npm ci`で入れたlocal `tsx`から現在のsourceを起動します。配布bundleはsourceを含まないため、同梱`dist`とNode runtimeを使い、AIが参照するREADMEと利用者向けdocsも同梱します。
 
-Discordの許可ユーザーIDとDiscord、Slack、LINE、Telegramのtokenは`xangi settings`で入力します。一時GUIは`127.0.0.1`だけにbindし、one-time URLとHost検証を使い、保存済み値をbrowserへ返しません。保存後はserverを閉じ、OS別config directoryの`secrets.json`へmode 0600でatomic保存します。利用者が`read`や`printf`を組み立てたり、tokenをAIとの会話へ貼り付けたりする必要はありません。明示的な環境変数は互換性のため引き続き優先されます。
+Discordの許可ユーザーID、Discord / Slack / LINE / Telegramのtoken、任意のAIプロバイダーAPIキーは`xangi settings`で入力します。一時GUIは`127.0.0.1`だけにbindし、one-time URLとHost検証を使い、保存済み値をbrowserへ返しません。保存後はserverを閉じ、OS別config directoryの`secrets.json`へmode 0600でatomic保存します。利用者が`read`や`printf`を組み立てたり、tokenをAIとの会話へ貼り付けたりする必要はありません。明示的な環境変数は互換性のため引き続き優先されます。
 
 GitHub Releaseでは共通入口を`install.sh`として公開します。`packaging/bootstrap.sh`がOSとCPUを検出し、同じReleaseにある`xangi-installer-<darwin|linux>-<arm64|x64>.sh`を選びます。pipe起動時はtarget installerへ`XANGI_INSTALL_DEFER_SETUP=1`を渡し、署名検証済みCLIの配置だけを完了して、AI setupとservice起動を別の`xangi setup`へ分離します。target installerは`packaging/build-installer.mjs`で生成し、xangi本体のEd25519署名済みmanifest/artifactを照合します。検証前にarchiveを展開せず、公開鍵と`releases/latest`の更新確認用manifest URLをversion領域外へ保存し、検証済みbundle、`current`、launcher、`~/.local/bin/xangi`を確定します。setupやservice起動が失敗してもxangi本体はrollbackせず、`xangi setup`または`xangi install`で再開できます。artifact URLはrelease versionへ固定し、更新時はlatest manifestの署名を検証してから新しいartifactを取得します。AIコーディングツールはRelease assetの`setup-ai-tools.sh`でxangiとは独立して導入・認証できます。通常のTerminalから実行した`xangi setup`が対話型オンボーディングを担当し、完了後にserviceを起動します。初回install後はLaunchAgentまたはsystemd user timerが6時間ごとに`xangi update`を実行します。workspaceテンプレートは選択時にrepositoryの最新commitを取得して空の初回だけ適用し、利用者の編集を更新・merge・上書きしません。
 
@@ -1443,6 +1443,14 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 ### WebチャットUI
 
+`/settings`では、共通`runtime_settings`が扱う7項目（backend、llmmode、autoreply、notify、threadmode、replysuggestions、respondtobots）と、日常運用で使う非秘密の起動設定を変更できる。チャンネル固有設定はプラットフォームを選び、接続先から取得したチャンネル名で対象を選択する。保存値には対応するチャンネルIDを使い、選択したチャンネルの保存済み設定と現在の実効値を各項目に表示する。各項目には「即時反映」「次のturnから」「再起動後」を表示する。
+
+起動設定APIは許可リストにある型・範囲検証済みの項目だけを既存`.env`へ保存し、現在のprocess環境は変更しない。接続token、許可ユーザー、AIプロバイダーのAPIキーは、Web UIの書き込み専用入力から既存の`SecretStore`へ保存できる。保存済みの秘密値はWebへ返さず、入力欄にも再表示しない。「設定済み／未設定」だけを返し、保存後は再起動すると反映される。明示的な環境変数がある場合はそちらが優先される。任意の環境変数名は受け付けない。
+
+「接続とAPIキー」にはCodex、OpenCode、Claude Code、Cursor Agent、Grok CLI、Antigravity、GitHub Copilot CLIを常に表示する。状態は「ログイン済み」「APIキー設定済み」「未認証」「判定不能」「未インストール」のいずれかで、CLIのversionも併記する。判定はモデル生成を行わない非対話コマンドまたは既存SDKのアカウント問い合わせを使用し、アカウント名、CLIの生出力、credentialはWebへ返さない。通信障害や未対応出力は「未認証」と断定せず「判定不能」にする。インストール済みCLIは確認ダイアログから公式の自己更新コマンドを実行できる。サーバーは任意コマンドを受け付けず、対応CLIごとに固定した実行ファイルと引数だけを`shell`なしで起動し、生のコマンド出力はWebへ返さない。更新後のCLIは次の実行から使用され、xangi自体は自動再起動しない。
+
+Slackのチャンネル名取得にはBot Token Scopeの`channels:read`（パブリック）と`groups:read`（プライベート）が必要になる。不足時は設定画面に追加すべきscopeと、Slack Appをワークスペースへ再インストールする手順を表示する。
+
 応答に添付された自己完結HTMLは、外部通信とform送信を止めたsandbox内でインラインプレビューし、元ファイルは別に保存できる。
 
 添付の転送中はPC・スマートフォンともファイル名、複数選択時の順番、進捗率を入力欄の直上に表示する。音声・動画はbyte Range配信に対応し、スマートフォンでもmetadata取得・seek・再生を行える。
@@ -1461,7 +1469,7 @@ Web ProjectはDiscordのチャンネルに相当する論理的な会話グル�
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/JSONL/YAML/TOML、C/C++・Rust・Go、Astro・Vue・Svelte・Sass系を含む主要コード形式、ログ・diff・patch・TSV・CFGを開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
-Chat / Files / Schedules / Monitor / Extensionsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
+Chat / Files / Schedules / Monitor / Extensions / Settingsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / Settings / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
 
 - hidden path、`.git`、`.xangi`、`.workspace_rag`、依存物、build/coverage成果物、symlinkは一覧・読込・保存のすべてで拒否する
 - ファイル作成・削除・rename・Git操作は行わず、既存の表示可能ファイルだけを保存する

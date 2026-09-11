@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, clearRecoveredReadError, request } from '../web-ui/src/api.js';
+import {
+  ApiError,
+  clearRecoveredReadError,
+  getJsonWithTimeout,
+  request,
+} from '../web-ui/src/api.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -52,5 +57,19 @@ describe('Web API transient retry', () => {
   it('clears a recovered read error without hiding a newer action error', () => {
     expect(clearRecoveredReadError('Load failed', 'Load failed')).toBe('');
     expect(clearRecoveredReadError('Upload failed', 'Load failed')).toBe('Upload failed');
+  });
+
+  it('aborts a JSON request with an actionable timeout message', async () => {
+    globalThis.fetch = vi.fn((_input, init) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const pending = getJsonWithTimeout('/api/runtime-settings/channels', 25, '読み込み失敗');
+    const rejection = expect(pending).rejects.toThrow('読み込み失敗');
+    await vi.advanceTimersByTimeAsync(25);
+
+    await rejection;
   });
 });

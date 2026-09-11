@@ -75,6 +75,23 @@ export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function getJsonWithTimeout<T>(
+  url: string,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(new Error(timeoutMessage)), timeoutMs);
+  try {
+    return await getJson<T>(url, { signal: controller.signal });
+  } catch (cause) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw cause;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
 export async function requestJson<T>(
   url: string,
   init: RequestInit & { body?: BodyInit | null } = {}

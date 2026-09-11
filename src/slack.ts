@@ -1,5 +1,9 @@
 import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
+import {
+  createSlackSettingsChannelLister,
+  type SettingsChannelListers,
+} from './settings-channels.js';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
 import { startAiSessionTitle } from './ai-session-title.js';
@@ -839,6 +843,7 @@ export interface SlackChannelOptions {
   reloadSkills: () => Skill[];
   scheduler?: Scheduler;
   externalChatUrlResolvers?: ExternalChatUrlResolvers;
+  settingsChannelListers?: SettingsChannelListers;
 }
 
 type SlackRestartResponse = {
@@ -1012,6 +1017,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+  if (options.settingsChannelListers) {
+    options.settingsChannelListers.slack = createSlackSettingsChannelLister(config.slack.botToken);
+  }
   const rejectUnauthorizedCommand = async (
     userId: string,
     respond: (response: { text: string; response_type: 'ephemeral' }) => Promise<unknown>

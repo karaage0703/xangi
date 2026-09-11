@@ -143,6 +143,24 @@ import {
   uploadMaxBytes,
 } from './web-http.js';
 import { isRealFileWithin, parseDisplayedUserAttachments } from './web-file-security.js';
+import {
+  updateWebRuntimeSetting,
+  webChannelRuntimeSettingsSnapshot,
+  webRuntimeSettingsSnapshot,
+} from './web-runtime-settings.js';
+import {
+  updateWebConnectionSetting,
+  updateWebStartupSetting,
+  webConnectionSettingsSnapshot,
+  webStartupSettingsSnapshot,
+} from './web-startup-settings.js';
+import { updateBackendTool, type BackendToolUpdateResult } from './backend-auth-status.js';
+import {
+  listSettingsChannelsWithTimeout,
+  settingsChannelListErrorMessage,
+  type SettingsChannelListers,
+  type SettingsPlatform,
+} from './settings-channels.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -256,6 +274,7 @@ interface WebChatOptions {
   destinationLabelResolverRef?: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   };
+  settingsChannelListers?: SettingsChannelListers;
   skillsRef?: { current: Skill[] };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
@@ -263,6 +282,7 @@ interface WebChatOptions {
   extensionUpdateRequest?: typeof createExtensionUpdateRequest;
   workspaceRegistry?: WorkspaceRegistry;
   externalChatUrlResolvers?: ExternalChatUrlResolvers;
+  updateBackend?: (id: string) => Promise<BackendToolUpdateResult>;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -956,6 +976,8 @@ export function startWebChat(options: WebChatOptions): void {
       url === '/workspace/' ||
       url === '/extensions' ||
       url === '/extensions/' ||
+      url === '/settings' ||
+      url === '/settings/' ||
       /^\/chat\/[^/]+\/?$/.test(url)
     ) {
       try {
@@ -1006,6 +1028,179 @@ export function startWebChat(options: WebChatOptions): void {
 
     if (url === '/health') {
       sendJson(res, 200, { status: 'ok', port });
+      return;
+    }
+
+    if (url === '/api/runtime-settings' && req.method === 'GET') {
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      sendJson(res, 200, webRuntimeSettingsSnapshot(options.config, options.resolver), {
+        'Cache-Control': 'no-store',
+      });
+      return;
+    }
+
+    if (url === '/api/runtime-settings/channels' && req.method === 'GET') {
+      const platform = new URL(rawUrl, 'http://localhost').searchParams.get('platform');
+      if (platform !== 'discord' && platform !== 'slack') {
+        sendJson(res, 400, { error: 'platform must be discord or slack' });
+        return;
+      }
+      const enabled = options.config?.[platform]?.enabled;
+      const lister = options.settingsChannelListers?.[platform as SettingsPlatform];
+      if (enabled === false) {
+        sendJson(res, 200, {
+          platform,
+          status: 'disabled',
+          channels: [],
+          message: `${platform === 'discord' ? 'Discord' : 'Slack'}接続が無効です`,
+        });
+        return;
+      }
+      if (!lister) {
+        sendJson(res, 200, {
+          platform,
+          status: enabled ? 'starting' : 'disabled',
+          channels: [],
+          message: enabled
+            ? '接続準備中です。少し待って再読み込みしてください'
+            : `${platform === 'discord' ? 'Discord' : 'Slack'}接続が無効です`,
+        });
+        return;
+      }
+      try {
+        sendJson(res, 200, {
+          platform,
+          status: 'available',
+          channels: await listSettingsChannelsWithTimeout(lister),
+        });
+      } catch (error) {
+        sendJson(res, 200, {
+          platform,
+          status: 'unavailable',
+          channels: [],
+          message: settingsChannelListErrorMessage(platform, error),
+        });
+      }
+      return;
+    }
+
+    if (url === '/api/runtime-settings/channel' && req.method === 'GET') {
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      const requestUrl = new URL(rawUrl, 'http://localhost');
+      const platform = requestUrl.searchParams.get('platform');
+      const channelId = requestUrl.searchParams.get('channelId')?.trim();
+      if (platform !== 'discord' && platform !== 'slack') {
+        sendJson(res, 400, { error: 'platform must be discord or slack' });
+        return;
+      }
+      if (!channelId || !/^[A-Za-z0-9_-]{1,128}$/.test(channelId)) {
+        sendJson(res, 400, { error: 'channelId is invalid' });
+        return;
+      }
+      sendJson(
+        res,
+        200,
+        webChannelRuntimeSettingsSnapshot(platform, channelId, options.config, options.resolver),
+        { 'Cache-Control': 'no-store' }
+      );
+      return;
+    }
+
+    if (url === '/api/runtime-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const message = await updateWebRuntimeSetting(body, {
+          config: options.config,
+          resolver: options.resolver,
+          agentRunner,
+          modelDiscovery: options.discoverModels,
+        });
+        sendJson(res, 200, {
+          message,
+          settings: webRuntimeSettingsSnapshot(options.config, options.resolver),
+        });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/startup-settings' && req.method === 'GET') {
+      sendJson(res, 200, { groups: webStartupSettingsSnapshot() }, { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url === '/api/startup-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const message = updateWebStartupSetting(await readBody(req));
+        sendJson(res, 200, { message, groups: webStartupSettingsSnapshot() });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/connection-settings' && req.method === 'GET') {
+      sendJson(res, 200, await webConnectionSettingsSnapshot(), { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url === '/api/connection-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const message = await updateWebConnectionSetting(await readBody(req));
+        sendJson(res, 200, { message, ...(await webConnectionSettingsSnapshot()) });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/backend-tools/update' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const result = await (options.updateBackend ?? updateBackendTool)(String(body.id ?? ''));
+        sendJson(res, 200, { ...result, ...(await webConnectionSettingsSnapshot()) });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 

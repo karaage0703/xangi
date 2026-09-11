@@ -371,6 +371,12 @@ describe('web-chat HTTP API', () => {
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
       destinationLabelResolverRef,
+      settingsChannelListers: {
+        discord: async () => [
+          { id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' },
+        ],
+        slack: async () => [{ id: 'C123', name: '#general' }],
+      },
       scheduler,
       resolver,
       workspaceRegistry,
@@ -403,6 +409,13 @@ describe('web-chat HTTP API', () => {
           updateAvailable: true,
         },
       }),
+      updateBackend: async (id) => ({
+        id,
+        label: 'Codex',
+        previousVersion: 'codex 1.0',
+        version: 'codex 2.0',
+        message: 'Codexを更新しました。新しい実行からcodex 2.0を使用します。',
+      }),
     });
     baseUrl = `http://127.0.0.1:${port}`;
 
@@ -419,6 +432,42 @@ describe('web-chat HTTP API', () => {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
+  });
+
+  it('serves channel names for the settings selector while keeping IDs as values', async () => {
+    const response = await fetch(`${baseUrl}/api/runtime-settings/channels?platform=discord`);
+    const body = (await response.json()) as {
+      status: string;
+      channels: Array<{ id: string; name: string; group?: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      platform: 'discord',
+      status: 'available',
+      channels: [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
+    });
+  });
+
+  it('updates an allowlisted backend tool through a same-origin mutation', async () => {
+    const response = await fetch(`${baseUrl}/api/backend-tools/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'codex' }),
+    });
+    const body = (await response.json()) as { id: string; message: string };
+    expect(response.status).toBe(200);
+    expect(body.id).toBe('codex');
+    expect(body.message).toContain('Codexを更新しました');
+  });
+
+  it('rejects a cross-origin backend tool update', async () => {
+    const response = await fetch(`${baseUrl}/api/backend-tools/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://example.invalid' },
+      body: JSON.stringify({ id: 'codex' }),
+    });
+    expect(response.status).toBe(403);
   });
 
   afterEach(async () => {
