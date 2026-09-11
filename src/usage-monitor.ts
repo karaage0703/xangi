@@ -309,7 +309,10 @@ export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsa
   return windows.length ? [{ id: 'copilot', label: 'GitHub Copilot', windows }] : [];
 }
 
-export function parseAntigravityStatus(payload: unknown): {
+export function parseAntigravityStatus(
+  payload: unknown,
+  now?: number
+): {
   groups: AccountUsageGroup[];
   conversationId?: string;
   conversationTitle?: string;
@@ -319,30 +322,40 @@ export function parseAntigravityStatus(payload: unknown): {
   const status = payload as AntigravityStatusPayload;
   const knownQuotaBuckets: Record<
     string,
-    { groupId: string; groupLabel: string; windowLabel: string; order: number }
+    {
+      groupId: string;
+      groupLabel: string;
+      windowLabel: string;
+      windowDurationMins: number;
+      order: number;
+    }
   > = {
     'gemini-5h': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     'gemini-weekly': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
     '3p-5h': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     '3p-weekly': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
   };
@@ -357,13 +370,21 @@ export function parseAntigravityStatus(payload: unknown): {
   for (const [id, quota] of Object.entries(status?.quota ?? {})) {
     if (typeof quota.remaining_fraction !== 'number') continue;
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
+    const expired = now !== undefined && Number.isFinite(resetMs) && resetMs <= now;
     const known = knownQuotaBuckets[id];
     const window = {
-      label: known?.windowLabel ?? (/week/i.test(id) ? '週次' : id),
-      usedPercent: Number(
-        Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
-      ),
-      resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+      label: known?.windowLabel ?? (/(?:^|-)weekly(?:-|$)/i.test(id) ? '週次' : id),
+      usedPercent: expired
+        ? 0
+        : Number(Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)),
+      windowDurationMins:
+        known?.windowDurationMins ??
+        (/(?:^|-)weekly(?:-|$)/i.test(id)
+          ? 10_080
+          : /(?:^|-)5h(?:-|$)/i.test(id)
+            ? 300
+            : undefined),
+      resetsAt: Number.isFinite(resetMs) && !expired ? resetMs / 1000 : undefined,
     };
     if (!known) {
       fallbackGroups.push({
@@ -530,7 +551,7 @@ async function readAntigravityUsage(): Promise<AccountUsageProvider> {
   const dataDir =
     process.env.DATA_DIR || resolve(process.env.WORKSPACE_PATH || process.cwd(), '.xangi');
   const payload = JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'));
-  const parsed = parseAntigravityStatus(payload);
+  const parsed = parseAntigravityStatus(payload, Date.now());
   const groups = parsed.groups;
   applyAntigravitySessionUsage(parsed);
   if (!groups.length) throw new Error('Antigravity status payload has no quota');
