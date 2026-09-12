@@ -105,6 +105,8 @@ export interface Config {
     injectChannelTopic?: boolean;
     injectTimestamp?: boolean;
     showButtons?: boolean;
+    /** 新規Discordスレッドの最初のturnだけAIタイトルを許可する。 */
+    sessionTitleAiOnce?: boolean;
     replySuggestions?: boolean;
     replySuggestionCount?: number;
     allowAutoreplyCommand?: boolean;
@@ -433,6 +435,7 @@ export function loadConfig(): Config {
       injectChannelTopic: process.env.INJECT_CHANNEL_TOPIC !== 'false', // デフォルトON
       injectTimestamp: process.env.INJECT_TIMESTAMP !== 'false', // デフォルトON
       showButtons: process.env.DISCORD_SHOW_BUTTONS !== 'false', // デフォルトON
+      sessionTitleAiOnce: process.env.DISCORD_SESSION_TITLE_AI_ONCE === 'true',
       replySuggestions: process.env.DISCORD_REPLY_SUGGESTIONS === 'true',
       replySuggestionCount: v.int('DISCORD_REPLY_SUGGESTIONS_COUNT', 3, { min: 1, max: 5 }),
       allowAutoreplyCommand: process.env.ALLOW_AUTOREPLY_COMMAND !== 'false', // デフォルトON

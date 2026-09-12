@@ -6,7 +6,10 @@ import { Events } from 'discord.js';
 import type { Client, Message } from 'discord.js';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { Config } from '../src/config.js';
-import { registerDiscordMessageHandlers } from '../src/discord/message-handler.js';
+import {
+  registerDiscordMessageHandlers,
+  shouldStartDiscordAiSessionTitle,
+} from '../src/discord/message-handler.js';
 import {
   buildDiscordChannelContextLine,
   getDiscordChannelTopic,
@@ -53,6 +56,26 @@ describe('resolveConversationChannelId', () => {
 
   it('スレッドを作成しなかった場合（既にスレッド内 / DM / 作成不可）は受信チャンネルIDを使う', () => {
     expect(resolveConversationChannelId('channel-123', undefined)).toBe('channel-123');
+  });
+});
+
+describe('Discord AI session title mode', () => {
+  it('AI命名をxangiが新規作成したスレッドの最初のturnだけに制限できる', () => {
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: true, createdThreadName: '最初の質問' })
+    ).toBe(true);
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: true, createdThreadName: null })
+    ).toBe(false);
+  });
+
+  it('制限を使わないaiモードは既存スレッドでも従来どおり対象にする', () => {
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: false, createdThreadName: null })
+    ).toBe(true);
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'prefix', aiOnce: true, createdThreadName: '最初の質問' })
+    ).toBe(false);
   });
 });
 

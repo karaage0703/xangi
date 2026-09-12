@@ -91,6 +91,19 @@ export function shouldProcessDiscordMessage(input: { system?: boolean }): boolea
   return !input.system;
 }
 
+/**
+ * `DISCORD_SESSION_TITLE_AI_ONCE=true` では、xangiが今作ったスレッドだけを
+ * AI命名対象にする。既存スレッドや /new 後の後続セッションを再命名しない。
+ */
+export function shouldStartDiscordAiSessionTitle(input: {
+  mode?: 'prefix' | 'ai';
+  aiOnce: boolean;
+  createdThreadName: string | null;
+}): boolean {
+  if (input.mode !== 'ai') return false;
+  return !input.aiOnce || input.createdThreadName !== null;
+}
+
 export interface DiscordMessageTarget {
   conversationChannelId: string;
   settingsChannelId: string;
@@ -446,7 +459,15 @@ export async function processPrompt(
     let aiTitleStarted = false;
     const prefixTitle = truncateSessionTitle(stripPromptMetadata(prompt));
     const startTitleIfNeeded = () => {
-      if (aiTitleStarted || config.sessionTitle?.mode !== 'ai') return;
+      if (
+        aiTitleStarted ||
+        !shouldStartDiscordAiSessionTitle({
+          mode: config.sessionTitle?.mode,
+          aiOnce: config.discord.sessionTitleAiOnce === true,
+          createdThreadName: target.createdThreadName,
+        })
+      )
+        return;
       const entry = getSessionEntry(appSessionId);
       if (!entry || entry.title) return;
       aiTitleStarted = startAiSessionTitle({
