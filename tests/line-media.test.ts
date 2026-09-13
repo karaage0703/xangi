@@ -6,6 +6,9 @@ import {
   stickerToText,
   locationToText,
   mediaNoticeText,
+  mediaLabel,
+  attachmentOnlyPrompt,
+  extensionForMedia,
 } from '../src/line.js';
 import { buildPromptWithAttachments } from '../src/file-utils.js';
 
@@ -112,5 +115,44 @@ describe('添付パスのプロンプトへの合流', () => {
     expect(
       buildPromptWithAttachments('添付ファイルを確認してください', ['/tmp/line_m1.jpg'])
     ).toBe('添付ファイルを確認してください\n\n[添付ファイル]\n  - /tmp/line_m1.jpg');
+  });
+});
+
+describe('添付だけが届いたときの指示文', () => {
+  it('種別・LINEの制約・文脈での判断・質問の許可をすべて含む', () => {
+    expect(attachmentOnlyPrompt('ファイル')).toBe(
+      [
+        'ユーザーがファイルを送った。',
+        '- LINEでは画像やファイルにテキストを添えられないため、指示は無い',
+        '- 内容を確認し、これまでの文脈に応じて答える',
+        '- 文脈から求められることが分からない場合は、ユーザーに質問を返す',
+      ].join('\n')
+    );
+  });
+
+  it('種別ラベルが差し替わる', () => {
+    expect(attachmentOnlyPrompt('画像')).toContain('ユーザーが画像を送った。');
+    expect(mediaLabel('video')).toBe('動画');
+    expect(mediaLabel('audio')).toBe('音声');
+  });
+});
+
+describe('保存名の拡張子', () => {
+  it('ファイルは fileName の拡張子を使う', () => {
+    expect(extensionForMedia({ type: 'file', fileName: '見積書.pdf' })).toBe('pdf');
+  });
+
+  it('拡張子のないファイル名なら bin に落とす', () => {
+    expect(extensionForMedia({ type: 'file', fileName: 'README' })).toBe('bin');
+  });
+
+  it('怪しい拡張子は採らない', () => {
+    expect(extensionForMedia({ type: 'file', fileName: 'a.thisisnotanext' })).toBe('bin');
+  });
+
+  it('画像・動画・音声は種別から決める', () => {
+    expect(extensionForMedia({ type: 'image' })).toBe('jpg');
+    expect(extensionForMedia({ type: 'video' })).toBe('mp4');
+    expect(extensionForMedia({ type: 'audio' })).toBe('m4a');
   });
 });

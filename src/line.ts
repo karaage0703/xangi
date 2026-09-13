@@ -310,8 +310,23 @@ export function resolveResumeSessionId(contextKey: string): string | undefined {
 /** スタンプの keywords は最大15語返る。全部渡すとノイズになるので先頭だけ使う。 */
 const STICKER_KEYWORD_LIMIT = 3;
 
-/** 画像が無いときにエージェントへ渡す既定の指示 (Discord 側と揃える) */
-const LINE_ATTACHMENT_ONLY_PROMPT = '添付ファイルを確認してください';
+/**
+ * 添付だけが届いたときにエージェントへ渡す指示。
+ *
+ * **LINE は画像やファイルにテキストを添えられない。** キャプション付きの送信が
+ * できないので、添付だけのイベントが普通に発生する。エージェントがその事情を
+ * 知らないと「何をしてほしいのか指示してくれ」と突き返してしまう。
+ *
+ * 種別 (画像 / 動画 / 音声 / ファイル) を差し込んで使う。
+ */
+export function attachmentOnlyPrompt(label: string): string {
+  return [
+    `ユーザーが${label}を送った。`,
+    '- LINEでは画像やファイルにテキストを添えられないため、指示は無い',
+    '- 内容を確認し、これまでの文脈に応じて答える',
+    '- 文脈から求められることが分からない場合は、ユーザーに質問を返す',
+  ].join('\n');
+}
 
 /**
  * コンテンツ取得のエンドポイント。
@@ -380,11 +395,40 @@ export function locationToText(location: {
  * **ユーザーへ直接送る文面ではない。** プロンプトに載せて、返事はエージェントに任せる。
  * 固定文面で直接返すと、導入環境ごとの口調と合わなくなる。
  */
+export function mediaLabel(kind: string): string {
+  return kind === 'video'
+    ? '動画'
+    : kind === 'audio'
+      ? '音声'
+      : kind === 'file'
+        ? 'ファイル'
+        : '画像';
+}
+
 export function mediaNoticeText(kind: string, fileName?: string): string {
-  const label =
-    kind === 'video' ? '動画' : kind === 'audio' ? '音声' : kind === 'file' ? 'ファイル' : '画像';
-  const head = `ユーザーが${label}を送った。`;
+  const head = `ユーザーが${mediaLabel(kind)}を送った。`;
   return fileName ? `${head}名前: ${fileName}` : head;
+}
+
+/**
+ * 保存名の拡張子。`file` は webhook の `fileName` から取る。
+ * 実体の判定はしない — 見た目を実物に寄せるためだけのもの。
+ */
+export function extensionForMedia(message: { type: string; fileName?: string }): string {
+  if (message.type === 'file' && message.fileName) {
+    const dot = message.fileName.lastIndexOf('.');
+    if (dot > 0 && dot < message.fileName.length - 1) {
+      const candidate = message.fileName.slice(dot + 1).toLowerCase();
+      if (/^[a-z0-9]{1,8}$/.test(candidate)) return candidate;
+    }
+  }
+  return message.type === 'video'
+    ? 'mp4'
+    : message.type === 'audio'
+      ? 'm4a'
+      : message.type === 'image'
+        ? 'jpg'
+        : 'bin';
 }
 
 /**
@@ -399,20 +443,20 @@ export function mediaNoticeText(kind: string, fileName?: string): string {
  * どの状態でも一度は取得を試し、取れなければ諦める。
  */
 async function fetchLineMedia(
-  message: { type: string; contentProvider?: { type?: string; originalContentUrl?: string } },
+  message: {
+    type: string;
+    fileName?: string;
+    contentProvider?: { type?: string; originalContentUrl?: string };
+  },
   messageId: string,
   ctx: HandlerContext
 ): Promise<string | null> {
   const url = resolveContentSource(message.contentProvider, messageId);
   // 拡張子は保存名の見た目のためだけに付ける。実体の判定はしない。
-  const ext =
-    message.type === 'video'
-      ? 'mp4'
-      : message.type === 'audio'
-        ? 'm4a'
-        : message.type === 'image'
-          ? 'jpg'
-          : 'bin';
+  // **file は webhook に fileName が載っているので、その拡張子を使う。**
+  // .bin にすると「拡張子は .bin だが中身は PDF だ」という余計な但し書きを
+  // エージェントが付ける羽目になる。
+  const ext = extensionForMedia(message);
   try {
     return await downloadFile(
       url,
@@ -595,8 +639,7 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
     const saved = await fetchLineMedia(message, messageId, ctx);
     if (saved) {
       attachmentPaths.push(saved);
-      // 添付があるときは Discord と同じ既定文に寄せる。種別の通知は添付で代替される。
-      text = LINE_ATTACHMENT_ONLY_PROMPT;
+      text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
     }
     // 取得できなければ text は mediaNoticeText のまま。
     // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
