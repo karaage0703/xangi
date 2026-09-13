@@ -252,6 +252,44 @@ describe('Scheduler', () => {
     expect(toggledBack?.enabled).toBe(true);
   });
 
+  it('runs a paused schedule once without changing its saved state', async () => {
+    let releaseRun!: () => void;
+    const started = vi.fn();
+    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
+      started(prompt, channelId);
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+      return 'ok';
+    });
+    const schedule = scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'manual task',
+      channelId: 'ch1',
+      platform: 'discord',
+    });
+    scheduler.toggle(schedule.id);
+
+    const run = scheduler.runNow(schedule.id);
+
+    expect(started).toHaveBeenCalledWith('manual task', 'ch1');
+    expect(scheduler.get(schedule.id)?.enabled).toBe(false);
+    expect(() => scheduler.runNow(schedule.id)).toThrow('このスケジュールは実行中です');
+
+    releaseRun();
+    await run;
+    expect(scheduler.get(schedule.id)).toMatchObject({
+      id: schedule.id,
+      enabled: false,
+      expression: '0 9 * * *',
+    });
+  });
+
+  it('rejects a manual run for an unknown schedule', () => {
+    expect(() => scheduler.runNow('missing')).toThrow('スケジュールが見つかりません');
+  });
+
   it('should update a schedule while preserving identity and enabled state', () => {
     const schedule = scheduler.add({
       type: 'cron',

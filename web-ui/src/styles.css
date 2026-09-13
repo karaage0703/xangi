@@ -5207,6 +5207,7 @@ video.media-preview {
   outline-offset: 2px;
 }
 
+.schedule-run,
 .schedule-edit,
 .schedule-delete {
   min-width: 44px;
@@ -5218,6 +5219,16 @@ video.media-preview {
   background: transparent;
   cursor: pointer;
   font-size: 12px;
+}
+
+.schedule-run:hover {
+  color: var(--accent-ink);
+  background: var(--accent-tint);
+}
+
+.schedule-run:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .schedule-edit:hover {
@@ -5827,6 +5838,7 @@ video.media-preview {
   .schedule-create select,
   .schedule-create textarea,
   .schedule-filters button,
+  .schedule-run,
   .schedule-edit,
   .schedule-delete {
     min-height: 44px;

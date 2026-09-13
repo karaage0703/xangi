@@ -18,6 +18,7 @@ Detailed usage guide for xangi.
 - [Autonomous AI Operations](#autonomous-ai-operations)
 - [Docker Deployment](#docker-deployment)
 - [Extension Integration](#extension-integration)
+- [Remote Platform Adapter](#remote-platform-adapter)
 - [Local LLM](#local-llm)
 - [Workspace Hooks](#workspace-hooks)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
@@ -938,6 +939,31 @@ Update preparation declares a program and arguments separately instead of a shel
 
 See [.env.example](../../.env.example) only for settings owned by xangi itself.
 
+## Remote Platform Adapter
+
+The Remote Platform Adapter is an experimental internal API that lets a host gateway retain Discord or Slack credentials while xangi owns normal sessions, agent execution, and shared lifecycle events. It is not a public Internet API.
+
+```text
+Discord / Slack
+  ⇅
+host Platform Gateway (credentials, API I/O, coarse allowlist)
+  ⇅ authenticated SSE
+xangi Remote Platform Adapter (sessions, agents, shared events)
+```
+
+Enable it with these environment variables:
+
+```dotenv
+WEB_CHAT_ENABLED=false
+XANGI_REMOTE_PLATFORM_ENABLED=true
+XANGI_REMOTE_PLATFORM_TOKEN=<long-random-value>
+WEB_CHAT_HOST=127.0.0.1
+```
+
+Send requests to `POST /api/remote-platform/turn` with `Authorization: Bearer ...`. The required fields are `platform`, `contextKey`, `settingsChannelId`, `channelId`, `messageId`, `userId`, `userName`, and `text`. The response streams `started`, `text`, `tool`, `error`, and `done` SSE events. Concurrent turns for the same xangi session are rejected with `409 Session is busy`.
+
+The adapter token is not a platform credential, but it authorizes callers to inject arbitrary turns. An unset token makes the endpoint return `503`, and a mismatch returns `401`. Share it only between the host gateway and xangi. Never pass raw Discord or Slack tokens to xangi or its agent process.
+
 ## Local LLM
 
 xangi's Local LLM backend uses the OpenAI-compatible API (`/v1/chat/completions`). It supports Ollama, vLLM, and other OpenAI-compatible servers (LM Studio, llama.cpp, etc.).
@@ -1311,8 +1337,11 @@ This section groups the key settings by purpose. See [`.env.example`](../../.env
 | Variable             | Description                                                | Default  |
 | -------------------- | ---------------------------------------------------------- | -------- |
 | `SESSION_TITLE_MODE` | `prefix`: first-message prefix; `ai`: concise AI-generated title | `ai`     |
+| `DISCORD_SESSION_TITLE_AI_ONCE` | Allow an AI title only for the first turn of a Discord thread created by xangi; `false` restores per-session AI naming | `true` |
 
 In `ai` mode, xangi uses the same backend and model selected for the first turn. Title generation starts as an isolated internal task after the main backend reports readiness, or after the first response text for backends without that signal. The main response never waits for it. With a single-concurrency Local LLM, the main request claims the slot first and title generation follows it. Failure, empty output, or a 10-second timeout preserves the prefix title. Web and Slack update the session name shown in Web Chat. Discord creates the thread immediately with the prefix and renames it after the AI title is ready.
+
+By default, AI updates are limited to the first turn of a thread created by xangi. Existing threads, manually renamed threads, and new internal sessions created after `/new` keep the Discord thread name unchanged. When an internal session is created inside an existing thread, its internal title inherits the current Discord thread name. Set `DISCORD_SESSION_TITLE_AI_ONCE=false` to restore AI naming for every session.
 
 ### First-turn history prefetch (Discord / Slack / Web)
 

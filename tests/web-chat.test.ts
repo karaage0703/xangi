@@ -372,9 +372,7 @@ describe('web-chat HTTP API', () => {
       discordRemoteInputRef,
       destinationLabelResolverRef,
       settingsChannelListers: {
-        discord: async () => [
-          { id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' },
-        ],
+        discord: async () => [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
         slack: async () => [{ id: 'C123', name: '#general' }],
       },
       scheduler,
@@ -707,23 +705,17 @@ describe('web-chat HTTP API', () => {
 
     const sessionsBeforeRun = listAllSessions().length;
     runner.persistResults = true;
-    const onDelivery = vi.fn();
-    await scheduler.getAgentRunner('web')?.(
-      '朝の予定を確認して',
-      '__new__',
-      scheduler.get(added.schedule.id),
-      { onDelivery }
-    );
+    const runResponse = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}/run`, {
+      method: 'POST',
+    });
+    expect(runResponse.status).toBe(202);
+    expect(await runResponse.json()).toEqual({ ok: true, scheduleId: added.schedule.id });
+    await vi.waitFor(() => expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1));
     const newSession = listAllSessions().find(
       (session) => session.platform === 'web' && session.projectId === project.id
     );
     expect(listAllSessions()).toHaveLength(sessionsBeforeRun + 1);
     expect(newSession).toBeDefined();
-    expect(onDelivery).toHaveBeenCalledWith({
-      platform: 'web',
-      destinationId: newSession!.id,
-      sessionId: expect.any(String),
-    });
     const sessionDetail = (await (
       await fetch(`${baseUrl}/api/sessions/${newSession!.id}`)
     ).json()) as {
@@ -776,6 +768,50 @@ describe('web-chat HTTP API', () => {
     });
     expect(removed.status).toBe(200);
     expect(scheduler.get(added.schedule.id)).toBeUndefined();
+
+    const missingRun = await fetch(`${baseUrl}/api/schedules/${added.schedule.id}/run`, {
+      method: 'POST',
+    });
+    expect(missingRun.status).toBe(404);
+  });
+
+  it('runs a paused schedule manually and rejects a duplicate run', async () => {
+    let releaseRun!: () => void;
+    scheduler.registerAgentRunner('discord', async () => {
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+      return 'done';
+    });
+    const schedule = scheduler.add({
+      type: 'cron',
+      expression: '0 9 * * *',
+      message: 'manual task',
+      channelId: 'thread-123',
+      platform: 'discord',
+    });
+    scheduler.toggle(schedule.id);
+
+    const started = await fetch(`${baseUrl}/api/schedules/${schedule.id}/run`, {
+      method: 'POST',
+    });
+    const duplicate = await fetch(`${baseUrl}/api/schedules/${schedule.id}/run`, {
+      method: 'POST',
+    });
+
+    expect(started.status).toBe(202);
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toEqual({ error: 'このスケジュールは実行中です' });
+    expect(scheduler.get(schedule.id)?.enabled).toBe(false);
+
+    releaseRun();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const retried = await fetch(`${baseUrl}/api/schedules/${schedule.id}/run`, {
+      method: 'POST',
+    });
+    expect(retried.status).toBe(202);
+    releaseRun();
+    expect(scheduler.get(schedule.id)?.enabled).toBe(false);
   });
 
   it('adds cached destination labels to schedule responses without replacing IDs', async () => {

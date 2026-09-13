@@ -18,6 +18,7 @@ xangiの詳細な使い方ガイドです。
 - [AIによる自律操作](#aiによる自律操作)
 - [Docker実行](#docker実行)
 - [Extension連携](#extension連携)
+- [Remote Platform Adapter](#remote-platform-adapter)
 - [Local LLM](#local-llm)
 - [ワークスペース hooks](#ワークスペース-hooks)
 - [Tool Trajectory Logger](#tool-trajectory-logger)
@@ -953,6 +954,31 @@ Extensions画面で「削除」を選ぶと、即座に停止・登録解除せ�
 
 xangiが受け持つ設定項目だけは[.env.example](../.env.example)を参照してください。
 
+## Remote Platform Adapter
+
+Remote Platform Adapterは、Discord/Slack tokenをhost側Gatewayに残したまま、受信eventをxangiの通常session・Agent・共通event処理へ渡すための実験的な内部APIです。公開Internet向けAPIではありません。
+
+```text
+Discord / Slack
+  ⇅
+host Platform Gateway（credential、API I/O、coarse allowlist）
+  ⇅ 認証済みSSE
+xangi Remote Platform Adapter（session、Agent、共通event）
+```
+
+次の環境変数で有効化します。
+
+```dotenv
+WEB_CHAT_ENABLED=false
+XANGI_REMOTE_PLATFORM_ENABLED=true
+XANGI_REMOTE_PLATFORM_TOKEN=<十分に長いランダム値>
+WEB_CHAT_HOST=127.0.0.1
+```
+
+`POST /api/remote-platform/turn`へ`Authorization: Bearer ...`を付けて送信します。`platform`、`contextKey`、`settingsChannelId`、`channelId`、`messageId`、`userId`、`userName`、`text`が必須です。応答は`started`、`text`、`tool`、`error`、`done`のSSE eventです。同じxangi sessionへの同時turnは`409 Session is busy`で拒否されます。
+
+このtokenはplatform credentialではありませんが、任意の発話をxangiへ投入できる権限です。未設定時はendpointを`503`、不一致時は`401`にし、host Gatewayとxangiの間だけで共有してください。raw Discord/Slack tokenをxangiやAgent processへ渡してはいけません。
+
 ## Local LLM
 
 xangiのLocal LLMバックエンドはOpenAI互換API（`/v1/chat/completions`）を使用します。OllamaとvLLM、その他のOpenAI互換サーバー（LM Studio、llama.cpp等）に対応しています。
@@ -1330,7 +1356,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 `ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Web・SlackではWeb Chatのセッション名を更新します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
 
-デフォルトでは、AIによる更新をxangiが新規作成したスレッドの最初のturnだけに制限します。既存スレッド、手動で付け直したスレッド名、`/new`後の新しい内部セッションは自動変更しません。従来どおり各セッションでAI命名する場合は`DISCORD_SESSION_TITLE_AI_ONCE=false`を設定します。
+デフォルトでは、AIによる更新をxangiが新規作成したスレッドの最初のturnだけに制限します。既存スレッド、手動で付け直したスレッド名、`/new`後の新しい内部セッションは自動変更しません。既存スレッド内で内部セッションを作成した場合、その内部タイトルには現在のDiscordスレッド名を引き継ぎます。従来どおり各セッションでAI命名する場合は`DISCORD_SESSION_TITLE_AI_ONCE=false`を設定します。
 
 ### 初回履歴先読み（Discord / Slack / Web 共通）
 

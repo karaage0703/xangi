@@ -71,6 +71,16 @@ export interface AgentRunFn {
   ): Promise<string>;
 }
 
+export class ScheduleRunError extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 409
+  ) {
+    super(message);
+    this.name = 'ScheduleRunError';
+  }
+}
+
 export function validateScheduleInput(schedule: ScheduleInput): void {
   if (schedule.type === 'cron') {
     if (!schedule.expression || !cron.validate(schedule.expression)) {
@@ -241,6 +251,21 @@ export class Scheduler {
       }
     }
     return schedule;
+  }
+
+  /**
+   * 登録済みスケジュールを、保存内容や次回発火時刻を変えずに1回実行する。
+   * 有効/無効は自動発火だけを制御し、明示的な手動実行は停止中でも許可する。
+   */
+  runNow(id: string): Promise<void> {
+    const schedule = this.get(id);
+    if (!schedule) {
+      throw new ScheduleRunError('スケジュールが見つかりません', 404);
+    }
+    if (this.runningJobs.has(id)) {
+      throw new ScheduleRunError('このスケジュールは実行中です', 409);
+    }
+    return this.executeJob(schedule);
   }
   // ─── Job Management ───────────────────────────────────────────────
   /**
