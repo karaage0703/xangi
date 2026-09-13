@@ -22,6 +22,7 @@ import {
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
+import { downloadFile, buildPromptWithAttachments } from './file-utils.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
 import { splitMessage } from './message-split.js';
 import { listenHttpServer } from './http-server-startup.js';
@@ -178,6 +179,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
       await handleRequest(req, res, {
         path,
         channelSecret,
+        channelAccessToken,
         agentRunner,
         resolver,
         client,
@@ -221,6 +223,8 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
 interface HandlerContext {
   path: string;
   channelSecret: string;
+  /** コンテンツ取得 (api-data.line.me) の Bearer に使う。client は内部に隠している */
+  channelAccessToken: string;
   agentRunner: AgentRunner;
   resolver: BackendResolver;
   client: LineBotClient;
@@ -303,29 +307,188 @@ export function resolveResumeSessionId(contextKey: string): string | undefined {
   return getProviderSessionId(contextKey);
 }
 
+/** スタンプの keywords は最大15語返る。全部渡すとノイズになるので先頭だけ使う。 */
+const STICKER_KEYWORD_LIMIT = 3;
+
+/** 画像が無いときにエージェントへ渡す既定の指示 (Discord 側と揃える) */
+const LINE_ATTACHMENT_ONLY_PROMPT = '添付ファイルを確認してください';
+
+/**
+ * コンテンツ取得のエンドポイント。
+ * **送信系の api.line.me とはホストが違う。** 取り違えると 404 になる。
+ */
+export function lineContentUrl(messageId: string): string {
+  return `https://api-data.line.me/v2/bot/message/${messageId}/content`;
+}
+
+/** コンテンツ取得の認証ヘッダ。Bearer が無いと 401 になる。 */
+export function lineContentAuthHeader(channelAccessToken: string): Record<string, string> {
+  return { Authorization: `Bearer ${channelAccessToken}` };
+}
+
+/**
+ * 取得元を決める。**コンテンツが LINE サーバにあるとは限らない。**
+ * contentProvider.type が external のときは originalContentUrl から取る。
+ */
+export function resolveContentSource(
+  contentProvider: { type?: string; originalContentUrl?: string } | undefined,
+  messageId: string
+): string {
+  if (contentProvider?.type === 'external' && contentProvider.originalContentUrl) {
+    return contentProvider.originalContentUrl;
+  }
+  return lineContentUrl(messageId);
+}
+
+/**
+ * スタンプをテキストにする。
+ *
+ * **メッセージスタンプは入力文字を主に置く。** keywords はスタンプ側の属性だが、
+ * text は本人が打った言葉で意図に近い。
+ */
+export function stickerToText(sticker: { keywords?: string[]; text?: string }): string {
+  const head = 'ユーザーがスタンプを送った。';
+  const meaning = (sticker.keywords ?? []).slice(0, STICKER_KEYWORD_LIMIT).join(', ');
+  if (sticker.text) {
+    return meaning
+      ? `${head}「${sticker.text}」（意味: ${meaning}）`
+      : `${head}「${sticker.text}」`;
+  }
+  return meaning ? `${head}意味: ${meaning}` : head;
+}
+
+/**
+ * 位置情報をテキストにする。
+ * **地図から地点を選ぶと title は付かず address だけが返る**ので、どちらも省略されうる。
+ */
+export function locationToText(location: {
+  title?: string;
+  address?: string;
+  latitude: number;
+  longitude: number;
+}): string {
+  const label = [location.title, location.address].filter(Boolean).join(' / ');
+  const coords = `(${location.latitude}, ${location.longitude})`;
+  return label
+    ? `ユーザーが位置情報を送った。${label} ${coords}`
+    : `ユーザーが位置情報を送った。${coords}`;
+}
+
+/**
+ * 本体を取得できなかったときに、何が届いたかだけをエージェントへ伝える。
+ *
+ * **ユーザーへ直接送る文面ではない。** プロンプトに載せて、返事はエージェントに任せる。
+ * 固定文面で直接返すと、導入環境ごとの口調と合わなくなる。
+ */
+export function mediaNoticeText(kind: string, fileName?: string): string {
+  const label =
+    kind === 'video' ? '動画' : kind === 'audio' ? '音声' : kind === 'file' ? 'ファイル' : '画像';
+  const head = `ユーザーが${label}を送った。`;
+  return fileName ? `${head}名前: ${fileName}` : head;
+}
+
+/**
+ * メディアの本体を取得してローカルへ保存する。取得できなければ null。
+ *
+ * **受信と同じターンで取りに行く。** LINE は "Content that users send is automatically
+ * deleted after a certain period of time" と明記しており、保持期間は公開されていない。
+ *
+ * **transcoding の状態は見て回らない。** image / file では 400 が返り
+ * (`Transcoding status doesn't support this type of content`)、video / audio でも
+ * 実測では常に `succeeded` だった。`processing` は「準備中」であって失敗ではないので、
+ * どの状態でも一度は取得を試し、取れなければ諦める。
+ */
+async function fetchLineMedia(
+  message: { type: string; contentProvider?: { type?: string; originalContentUrl?: string } },
+  messageId: string,
+  ctx: HandlerContext
+): Promise<string | null> {
+  const url = resolveContentSource(message.contentProvider, messageId);
+  // 拡張子は保存名の見た目のためだけに付ける。実体の判定はしない。
+  const ext =
+    message.type === 'video'
+      ? 'mp4'
+      : message.type === 'audio'
+        ? 'm4a'
+        : message.type === 'image'
+          ? 'jpg'
+          : 'bin';
+  try {
+    return await downloadFile(
+      url,
+      `line_${messageId}.${ext}`,
+      lineContentAuthHeader(ctx.channelAccessToken)
+    );
+  } catch (err) {
+    console.error(`[xangi-line] failed to download ${message.type} (${messageId}):`, err);
+    return null;
+  }
+}
+
 async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
   if (event.type !== 'message') return;
   const message = event.message;
-  if (!message || message.type !== 'text') return;
+  if (!message) return;
 
   const source = event.source;
   const userId = source && 'userId' in source ? source.userId : undefined;
   const replyToken = 'replyToken' in event ? event.replyToken : undefined;
-  const text = message.text;
   const messageId = message.id;
 
-  if (!userId || !replyToken || !text) {
+  if (!userId || !replyToken) {
     console.warn(
-      '[xangi-line] skip event (missing userId / replyToken / text):',
-      JSON.stringify({ hasUserId: !!userId, hasReplyToken: !!replyToken, hasText: !!text })
+      '[xangi-line] skip event (missing userId / replyToken):',
+      JSON.stringify({ hasUserId: !!userId, hasReplyToken: !!replyToken, type: message.type })
     );
     return;
   }
 
-  // allowlist
+  // **allowlist は本体取得より先に見る。** 後ろに置くと、許可していない相手の
+  // ファイルまでダウンロードしてしまう。
   if (!ctx.allowAll && !ctx.allowedUsers.includes(userId)) {
     console.log(`[xangi-line] user ${userId} not in allowlist, ignoring`);
     return;
+  }
+
+  // 種別ごとに、エージェントへ渡すテキストを決める。
+  // **本体の取得はここではしない。** 取得は slow-response タイマーを張った後に行う
+  // (実測で 356MB / 41秒。先に取ると 45 秒の通知が出る頃には replyToken が失効する)。
+  let text: string;
+  let pendingMedia: { kind: string; fileName?: string } | null = null;
+
+  switch (message.type) {
+    case 'text':
+      if (!message.text) {
+        console.warn('[xangi-line] skip event (empty text)');
+        return;
+      }
+      text = message.text;
+      break;
+    case 'sticker':
+      text = stickerToText(message);
+      break;
+    case 'location':
+      text = locationToText(message);
+      break;
+    case 'image':
+    case 'video':
+    case 'audio':
+    case 'file': {
+      const fileName = message.type === 'file' ? message.fileName : undefined;
+      text = mediaNoticeText(message.type, fileName);
+      if (messageId) {
+        pendingMedia = { kind: message.type, fileName };
+      }
+      break;
+    }
+    default: {
+      // 型の上では全種別を網羅しているが、LINE 側が新しい種別を追加する可能性がある。
+      // **無言で捨てず、何が届いたかだけはエージェントへ渡す。**
+      const unknownType = (message as { type?: string }).type ?? 'unknown';
+      console.log(`[xangi-line] unknown message type: ${unknownType}`);
+      text = `ユーザーが${unknownType}を送った。`;
+      break;
+    }
   }
 
   const contextKey = `${LINE_CONTEXT_PREFIX}${userId}`;
@@ -425,6 +588,20 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
     }, ctx.slowResponseThresholdMs);
   }
 
+  // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
+  // 45 秒の「考え中」は replyToken が生きているうちに届く。
+  const attachmentPaths: string[] = [];
+  if (pendingMedia && messageId) {
+    const saved = await fetchLineMedia(message, messageId, ctx);
+    if (saved) {
+      attachmentPaths.push(saved);
+      // 添付があるときは Discord と同じ既定文に寄せる。種別の通知は添付で代替される。
+      text = LINE_ATTACHMENT_ONLY_PROMPT;
+    }
+    // 取得できなければ text は mediaNoticeText のまま。
+    // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
+  }
+
   const startTime = Date.now();
   let runResult: RunResult | null = null;
   let runError: unknown = null;
@@ -432,7 +609,7 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
   try {
     runResult = await runWithBubbleEvents(
       ctx.agentRunner,
-      text,
+      buildPromptWithAttachments(text, attachmentPaths),
       {
         threadId: threadIdFor('line', userId),
         turnId: turnIdFor('line', messageId ?? String(Date.now())),
