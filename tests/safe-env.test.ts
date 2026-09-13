@@ -29,4 +29,25 @@ describe('safe agent environment', () => {
     if (previousGemini === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previousGemini;
   });
+
+  it('passes sandbox-owned Codex config and network proxy routes', () => {
+    const values = {
+      CODEX_HOME: '/var/lib/xangi/codex-home',
+      HTTPS_PROXY: 'http://10.200.0.1:3128',
+      NO_PROXY: '127.0.0.1,localhost',
+      SSL_CERT_FILE: '/etc/openshell-tls/ca-bundle.pem',
+    };
+    const previous = Object.fromEntries(
+      Object.keys(values).map((key) => [key, process.env[key]])
+    );
+    Object.assign(process.env, values);
+
+    const env = getSafeEnv();
+
+    expect(env).toMatchObject(values);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
 });

@@ -94,6 +94,7 @@ xangi doctor
 - [Telegram](docs/telegram-setup.md)
 - [LINE](docs/line-setup.md)
 - Web Chatは`xangi setup`だけで設定可能
+- [Remote Platform Adapter（実験的）](docs/remote-platform.md)
 
 ## ソースから開発する
 

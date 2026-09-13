@@ -303,6 +303,7 @@ xangi setup
 xangi doctor
 
 # xangi本体とは独立したAIにエラー調査・修正・再確認を任せる
+# AIは最初に症状を質問し、回答後にその経路を優先して調査する
 xangi rescue
 
 # 実行中instanceのWeb UIアクセス先・bind・Chat/Workspace疎通をJSONで表示

@@ -301,6 +301,7 @@ xangi setup
 xangi doctor
 
 # Ask an AI agent independent of the xangi service to investigate, repair, and verify errors
+# The agent asks about the symptom first, then prioritizes that path after your reply
 xangi rescue
 
 # Print Web UI URLs, bind settings, and Chat/Workspace reachability for the running instance as JSON

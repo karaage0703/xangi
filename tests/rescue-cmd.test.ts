@@ -72,10 +72,31 @@ describe('xangi rescue', () => {
     expect(prompt).toContain('secretの値を表示・会話へ転記・外部送信しない');
   });
 
-  it('keeps detailed rescue instructions in a private temporary file and removes it', async () => {
+  it('asks for the user-visible symptom before running diagnostics', () => {
+    const layout = resolveAppLayout({ platform: 'linux', arch: 'x64', homeDir: '/home/tester' });
+    const prompt = buildRescuePrompt({
+      launcherCommand: 'xangi',
+      documentationRoot: '/home/tester/xangi',
+      installationKind: 'managed',
+      layout,
+    });
+
+    expect(prompt).toContain('最初の応答では診断toolやファイル読み取りを始めず');
+    expect(prompt).toContain('「何が起きていますか？」と尋ねて返答を待つ');
+    expect(prompt.indexOf('何が起きていますか？')).toBeLessThan(
+      prompt.indexOf('service状態、doctor結果、直近ログを調査')
+    );
+    expect(prompt).toContain('その利用者向け経路を最優先に調べる');
+    expect(prompt).toContain('無関係な警告を主症状と取り違えない');
+  });
+
+  it('asks for the symptom before exposing the private detailed instructions', async () => {
     const prepared = await prepareRescueLaunch('private diagnostic instructions');
     roots.push(dirname(prepared.instructionPath));
     expect(prepared.visiblePrompt).not.toContain('private diagnostic instructions');
+    expect(prepared.visiblePrompt).toContain('最初の応答ではtoolやファイル読み取りをせず');
+    expect(prepared.visiblePrompt).toContain('「何が起きていますか？」と尋ねて返答を待って');
+    expect(prepared.visiblePrompt).toContain('利用者が回答した後に');
     expect(await readFile(prepared.instructionPath, 'utf8')).toContain('private diagnostic');
     expect((await stat(prepared.instructionPath)).mode & 0o777).toBe(0o600);
     await prepared.cleanup();

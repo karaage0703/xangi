@@ -18,6 +18,17 @@ export const ALLOWED_ENV_KEYS = [
   // Node.js
   'NODE_ENV',
   'NODE_PATH',
+  // Backend CLI runtime/config. Values are paths or routes, never credentials.
+  'CODEX_HOME',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'SSL_CERT_FILE',
   // xangi動作用
   'WORKSPACE_PATH',
   'AGENT_BACKEND',
