@@ -76,12 +76,14 @@ export function buildRescuePrompt(options: {
 - logs: ${logs}
 - configured workspace: ${workspace}
 
-次の順で自律的に復旧してください:
-1. 対象情報、xangiの実装、公式document、設定、service状態、doctor結果、直近ログを調査して真因を特定する。
-2. 必要なファイルや設定を修正する。個別の既知エラーだけを前提にせず、実際の状態を根拠に判断する。
-3. \`${options.launcherCommand} service start${targetFlag}\`または必要ならrestartを実行する。
-4. \`${options.launcherCommand} doctor${targetFlag}\`を実行し、復旧したことを確認する。失敗した場合は調査と修正を続ける。
-5. 最後に原因、変更内容、検証結果、残課題を短く報告する。
+次の順で復旧してください:
+1. 最初の応答では診断toolやファイル読み取りを始めず、利用者へ「何が起きていますか？」と尋ねて返答を待つ。可能なら、期待した動作、実際の症状、発生時刻、直前の変更を一つの簡潔な質問で確認する。
+2. 利用者の回答を受けたら、把握した症状を短く復唱し、その利用者向け経路を最優先に調べる。doctorの別項目や無関係な警告を主症状と取り違えない。
+3. 対象情報、xangiの実装、公式document、設定、service状態、doctor結果、直近ログを調査して真因を特定する。
+4. 必要なファイルや設定を修正する。個別の既知エラーだけを前提にせず、実際の状態を根拠に判断する。
+5. \`${options.launcherCommand} service start${targetFlag}\`または必要ならrestartを実行する。
+6. \`${options.launcherCommand} doctor${targetFlag}\`を実行し、復旧したことを確認する。失敗した場合は調査と修正を続ける。
+7. 最後に原因、変更内容、検証結果、残課題を短く報告する。
 
 安全上の制約:
 - token、password、secretの値を表示・会話へ転記・外部送信しない。設定の有無だけを扱う。
@@ -103,7 +105,7 @@ export async function prepareRescueLaunch(initialPrompt: string): Promise<{
   await writeFile(instructionPath, initialPrompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await chmod(instructionPath, 0o600);
   return {
-    visiblePrompt: `xangiの復旧を始めます。最初に ${instructionPath} を読み、その指示に従って調査・修正・検証してください。`,
+    visiblePrompt: `xangiの復旧を始めます。最初の応答ではtoolやファイル読み取りをせず、利用者へ「何が起きていますか？」と尋ねて返答を待ってください。可能なら期待した動作、実際の症状、発生時刻、直前の変更を一つの簡潔な質問で確認してください。利用者が回答した後に ${instructionPath} を読み、その指示に従って調査・修正・検証してください。`,
     instructionPath,
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };

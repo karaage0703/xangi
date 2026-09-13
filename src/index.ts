@@ -172,7 +172,8 @@ async function main() {
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
   const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
   const interChatCfg = getInterChatConfig();
-  if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled) {
+  const remotePlatformEnabled = process.env.XANGI_REMOTE_PLATFORM_ENABLED === 'true';
+  if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled || remotePlatformEnabled) {
     startWebChat({
       agentRunner,
       historyPrefetch: config.historyPrefetch,

@@ -161,6 +161,7 @@ import {
   type SettingsChannelListers,
   type SettingsPlatform,
 } from './settings-channels.js';
+import { handleRemotePlatformRequest } from './remote-platform-server.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -902,6 +903,25 @@ export function startWebChat(options: WebChatOptions): void {
       res.writeHead(200);
       res.end();
       return;
+    }
+
+    if (url === '/api/remote-platform/turn') {
+      try {
+        const handled = await handleRemotePlatformRequest(req, res, {
+          agentRunner,
+          config: options.config,
+          resolver: options.resolver,
+          workspaceRegistry,
+        });
+        if (handled) return;
+      } catch (err) {
+        if (!res.headersSent) {
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        } else {
+          res.end();
+        }
+        return;
+      }
     }
 
     // inter-instance-chat のHTTP APIは専用ハンドラに委譲
