@@ -23,6 +23,7 @@ import {
   createSession,
   createWebSession,
   getActiveSessionId,
+  getSessionEntry,
   initSessions,
 } from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
@@ -667,6 +668,62 @@ describe('Discord thread run lock', () => {
         appSessionId: expect.any(String),
       })
     );
+  });
+
+  it('既存スレッドで作成した内部セッションへDiscordスレッド名を引き継ぐ', async () => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': true },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const runStream = vi.fn().mockResolvedValue({ result: 'ok', sessionId: 'provider-1' });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      sessionTitle: { mode: 'ai' },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+        sessionTitleAiOnce: true,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+    });
+
+    const message = createExistingThreadMessage({
+      messageId: 'existing-thread-title-1',
+      content: '内部セッションを作り直す発言',
+      threadId: 'thread-title-123',
+      parentChannelId: '123',
+      starterContent: 'スレッド開始メッセージ',
+      client,
+    });
+
+    await handlers.get(Events.MessageCreate)!(message);
+
+    const appSessionId = getActiveSessionId('thread-title-123');
+    expect(appSessionId).toBeDefined();
+    expect(getSessionEntry(appSessionId!)?.title).toBe('詳しく教えて');
+    expect(runStream).toHaveBeenCalledTimes(1);
   });
 
   it('既存スレッド内メッセージでは親チャンネル topic をプロンプトに含める', async () => {

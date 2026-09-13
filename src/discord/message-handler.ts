@@ -308,6 +308,17 @@ export async function processPrompt(
     return null;
   }
   const { appSessionId, workspace } = resolvedSessionWorkspace;
+  const sessionEntry = getSessionEntry(appSessionId);
+  if (
+    config.discord.sessionTitleAiOnce === true &&
+    target.isThread &&
+    target.createdThreadName === null &&
+    target.threadName?.trim() &&
+    sessionEntry &&
+    !sessionEntry.title
+  ) {
+    updateSessionTitle(appSessionId, truncateSessionTitle(target.threadName.trim()));
+  }
   const sessionWorkdir = workspace?.path ?? config.agent.config.workdir ?? process.cwd();
   const latency = new TurnLatencyRecorder({
     platform: 'discord',

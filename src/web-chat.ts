@@ -98,7 +98,7 @@ import {
   hasUsableModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
-import type { Platform, Scheduler } from './scheduler.js';
+import { ScheduleRunError, type Platform, type Scheduler } from './scheduler.js';
 import {
   parseWebScheduleInput,
   scheduleForWebResponse,
@@ -1428,6 +1428,33 @@ export function startWebChat(options: WebChatOptions): void {
         sendJson(res, 201, { schedule: scheduleForResponse(schedule) });
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const scheduleRunMatch = url.match(/^\/api\/schedules\/([^/]+)\/run$/);
+    if (scheduleRunMatch && req.method === 'POST') {
+      if (options.config?.scheduler.enabled === false) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        return;
+      }
+      if (!options.scheduler) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        return;
+      }
+      const id = decodeURIComponent(scheduleRunMatch[1]);
+      try {
+        void options.scheduler.runNow(id).catch((error) => {
+          console.error(`[web] Manual schedule run failed: ${id}`, error);
+        });
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, scheduleId: id }));
+      } catch (error) {
+        const status = error instanceof ScheduleRunError ? error.status : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
       return;
     }

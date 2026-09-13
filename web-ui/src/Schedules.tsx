@@ -57,6 +57,14 @@ function timingLabel(schedule: Schedule): string {
   return cronDescription(schedule.expression || '');
 }
 
+function destinationLabel(schedule: Schedule, projectNames: Map<string, string>): string {
+  if (schedule.platform !== 'web') return schedule.destinationLabel || schedule.channelId;
+  if (schedule.channelId !== '__new__') return `既存会話 / ${schedule.channelId}`;
+  return schedule.projectId
+    ? `新しい会話 / ${projectNames.get(schedule.projectId) || schedule.projectId}`
+    : '新しい会話';
+}
+
 function schedulePayload(input: {
   mode: ScheduleMode;
   platform: SchedulePlatform;
@@ -176,6 +184,8 @@ export function Schedules() {
   const [expression, setExpression] = useState('0 9 * * *');
   const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
   const [deletingSchedule, setDeletingSchedule] = useState(false);
+  const [scheduleToRun, setScheduleToRun] = useState<Schedule | null>(null);
+  const [startingSchedule, setStartingSchedule] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -316,6 +326,25 @@ export function Schedules() {
       setScheduleToDelete(null);
     } finally {
       setDeletingSchedule(false);
+    }
+  };
+
+  const runNow = async () => {
+    const schedule = scheduleToRun;
+    if (!schedule || startingSchedule) return;
+    setStartingSchedule(true);
+    setMessage('');
+    try {
+      await requestJson(`/api/schedules/${encodeURIComponent(schedule.id)}/run`, {
+        method: 'POST',
+      });
+      setMessage(`「${schedule.label || timingLabel(schedule)}」の実行を開始しました。`);
+      setScheduleToRun(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      setScheduleToRun(null);
+    } finally {
+      setStartingSchedule(false);
     }
   };
 
@@ -566,18 +595,18 @@ export function Schedules() {
                       <div className="schedule-row-meta">
                         <span>{timingLabel(schedule)}</span>
                         <span>{platformLabel(schedule.platform)}</span>
-                        <span>
-                          {schedule.platform === 'web'
-                            ? schedule.channelId === '__new__'
-                              ? schedule.projectId
-                                ? `新しい会話 / ${projectNames.get(schedule.projectId) || schedule.projectId}`
-                                : '新しい会話'
-                              : `既存会話 / ${schedule.channelId}`
-                            : schedule.destinationLabel || schedule.channelId}
-                        </span>
+                        <span>{destinationLabel(schedule, projectNames)}</span>
                       </div>
                     </div>
                     <div className="schedule-row-actions">
+                      <button
+                        className="schedule-run"
+                        type="button"
+                        disabled={!schedulerEnabled}
+                        onClick={() => setScheduleToRun(schedule)}
+                      >
+                        今すぐ実行
+                      </button>
                       <label className="schedule-toggle">
                         <span className="sr-only">
                           {schedule.enabled ? '停止する' : '有効にする'}
@@ -625,6 +654,22 @@ export function Schedules() {
           if (!deletingSchedule) setScheduleToDelete(null);
         }}
         onConfirm={() => void remove()}
+      />
+      <ConfirmDialog
+        open={Boolean(scheduleToRun)}
+        title="スケジュールを今すぐ実行"
+        description={
+          scheduleToRun
+            ? `「${scheduleToRun.label || timingLabel(scheduleToRun)}」を${platformLabel(scheduleToRun.platform)}の「${destinationLabel(scheduleToRun, projectNames)}」で実行します。次回予定と有効状態は変わりません。`
+            : ''
+        }
+        confirmLabel="今すぐ実行"
+        busyLabel="開始中…"
+        busy={startingSchedule}
+        onCancel={() => {
+          if (!startingSchedule) setScheduleToRun(null);
+        }}
+        onConfirm={() => void runNow()}
       />
     </main>
   );
