@@ -91,6 +91,34 @@ export function shouldProcessDiscordMessage(input: { system?: boolean }): boolea
   return !input.system;
 }
 
+/**
+ * `DISCORD_SESSION_TITLE_AI_ONCE=true` では、xangiが今作ったスレッドだけを
+ * AI命名対象にする。既存スレッドや /new 後の後続セッションを再命名しない。
+ */
+export function shouldStartDiscordAiSessionTitle(input: {
+  mode?: 'prefix' | 'ai';
+  aiOnce: boolean;
+  createdThreadName: string | null;
+}): boolean {
+  if (input.mode !== 'ai') return false;
+  return !input.aiOnce || input.createdThreadName !== null;
+}
+
+export function shouldApplyDiscordAiSessionTitle(input: {
+  aiOnce: boolean;
+  appSessionId: string;
+  activeSessionId?: string;
+  createdThreadName: string | null;
+  currentThreadName: string | null;
+}): boolean {
+  if (!input.aiOnce) return true;
+  return (
+    input.activeSessionId === input.appSessionId &&
+    input.createdThreadName !== null &&
+    input.currentThreadName === input.createdThreadName
+  );
+}
+
 export interface DiscordMessageTarget {
   conversationChannelId: string;
   settingsChannelId: string;
@@ -102,6 +130,7 @@ export interface DiscordMessageTarget {
     send: (options: unknown) => Promise<Message>;
   };
   sendInitial: (options: Parameters<Message['reply']>[0]) => Promise<Message>;
+  getCurrentThreadName?: () => Promise<string | null>;
   renameThread?: (title: string) => Promise<void>;
 }
 
@@ -201,6 +230,8 @@ async function resolveDiscordMessageTarget(
       : (sourceChannelDetails.parent?.name ?? null)
     : null;
   const threadChannel = (newThread ?? sourceChannel) as {
+    name?: string;
+    fetch?: () => Promise<{ name?: string }>;
     setName?: (title: string) => Promise<unknown>;
   };
 
@@ -214,6 +245,13 @@ async function resolveDiscordMessageTarget(
     outputChannel,
     sendInitial: (options: Parameters<Message['reply']>[0]) =>
       newThread ? newThread.send(options) : message.reply(options),
+    getCurrentThreadName: isThread
+      ? async () => {
+          const current =
+            typeof threadChannel.fetch === 'function' ? await threadChannel.fetch() : threadChannel;
+          return current.name ?? null;
+        }
+      : undefined,
     renameThread:
       isThread && typeof threadChannel.setName === 'function'
         ? async (title: string) => {
@@ -446,7 +484,15 @@ export async function processPrompt(
     let aiTitleStarted = false;
     const prefixTitle = truncateSessionTitle(stripPromptMetadata(prompt));
     const startTitleIfNeeded = () => {
-      if (aiTitleStarted || config.sessionTitle?.mode !== 'ai') return;
+      if (
+        aiTitleStarted ||
+        !shouldStartDiscordAiSessionTitle({
+          mode: config.sessionTitle?.mode,
+          aiOnce: config.discord.sessionTitleAiOnce === true,
+          createdThreadName: target.createdThreadName,
+        })
+      )
+        return;
       const entry = getSessionEntry(appSessionId);
       if (!entry || entry.title) return;
       aiTitleStarted = startAiSessionTitle({
@@ -459,8 +505,32 @@ export async function processPrompt(
           workdir: sessionWorkdir,
         },
         onTitle: async (title) => {
+          const aiOnce = config.discord.sessionTitleAiOnce === true;
+          let currentThreadName = target.createdThreadName;
+          if (aiOnce && target.getCurrentThreadName) {
+            try {
+              currentThreadName = await target.getCurrentThreadName();
+            } catch (error) {
+              console.warn(
+                `[session-title] Failed to verify Discord thread name for ${appSessionId}: ${error instanceof Error ? error.message : String(error)}`
+              );
+              return;
+            }
+          }
+          // The thread-name fetch above yields control. Re-read the session immediately before
+          // applying the result so a manual title change during that fetch is preserved.
           const current = getSessionEntry(appSessionId);
           if (!current || (current.title && current.title !== prefixTitle)) return;
+          if (
+            !shouldApplyDiscordAiSessionTitle({
+              aiOnce,
+              appSessionId,
+              activeSessionId: getActiveSessionId(target.conversationChannelId),
+              createdThreadName: target.createdThreadName,
+              currentThreadName,
+            })
+          )
+            return;
           updateSessionTitle(appSessionId, title);
           if (target.renameThread) {
             try {

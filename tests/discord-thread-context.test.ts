@@ -6,7 +6,11 @@ import { Events } from 'discord.js';
 import type { Client, Message } from 'discord.js';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { Config } from '../src/config.js';
-import { registerDiscordMessageHandlers } from '../src/discord/message-handler.js';
+import {
+  registerDiscordMessageHandlers,
+  shouldApplyDiscordAiSessionTitle,
+  shouldStartDiscordAiSessionTitle,
+} from '../src/discord/message-handler.js';
 import {
   buildDiscordChannelContextLine,
   getDiscordChannelTopic,
@@ -53,6 +57,59 @@ describe('resolveConversationChannelId', () => {
 
   it('スレッドを作成しなかった場合（既にスレッド内 / DM / 作成不可）は受信チャンネルIDを使う', () => {
     expect(resolveConversationChannelId('channel-123', undefined)).toBe('channel-123');
+  });
+});
+
+describe('Discord AI session title mode', () => {
+  it('AI命名をxangiが新規作成したスレッドの最初のturnだけに制限できる', () => {
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: true, createdThreadName: '最初の質問' })
+    ).toBe(true);
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: true, createdThreadName: null })
+    ).toBe(false);
+  });
+
+  it('生成待ちの間に /new された旧セッションのタイトルを適用しない', () => {
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'old-session',
+        activeSessionId: 'new-session',
+        createdThreadName: '最初の質問',
+        currentThreadName: '最初の質問',
+      })
+    ).toBe(false);
+  });
+
+  it('生成待ちの間に手動変更されたスレッド名を上書きしない', () => {
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'session-1',
+        activeSessionId: 'session-1',
+        createdThreadName: '最初の質問',
+        currentThreadName: '手動タイトル',
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'session-1',
+        activeSessionId: 'session-1',
+        createdThreadName: '最初の質問',
+        currentThreadName: '最初の質問',
+      })
+    ).toBe(true);
+  });
+
+  it('制限を使わないaiモードは既存スレッドでも従来どおり対象にする', () => {
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: false, createdThreadName: null })
+    ).toBe(true);
+    expect(
+      shouldStartDiscordAiSessionTitle({ mode: 'prefix', aiOnce: true, createdThreadName: '最初の質問' })
+    ).toBe(false);
   });
 });
 

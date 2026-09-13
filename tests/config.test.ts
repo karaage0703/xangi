@@ -173,6 +173,17 @@ describe('config', () => {
     expect(loadConfig().sessionTitle.mode).toBe('prefix');
   });
 
+  it('limits Discord AI titles to newly created threads by default and supports opt-out', async () => {
+    process.env.DISCORD_TOKEN = 'test-discord-token';
+    delete process.env.DISCORD_SESSION_TITLE_AI_ONCE;
+
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().discord.sessionTitleAiOnce).toBe(true);
+
+    process.env.DISCORD_SESSION_TITLE_AI_ONCE = 'false';
+    expect(loadConfig().discord.sessionTitleAiOnce).toBe(false);
+  });
+
   it('should allow disabling Discord completion notifications via env', async () => {
     process.env.DISCORD_TOKEN = 'test-discord-token';
     process.env.DISCORD_COMPLETION_NOTIFY = 'off';
