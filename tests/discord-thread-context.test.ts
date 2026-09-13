@@ -8,6 +8,7 @@ import type { AgentRunner } from '../src/agent-runner.js';
 import type { Config } from '../src/config.js';
 import {
   registerDiscordMessageHandlers,
+  shouldApplyDiscordAiSessionTitle,
   shouldStartDiscordAiSessionTitle,
 } from '../src/discord/message-handler.js';
 import {
@@ -67,6 +68,39 @@ describe('Discord AI session title mode', () => {
     expect(
       shouldStartDiscordAiSessionTitle({ mode: 'ai', aiOnce: true, createdThreadName: null })
     ).toBe(false);
+  });
+
+  it('生成待ちの間に /new された旧セッションのタイトルを適用しない', () => {
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'old-session',
+        activeSessionId: 'new-session',
+        createdThreadName: '最初の質問',
+        currentThreadName: '最初の質問',
+      })
+    ).toBe(false);
+  });
+
+  it('生成待ちの間に手動変更されたスレッド名を上書きしない', () => {
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'session-1',
+        activeSessionId: 'session-1',
+        createdThreadName: '最初の質問',
+        currentThreadName: '手動タイトル',
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyDiscordAiSessionTitle({
+        aiOnce: true,
+        appSessionId: 'session-1',
+        activeSessionId: 'session-1',
+        createdThreadName: '最初の質問',
+        currentThreadName: '最初の質問',
+      })
+    ).toBe(true);
   });
 
   it('制限を使わないaiモードは既存スレッドでも従来どおり対象にする', () => {
