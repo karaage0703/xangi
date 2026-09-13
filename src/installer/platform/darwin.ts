@@ -1,7 +1,13 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ServiceAdapter, ServiceStatus } from './service.js';
+import {
+  defaultCommandRunner,
+  launchctlDomain,
+  writeAtomic,
+  xml,
+  type CommandRunner,
+} from './common.js';
 
 export type { ServiceAdapter, ServiceStatus } from './service.js';
 
@@ -23,19 +29,7 @@ export interface DarwinServiceOptions extends LaunchAgentOptions {
   autostartPlistPath: string;
 }
 
-export interface DarwinCommandRunner {
-  run(command: string, args: string[], allowFailure?: boolean): string;
-  status(command: string, args: string[]): { status: number | null; output: string };
-}
-
-function xml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-}
+export type DarwinCommandRunner = CommandRunner;
 
 export function renderLaunchAgentPlist(options: LaunchAgentOptions): string {
   const args = [
@@ -79,34 +73,6 @@ export function renderLaunchAgentPlist(options: LaunchAgentOptions): string {
   ].join('\n');
 }
 
-function launchctlDomain(): string {
-  const uid = process.getuid?.();
-  if (uid === undefined) {
-    throw new Error('LaunchAgent requires a numeric user id');
-  }
-  return 'gui/' + uid;
-}
-
-function run(command: string, args: string[], allowFailure = false): string {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
-  const output = String(result.stdout ?? '') + String(result.stderr ?? '');
-  if (!allowFailure && (result.status ?? 1) !== 0) {
-    throw new Error(output.trim() || command + ' ' + args.join(' ') + ' failed');
-  }
-  return output.trim();
-}
-
-const defaultCommandRunner: DarwinCommandRunner = {
-  run,
-  status(command, args) {
-    const result = spawnSync(command, args, { encoding: 'utf8' });
-    return {
-      status: result.status,
-      output: (String(result.stdout ?? '') + String(result.stderr ?? '')).trim(),
-    };
-  },
-};
-
 export function createDarwinServiceAdapter(
   options: DarwinServiceOptions,
   commands: DarwinCommandRunner = defaultCommandRunner
@@ -114,10 +80,7 @@ export function createDarwinServiceAdapter(
   const domain = launchctlDomain();
   const writePlist = (path: string): void => {
     mkdirSync(dirname(path), { recursive: true });
-    const temporary = path + '.tmp-' + process.pid;
-    writeFileSync(temporary, renderLaunchAgentPlist(options), { mode: 0o644 });
-    chmodSync(temporary, 0o644);
-    renameSync(temporary, path);
+    writeAtomic(path, renderLaunchAgentPlist(options));
   };
   const activePlistPath = (): string =>
     existsSync(options.autostartPlistPath) ? options.autostartPlistPath : options.plistPath;

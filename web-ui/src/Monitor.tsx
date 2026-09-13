@@ -1,3 +1,4 @@
+import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -79,6 +80,8 @@ interface UsageProvider {
 }
 
 export interface MonitorSession {
+  modelExecution?: ModelExecution;
+  modelHistory?: ModelExecution[];
   id: string;
   title?: string;
   platform?: string;
@@ -100,6 +103,7 @@ export interface MonitorSession {
   tokenUsage?: MonitorTokenUsage;
   processingTime?: MonitorProcessingTime;
   estimatedCost?: MonitorEstimatedCost;
+  providerTitle?: string;
   progressCard?: {
     revision: number;
     updatedAt: string;
@@ -143,9 +147,16 @@ interface MonitorActivityEvent {
 type MonitorFilter = 'chat' | 'web' | 'scheduler';
 export type MonitorTimeRange = '24h' | '7d' | '30d' | 'all';
 export type MonitorLane = 'running' | 'waiting' | 'completed';
+export type UsageDisplayMode = 'used' | 'remaining';
+export const DEFAULT_USAGE_DISPLAY_MODE: UsageDisplayMode = 'used';
 
 const PAGE_SIZE = 200;
 const USAGE_VISIBILITY_KEY = 'xangi.monitor.hidden-usage-providers';
+export const USAGE_DISPLAY_MODE_KEY = 'xangi:monitor-usage-mode';
+
+export function resolveUsageDisplayMode(stored: string | null | undefined): UsageDisplayMode {
+  return stored === 'remaining' ? 'remaining' : DEFAULT_USAGE_DISPLAY_MODE;
+}
 
 const FILTERS: Array<{ value: MonitorFilter; label: string }> = [
   { value: 'chat', label: 'Chat' },
@@ -183,6 +194,24 @@ export function usagePacePercent(
   const durationMs = window.windowDurationMins * 60_000;
   const startMs = window.resetsAt * 1000 - durationMs;
   return Math.min(100, Math.max(0, ((now - startMs) / durationMs) * 100));
+}
+
+export function usageDisplayPercent(usedPercent: number, mode: UsageDisplayMode): number {
+  return mode === 'used'
+    ? Math.max(0, Math.min(100, Math.round(usedPercent)))
+    : Math.max(0, Math.min(100, 100 - Math.round(usedPercent)));
+}
+
+export function usageBarWidth(usedPercent: number, mode: UsageDisplayMode): number {
+  return mode === 'used'
+    ? Math.min(100, Math.max(0, usedPercent))
+    : Math.min(100, Math.max(0, 100 - usedPercent));
+}
+
+export function usageDisplayPace(pace: number, mode: UsageDisplayMode): number {
+  return mode === 'used'
+    ? Math.min(100, Math.max(0, pace))
+    : Math.min(100, Math.max(0, 100 - pace));
 }
 
 export function formatEstimatedCost(value: number): string {
@@ -511,6 +540,13 @@ export function Monitor() {
   const [closingAllWaiting, setClosingAllWaiting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [accountUsage, setAccountUsage] = useState<AccountUsageResponse>();
+  const [usageDisplayMode, setUsageDisplayMode] = useState<UsageDisplayMode>(() => {
+    try {
+      return resolveUsageDisplayMode(localStorage.getItem(USAGE_DISPLAY_MODE_KEY));
+    } catch {
+      return DEFAULT_USAGE_DISPLAY_MODE;
+    }
+  });
   const [hiddenUsageProviders, setHiddenUsageProviders] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(USAGE_VISIBILITY_KEY) || '[]') as string[];
@@ -782,6 +818,10 @@ export function Monitor() {
       return next;
     });
   };
+  const selectUsageDisplayMode = (mode: UsageDisplayMode) => {
+    setUsageDisplayMode(mode);
+    localStorage.setItem(USAGE_DISPLAY_MODE_KEY, mode);
+  };
 
   return (
     <main className="monitor-page">
@@ -857,21 +897,41 @@ export function Monitor() {
                 <h2>AI利用量</h2>
                 <p>アカウント枠は60秒ごと、コンテキストはturn完了時に更新</p>
               </div>
-              {hiddenUsageProviders
-                .filter((providerId) =>
-                  usageProviders.some((provider) => provider.id === providerId)
-                )
-                .map((providerId) => (
+              <div className="monitor-usage-controls">
+                <div className="monitor-usage-mode-toggle" role="group" aria-label="利用量の表示">
                   <button
-                    key={providerId}
                     type="button"
-                    onClick={() => setProviderHidden(providerId, false)}
+                    className={`monitor-usage-mode-button ${usageDisplayMode === 'used' ? 'active' : ''}`}
+                    aria-pressed={usageDisplayMode === 'used'}
+                    onClick={() => selectUsageDisplayMode('used')}
                   >
-                    {usageProviders.find((provider) => provider.id === providerId)?.label ||
-                      providerId}
-                    を表示
+                    使用量
                   </button>
-                ))}
+                  <button
+                    type="button"
+                    className={`monitor-usage-mode-button ${usageDisplayMode === 'remaining' ? 'active' : ''}`}
+                    aria-pressed={usageDisplayMode === 'remaining'}
+                    onClick={() => selectUsageDisplayMode('remaining')}
+                  >
+                    残量
+                  </button>
+                </div>
+                {hiddenUsageProviders
+                  .filter((providerId) =>
+                    usageProviders.some((provider) => provider.id === providerId)
+                  )
+                  .map((providerId) => (
+                    <button
+                      key={providerId}
+                      type="button"
+                      onClick={() => setProviderHidden(providerId, false)}
+                    >
+                      {usageProviders.find((provider) => provider.id === providerId)?.label ||
+                        providerId}
+                      を表示
+                    </button>
+                  ))}
+              </div>
             </header>
             <div className="monitor-usage-providers">
               {visibleUsageProviders.map((provider) => (
@@ -897,6 +957,14 @@ export function Monitor() {
                         {presentation.description && <p>{presentation.description}</p>}
                         {group.windows.map((window) => {
                           const pace = usagePacePercent(window, clock);
+                          const displayPercent = usageDisplayPercent(
+                            window.usedPercent,
+                            usageDisplayMode
+                          );
+                          const displayPace =
+                            pace === undefined
+                              ? undefined
+                              : usageDisplayPace(pace, usageDisplayMode);
                           return (
                             <div
                               className="monitor-usage-window"
@@ -905,11 +973,12 @@ export function Monitor() {
                               <div>
                                 <span>{window.label}</span>
                                 <strong>
-                                  {Math.round(window.usedPercent)}%
-                                  {pace !== undefined && (
+                                  {displayPercent}%
+                                  {displayPace !== undefined && (
                                     <span className="monitor-usage-pace">
                                       {' '}
-                                      / 目安 {Math.round(pace)}%
+                                      / {usageDisplayMode === 'used' ? '目安' : '目安残'}{' '}
+                                      {Math.round(displayPace)}%
                                     </span>
                                   )}
                                 </strong>
@@ -917,22 +986,22 @@ export function Monitor() {
                               <div
                                 className="monitor-usage-chart"
                                 role="progressbar"
-                                aria-label={`${window.label}の使用率 ${Math.round(window.usedPercent)}%${pace === undefined ? '' : `、時間経過の目安 ${Math.round(pace)}%`}`}
+                                aria-label={`${window.label}の${usageDisplayMode === 'used' ? '使用率' : '残量'} ${displayPercent}%${displayPace === undefined ? '' : `、時間経過の${usageDisplayMode === 'used' ? '目安' : '目安残'} ${Math.round(displayPace)}%`}`}
                                 aria-valuemin={0}
                                 aria-valuemax={100}
-                                aria-valuenow={Math.round(window.usedPercent)}
+                                aria-valuenow={displayPercent}
                               >
                                 <span
                                   className="monitor-usage-actual"
                                   style={{
-                                    width: `${Math.min(100, Math.max(0, window.usedPercent))}%`,
+                                    width: `${usageBarWidth(window.usedPercent, usageDisplayMode)}%`,
                                   }}
                                 />
-                                {pace !== undefined && (
+                                {displayPace !== undefined && (
                                   <span
                                     className="monitor-usage-target"
-                                    style={{ left: `${pace}%` }}
-                                    title={`時間経過の目安 ${Math.round(pace)}%`}
+                                    style={{ left: `${displayPace}%` }}
+                                    title={`時間経過の${usageDisplayMode === 'used' ? '目安' : '目安残'} ${Math.round(displayPace)}%`}
                                   />
                                 )}
                               </div>
@@ -1048,6 +1117,9 @@ export function Monitor() {
                         ],
                       ]
                     : []),
+                  ...(selected.providerTitle
+                    ? [['provider-title', 'AI側の会話名', selected.providerTitle]]
+                    : []),
                 ].map(([key, label, value]) => (
                   <div className={`monitor-detail-kv monitor-detail-kv-${key}`} key={key}>
                     <dt>{label}</dt>
@@ -1090,7 +1162,7 @@ export function Monitor() {
                   </div>
                   <div>
                     <dt>モデル</dt>
-                    <dd>{selected.backend ? selected.backend.model || 'デフォルト' : '-'}</dd>
+                    <dd>{modelExecutionLabel(selected.modelExecution, selected.backend)}</dd>
                   </div>
                   <div>
                     <dt>effort</dt>
@@ -1099,6 +1171,7 @@ export function Monitor() {
                 </dl>
               </section>
 
+              <ModelHistory history={selected.modelHistory} />
               <details className="monitor-technical-details">
                 <summary>内部ID</summary>
                 <dl>

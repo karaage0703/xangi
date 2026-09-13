@@ -1050,23 +1050,6 @@
       .session-row .stop-btn:hover {
         color: var(--danger);
       }
-      .session-row .autotalk-btn:hover {
-        color: var(--primary);
-      }
-      .session-row .autotalk-btn.on {
-        opacity: 1;
-        color: #f59e0b;
-        animation: autotalk-pulse 1.6s ease-in-out infinite;
-      }
-      @keyframes autotalk-pulse {
-        0%,
-        100% {
-          transform: scale(1);
-        }
-        50% {
-          transform: scale(1.18);
-        }
-      }
       /* タイムアウト残り時間表示 (アクティブセッションのみ) */
       .session-row .timeout-display {
         display: inline-block;
@@ -1119,17 +1102,6 @@
       }
       .session-row .extend-btn.disabled:hover {
         background: rgba(156, 163, 175, 0.1);
-      }
-      /* セッション行の "🤖 自走中" インラインバッジ */
-      .session-row .autotalk-badge {
-        display: inline-block;
-        margin-right: 4px;
-        font-size: 11px;
-        padding: 1px 5px;
-        border-radius: 8px;
-        background: rgba(245, 158, 11, 0.18);
-        color: #f59e0b;
-        font-weight: 600;
       }
       /* 画面下に出る軽量トースト */
       .toast {
@@ -1391,17 +1363,6 @@
         <button id="menu-btn" onclick="toggleSidebar()">&#9776;</button>
         <h1>xangi</h1>
         <span class="spacer"></span>
-        <a
-          id="inter-chat-link"
-          class="tool-link"
-          href="/inter-chat"
-          target="_blank"
-          rel="noopener"
-          title="inter-instance-chat 履歴ビューア (別タブで開く)"
-          hidden
-        >
-          🔁 inter-chat
-        </a>
         <a class="tool-link" href="/monitor" title="セッション監視"> ◉ monitor </a>
         <span class="pane-count" id="pane-count">0 panes</span>
         <button
@@ -1688,7 +1649,7 @@
 
       // 描画済みコンテナ内の外部リンク (http/https) を新しいタブで開く。
       // marked.js は既定でリンクに target を付けないため、innerHTML 代入後に
-      // 付与する。内部リンク (/inter-chat 等) は個別対応済みなので対象外。
+      // 付与する。内部リンクは個別対応済みなので対象外。
       function addLinkTargets(container) {
         container.querySelectorAll('a').forEach(function (a) {
           var href = a.getAttribute('href') || '';
@@ -1707,13 +1668,12 @@
         return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + h + ':' + m;
       }
 
-      // 自走モードのプロンプト（内部リクエスト）はユーザー発言として履歴に残るが、
-      // UI には出さない。先頭マーカーで判別する。
-      const AUTOTALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
-      function filterAutoTalkInternal(m) {
+      // 削除済みの旧自走モードが残した内部プロンプトは履歴UIに表示しない。
+      const LEGACY_INTERNAL_PROMPT_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
+      function filterLegacyInternalPrompt(m) {
         if (!m || m.role !== 'user') return true;
         var c = typeof m.content === 'string' ? m.content : '';
-        return !c.startsWith(AUTOTALK_SENTINEL);
+        return !c.startsWith(LEGACY_INTERNAL_PROMPT_SENTINEL);
       }
 
       // ─── Pane クラス ───
@@ -2563,7 +2523,7 @@
           try {
             var res = await fetch('/api/sessions/' + encodeURIComponent(this.sessionId));
             var data = await res.json();
-            var msgs = (data.messages || []).filter(filterAutoTalkInternal).filter(function (m) {
+            var msgs = (data.messages || []).filter(filterLegacyInternalPrompt).filter(function (m) {
               return m.role !== 'error';
             });
             // メッセージ数が変わってなければ何もしない
@@ -2604,7 +2564,7 @@
             var res = await fetch('/api/sessions/' + encodeURIComponent(id));
             var data = await res.json();
             this._setTitle(data.title || id);
-            var msgs = (data.messages || []).filter(filterAutoTalkInternal);
+            var msgs = (data.messages || []).filter(filterLegacyInternalPrompt);
             for (var i = 0; i < msgs.length; i++) {
               var m = msgs[i];
               if (m.role === 'error') continue;
@@ -3234,18 +3194,6 @@
           var data = await res.json();
           allSessions = data.sessions || [];
           renderSessions(allSessions);
-          // autoTalk=true セッションがあれば polling を起動（既存があれば no-op）
-          // 逆に OFF になったセッションは止める
-          var activeAuto = {};
-          allSessions.forEach(function (s) {
-            if (s.autoTalk) activeAuto[s.id] = true;
-          });
-          Object.keys(autoTalkPollers).forEach(function (id) {
-            if (!activeAuto[id]) stopAutoTalkPolling(id);
-          });
-          Object.keys(activeAuto).forEach(function (id) {
-            startAutoTalkPolling(id);
-          });
         } catch (e) {}
       }
 
@@ -3287,14 +3235,6 @@
           item.setAttribute('data-id', s.id);
           var label = document.createElement('span');
           label.className = 'label';
-          // 自走 ON のセッションには「🤖 自走中」バッジを行頭に追加
-          if (s.autoTalk) {
-            var atBadge = document.createElement('span');
-            atBadge.className = 'autotalk-badge';
-            atBadge.textContent = '\u{1F916} 自走中';
-            label.appendChild(atBadge);
-            label.appendChild(document.createTextNode(' '));
-          }
           label.appendChild(document.createTextNode(active + icon + ' ' + (s.title || s.id)));
           label.addEventListener(
             'click',
@@ -3333,26 +3273,6 @@
               })(s.id)
             );
             item.appendChild(stopBtn);
-          }
-
-          // 自走モード（auto-talk）トグル — web セッションのみ表示
-          if (s.platform === 'web') {
-            var atBtn = document.createElement('span');
-            atBtn.className = 'row-act autotalk-btn' + (s.autoTalk ? ' on' : '');
-            atBtn.textContent = '\u{1F916}';
-            atBtn.title = s.autoTalk
-              ? '自走モード ON — agent がランダム間隔で発話中（クリックで停止）'
-              : '自走モード OFF — クリックで開始（agent が一定時間ごとに勝手に発話）';
-            atBtn.addEventListener(
-              'click',
-              (function (id, on) {
-                return function (e) {
-                  e.stopPropagation();
-                  toggleAutoTalk(id, !on);
-                };
-              })(s.id, s.autoTalk)
-            );
-            item.appendChild(atBtn);
           }
 
           var pinBtn = document.createElement('span');
@@ -3445,54 +3365,6 @@
         }, 2400);
       }
 
-      async function toggleAutoTalk(id, enabled) {
-        try {
-          var res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/autotalk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: !!enabled }),
-          });
-          if (!res.ok) {
-            var msg = '自走モード切替に失敗';
-            try {
-              var err = await res.json();
-              if (err && err.error) msg = err.error;
-            } catch (_) {}
-            showToast('⚠ ' + msg);
-            return;
-          }
-          loadSessions();
-          // 自走 ON のセッションを開いていれば、新着発話を polling で拾う
-          if (enabled) startAutoTalkPolling(id);
-          else stopAutoTalkPolling(id);
-          showToast(
-            enabled ? '🤖 自走モード ON — agent がランダム間隔で発話します' : '🤖 自走モード OFF',
-            enabled ? 'success' : ''
-          );
-        } catch (e) {
-          showToast('⚠ 自走モード切替に失敗: ' + (e && e.message ? e.message : e));
-        }
-      }
-
-      // 自走モードのセッションは agent が裏で発話するので、開いてるペインを定期リフレッシュ
-      var autoTalkPollers = {};
-      function startAutoTalkPolling(sessionId) {
-        if (autoTalkPollers[sessionId]) return;
-        autoTalkPollers[sessionId] = setInterval(function () {
-          paneManager.panes.forEach(function (p) {
-            if (p.sessionId === sessionId && !p.sending && typeof p.refreshHistory === 'function') {
-              p.refreshHistory();
-            }
-          });
-        }, 8000);
-      }
-      function stopAutoTalkPolling(sessionId) {
-        if (autoTalkPollers[sessionId]) {
-          clearInterval(autoTalkPollers[sessionId]);
-          delete autoTalkPollers[sessionId];
-        }
-      }
-
       async function deleteSessionById(id) {
         if (!confirm('Delete this session?')) return;
         try {
@@ -3527,9 +3399,6 @@
           window._completionShowElapsed = cfg.completionShowElapsed !== false;
           if (typeof cfg.timeoutExtendEnabled === 'boolean') {
             timeoutExtendEnabled = cfg.timeoutExtendEnabled;
-          }
-          if (cfg.interChatEnabled === true) {
-            document.getElementById('inter-chat-link')?.removeAttribute('hidden');
           }
         } catch (e) {
           /* 失敗時はフィルタ無し (全許可) のまま */

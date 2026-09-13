@@ -1,7 +1,7 @@
 /**
  * runWithBubbleEvents の events.* 配信契約をロックするテスト。
  *
- * 4箇所 (web-chat / Discord / Slack / auto-talk) すべてが
+ * web-chat / Discord / Slackなどの呼び出し元が
  * このラッパー経由で events.* を投げる構造になっているため、ここで仕様を固定する
  * ことで「呼び出し元によって events.* が抜ける」回帰を防ぐ。
  *

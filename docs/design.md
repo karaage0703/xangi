@@ -102,9 +102,11 @@ flowchart LR
 
 `http.createServer` ベースの軽量サーバー（Express 依存なし）。
 
-`WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。`XANGI_EVENTS_SERVER_ENABLED=true`だけを指定したheadless構成では同じサーバーを起動するが、health、イベントSSE、session参照、pet/device/terminal inboxだけを公開し、Web UI assetとその他のWeb APIは404にする。
+`WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。eventsまたはHTTP版inter-instance chatだけを指定したheadless構成でも同じサーバーを起動するが、必要な専用endpoint以外のWeb UI assetとWeb APIは404にする。
 
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
+- 指名問い合わせは既定でBearer認証付きHTTPを使い、`INTER_INSTANCE_CHAT_PEERS`から宛先を解決する。受信側は送信元ごとの通常Web sessionを再利用し、transcriptとprovider文脈を永続化する。別instanceの内容はユーザー承認として扱わない
+- 指名問い合わせの受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`で制限できる。未設定または`*`は正しい共有tokenを持つ全instanceを許可する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
@@ -114,6 +116,7 @@ flowchart LR
 - Web Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
+- `/settings`は`runtime-settings-command.ts`の7項目を共通dispatcher経由で変更する。チャンネル選択肢は接続済みDiscord clientのcacheまたはSlack `conversations.list`から名前を取得し、UIには名前を表示してIDを内部値として保存する。Slackのscope不足は`channels:read` / `groups:read`と再インストール手順へ変換する。選択中チャンネルの保存済みoverrideと実効値は専用GET APIから取得して各入力へ反映する。非秘密の起動設定は`web-startup-settings.ts`の型付きallowlistだけを既存`.env`へ保存する。接続tokenとAPIキーは既存`SecretStore`へ書き込み専用入力から保存でき、Webへは値でなく設定有無だけを返す。`backend-auth-status.ts`は対応する全AIエージェントCLIを列挙し、専用status、認証一覧、モデル一覧、または既存Copilot SDKのアカウント問い合わせで非対話にログイン状態を判定する。AI CLI更新は同モジュールの固定allowlistにある自己更新サブコマンドだけを`shell`なしで実行し、生出力を返さず更新後のversionだけを再取得する。秘密値やCLI出力は返さず、認証以外の失敗は未認証と断定せず判定不能にする。任意の環境変数は受け付けず、明示的な環境変数は引き続き保存値より優先する。変更APIはsame-origin mutationを強制し、画面は即時・次のturn・再起動後を別ラベルで表示する
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
@@ -127,6 +130,8 @@ flowchart LR
 
 ### macOS・Linux・WSL2セットアップ・更新コア
 
+- Remote workerは内部Tool Serverと分離した専用WebSocketへ外向き接続する。事前登録したworkerをfile-backed tokenで認証し、version付きcapabilityを申告する。MVPはsystem情報、worker側workspace/command allowlistで制限したshell非経由argv実行、read-only USB列挙だけを提供する。device書込み、serial制御、自動配置、public network transportはdevice別approvalとTLSを設計するまで含めない
+- Remote workerの常駐管理はmacOSでlaunchd、Linux/WSL2でsystemd user serviceを使い分ける。pairing・0600設定保存は共通化し、restartでは認証情報を保持する。Linuxのuser managerをpairing前に検査する。
 - `installer/layout.ts` はapp versionsとworkspace/state/configを分離する。将来のWindows adapterも同じlogical layoutを使う
 - `installer/manifest.ts` と `updater.ts` はEd25519、SHA-256、update lock、staging、atomic current切替を担当する。初回installのservice起動時はhealth確認と失敗時rollbackを行う
 - `installer/platform/darwin.ts` はLaunchAgentだけを担当し、OS固有処理を共通updaterから分離する
@@ -279,9 +284,11 @@ class TimeoutController extends EventEmitter {
 BackendResolverの優先順位:
 
 1. `/backend set` で設定されたchannelOverrides（メモリ上、`.env`のCHANNEL_OVERRIDESに永続化。Discord スレッドでは親チャンネルIDで解決）
-2. `.env` のデフォルト（`AGENT_BACKEND`, `AGENT_MODEL`）
+2. `.env` のデフォルト（`AGENT_BACKEND`, `AGENT_MODEL`, `AGENT_EFFORT`）
 
-`backend-effort.ts`がbackendごとの対応effortを一元管理する。`/backend set`と`CHANNEL_OVERRIDES`読み込み時に組み合わせを検証し、非対応値は保存・適用しない。解決済みeffortは各runnerが実CLI引数へ変換する。
+`backend-effort.ts`がbackendごとの対応effortを一元管理する。モデル取得結果に`supportedEfforts`がある場合は、backendと選択モデル（モデル未指定時は取得結果のデフォルトモデル）の積集合を候補表示と対話的な保存時検証に使う。Codexはapp-server、GitHub Copilotは公式SDK、OpenCodeは`models --verbose`のvariant metadata、GrokはCLI生成のmodel cacheを使う。Cursor / AntigravityはeffortがモデルIDに含まれる項目を検出し、別のeffortを重ねて表示・送信しない。`supportedEfforts: []`は明示的な非対応として扱い、backend既定値へfallbackしない。Claude Codeは機械可読なモデル一覧を持たないため、CLI全体の対応範囲を使う。`CHANNEL_OVERRIDES`読み込み時はbackend単位で非対応値を除外し、解決済みeffortは各runnerが実CLI引数へ変換する。
+
+`scope:global`の変更はbackend・model・effortを1組として`.env`と`BackendResolver`へ保存し、既定runnerを差し替える。実行中turnが参照する旧runnerは完了まで保持し、新しいturnだけが更新後の設定を使う。backendまたはmodelを明示したchannel overrideはglobal effortを継承せず、そのchannelでeffortも明示した場合だけ適用する。
 
 ### システムプロンプト（base-runner.ts）
 
@@ -293,6 +300,7 @@ xangiがAI CLIに注入するシステムプロンプトを管理：
   - ユーザー向けslash commandは各platformの `/help` とcommand metadataを正本にする
   - platform未指定時は固有ルールを注入せず、Discord / Slackの操作説明を混在させない
 - **プラットフォーム識別** — 各メッセージに `[プラットフォーム: Discord]` or `[プラットフォーム: Slack]` を注入。AIが適切なコマンドを使い分け
+- **固定指示の重複防止** — ネイティブなsystem指示口があるCLIはその経路を使う。user promptへの埋め込みが必要なCLIはプロバイダーセッションの初回だけ固定指示を渡し、resume時には複製しない。stale sessionから新規セッションへ戻す場合は固定指示も再投入する
 
 #### Runtime context 注入（runtime-context.ts）
 
@@ -314,9 +322,12 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | CLI         | 自動読み込みファイル     | 注入方法                                                                                          |
 | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
 | Claude Code | `CLAUDE.md`              | `--append-system-prompt`（一回限り）                                                              |
-| Codex CLI   | `AGENTS.md`              | `<system-context>` タグで埋め込み                                                                 |
-| OpenCode    | `AGENTS.md`              | CLI側で自動読み込み。`.agents/skills`もOpenCodeへ委譲                                             |
-| Cursor CLI  | `AGENTS.md`              | CLI側で自動読み込み（xangi側の注入なし）                                                          |
+| Codex CLI   | `AGENTS.md`              | CLI側で自動読み込み。xangi固定指示はプロバイダーセッションの初回user promptだけに注入             |
+| OpenCode    | `AGENTS.md`              | CLI側で自動読み込み。`.agents/skills`もOpenCodeへ委譲。xangi固定指示は初回user promptだけに注入   |
+| Cursor CLI  | `AGENTS.md`              | CLI側で自動読み込み。xangi固定指示は初回user promptだけに注入                                     |
+| Grok CLI    | CLI固有                  | xangi固定指示はネイティブの`--rules`でsystem promptへ追加                                         |
+| Copilot CLI | CLI固有                  | xangi固定指示はプロバイダーセッションの初回user promptだけに注入                                  |
+| Antigravity | CLI固有                  | xangi固定指示はプロバイダーセッションの初回user promptだけに注入                                  |
 | Local LLM   | `AGENTS.md`, `MEMORY.md` | システムプロンプトに直接埋め込み（`CLAUDE.md` は通常 `AGENTS.md` のシンボリックリンクのため除外） |
 
 ### AI CLIアダプター
@@ -335,7 +346,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
-`runtime-settings-command.ts` はチャットから変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
+`runtime-settings-command.ts` はチャットとWeb設定画面から変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`、Web UIの`/api/runtime-settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、共通dispatcherとWeb APIは`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
 
@@ -1026,6 +1037,8 @@ src/
 ├── line.ts             # LINE Bot統合（Webhook + 署名検証）
 ├── telegram.ts         # Telegram Bot統合（polling / webhook + 監視ルール）
 ├── web-chat.ts         # WebチャットUI（HTTPサーバー）
+├── web-http.ts         # Web共通HTTP境界（Origin検証、body読込、Range対応ファイル配信）
+├── web-file-security.ts # Web添付・配信pathのrealpath境界検証
 ├── agent-runner.ts     # AI CLIインターフェース
 ├── base-runner.ts      # システムプロンプト生成
 ├── bubble-events-runner.ts # Runner実行を応答ライフサイクルイベント発火付きでラップ
@@ -1083,7 +1096,7 @@ src/
 │   ├── xangi.ts        #   人間向けターミナルCLIエントリーポイント
 │   ├── tool-command.ts #   tool-server用共通dispatcher
 │   └── xangi-cmd.ts    #   後方互換エントリーポイント
-├── inter-instance-chat/ # インスタンス間チャット（per-instance jsonl / auto-talk / 履歴ビューア）
+├── inter-instance-chat/ # インスタンス間チャット（認証付きHTTP / 通常session履歴）
 ├── local-llm/          # Local LLMアダプター
 │   ├── runner.ts       #   メインランナー（セッション管理・ツール実行ループ）
 │   ├── llm-client.ts   #   LLM APIクライアント（Ollama native + OpenAI互換）
@@ -1174,3 +1187,11 @@ src/
 1. `AgentRunner` インターフェースを実装
 2. `config.ts` にバックエンド設定を追加
 3. `index.ts` で初期化処理を追加
+
+### 実行モデルの永続化
+
+`SessionEntry.modelExecution` は直近turn、`modelHistory` はturn IDごとの実行スナップショットを保持する。各スナップショットには `backend`、`configuredModel`、最後に確認した `effectiveModel`、確認したモデル名集合 `observedModels`、実行時の `configuredEffort`、providerが確認した `effectiveEffort`、各確認元、開始・更新時刻、状態、provider session IDを保存する。開始時、モデル・effort通知時、成功・失敗終了時に更新し、終了記録はトランスクリプトにも付加する。
+
+実効effortのprovider証拠はbackend固有の構造化記録から取得する。Codexは対象turnのrollout、Grokは実行前のbyte offset以降へ追記されたmain sessionの`chat_history.jsonl`、Antigravityはstreamで確認したモデルIDのeffort接尾辞を使用する。Copilotの`auto`などproviderが実効値を返さない実行は補完せず不明のまま保持する。
+
+`agent.model` はresume判定用の指定値であり、実測モデルで上書きしない。CLIやプロバイダーによるalias解決・fallbackは実行スナップショットで表現する。UIは最後の実測モデルを先頭にし、同turnの他の確認モデルも表示する。過去の設定やモデルを現在のresolverから補完しない。古い `agent.model` は設定値・実行未確認、証拠のないモデルは不明とする。復元済みの `modelHistory` だけが存在する場合はその最新記録を表示する。Webの次回設定は別の `nextBackend` として扱い、Discordでは設定対象の親チャンネルと実行記録を参照するthreadのcontext keyを分離する。

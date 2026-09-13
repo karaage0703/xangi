@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { StreamCallbacks } from '../src/agent-runner.js';
 import type { RunOptions, RunResult } from '../src/agent-runner.js';
 import { CliRunnerBase, type CliStreamParser } from '../src/cli-runner-core.js';
+import { logResponse } from '../src/transcript-logger.js';
+
+vi.mock('../src/transcript-logger.js', () => ({
+  logPrompt: vi.fn(),
+  logResponse: vi.fn(),
+}));
 
 // child_process をモック
 vi.mock('child_process', () => {
@@ -74,6 +80,10 @@ class TestRunner extends CliRunnerBase {
     return this.executeStreamCore([prompt], callbacks, opts);
   }
 
+  logResult(result: RunResult, options?: RunOptions): void {
+    this.logResponseTranscript(result, options);
+  }
+
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
     let fullText = '';
     let sessionId = '';
@@ -105,6 +115,30 @@ class TestRunner extends CliRunnerBase {
     };
   }
 }
+
+describe('CliRunnerBase transcript logging', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('persists common RunResult usage with the assistant response', () => {
+    const runner = new TestRunner({ timeoutMs: 5000, workdir: '/tmp/workspace' });
+    runner.logResult(
+      {
+        result: 'done',
+        sessionId: 'provider-session',
+        usage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 },
+      },
+      { appSessionId: 'app-session' }
+    );
+
+    expect(logResponse).toHaveBeenCalledWith('/tmp/workspace', 'app-session', {
+      result: 'done',
+      sessionId: 'provider-session',
+      usage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 },
+    });
+  });
+});
 
 async function getMockProcess() {
   const { getMockProcess } = (await import('child_process')) as unknown as {

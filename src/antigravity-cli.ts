@@ -1,3 +1,4 @@
+import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
   extractAntigravityErrorMessage,
@@ -6,9 +7,8 @@ import {
 } from './antigravity-output.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
-import { prependRuntimeContext } from './runtime-context.js';
-import { logPrompt, logResponse } from './transcript-logger.js';
-import { CliRunnerBase, type CliStreamParser } from './cli-runner-core.js';
+import { inferEffortFromModelName } from './backend-effort.js';
+import { CliRunnerBase, extractNestedText, type CliStreamParser } from './cli-runner-core.js';
 import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
@@ -22,6 +22,8 @@ export interface AntigravityOptions extends BaseRunnerOptions {
 }
 
 interface AntigravityJsonResponse {
+  model?: string;
+  denied_actions?: unknown;
   status?: string;
   duration_seconds?: number;
   num_turns?: number;
@@ -64,6 +66,7 @@ interface AntigravityStreamEvent {
   event?: string;
   conversation_id?: string;
   init?: {
+    model?: string;
     conversation_id?: string;
     cwd?: string;
     tools?: string[];
@@ -89,6 +92,20 @@ type StreamOutputCapability = 'unknown' | 'stream-json' | 'legacy';
 type SlashCommandCapabilityProbeResult = 'supported' | 'unsupported' | 'unknown';
 
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
+const PRINT_TIMEOUT_NOTICE =
+  '時間上限に達したため、この回答は未完了です。続きが必要な場合は同じ会話で依頼してください。';
+
+function hasPartialOutputTimeout(stderr: string): boolean {
+  return /^\[agy\] print timeout after \S+ with turn in progress; returning partial output\s*$/m.test(
+    stderr
+  );
+}
+
+function withPrintTimeoutNotice(text: string, stderr: string): string {
+  return hasPartialOutputTimeout(stderr)
+    ? [text, PRINT_TIMEOUT_NOTICE].filter(Boolean).join('\n\n')
+    : text;
+}
 const WORKSPACE_WRITE_SYSTEM_GUIDANCE = `## Antigravity workspace file writes
 When calling write_to_file for a normal file in the current workspace, omit ArtifactMetadata entirely. ArtifactMetadata is reserved for Antigravity's internal artifact directory, not workspace files.`;
 const WORKSPACE_WRITE_RECOVERY_PROMPT = `The preceding write_to_file call failed because ArtifactMetadata was attached to a normal workspace path. Continue the same task from that failed write only. Retry that write without the ArtifactMetadata field and preserve the requested workspace path. Do not repeat completed tool calls or external side effects. Then finish the task normally.`;
@@ -135,8 +152,10 @@ export class AntigravityRunner extends CliRunnerBase {
     this.systemPrompt = [buildSystemPrompt(options?.platform), WORKSPACE_WRITE_SYSTEM_GUIDANCE]
       .filter(Boolean)
       .join('\n\n');
-    this.printTimeout =
-      process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${Math.ceil(this.timeoutMs / 1000)}s`;
+    // Reserve startup/shutdown time without consuming most of a short request's budget.
+    const marginMs = Math.min(30_000, this.timeoutMs * 0.1);
+    const printTimeoutMs = Math.max(1, Math.floor(this.timeoutMs - marginMs));
+    this.printTimeout = process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${printTimeoutMs / 1000}s`;
     this.disableSlashCommands = process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS !== 'false';
   }
 
@@ -160,7 +179,7 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--model', this.model);
     }
 
-    if (options?.effort) {
+    if (options?.effort && inferEffortFromModelName(this.model ?? '') !== options.effort) {
       args.push('--effort', options.effort);
     }
 
@@ -341,13 +360,6 @@ export class AntigravityRunner extends CliRunnerBase {
     }
   }
 
-  private buildFullPrompt(rawPrompt: string): string {
-    const promptWithRuntime = prependRuntimeContext(rawPrompt, this.workdir);
-    return this.systemPrompt
-      ? `<system-context>\n${this.systemPrompt}\n</system-context>\n\n${promptWithRuntime}`
-      : promptWithRuntime;
-  }
-
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
     return {
       ...super.buildEnv(channelId),
@@ -382,13 +394,11 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
 
     this.logExecution('Executing', options);
 
-    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    if (attemptOptions.recordPrompt !== false) this.logPromptTranscript(fullPrompt, options);
 
     const wantsJson = this.outputCapability !== 'legacy';
     // Unknown runners need a pre-run snapshot in case they return legacy plain text.
@@ -434,7 +444,7 @@ export class AntigravityRunner extends CliRunnerBase {
       );
     }
 
-    const { result, sessionId } = this.interpretOutput(
+    const result = this.interpretOutput(
       execution.stdout,
       execution.stderr,
       usedJson,
@@ -442,11 +452,9 @@ export class AntigravityRunner extends CliRunnerBase {
       options?.sessionId
     );
 
-    if (options?.appSessionId && this.workdir) {
-      logResponse(this.workdir, options.appSessionId, { result, sessionId });
-    }
+    this.logResponseTranscript(result, options);
 
-    return { result, sessionId };
+    return result;
   }
 
   async runStream(
@@ -501,12 +509,10 @@ export class AntigravityRunner extends CliRunnerBase {
       return this.runPseudoStream(prompt, callbacks, options, attemptOptions);
     }
 
-    const fullPrompt = this.buildFullPrompt(prompt);
+    const fullPrompt = this.buildTaggedPrompt(prompt, this.systemPrompt, !options?.sessionId);
     this.logExecution('Streaming', options);
 
-    if (attemptOptions.recordPrompt !== false && options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, fullPrompt);
-    }
+    if (attemptOptions.recordPrompt !== false) this.logPromptTranscript(fullPrompt, options);
 
     // Unknown stream capability may be Agy 1.1.2 returning plain output while ignoring
     // --output-format. Snapshot before execution so its conversation ID can be recovered.
@@ -520,12 +526,7 @@ export class AntigravityRunner extends CliRunnerBase {
         result.sessionId =
           this.findChangedConversationId(conversationsBefore) || options?.sessionId || '';
       }
-      if (options?.appSessionId && this.workdir) {
-        logResponse(this.workdir, options.appSessionId, {
-          result: result.result,
-          sessionId: result.sessionId,
-        });
-      }
+      this.logResponseTranscript(result, options);
     };
 
     try {
@@ -561,12 +562,15 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
+    const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
     let rawOutput = '';
     let errorDetail: string | undefined;
     let lastToolError: string | undefined;
     let sawResult = false;
+    let emptySuccess = false;
+    let deniedActions: unknown;
     let sawNativeEvent = false;
     let backendReady = false;
     const emittedToolSteps = new Set<string>();
@@ -586,6 +590,8 @@ export class AntigravityRunner extends CliRunnerBase {
         }
 
         sawNativeEvent = true;
+        if (event.event === 'init') models.add(event.init?.model);
+        if (event.event === 'result') models.add(event.result?.model);
         this.streamOutputCapability = 'stream-json';
         this.outputCapability = 'json';
         sessionId = event.conversation_id ?? sessionId;
@@ -652,12 +658,12 @@ export class AntigravityRunner extends CliRunnerBase {
             return phase === 'stream' ? new Error(errorDetail) : undefined;
           }
 
+          deniedActions = result.denied_actions;
           const response = typeof result.response === 'string' ? result.response : '';
+          emptySuccess = !response;
           if (!response) {
-            errorDetail =
-              lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response';
-            if (isAntigravityWorkspaceArtifactPathError(errorDetail)) return undefined;
-            return phase === 'stream' ? new Error(errorDetail) : undefined;
+            // stderr can arrive after this result. Decide at close whether this is a timeout.
+            return undefined;
           }
 
           if (response.startsWith(fullText)) {
@@ -672,7 +678,7 @@ export class AntigravityRunner extends CliRunnerBase {
 
         return undefined;
       },
-      finalize: () => {
+      finalize: (stderr = '') => {
         if (!sawNativeEvent) {
           this.streamOutputCapability = 'legacy';
           const result = rawOutput.trim();
@@ -688,9 +694,28 @@ export class AntigravityRunner extends CliRunnerBase {
         if (errorDetail) {
           throw new AntigravityConversationError(errorDetail, sessionId);
         }
-        return { result: fullText, sessionId };
+        const denialNotice = this.withDeniedActions({ denied_actions: deniedActions });
+        if (!hasPartialOutputTimeout(stderr) && !denialNotice && (emptySuccess || !fullText)) {
+          throw new AntigravityConversationError(
+            lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response',
+            sessionId
+          );
+        }
+        const result = withPrintTimeoutNotice(
+          this.withDeniedActions({ response: fullText, denied_actions: deniedActions }),
+          stderr
+        );
+        if (result !== fullText) callbacks.onText?.(result.slice(fullText.length), result);
+        const modelEvidence = models.result();
+        const effort = inferEffortFromModelName(modelEvidence.model ?? '');
+        return {
+          result,
+          sessionId,
+          ...modelEvidence,
+          ...(effort ? { effort } : {}),
+        };
       },
-      exitErrorDetail: () => errorDetail,
+      exitErrorDetail: () => errorDetail ?? (emptySuccess ? lastToolError : undefined),
       wrapExitError: (error) =>
         sessionId && isAntigravityWorkspaceArtifactPathError(error)
           ? new AntigravityConversationError(error.message, sessionId, { cause: error })
@@ -705,6 +730,9 @@ export class AntigravityRunner extends CliRunnerBase {
     attemptOptions: AntigravityAttemptOptions = {}
   ): Promise<RunResult> {
     const result = await this.runOnce(prompt, options, attemptOptions);
+    const models = new ProviderModels(callbacks.onModel);
+    for (const model of result.models ?? []) models.add(model);
+    models.add(result.model);
     callbacks.onText?.(result.result, result.result);
     callbacks.onComplete?.(result);
     return result;
@@ -738,11 +766,20 @@ export class AntigravityRunner extends CliRunnerBase {
 
       this.outputCapability = 'json';
       if (response.status === 'SUCCESS') {
-        const result = typeof response.response === 'string' ? response.response : '';
+        const result = withPrintTimeoutNotice(this.withDeniedActions(response), stderr);
         if (!result) {
           throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
         }
-        return { result, sessionId: response.conversation_id ?? priorSessionId ?? '' };
+        const models = new ProviderModels();
+        models.add(response.model);
+        const modelEvidence = models.result();
+        const effort = inferEffortFromModelName(modelEvidence.model ?? '');
+        return {
+          result,
+          sessionId: response.conversation_id ?? priorSessionId ?? '',
+          ...modelEvidence,
+          ...(effort ? { effort } : {}),
+        };
       }
       if (response.status === 'ERROR') {
         throw new AntigravityConversationError(
@@ -756,6 +793,26 @@ export class AntigravityRunner extends CliRunnerBase {
     }
 
     return this.buildLegacyResult(stdout, stderr, response, conversationsBefore, priorSessionId);
+  }
+
+  private withDeniedActions(response: AntigravityJsonResponse, streamedText = ''): string {
+    const responseText = typeof response.response === 'string' ? response.response : '';
+    if (!Array.isArray(response.denied_actions) || !response.denied_actions.length)
+      return responseText;
+    const text = responseText || streamedText;
+    const names = [
+      ...new Set(
+        response.denied_actions.flatMap((item: unknown) => {
+          const action = this.toRecord(item);
+          const name = action?.display_name ?? action?.action;
+          return typeof name === 'string' && name.trim()
+            ? [name.replace(/\s/g, ' ').slice(0, 120)]
+            : [];
+        })
+      ),
+    ].slice(0, 10);
+    const notice = `権限がないため実行されなかった操作があります${names.length ? `: ${names.join(', ')}` : '。'}`;
+    return text.includes(notice) ? text : [text, notice].filter(Boolean).join('\n\n');
   }
 
   private buildLegacyResult(
@@ -843,24 +900,9 @@ export class AntigravityRunner extends CliRunnerBase {
       event.text,
       event.content,
       event.response,
-      this.extractTextFromUnknown(event.message),
+      extractNestedText(event.message),
     ]) {
       if (typeof value === 'string' && value) return value;
-    }
-    return '';
-  }
-
-  private extractTextFromUnknown(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (!value || typeof value !== 'object') return '';
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === 'string') return record.text;
-    if (typeof record.content === 'string') return record.content;
-    if (Array.isArray(record.content)) {
-      return record.content
-        .map((block) => this.extractTextFromUnknown(block))
-        .filter(Boolean)
-        .join('');
     }
     return '';
   }

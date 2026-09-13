@@ -1,8 +1,17 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { delimiter, isAbsolute, join } from 'node:path';
+import {
+  CopilotClient,
+  RuntimeConnection,
+  type ModelInfo as CopilotModelInfo,
+} from '@github/copilot-sdk';
 import {
   extractAntigravityOutputError,
   reportsUnsupportedOutputFormat,
 } from './antigravity-output.js';
+import { inferEffortFromModelName } from './backend-effort.js';
 import type { AgentBackend } from './config.js';
 import { resolveExtensionAgentBackend } from './extensions.js';
 import { getSafeEnv } from './safe-env.js';
@@ -36,6 +45,23 @@ export type ModelDiscoveryCommandRunner = (
   args: string[],
   input?: string
 ) => Promise<CommandResult>;
+
+export type CopilotModelLister = () => Promise<CopilotModelInfo[]>;
+
+const STANDARD_EFFORTS = new Set([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+]);
+
+function standardEfforts(values: string[]): string[] {
+  return values.filter((value) => STANDARD_EFFORTS.has(value));
+}
 
 function hasAuthenticationError(result: CommandResult): boolean {
   return /not authenticated|not logged in|sign.?in required|login required/i.test(
@@ -149,9 +175,35 @@ export function parseCursorModels(output: string): BackendModel[] {
     const [, id, rawName] = match;
     const isDefault = /\(.*default.*\)$/i.test(rawName);
     const displayName = rawName.replace(/\s*\([^)]*default[^)]*\)\s*$/i, '').trim();
-    models.push({ id, displayName, isDefault });
+    const effort = inferEffortFromModelName(id, displayName);
+    models.push({
+      id,
+      displayName,
+      isDefault,
+      // Cursor's catalog exposes many effort-specific model IDs. Do not offer a
+      // second, incompatible effort for those IDs, and never parameterize Auto.
+      supportedEfforts: id === 'auto' ? [] : effort ? [effort] : undefined,
+    });
   }
-  return models;
+  const effortByFamily = new Map<string, Set<string>>();
+  const familyOf = (id: string) =>
+    id.replace(/-fast$/, '').replace(/-(?:extra-high|xhigh|minimal|medium|high|low|none|max)$/, '');
+  for (const model of models) {
+    const effort = model.supportedEfforts?.[0];
+    if (!effort) continue;
+    const family = familyOf(model.id);
+    const efforts = effortByFamily.get(family) ?? new Set<string>();
+    efforts.add(effort);
+    effortByFamily.set(family, efforts);
+  }
+  return models.map((model) => {
+    if (model.supportedEfforts !== undefined) return model;
+    const familyEfforts = effortByFamily.get(familyOf(model.id));
+    return {
+      ...model,
+      supportedEfforts: familyEfforts ? [...new Set([...familyEfforts, 'medium'])] : [],
+    };
+  });
 }
 
 export function parseGrokModels(output: string): BackendModel[] {
@@ -164,12 +216,64 @@ export function parseGrokModels(output: string): BackendModel[] {
   return models;
 }
 
+export function applyGrokModelMetadata(models: BackendModel[], output: string): BackendModel[] {
+  const parsed = JSON.parse(output) as {
+    models?: Record<
+      string,
+      {
+        info?: {
+          supports_reasoning_effort?: boolean;
+          reasoning_efforts?: Array<{ id?: string; value?: string }>;
+        };
+      }
+    >;
+  };
+  return models.map((model) => {
+    const info = parsed.models?.[model.id]?.info;
+    if (!info) return model;
+    return {
+      ...model,
+      supportedEfforts:
+        info.supports_reasoning_effort === true
+          ? standardEfforts(
+              (info.reasoning_efforts ?? []).flatMap((effort) =>
+                effort.value || effort.id ? [effort.value || effort.id || ''] : []
+              )
+            )
+          : [],
+    };
+  });
+}
+
 export function parseOpenCodeModels(output: string): BackendModel[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((id) => ({ id }));
+  const lines = output.split('\n');
+  const models: BackendModel[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const id = lines[index].trim();
+    if (!id || id.startsWith('{') || !id.includes('/')) continue;
+    let metadata: { name?: string; variants?: Record<string, unknown> } | undefined;
+    const jsonLines: string[] = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (jsonLines.length === 0 && !line.trim().startsWith('{')) break;
+      jsonLines.push(line);
+      try {
+        metadata = JSON.parse(jsonLines.join('\n')) as typeof metadata;
+        index = cursor;
+        break;
+      } catch {
+        // Pretty-printed model metadata spans multiple lines.
+      }
+    }
+    models.push({
+      id,
+      displayName: metadata?.name,
+      supportedEfforts: metadata
+        ? standardEfforts(Object.keys(metadata.variants ?? {}))
+        : undefined,
+    });
+  }
+  return models;
 }
 
 interface AntigravityModelsCommand {
@@ -192,10 +296,12 @@ function parseAntigravityModelsCommand(value: unknown): BackendModel[] | undefin
     .filter((model): model is { id: string; label?: string } =>
       Boolean(model && typeof model === 'object' && typeof model.id === 'string' && model.id.trim())
     )
-    .map((model) => ({
-      id: model.id.trim(),
-      displayName: model.label?.trim() || undefined,
-    }));
+    .map((model) => {
+      const id = model.id.trim();
+      const displayName = model.label?.trim() || undefined;
+      const effort = inferEffortFromModelName(id, displayName);
+      return { id, displayName, supportedEfforts: effort ? [effort] : undefined };
+    });
 }
 
 export function parseAntigravityModels(output: string): BackendModel[] {
@@ -219,8 +325,45 @@ export function parseAntigravityModels(output: string): BackendModel[] {
     }
     const [id, ...labelParts] = trimmed.split('\t');
     const displayName = labelParts.join('\t').trim();
-    return [{ id: id.trim(), displayName: displayName || undefined }];
+    const normalizedId = id.trim();
+    const normalizedName = displayName || undefined;
+    const effort = inferEffortFromModelName(normalizedId, normalizedName);
+    return [
+      {
+        id: normalizedId,
+        displayName: normalizedName,
+        supportedEfforts: effort ? [effort] : undefined,
+      },
+    ];
   });
+}
+
+async function listCopilotModels(): Promise<CopilotModelInfo[]> {
+  const env = getSafeEnv();
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  const childEnv = Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  );
+  const configuredCommand = configuredBackendCommand('copilot', env);
+  const executable = isAbsolute(configuredCommand)
+    ? configuredCommand
+    : (childEnv.PATH?.split(delimiter)
+        .map((directory) => join(directory, configuredCommand))
+        .find((candidate) => existsSync(candidate)) ?? configuredCommand);
+  const client = new CopilotClient({
+    connection: RuntimeConnection.forStdio({
+      path: executable,
+      env: childEnv,
+    }),
+    logLevel: 'none',
+  });
+  try {
+    await client.start();
+    return await client.listModels();
+  } finally {
+    await client.stop().catch(() => undefined);
+  }
 }
 
 function isUnsupportedAntigravityOutputFormat(error: unknown): boolean {
@@ -280,15 +423,20 @@ async function discoverLocalLlmModels(fetchFn: typeof fetch): Promise<BackendMod
 
 export async function discoverBackendModels(
   backend: AgentBackend,
-  options: { runner?: ModelDiscoveryCommandRunner; fetchFn?: typeof fetch } = {}
+  options: {
+    runner?: ModelDiscoveryCommandRunner;
+    fetchFn?: typeof fetch;
+    copilotModelLister?: CopilotModelLister;
+    grokModelMetadataReader?: () => Promise<string>;
+  } = {}
 ): Promise<BackendModelDiscovery> {
   const runner = options.runner ?? runCommand;
   let antigravitySource = 'agy --output-format json models';
   try {
-    if (backend === 'claude-code' || backend === 'github-copilot') {
+    if (backend === 'claude-code') {
       return {
         backend,
-        source: backend === 'claude-code' ? 'Claude Code CLI' : 'GitHub Copilot CLI',
+        source: 'Claude Code CLI',
         status: 'unsupported',
         models: [],
         message: 'CLIに独立した機械可読モデル一覧コマンドがありません',
@@ -306,6 +454,24 @@ export async function discoverBackendModels(
     }
     if (backend === 'local-llm') {
       return discoverLocalLlmModels(options.fetchFn ?? fetch);
+    }
+    if (backend === 'github-copilot') {
+      const models = await (options.copilotModelLister ?? listCopilotModels)();
+      if (models.length === 0) throw new Error('Copilot SDK listModels returned no models');
+      return {
+        backend,
+        source: 'GitHub Copilot SDK listModels',
+        status: 'available',
+        models: models.map((model) => ({
+          id: model.id,
+          displayName: model.name,
+          isDefault: model.id === 'auto',
+          supportedEfforts:
+            model.capabilities?.supports?.reasoningEffort === true
+              ? standardEfforts(model.supportedReasoningEfforts ?? [])
+              : [],
+        })),
+      };
     }
     if (backend === 'codex') {
       const input = [
@@ -338,15 +504,30 @@ export async function discoverBackendModels(
       const result = await runner('grok', ['models']);
       if (hasAuthenticationError(result)) throw new Error('Grok CLI is not authenticated');
       const { stdout } = result;
-      const models = parseGrokModels(stdout);
+      let models = parseGrokModels(stdout);
       if (models.length === 0) throw new Error('grok models returned no models');
-      return { backend, source: 'grok models', status: 'available', models };
+      let source = 'grok models';
+      try {
+        const readMetadata =
+          options.grokModelMetadataReader ??
+          (() => {
+            const env = getSafeEnv();
+            const grokHome = process.env.GROK_HOME || (env.HOME ? join(env.HOME, '.grok') : '');
+            if (!grokHome) throw new Error('Grok home is unavailable');
+            return readFile(join(grokHome, 'models_cache.json'), 'utf8');
+          });
+        models = applyGrokModelMetadata(models, await readMetadata());
+        source = 'grok models + CLI model cache';
+      } catch {
+        // Older Grok CLI versions may not keep structured model metadata.
+      }
+      return { backend, source, status: 'available', models };
     }
     if (backend === 'opencode') {
-      const { stdout } = await runner('opencode', ['models']);
+      const { stdout } = await runner('opencode', ['models', '--verbose']);
       const models = parseOpenCodeModels(stdout);
       if (models.length === 0) throw new Error('opencode models returned no models');
-      return { backend, source: 'opencode models', status: 'available', models };
+      return { backend, source: 'opencode models --verbose', status: 'available', models };
     }
     let result: CommandResult;
     try {
@@ -374,8 +555,10 @@ export async function discoverBackendModels(
             : backend === 'grok'
               ? 'grok models'
               : backend === 'opencode'
-                ? 'opencode models'
-                : antigravitySource,
+                ? 'opencode models --verbose'
+                : backend === 'github-copilot'
+                  ? 'GitHub Copilot SDK listModels'
+                  : antigravitySource,
       status: 'unavailable',
       models: [],
       message: error instanceof Error ? error.message : String(error),

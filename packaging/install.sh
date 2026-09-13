@@ -157,7 +157,6 @@ unpacked="$staging/$ARCHIVE_ROOT"
 [[ -f "$unpacked/dist/cli/xangi-main.js" ]] || fail 'bundle is missing the xangi CLI entrypoint'
 [[ -f "$unpacked/web/index.html" ]] || fail 'bundle is missing the Web Chat UI'
 [[ -f "$unpacked/web/monitor.html" ]] || fail 'bundle is missing the session monitor UI'
-[[ -f "$unpacked/web/inter-chat.html" ]] || fail 'bundle is missing the inter-instance chat UI'
 [[ -f "$unpacked/web/app/index.html" ]] || fail 'bundle is missing the React Web UI'
 web_app_refs="$(grep -oE '/app/[^"]+\.(js|css)' "$unpacked/web/app/index.html" || true)"
 [[ "$web_app_refs" == *".js"* && "$web_app_refs" == *".css"* ]] ||

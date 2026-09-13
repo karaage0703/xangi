@@ -79,6 +79,7 @@ See the [usage guide](docs/en/usage.md#first-install-without-git) for installati
 - Web Chat: initially open `http://127.0.0.1:18888`
 - Discord, Slack, Telegram, or LINE: message the configured bot
 - Health check: `xangi doctor`
+- AI-guided error investigation and repair: `xangi rescue`
 - Web UI URLs and reachability: `xangi tool web_status`
 - Version check: `xangi --version`
 - Connection settings: `xangi settings`
@@ -136,7 +137,7 @@ See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 
 ## Extensions
 
-Add and manage external capabilities from Extensions in the Web UI. See [Extension Integration](docs/en/usage.md#extension-integration) for details.
+Use Settings in the Web UI for every runtime control and the common non-secret startup settings, each with explicit apply timing. Select per-channel settings by name and inspect both saved and effective values. The page lists login status and version for every supported AI-agent CLI and can run its official self-update after confirmation. Write-only API-key inputs save to the existing local secret store without redisplaying stored values. Add or manage external capabilities from Extensions. See the [usage guide](docs/en/usage.md#web-chat-ui) and [Extension Integration](docs/en/usage.md#extension-integration) for details.
 
 - [xangi-search](https://github.com/karaage0703/xangi-search) - An extension for searching your workspace
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - An extension that brings xangi responses, expressions, and head movement to M5Stack devices
@@ -151,7 +152,7 @@ Add and manage external capabilities from Extensions in the Web UI. See [Extensi
 - [Usage guide](docs/en/usage.md) - Commands, configuration, Docker, Local LLMs, multiple instances, and troubleshooting
 - [Design document](docs/en/design.md) - Architecture, components, and data flow
 - [External event stream](docs/en/events.md) - SSE and device input APIs
-- [Inter-instance chat](docs/en/inter-instance-chat.md) - Messaging between xangi instances
+- [Inter-instance chat](docs/en/inter-instance-chat.md) - Authenticated directed requests across machines
 
 ## Book
 

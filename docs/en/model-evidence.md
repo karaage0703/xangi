@@ -1,0 +1,14 @@
+# Provider model evidence
+
+Model execution history stores request-scoped provider evidence separately from the requested model. Missing evidence remains unknown; changing today's CLI settings cannot identify an old run. Multiple main-conversation models are retained and the latest observation is recorded separately.
+
+- **Claude Code:** native `system/init.model` and main `assistant.message.model`, including persistent processes. Child events with `parent_tool_use_id` are excluded. Aggregate `modelUsage` is not main-conversation proof because it can include auxiliary calls. The JSON-only `run()` response can therefore remain unknown; streaming and persistent execution report structured identities.
+- **Codex:** native structured turn metadata when provided, plus session-linked rollout `turn_context.model` bounded to the request. See the Codex evidence reader for validation and timestamp rules.
+- **Cursor / Grok:** native assistant/system/result model metadata when exposed by that CLI version. An `auto` alias and the assistant's response text are not proof of the selected model.
+- **GitHub Copilot:** `assistant.usage.data.model`, excluding subagent, sampling, background, and compaction classifications. Fields are defined by the installed `@github/copilot-sdk` (MIT) generated session-event types. Missing classification is accepted for compatibility with older main-conversation events.
+- **OpenCode:** JSONL parts lack identity, so completion performs a bounded, read-only `opencode export <sessionID>` (5 seconds; 32 MiB limit). Only matching session assistant metadata within the request time interval and workspace is accepted; summary records are excluded. Export failure, unsupported output, or missing metadata leaves identity unknown. This does not invoke another model turn. The CLI command is documented at <https://opencode.ai/docs/cli#export>; assistant `modelID`, `providerID`, `time.created`, `sessionID`, `path.cwd`, and `summary` fields are defined by the installed `@opencode-ai/sdk` (MIT), referenced by <https://opencode.ai/docs/sdk>.
+- **Antigravity:** model metadata from native init/result envelopes, if supplied. Legacy free-text or ordinary JSON answers are never treated as model evidence.
+- **Local LLM:** response `model` from OpenAI-compatible and Ollama APIs, both JSON and streaming, across each request's tool loop. The requested alias is not substituted for a missing response model.
+- **Extension backends:** optional response `model` and `models` fields in schema version 1. The extension should supply only main-conversation identities, in observation order, with `model` naming its latest observation. Existing extensions without these fields remain compatible and report unknown.
+
+Provider-reported identifiers do not guarantee a vendor's internal deployment or routing implementation. CLI versions which omit model metadata cannot establish it solely from an explicitly requested model.

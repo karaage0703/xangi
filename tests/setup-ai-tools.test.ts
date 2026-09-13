@@ -85,18 +85,48 @@ describe('standalone AI coding tool setup', () => {
     await expect((await import('node:fs/promises')).readFile(log, 'utf8')).resolves.toContain('\n');
   });
 
-  it('guides Codex users through nvm setup before installing Node.js', async () => {
+  it('installs Codex with the official standalone installer without npm', async () => {
     const data = await fixture();
-    const error = await exec('/bin/bash', ['packaging/setup-ai-tools.sh', 'codex'], {
-      env: { HOME: data.home, PATH: data.bin },
-    }).catch((cause: unknown) => cause as { stderr: string });
-    expect(error.stderr).toContain('Codexの導入にはNode.jsとnpmが必要です');
-    expect(error.stderr).toContain(
-      'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash'
+    const requestLog = join(data.root, 'codex-installer-url.log');
+    const npmLog = join(data.root, 'npm.log');
+    await fakeCommand(join(data.bin, 'npm'), `printf 'called\n' > '${npmLog}'\nexit 99`);
+    await fakeCommand(
+      join(data.bin, 'curl'),
+      `output=''
+url=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\n' "$url" > '${requestLog}'
+cat > "$output" <<'INSTALLER'
+#!/bin/sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/codex" <<'CODEX'
+#!/bin/sh
+[ "$1 $2" = "login status" ] && exit 1
+[ "$1" = "login" ] && printf 'login\n' > "$HOME/codex-login.log"
+exit 0
+CODEX
+chmod +x "$HOME/.local/bin/codex"
+INSTALLER`
     );
-    expect(error.stderr).toContain('現在のTerminalを閉じて、新しいTerminalを開きます');
-    expect(error.stderr).toContain('command -v nvm\n   nvm install --lts');
-    expect(error.stderr).toContain('https://github.com/nvm-sh/nvm');
+
+    const result = await exec('/bin/bash', ['packaging/setup-ai-tools.sh', 'codex'], {
+      env: { HOME: data.home, PATH: `${data.bin}:/usr/bin:/bin` },
+    });
+    expect(result.stdout).toContain('codex のセットアップを終了しました');
+    await expect((await import('node:fs/promises')).readFile(requestLog, 'utf8')).resolves.toBe(
+      'https://chatgpt.com/codex/install.sh\n'
+    );
+    await expect(
+      (await import('node:fs/promises')).readFile(join(data.home, 'codex-login.log'), 'utf8')
+    ).resolves.toBe('login\n');
+    await expect(
+      (await import('node:fs/promises')).readFile(npmLog, 'utf8')
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('does not reinstall or relogin an already ready tool', async () => {

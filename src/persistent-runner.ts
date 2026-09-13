@@ -1,3 +1,4 @@
+import { ProviderModels, observeClaudeModel } from './provider-model.js';
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import type {
@@ -42,6 +43,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
   private buffer = '';
   private sessionId = '';
   private fullText = '';
+  private observedModels = new ProviderModels();
   private shuttingDown = false;
   private cancelling = false;
 
@@ -310,9 +312,13 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
    */
   private handleJsonMessage(json: {
     type: string;
+    model?: string;
+    parent_tool_use_id?: string | null;
+    modelUsage?: Record<string, unknown>;
     subtype?: string;
     session_id?: string;
     message?: {
+      model?: string;
       content?: Array<{
         type: string;
         text?: string;
@@ -324,6 +330,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     error?: string;
     is_error?: boolean;
   }): void {
+    if (this.currentItem) observeClaudeModel(this.observedModels, json);
     if (json.type === 'system' && json.session_id) {
       this.sessionId = json.session_id;
       console.log(`[persistent-runner] Session initialized: ${this.sessionId.slice(0, 8)}...`);
@@ -417,6 +424,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
           // 誤解を招く `✅` ではなく正直な fallback を返す
           result: finalizeDisplayText(this.fullText),
           sessionId: this.sessionId,
+          ...this.observedModels.result(),
         };
 
         this.currentItem?.callbacks?.onComplete?.(result);
@@ -448,6 +456,9 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     }
 
     this.currentItem = this.queue.shift()!;
+    this.observedModels = new ProviderModels((model) =>
+      this.currentItem?.callbacks?.onModel?.(model)
+    );
     this.fullText = '';
 
     // ensureProcess はサーキットブレーカーオープン時に throw する。
@@ -664,10 +675,7 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
    * リクエストを実行（キューに追加）
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ prompt, options, resolve, reject });
-      this.processNext();
-    });
+    return this.enqueue(prompt, options);
   }
 
   /**
@@ -677,6 +685,14 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     prompt: string,
     callbacks: StreamCallbacks,
     options?: RunOptions
+  ): Promise<RunResult> {
+    return this.enqueue(prompt, options, callbacks);
+  }
+
+  private enqueue(
+    prompt: string,
+    options?: RunOptions,
+    callbacks?: StreamCallbacks
   ): Promise<RunResult> {
     return new Promise((resolve, reject) => {
       this.queue.push({ prompt, options, callbacks, resolve, reject });

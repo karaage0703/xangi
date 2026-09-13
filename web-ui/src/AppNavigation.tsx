@@ -1,4 +1,4 @@
-export type AppSurface = 'chat' | 'workspace' | 'schedules' | 'monitor' | 'extensions';
+export type AppSurface = 'chat' | 'workspace' | 'schedules' | 'monitor' | 'extensions' | 'settings';
 
 interface AppNavigationProps {
   current: AppSurface;
@@ -36,6 +36,13 @@ export const DESTINATIONS: Array<{
     icon: 'extensions',
     placement: 'secondary',
   },
+  {
+    id: 'settings',
+    href: '/settings',
+    label: '設定',
+    icon: 'settings',
+    placement: 'secondary',
+  },
 ];
 
 export function NavigationIcon({ icon }: { icon: AppSurface | 'more' | 'close' }) {
@@ -53,6 +60,14 @@ export function NavigationIcon({ icon }: { icon: AppSurface | 'more' | 'close' }
   }
   if (icon === 'extensions') {
     return <path d="M8.5 4.5h3v4h4v3h4v4h-4v4h-4v-4h-4v-3h-4v-4h5v-4Z" />;
+  }
+  if (icon === 'settings') {
+    return (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 3.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m14.5-6-1.5 1.5m-9 9L6 18m12 0-1.5-1.5m-9-9L6 6" />
+      </>
+    );
   }
   if (icon === 'close') {
     return <path d="m6 6 12 12M18 6 6 18" />;

@@ -619,14 +619,17 @@ export function createUserPromptSubmitHookRunner(
  * turnごとに読み直し、定義が変わった時だけ実runnerを入れ替える。
  * 不正な設定への一時的な書き換えでは直前の正常設定を維持する。
  */
-export class ReloadingUserPromptSubmitHookRunner {
-  private runner: UserPromptSubmitHookRunner | null = null;
+class ReloadingHookRunner<Definition, Runner extends { count: number }> {
+  private runner: Runner | null = null;
   private signature: string | undefined;
   private initialized = false;
 
   constructor(
     private readonly workspace: string,
-    private readonly env: NodeJS.ProcessEnv = process.env
+    private readonly env: NodeJS.ProcessEnv,
+    private readonly select: (config: HooksConfig) => Definition[] | undefined,
+    private readonly create: (definitions: Definition[], workspace: string) => Runner,
+    private readonly label: string
   ) {
     this.refresh();
   }
@@ -636,65 +639,9 @@ export class ReloadingUserPromptSubmitHookRunner {
     return this.runner?.count ?? 0;
   }
 
-  async run(payload: UserPromptSubmitHookPayload): Promise<UserPromptSubmitHookContext[]> {
+  current(): Runner | null {
     this.refresh();
-    return this.runner?.run(payload) ?? [];
-  }
-
-  private refresh(): void {
-    if (this.env.XANGI_HOOKS_ENABLED === 'false') {
-      this.replace([]);
-      return;
-    }
-
-    const file = this.env.XANGI_HOOKS_FILE || path.join(this.workspace, 'hooks', 'hooks.json');
-    const exists = fs.existsSync(file);
-    const config = loadHooksConfig(this.workspace, this.env.XANGI_HOOKS_FILE);
-    if (!config && exists) {
-      // loadHooksConfigが警告を出す。不正な一時状態では最後の正常設定を維持する。
-      return;
-    }
-    this.replace(config?.hooks.UserPromptSubmit ?? []);
-  }
-
-  private replace(defs: UserPromptSubmitHookDefinition[]): void {
-    const signature = JSON.stringify(defs);
-    if (this.initialized && signature === this.signature) return;
-
-    const previousCount = this.runner?.count ?? 0;
-    this.runner = defs.length > 0 ? new UserPromptSubmitHookRunner(defs, this.workspace) : null;
-    this.signature = signature;
-    this.initialized = true;
-
-    if (previousCount !== defs.length) {
-      console.log(
-        `[hooks] UserPromptSubmit hooks reloaded: ${previousCount} -> ${defs.length} hook(s)`
-      );
-    }
-  }
-}
-
-/** Stop設定を各gate前に再確認するrunner。 */
-export class ReloadingStopHookRunner {
-  private runner: StopHookRunner | null = null;
-  private signature: string | undefined;
-  private initialized = false;
-
-  constructor(
-    private readonly workspace: string,
-    private readonly env: NodeJS.ProcessEnv = process.env
-  ) {
-    this.refresh();
-  }
-
-  get count(): number {
-    this.refresh();
-    return this.runner?.count ?? 0;
-  }
-
-  async run(payload: StopHookPayload): Promise<StopHookVerdict> {
-    this.refresh();
-    return this.runner?.run(payload) ?? { block: false };
+    return this.runner;
   }
 
   private refresh(): void {
@@ -707,21 +654,71 @@ export class ReloadingStopHookRunner {
     const exists = fs.existsSync(file);
     const config = loadHooksConfig(this.workspace, this.env.XANGI_HOOKS_FILE);
     if (!config && exists) return;
-    this.replace(config?.hooks.Stop ?? []);
+    this.replace(config ? (this.select(config) ?? []) : []);
   }
 
-  private replace(defs: HookDefinition[]): void {
+  private replace(defs: Definition[]): void {
     const signature = JSON.stringify(defs);
     if (this.initialized && signature === this.signature) return;
 
     const previousCount = this.runner?.count ?? 0;
-    this.runner = defs.length > 0 ? new StopHookRunner(defs, this.workspace) : null;
+    this.runner = defs.length > 0 ? this.create(defs, this.workspace) : null;
     this.signature = signature;
     this.initialized = true;
 
     if (previousCount !== defs.length) {
-      console.log(`[hooks] Stop hooks reloaded: ${previousCount} -> ${defs.length} hook(s)`);
+      console.log(
+        `[hooks] ${this.label} hooks reloaded: ${previousCount} -> ${defs.length} hook(s)`
+      );
     }
+  }
+}
+
+export class ReloadingUserPromptSubmitHookRunner {
+  private readonly hooks: ReloadingHookRunner<
+    UserPromptSubmitHookDefinition,
+    UserPromptSubmitHookRunner
+  >;
+
+  constructor(workspace: string, env: NodeJS.ProcessEnv = process.env) {
+    this.hooks = new ReloadingHookRunner(
+      workspace,
+      env,
+      (config) => config.hooks.UserPromptSubmit,
+      (defs, cwd) => new UserPromptSubmitHookRunner(defs, cwd),
+      'UserPromptSubmit'
+    );
+  }
+
+  get count(): number {
+    return this.hooks.count;
+  }
+
+  async run(payload: UserPromptSubmitHookPayload): Promise<UserPromptSubmitHookContext[]> {
+    return this.hooks.current()?.run(payload) ?? [];
+  }
+}
+
+/** Stop設定を各gate前に再確認するrunner。 */
+export class ReloadingStopHookRunner {
+  private readonly hooks: ReloadingHookRunner<HookDefinition, StopHookRunner>;
+
+  constructor(workspace: string, env: NodeJS.ProcessEnv = process.env) {
+    this.hooks = new ReloadingHookRunner(
+      workspace,
+      env,
+      (config) => config.hooks.Stop,
+      (defs, cwd) => new StopHookRunner(defs, cwd),
+      'Stop'
+    );
+  }
+
+  get count(): number {
+    return this.hooks.count;
+  }
+
+  async run(payload: StopHookPayload): Promise<StopHookVerdict> {
+    return this.hooks.current()?.run(payload) ?? { block: false };
   }
 }
 

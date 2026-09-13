@@ -19,6 +19,8 @@ import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
 import { splitMessage } from './message-split.js';
 import { listenHttpServer } from './http-server-startup.js';
+import { readRawBody } from './web-http.js';
+import type { Config } from './config.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -113,27 +115,21 @@ export function snapLoadingSeconds(value: number | undefined): number {
   return best;
 }
 
-export interface LineBotOptions {
+export interface LineBotOptions extends Omit<
+  Config['line'],
+  | 'enabled'
+  | 'channelSecret'
+  | 'channelAccessToken'
+  | 'webhookPort'
+  | 'webhookPath'
+  | 'resetTextPatterns'
+> {
   agentRunner: AgentRunner;
   resolver: BackendResolver;
   channelSecret: string;
   channelAccessToken: string;
-  allowedUsers?: string[];
   port?: number;
   path?: string;
-  /** Loading animation (POST /v2/bot/chat/loading/start) 即時 ACK (default: true) */
-  loadingAnimationEnabled?: boolean;
-  /** Loading animation 表示秒数 (5/10/15/20/25/30/40/50/60、default: 60) */
-  loadingAnimationSeconds?: number;
-  /** Reply→Push 自動切替 (default: true)。無効なら reply 一択で 60s 超は返信失敗 */
-  slowResponseEnabled?: boolean;
-  /** Slow response 閾値 ms (default: 45000)。これを超えたら「考え中」を reply で送って Push に切替 */
-  slowResponseThresholdMs?: number;
-  /** Idle session reset (default: true)。一定時間 idle で次の発話時に session 自動切替 */
-  idleResetEnabled?: boolean;
-  /** Idle reset の閾値時間 (default: 4 時間) */
-  idleResetHours?: number;
-  /** Reset コマンドのテキストパターン (default: 規定パターン)。空配列を渡すと検出無効 */
   resetTextPatterns?: readonly string[];
   completionDisplay?: CompletionDisplayOptions;
   completionNotifyAfterMs?: number;
@@ -256,7 +252,7 @@ async function handleRequest(
   }
 
   // raw body 取得 (署名検証は raw bytes 必須)
-  const rawBody = await readRawBody(req);
+  const rawBody = await readRawBody(req, Number.MAX_SAFE_INTEGER);
   const signature = (req.headers['x-line-signature'] as string | undefined) ?? '';
 
   if (!signature || !validateSignature(rawBody, ctx.channelSecret, signature)) {
@@ -284,14 +280,6 @@ async function handleRequest(
       console.error('[xangi-line] handleEvent error:', err);
     });
   }
-}
-
-async function readRawBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {

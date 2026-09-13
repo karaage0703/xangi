@@ -102,9 +102,11 @@ Based on `@slack/bolt`.
 
 Lightweight server based on `http.createServer` (no Express dependency).
 
-With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless setup with only `XANGI_EVENTS_SERVER_ENABLED=true` starts the same server but exposes only health, event SSE, session reads, and pet/device/terminal inbox routes; Web UI assets and unrelated Web APIs return 404.
+With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless setup enabled by events or HTTP inter-instance chat starts the same server but exposes only the required dedicated endpoints; Web UI assets and unrelated Web APIs return 404.
 
 - A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
+- Directed requests use bearer-authenticated HTTP by default and resolve targets through `INTER_INSTANCE_CHAT_PEERS`. The receiver reuses one regular Web session per sender, preserving transcripts and provider context, and never treats another instance's content as user authorization
+- `INTER_INSTANCE_CHAT_ALLOWED_PEERS` can restrict directed-request senders; when unset or `*`, any instance holding the shared token is allowed
 - Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops. Sessions originating from Discord or Slack resolve their original chat URL through a dedicated API and expose it in the Web Chat pane header. Web branches retain a source-session ID that remains available after history injection
 - Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
 - Attachment uploads use `XMLHttpRequest.upload` progress events to show the file name, position within a multi-file selection, and transfer percentage above the composer on both desktop and mobile
@@ -114,6 +116,7 @@ With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless set
 - The Web Projects screen registers existing absolute paths in the central workspace registry and can unregister unused workspaces. Unregistering never changes the directory or its files and is rejected for the default workspace, Project or existing-session references, and platform channel bindings
 - `xangi service restart` and `xangi tool system_restart` use the new CLI to validate the production Web Project state read-only before requesting a restart. An incompatible state blocks the restart without modifying the state file
 - Web backend resolution uses conversation override (`/backend set`) first, then the Project default, then the runtime default. `/backend reset` removes only the conversation override. If moving a conversation changes provider backend, xangi does not reuse the old provider session ID and preloads the saved transcript into the next turn to preserve context
+- `/settings` changes all seven `runtime-settings-command.ts` items through the shared dispatcher. Channel choices load names from the connected Discord client's cache or Slack `conversations.list`; the UI shows names while retaining IDs only as internal values. Missing Slack scopes are translated into `channels:read` / `groups:read` and workspace-reinstallation guidance. A dedicated GET API returns the selected channel's saved overrides and effective values for the controls. Non-secret startup settings use a typed allowlist in `web-startup-settings.ts` and persist to the existing `.env`. Write-only inputs can save connection tokens and API keys to the existing `SecretStore`; the Web client receives configured status, never the stored values. `backend-auth-status.ts` enumerates every supported AI-agent CLI and checks login non-interactively through a dedicated status command, credential listing, model listing, or the existing Copilot SDK account request. AI CLI updates launch only the self-update subcommand in that module's fixed allowlist, without a shell, suppress raw output, and then probe the installed version again. It never returns secret values or raw CLI output, and reports non-authentication probe failures as unknown instead of incorrectly claiming the user is signed out. Arbitrary environment variables are rejected, and explicit environment variables continue to take precedence over stored values. Mutation APIs enforce same-origin requests, and the page labels changes as immediate, next-turn, or restart-time
 - `GET /api/sessions` returns the latest 100 sessions plus `activity` and a `sessionMode` that describes whether provider context can continue, and supports server-side `lifecycle=open|closed` and `updatedSince` filters. `GET /api/sessions/:id` also returns `isActive` and `activity`, allowing Web Chat to recover from a broken send SSE by observing the same server turn or loading its persisted transcript. The POST is never retried automatically. Title derivation reads the first JSONL line in chunks instead of each complete log
 - Monitor accumulates each agent turn's wall-clock duration per Session in `DATA_DIR/sessions.json` and shows the cumulative processing time on both cards and the detail panel. `Chat`, `Web`, and `Schedule` are independent toggles, with only `Chat` and `Web` enabled by default; enabled types share the same token/time presentation and can appear together. Scheduler Session titles use the schedule label instead of the full execution prompt, and long card titles are truncated to one line; pre-feature scheduler history is explicitly labeled as an approximation from Session creation to update
 - The completed-Session range is independent of the `Chat`, `Web`, and `Schedule` toggles, offering 24 hours, 7 days, 30 days, or all history with 24 hours as the default
@@ -127,6 +130,8 @@ With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless set
 
 ### macOS, Linux, and WSL2 setup and update core
 
+- Remote workers connect outbound to a dedicated WebSocket listener, separate from the internal Tool Server. A pre-registered worker authenticates with a file-backed token and advertises versioned capabilities. The MVP exposes system information, shell-free argv execution constrained by worker-local workspace and command allowlists, and read-only USB discovery. Device writes, serial control, automatic placement, and public-network transport are excluded until they have per-device approvals and TLS
+- Remote worker lifecycle uses launchd on macOS and a systemd user service on Linux/WSL2. Pairing and private configuration persistence are shared; restart preserves credentials. Linux checks the user manager before consuming a pairing code.
 - `installer/layout.ts` separates application versions from workspace, state, and configuration. A future Windows adapter uses the same logical layout
 - `installer/manifest.ts` and `updater.ts` provide Ed25519 and SHA-256 verification, an update lock, staging, and atomic current switching. Initial service activation performs a health check and rolls back on failure
 - `installer/platform/darwin.ts` owns LaunchAgent behavior, keeping OS-specific lifecycle code outside the shared updater
@@ -281,9 +286,11 @@ Message received
 BackendResolver priority:
 
 1. channelOverrides set via `/backend set` (in-memory, persisted to CHANNEL_OVERRIDES in `.env`; Discord threads resolve through the parent channel ID)
-2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`)
+2. Defaults from `.env` (`AGENT_BACKEND`, `AGENT_MODEL`, `AGENT_EFFORT`)
 
-`backend-effort.ts` centralizes the effort levels supported by each backend. `/backend set` and `CHANNEL_OVERRIDES` loading validate the backend/effort pair and never save or apply unsupported values. Each runner translates a resolved effort into effective CLI arguments.
+`backend-effort.ts` centralizes the effort levels supported by each backend. When model discovery returns `supportedEfforts`, the UI and interactive save-time validation use the intersection of the backend capabilities and the selected model capabilities (or the discovered default model when no model is specified). Codex uses app-server metadata, GitHub Copilot uses the official SDK, OpenCode uses variant metadata from `models --verbose`, and Grok uses the CLI-generated model cache. Cursor and Antigravity detect entries whose model ID already encodes effort and do not display or send a conflicting second value. An explicit `supportedEfforts: []` means unsupported and does not fall back to backend defaults. Claude Code has no machine-readable model catalog, so it uses the CLI-wide range. `CHANNEL_OVERRIDES` loading rejects values unsupported at the backend level. Each runner translates a resolved effort into effective CLI arguments.
+
+A `scope:global` change persists backend, model, and effort as one setting in `.env` and `BackendResolver`, then swaps the default runner. A runner already executing a turn remains alive until that turn completes; only subsequent turns use the new setting. A channel override that explicitly selects a backend or model does not inherit the global effort unless that channel also specifies an effort.
 
 ### System Prompt (base-runner.ts)
 
@@ -295,6 +302,7 @@ Manages the system prompts that xangi injects into AI CLIs:
   - User-facing slash commands keep each platform's `/help` and command metadata as their source of truth
   - When the platform is unknown, no platform-specific rules are injected, preventing Discord and Slack instructions from being mixed
 - **Platform identification** — Each message is annotated with `[Platform: Discord]` or `[Platform: Slack]`. The AI uses the appropriate commands accordingly
+- **No duplicate fixed instructions** — CLIs with a native system-instruction channel use it. CLIs that require embedding instructions in a user prompt receive them only on the first turn of a provider session, not on resume. A stale-session retry that starts a new provider session restores the fixed instructions
 - **Turn-history display** — The shared event layer persists streamed commentary and tool calls chronologically for every backend. Discord keeps the compatibility setting `DISCORD_TOOL_HISTORY_MODE=button|inline|off`; the default `button` mode leaves completed messages clean and exposes history only to the clicking user through an ephemeral `History` response. Discord defers the interaction before loading history to meet its acknowledgement deadline and restores persisted history from the turn reference embedded in new buttons after a process restart. Discord and Slack share one formatter that folds consecutive commentary line breaks and renders one event per line. Slack uses the same `History` button; the `Close` button on its user-only ephemeral response deletes only that response. Web Chat adds a per-answer `History` disclosure restored through `/api/sessions/:id/turn-history` after reload. The previous `/tool-history` API and environment-variable names remain available for compatibility. `DISCORD_SHOW_TOOL_BUTTON=false` hides the Discord button. `inline` retains the legacy tool-only lines above the message, and `off` hides completed history. `DISCORD_SHOW_TOOL_USE=false` maps to `off` and `true` maps to `inline`. During a turn, xangi shows raw commands unless `DISCORD_SHOW_LIVE_TOOL_USE=false`. Completed history normalizes internal context tools into labels such as `workspace-RAG検索`; Bash/exec entries strip wrappers such as `/bin/bash -lc`. Live Bash/exec input is capped at 200 characters and can be configured with `XANGI_TOOL_DISPLAY_MAX`.
 - **Reply suggestions** — Discord, Slack, and Web Chat generate suggestions in a dedicated JSON block within the same AI response and remove that block before display. Discord and Slack expose one public `返信候補` button and reveal choices ephemerally to the requesting user. Web Chat uses a collapsed control below the response. Selecting a choice continues the same session. Discord's `/replysuggestions` command persists a global override in `settings.json`; every platform checks it immediately before processing a message. OFF skips suggestion prompt injection. Session titles and transcript views also remove history-prefetch and suggestion-generation metadata.
 
@@ -313,13 +321,16 @@ Each turn prepends one line containing the agent workspace and Git repository:
 
 AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to each AI CLI's auto-loading feature:
 
-| CLI         | Auto-loaded Files        | Injection Method                                                                                         |
-| ----------- | ------------------------ | -------------------------------------------------------------------------------------------------------- |
-| Claude Code | `CLAUDE.md`              | `--append-system-prompt` (one-time)                                                                      |
-| Codex CLI   | `AGENTS.md`              | Embedded via `<system-context>` tag                                                                      |
-| OpenCode    | `AGENTS.md`              | Loaded natively by the CLI; `.agents/skills` is delegated to OpenCode                                    |
-| Cursor CLI  | `AGENTS.md`              | Auto-loaded by CLI (no xangi-side injection)                                                             |
-| Local LLM   | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded) |
+| CLI         | Auto-loaded Files        | Injection Method                                                                                                                           |
+| ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code | `CLAUDE.md`              | `--append-system-prompt` (one-time)                                                                                                        |
+| Codex CLI   | `AGENTS.md`              | Loaded natively by the CLI; xangi's fixed instructions are embedded only in the first provider-session user prompt                         |
+| OpenCode    | `AGENTS.md`              | Loaded natively by the CLI; `.agents/skills` is delegated to OpenCode; fixed xangi instructions are embedded only in the first user prompt |
+| Cursor CLI  | `AGENTS.md`              | Loaded natively by the CLI; fixed xangi instructions are embedded only in the first user prompt                                            |
+| Grok CLI    | CLI-specific             | Fixed xangi instructions are appended to the system prompt with native `--rules`                                                           |
+| Copilot CLI | CLI-specific             | Fixed xangi instructions are embedded only in the first provider-session user prompt                                                       |
+| Antigravity | CLI-specific             | Fixed xangi instructions are embedded only in the first provider-session user prompt                                                       |
+| Local LLM   | `AGENTS.md`, `MEMORY.md` | Directly embedded in system prompt (`CLAUDE.md` is typically a symlink to `AGENTS.md`, so it's excluded)                                   |
 
 ### AI CLI Adapters
 
@@ -337,7 +348,7 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 
 `backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi tool models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
 
-`runtime-settings-command.ts` provides structured dispatch for chat-controlled runtime settings. Discord native commands, Slack `/backend`, and the AI-facing `xangi tool runtime_settings` share the same validation and persistence logic. It does not execute arbitrary slash-command strings; only `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots` are explicitly allowed.
+`runtime-settings-command.ts` provides structured dispatch for chat- and Web-controlled runtime settings. Discord native commands, Slack `/backend`, the AI-facing `xangi tool runtime_settings`, and the Web UI's `/api/runtime-settings` share the same validation and persistence logic. It does not execute arbitrary slash-command strings: both the shared dispatcher and Web API explicitly allow only `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
 
@@ -1029,6 +1040,8 @@ src/
 ├── line.ts             # LINE Bot integration (webhook + signature verification)
 ├── telegram.ts         # Telegram Bot integration (polling / webhook + monitoring rules)
 ├── web-chat.ts         # Web Chat UI (HTTP server)
+├── web-http.ts         # Shared Web HTTP boundary (Origin checks, body reads, Range file serving)
+├── web-file-security.ts # Realpath boundary checks for Web attachments and file serving
 ├── agent-runner.ts     # AI CLI interface
 ├── base-runner.ts      # System prompt generation
 ├── bubble-events-runner.ts # Wraps Runner execution with response lifecycle event emission
@@ -1086,7 +1099,7 @@ src/
 │   ├── xangi.ts        #   User-facing terminal CLI entry point
 │   ├── tool-command.ts #   Shared tool-server dispatcher
 │   └── xangi-cmd.ts    #   Backward-compatible entry point
-├── inter-instance-chat/ # Inter-instance chat (per-instance jsonl / auto-talk / history viewer)
+├── inter-instance-chat/ # Inter-instance chat (authenticated HTTP / session history)
 ├── local-llm/          # Local LLM adapter
 │   ├── runner.ts       #   Main runner (session management, tool execution loop)
 │   ├── llm-client.ts   #   LLM API client (Ollama native + OpenAI compatible)
@@ -1178,3 +1191,11 @@ For details (environment variable reference, Docker operation methods, etc.), se
 1. Implement the `AgentRunner` interface
 2. Add backend configuration to `config.ts`
 3. Add initialization logic to `index.ts`
+
+### Durable execution models
+
+`SessionEntry.modelExecution` holds the latest turn and `modelHistory` holds snapshots keyed by turn ID. Each snapshot records `backend`, `configuredModel`, the last observed `effectiveModel`, the set of `observedModels`, the run's `configuredEffort`, provider-confirmed `effectiveEffort`, their evidence sources, start/update timestamps, status, and provider session ID. Persistence happens at startup, on model or effort notifications, and on success or failure; final evidence is also attached to the transcript.
+
+Provider evidence for effective effort comes from backend-specific structured records. Codex uses the target turn's rollout, Grok reads main-session `chat_history.jsonl` records appended after the pre-run byte offset, and Antigravity uses the effort suffix of a model ID confirmed by its stream. Runs such as Copilot `auto` remain unknown when the provider does not report an effective value.
+
+`agent.model` remains the requested value used for resume compatibility, never overwritten with observations. Execution snapshots represent provider alias resolution and fallback. The UI leads with the last observed model and separately lists other models observed during the turn. Historical values never resolve against today's defaults. Legacy `agent.model` remains configuration-only evidence; missing evidence remains unknown. Recovered sessions with only `modelHistory` display their latest stored snapshot. Web exposes next-run configuration separately as `nextBackend`; Discord separates the parent settings channel from the thread context key used to retrieve execution evidence.

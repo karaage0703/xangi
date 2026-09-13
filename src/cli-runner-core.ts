@@ -15,6 +15,8 @@ import { buildCliEnv, clearManagedCliProcess, registerManagedCliProcess } from '
 import { appendJsonlChunk, flushJsonlBuffer } from './jsonl-buffer.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
+import { prependRuntimeContext } from './runtime-context.js';
+import { logPrompt, logResponse } from './transcript-logger.js';
 
 /**
  * JSONL ストリームをランナー固有のイベント解釈に変換するパーサ。
@@ -32,8 +34,8 @@ export interface CliStreamParser {
   handleEvent(json: unknown, phase: 'stream' | 'flush'): Error | false | undefined | void;
   /** JSON ではない行を扱う必要があるランナー向け（旧 CLI のプレーン出力など） */
   handleRawLine?(line: string, phase: 'stream' | 'flush'): void;
-  /** 正常終了時の結果テキストとセッション ID を返す */
-  finalize(): Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
+  /** 正常終了時の結果を返す。stderrはプロセス終了までの全文（利用は任意）。 */
+  finalize(stderr?: string): Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
   /** exit code != 0 のとき、エラーメッセージに添える詳細（CLI の error イベント本文など） */
   exitErrorDetail?(): string | undefined;
   /** exit code != 0 のエラーへ、ランナー固有の状態を引き継ぐ */
@@ -59,6 +61,37 @@ export interface CollectOutputOptions {
   encoding?: BufferEncoding;
   /** exit code に関わらず stderr 全文を呼び出し元へ渡す */
   onStderr?: (stderr: string) => void;
+}
+
+export function mergeStreamText(
+  text: string,
+  isDelta: boolean,
+  fullText: string
+): { fullText: string; emitText?: string } {
+  if (isDelta) {
+    if (text.startsWith(fullText)) {
+      const delta = text.slice(fullText.length);
+      return delta ? { fullText: text, emitText: delta } : { fullText };
+    }
+    return { fullText: `${fullText}${text}`, emitText: text };
+  }
+  if (text === fullText || fullText.endsWith(text)) return { fullText };
+  if (text.startsWith(fullText)) {
+    const delta = text.slice(fullText.length);
+    return delta ? { fullText: text, emitText: delta } : { fullText };
+  }
+  return { fullText: text };
+}
+
+export function extractNestedText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string') return record.text;
+  if (typeof record.content === 'string') return record.content;
+  return Array.isArray(record.content)
+    ? record.content.map(extractNestedText).filter(Boolean).join('')
+    : '';
 }
 
 /**
@@ -121,6 +154,32 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       ? ` (session: ${options.sessionId.slice(0, 8)}...)`
       : ' (new)';
     console.log(`[${this.logPrefix}] ${kind} in ${this.workdir || 'default dir'}${sessionInfo}`);
+  }
+
+  protected buildTaggedPrompt(
+    rawPrompt: string,
+    systemPrompt: string,
+    includeSystemPrompt = true
+  ): string {
+    const prompt = prependRuntimeContext(rawPrompt, this.workdir);
+    return includeSystemPrompt && systemPrompt
+      ? `<system-context>\n${systemPrompt}\n</system-context>\n\n${prompt}`
+      : prompt;
+  }
+
+  protected logPromptTranscript(prompt: string, options?: RunOptions): void {
+    if (options?.appSessionId && this.workdir)
+      logPrompt(this.workdir, options.appSessionId, prompt);
+  }
+
+  protected logResponseTranscript(result: RunResult, options?: RunOptions): void {
+    if (options?.appSessionId && this.workdir) {
+      logResponse(this.workdir, options.appSessionId, {
+        result: result.result,
+        sessionId: result.sessionId,
+        usage: result.usage,
+      });
+    }
   }
 
   /**
@@ -227,6 +286,36 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
    * ストリーミング実行: JSONL を逐次パースして CliStreamParser に流す。
    * エラー通知（callbacks.onError）はここで一元管理する。
    */
+  protected async executeStreamWithResumeRetry(
+    args: string[],
+    callbacks: StreamCallbacks,
+    options: RunOptions | undefined,
+    retry: {
+      isStaleError: (error: unknown) => boolean;
+      args: () => string[];
+      warning: (sessionId: string) => string;
+      onComplete?: (result: RunResult) => void;
+    }
+  ): Promise<RunResult> {
+    try {
+      return await this.executeStreamCore(args, callbacks, {
+        channelId: options?.channelId,
+        notifyOnError: false,
+        onComplete: retry.onComplete,
+      });
+    } catch (error) {
+      if (!options?.sessionId || !retry.isStaleError(error)) {
+        callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      console.warn(retry.warning(options.sessionId));
+      return this.executeStreamCore(retry.args(), callbacks, {
+        channelId: options.channelId,
+        onComplete: retry.onComplete,
+      });
+    }
+  }
+
   protected executeStreamCore(
     args: string[],
     callbacks: StreamCallbacks,
@@ -326,7 +415,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
         let finalized: Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
         try {
-          finalized = parser.finalize();
+          finalized = parser.finalize(stderr);
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           notifyError(err);

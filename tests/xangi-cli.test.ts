@@ -198,8 +198,10 @@ exit 0
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('xangi --version');
     expect(result.stdout).toContain('xangi install');
+    expect(result.stdout).toContain('xangi rescue');
     expect(result.stdout).toContain('xangi uninstall');
     expect(result.stdout).toContain('xangi update');
+    expect(result.stdout).toContain('xangi worker install --pair');
     expect(result.stdout).not.toContain('notion-sync');
     expect(result.stdout).toContain('--allow-downgrade');
     expect(result.stdout).toContain('--purge');
@@ -207,6 +209,21 @@ exit 0
     expect(result.stdout).toContain('setup --apply');
     expect(result.stdout).toContain('--workspace-mode');
     expect(result.stdout).not.toContain('--browser');
+  });
+
+  it('suggests AI rescue when service startup fails', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-rescue-guidance-'));
+    try {
+      const result = await runCli(['service', 'start', '--dir', xangiDir], {
+        PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+      });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain('ecosystem.config.cjs');
+      expect(result.stderr).toContain('xangi rescue');
+    } finally {
+      rmSync(xangiDir, { recursive: true, force: true });
+    }
   });
 
   it.each([['--help'], ['-h'], ['--managed', '--help']])(

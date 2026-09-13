@@ -1,6 +1,5 @@
 import type { ChatSseDataMap, ChatSseEvent, ParsedSsePackets, Platform, SsePacket } from './types';
 
-export const AUTOTALK_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 const READ_RETRY_DELAYS_MS = [200, 800];
 
 export class ApiError extends Error {
@@ -74,6 +73,23 @@ function waitForRetry(milliseconds: number, signal?: AbortSignal | null): Promis
 export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await request(url, init);
   return response.json() as Promise<T>;
+}
+
+export async function getJsonWithTimeout<T>(
+  url: string,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(new Error(timeoutMessage)), timeoutMs);
+  try {
+    return await getJson<T>(url, { signal: controller.signal });
+  } catch (cause) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw cause;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
 }
 
 export async function requestJson<T>(
@@ -157,18 +173,6 @@ export function stripMetadata(text: string): string {
     .replace(/^\[現在時刻: [^\]]*\]\n?/gm, '')
     .replace(/^\[チャンネルID: [^\]]*\]\n?/gm, '')
     .trim();
-}
-
-export function isAutoTalkInternalMessage(message: { role: string; content: unknown }): boolean {
-  return (
-    message.role === 'user' &&
-    typeof message.content === 'string' &&
-    message.content.startsWith(AUTOTALK_SENTINEL)
-  );
-}
-
-export function isVisibleTranscriptMessage(message: { role: string; content: unknown }): boolean {
-  return !isAutoTalkInternalMessage(message);
 }
 
 export function splitThreadId(threadId: string): { platform: string; contextKey: string } {

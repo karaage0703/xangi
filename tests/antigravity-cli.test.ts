@@ -307,7 +307,7 @@ describe('AntigravityRunner', () => {
 
     expect(command).toBe('agy');
     expect(args).toContain('--dangerously-skip-permissions');
-    expect(args[args.indexOf('--print-timeout') + 1]).toBe('1800s');
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('1770s');
     expect(args).toContain('-p');
     expect(args[args.indexOf('--output-format') + 1]).toBe('json');
   });
@@ -321,6 +321,16 @@ describe('AntigravityRunner', () => {
     expect(prompt).toContain('not workspace files');
   });
 
+  it('omits fixed xangi instructions when resuming a provider session', async () => {
+    const runner = new AntigravityRunner({});
+    const { args } = await getSpawnArgs(runner, 'run', { sessionId: 'conv-existing' });
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('hello');
+    expect(prompt).not.toContain('ArtifactMetadata');
+    expect(prompt).not.toContain('<system-context>');
+  });
+
   it('allows overriding the Antigravity print timeout', async () => {
     process.env.ANTIGRAVITY_PRINT_TIMEOUT = '30s';
     const runner = new AntigravityRunner({});
@@ -329,11 +339,15 @@ describe('AntigravityRunner', () => {
     expect(args[args.indexOf('--print-timeout') + 1]).toBe('30s');
   });
 
-  it('matches the Agy print timeout to the runner timeout by default', async () => {
-    const runner = new AntigravityRunner({ timeoutMs: 90_000 });
+  it.each([
+    [90_000, '81s'],
+    [1_000, '0.9s'],
+    [500, '0.45s'],
+  ])('reserves startup and shutdown time for a %sms budget', async (timeoutMs, expected) => {
+    const runner = new AntigravityRunner({ timeoutMs: timeoutMs as number });
     const { args } = await getSpawnArgs(runner, 'run');
 
-    expect(args[args.indexOf('--print-timeout') + 1]).toBe('90s');
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe(expected);
   });
 
   it('includes model, cwd, add-dir, and conversation args', async () => {
@@ -353,6 +367,13 @@ describe('AntigravityRunner', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('high');
   });
 
+  it('does not duplicate an effort already encoded in the model ID', async () => {
+    const runner = new AntigravityRunner({ model: 'gemini-3.8-flash-high' });
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'high' });
+
+    expect(args).not.toContain('--effort');
+  });
+
   it('passes account hiding env by default', async () => {
     const runner = new AntigravityRunner({});
     const { env } = await getSpawnArgs(runner, 'run');
@@ -369,6 +390,51 @@ describe('AntigravityRunner', () => {
     mockProcess.emit('close', 0);
 
     await expect(promise).resolves.toEqual({ result: 'json answer', sessionId: 'conv-1' });
+  });
+
+  it('preserves native model evidence through non-stream completion', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+    const mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'SUCCESS',
+          response: 'ok',
+          conversation_id: 'conv-model',
+          model: 'native-model',
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({
+      model: 'native-model',
+      models: ['native-model'],
+    });
+  });
+
+  it('reports effort encoded by the provider-confirmed model', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+    const mockProcess = await waitForProcess();
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          status: 'SUCCESS',
+          response: 'ok',
+          conversation_id: 'conv-effort',
+          model: 'gemini-3.8-flash-low',
+        })
+      )
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).resolves.toMatchObject({
+      model: 'gemini-3.8-flash-low',
+      effort: 'low',
+    });
   });
 
   it('replaces a supplied session id with the JSON conversation id', async () => {
@@ -831,6 +897,293 @@ describe('AntigravityRunner', () => {
       ['チェック\n', '水田チェック\n'],
     ]);
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['run', ''],
+    ['run', 'Partial answer\n'],
+    ['stream', ''],
+    ['stream', 'Partial answer\n'],
+  ])('preserves timed out output in %s (%s)', async (mode, response) => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const onError = vi.fn();
+    const onComplete = vi.fn();
+    const promise =
+      mode === 'run'
+        ? runner.run('long task')
+        : runner.runStream('long task', { onText, onError, onComplete });
+    const proc = await waitForProcess();
+    if (mode === 'stream' && response) {
+      proc.stdout.emit(
+        'data',
+        Buffer.from(
+          JSON.stringify({
+            event: 'step_update',
+            step_update: { step_type: 'agent_response', text_delta: response },
+          }) + '\n'
+        )
+      );
+    }
+    const result = {
+      status: 'SUCCESS',
+      response,
+      conversation_id: 'partial-conversation',
+      model: 'gemini-3.5-pro',
+    };
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+    );
+    // Different pipes may deliver the warning after the final stdout event, in split chunks.
+    proc.stderr.emit('data', Buffer.from('[agy] print timeout after 2s with turn in progress; '));
+    proc.stderr.emit('data', Buffer.from('returning partial output\n'));
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(answer.sessionId).toBe('partial-conversation');
+    expect(answer.model).toBe('gemini-3.5-pro');
+    expect(answer.models).toEqual(['gemini-3.5-pro']);
+    expect(answer.result.startsWith(response)).toBe(true);
+    expect(answer.result).toContain('時間上限に達したため、この回答は未完了です。');
+    expect(await getProcesses()).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+    if (mode === 'stream') {
+      expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
+      expect(onComplete).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('retains streamed partial text when the final timeout response is empty', async () => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const promise = runner.runStream('task', { onText });
+    const proc = await waitForProcess();
+    proc.stderr.emit(
+      'data',
+      Buffer.from('[agy] print timeout after 2s with turn in progress; returning partial output\n')
+    );
+    for (const event of [
+      {
+        event: 'step_update',
+        step_update: { step_type: 'agent_response', text_delta: '途中の回答' },
+      },
+      {
+        event: 'result',
+        result: { status: 'SUCCESS', response: '', conversation_id: 'partial-id' },
+      },
+    ])
+      proc.stdout.emit('data', Buffer.from(JSON.stringify(event) + '\n'));
+    proc.emit('close', 0);
+    const result = await promise;
+    expect(result.sessionId).toBe('partial-id');
+    expect(result.result.startsWith('途中の回答')).toBe(true);
+    expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(result.result);
+  });
+
+  it.each(['', 'Final answer'])(
+    'preserves text with concurrent denial and timeout (final=%s)',
+    async (response) => {
+      const runner = new AntigravityRunner({});
+      const onText = vi.fn();
+      const onComplete = vi.fn();
+      const promise = runner.runStream('task', { onText, onComplete });
+      const proc = await waitForProcess();
+      const partial = response || '途中の回答です';
+      for (const event of [
+        { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: partial } },
+        {
+          event: 'result',
+          result: {
+            status: 'SUCCESS',
+            response,
+            conversation_id: 'denied-timeout',
+            denied_actions: [{ action: 'url', display_name: 'ReadUrlContent' }],
+          },
+        },
+      ])
+        proc.stdout.emit('data', Buffer.from(JSON.stringify(event) + '\n'));
+      proc.stderr.emit(
+        'data',
+        Buffer.from(
+          '[agy] print timeout after 2s with turn in progress; returning partial output\n'
+        )
+      );
+      proc.emit('close', 0);
+      const result = await promise;
+      expect(result.sessionId).toBe('denied-timeout');
+      expect(result.result.startsWith(partial)).toBe(true);
+      expect(result.result.match(/ReadUrlContent/g)).toHaveLength(1);
+      expect(result.result.match(/時間上限に達したため/g)).toHaveLength(1);
+      expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(result.result);
+      expect(onComplete).toHaveBeenCalledWith(result);
+      expect(await getProcesses()).toHaveLength(1);
+    }
+  );
+
+  it('does not accept a missing result event even when timeout stderr is present', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.runStream('task', {});
+    const rejected = expect(promise).rejects.toThrow('without a result event');
+    const proc = await waitForProcess();
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'init', init: {}, conversation_id: 'conv' }) + '\n')
+    );
+    proc.stderr.emit(
+      'data',
+      Buffer.from('[agy] print timeout after 2s with turn in progress; returning partial output\n')
+    );
+    proc.emit('close', 0);
+    await rejected;
+  });
+
+  it.each(['run', 'stream'])('keeps nonzero timeout exits as errors in %s', async (mode) => {
+    const runner = new AntigravityRunner({});
+    const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+    const rejected = expect(promise).rejects.toThrow();
+    const proc = await waitForProcess();
+    const result = { status: 'SUCCESS', response: 'Partial', conversation_id: 'conv' };
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+    );
+    proc.stderr.emit(
+      'data',
+      Buffer.from('[agy] print timeout after 2s with turn in progress; returning partial output\n')
+    );
+    proc.emit('close', 1);
+    await rejected;
+    expect(await getProcesses()).toHaveLength(1);
+  });
+
+  it.each(['run', 'stream'])(
+    'does not treat unrelated stderr as a partial timeout in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+      const rejected = expect(promise).rejects.toThrow('without a response');
+      const proc = await waitForProcess();
+      const result = { status: 'SUCCESS', response: '' };
+      proc.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+      );
+      proc.stderr.emit('data', Buffer.from('A tool mentioned timeout and partial output\n'));
+      proc.emit('close', 0);
+      await rejected;
+    }
+  );
+
+  it.each(['run', 'stream'])('reports URL access denial without auto retry in %s', async (mode) => {
+    const runner = new AntigravityRunner({});
+    const promise = mode === 'run' ? runner.run('read URL') : runner.runStream('read URL', {});
+    const proc = await waitForProcess();
+    const result = {
+      status: 'SUCCESS',
+      response: '',
+      conversation_id: 'url-conv',
+      denied_actions: [{ action: 'url', display_name: 'ReadUrlContent' }],
+    };
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+    );
+    proc.emit('close', 0);
+    expect((await promise).result).toContain(
+      '権限がないため実行されなかった操作があります: ReadUrlContent'
+    );
+    expect(await getProcesses()).toHaveLength(1);
+  });
+
+  it.each(['run', 'stream'])('reports 1.1.27 denied actions without retry in %s', async (mode) => {
+    const runner = new AntigravityRunner({});
+    const onError = vi.fn();
+    const onText = vi.fn();
+    const promise =
+      mode === 'run'
+        ? runner.run('write file')
+        : runner.runStream('write file', { onError, onText });
+    const proc = await waitForProcess();
+    const result = {
+      status: 'SUCCESS',
+      response: '',
+      conversation_id: 'denied-conversation',
+      denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+    };
+    proc.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(answer).toEqual({
+      result: '権限がないため実行されなかった操作があります: RunCommand',
+      sessionId: 'denied-conversation',
+    });
+    expect(await getProcesses()).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+    if (mode === 'stream') expect(onText).toHaveBeenCalledWith(answer.result, answer.result);
+  });
+
+  it('appends a denial notice after streamed text without replaying the answer', async () => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const promise = runner.runStream('write file', { onText });
+    const proc = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: { step_type: 'agent_response', text_delta: 'Partial answer\n' },
+      },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'Partial answer\n',
+          denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+        },
+      },
+    ];
+    proc.stdout.emit(
+      'data',
+      Buffer.from(events.map((value) => JSON.stringify(value)).join('\n') + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
+    expect(answer.result.match(/Partial answer/g)).toHaveLength(1);
+    expect(answer.result).toContain('RunCommand');
+  });
+
+  it('keeps streamed text when an empty final response reports denied actions', async () => {
+    const runner = new AntigravityRunner({});
+    const onText = vi.fn();
+    const promise = runner.runStream('write file', { onText });
+    const proc = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: { step_type: 'agent_response', text_delta: 'Partial answer\n' },
+      },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: '',
+          denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+        },
+      },
+    ];
+    proc.stdout.emit(
+      'data',
+      Buffer.from(events.map((value) => JSON.stringify(value)).join('\n') + '\n')
+    );
+    proc.emit('close', 0);
+    const answer = await promise;
+    expect(onText.mock.calls.map((call) => call[0]).join('')).toBe(answer.result);
+    expect(answer.result).toBe(
+      'Partial answer\n\n\n権限がないため実行されなかった操作があります: RunCommand'
+    );
   });
 
   it('keeps a tool error non-fatal when Agy later returns an answer', async () => {

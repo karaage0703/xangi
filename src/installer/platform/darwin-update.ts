@@ -1,7 +1,14 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { UpdateSchedulerAdapter, UpdateSchedulerStatus } from './update-scheduler.js';
+import {
+  defaultCommandRunner as defaultCommands,
+  launchctlDomain,
+  validatedInterval,
+  writeAtomic,
+  xml,
+  type CommandRunner,
+} from './common.js';
 
 export interface DarwinUpdateSchedulerOptions {
   label: string;
@@ -13,26 +20,7 @@ export interface DarwinUpdateSchedulerOptions {
   intervalSeconds?: number;
 }
 
-export interface DarwinUpdateCommandRunner {
-  run(command: string, args: string[], allowFailure?: boolean): string;
-  status(command: string, args: string[]): { status: number | null; output: string };
-}
-
-function xml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-}
-
-function validatedInterval(value = 21_600): number {
-  if (!Number.isSafeInteger(value) || value < 300 || value > 2_592_000) {
-    throw new Error('Update interval must be an integer between 300 and 2592000 seconds');
-  }
-  return value;
-}
+export type DarwinUpdateCommandRunner = CommandRunner;
 
 export function renderUpdateLaunchAgentPlist(options: DarwinUpdateSchedulerOptions): string {
   const interval = validatedInterval(options.intervalSeconds);
@@ -64,32 +52,6 @@ export function renderUpdateLaunchAgentPlist(options: DarwinUpdateSchedulerOptio
   ].join('\n');
 }
 
-function launchctlDomain(): string {
-  const uid = process.getuid?.();
-  if (uid === undefined) throw new Error('LaunchAgent requires a numeric user id');
-  return `gui/${uid}`;
-}
-
-function run(command: string, args: string[], allowFailure = false): string {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
-  const output = String(result.stdout ?? '') + String(result.stderr ?? '');
-  if (!allowFailure && (result.status ?? 1) !== 0) {
-    throw new Error(output.trim() || `${command} ${args.join(' ')} failed`);
-  }
-  return output.trim();
-}
-
-const defaultCommands: DarwinUpdateCommandRunner = {
-  run,
-  status(command, args) {
-    const result = spawnSync(command, args, { encoding: 'utf8' });
-    return {
-      status: result.status,
-      output: (String(result.stdout ?? '') + String(result.stderr ?? '')).trim(),
-    };
-  },
-};
-
 export function createDarwinUpdateScheduler(
   options: DarwinUpdateSchedulerOptions,
   commands: DarwinUpdateCommandRunner = defaultCommands
@@ -100,15 +62,11 @@ export function createDarwinUpdateScheduler(
       mkdirSync(dirname(options.plistPath), { recursive: true });
       mkdirSync(dirname(options.stdoutPath), { recursive: true });
       mkdirSync(dirname(options.stderrPath), { recursive: true });
-      const temporary = `${options.plistPath}.tmp-${process.pid}`;
       try {
-        writeFileSync(temporary, renderUpdateLaunchAgentPlist(options), { mode: 0o644 });
-        chmodSync(temporary, 0o644);
-        renameSync(temporary, options.plistPath);
+        writeAtomic(options.plistPath, renderUpdateLaunchAgentPlist(options));
         commands.run('launchctl', ['bootout', domain, options.plistPath], true);
         commands.run('launchctl', ['bootstrap', domain, options.plistPath]);
       } catch (error) {
-        rmSync(temporary, { force: true });
         commands.run('launchctl', ['bootout', domain, options.plistPath], true);
         rmSync(options.plistPath, { force: true });
         throw error;

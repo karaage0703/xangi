@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebClient } from '@slack/web-api';
 import type { AgentRunner } from '../src/agent-runner.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
-import type { Config } from '../src/config.js';
+import type { AgentBackend, Config, EffortLevel } from '../src/config.js';
 import {
   clearSessions,
   createWebSession,
@@ -396,13 +396,21 @@ function processMessageWithoutMinimumDisplayDelay(
 
 function createBackendResolverStub(defaultBackend = 'claude-code') {
   const overrides = new Map<string, ChannelOverride>();
+  let currentDefault = {
+    backend: defaultBackend as AgentBackend,
+    model: undefined as string | undefined,
+    effort: undefined as EffortLevel | undefined,
+  };
   const resolver = {
     resolve: vi.fn((channelId: string) => ({
       backend: overrides.get(channelId)?.backend ?? defaultBackend,
       model: overrides.get(channelId)?.model,
       effort: overrides.get(channelId)?.effort,
     })),
-    getDefault: vi.fn(() => ({ backend: defaultBackend })),
+    getDefault: vi.fn(() => currentDefault),
+    setDefault: vi.fn((backend: AgentBackend, model?: string, effort?: EffortLevel) => {
+      currentDefault = { backend, model, effort };
+    }),
     getChannelOverride: vi.fn((channelId: string) => overrides.get(channelId)),
     setChannelOverride: vi.fn((channelId: string, override: ChannelOverride) => {
       overrides.set(channelId, override);
@@ -462,6 +470,12 @@ describe('Slack /backend command', () => {
       channelId: AUTO_REPLY_CHANNEL,
       resolver,
       agentRunner,
+      modelDiscovery: vi.fn().mockResolvedValue({
+        backend: 'cursor',
+        source: 'test source',
+        status: 'available',
+        models: [{ id: 'cursor-model', supportedEfforts: ['low', 'medium', 'high'] }],
+      }),
     });
 
     expect(resolver.setChannelOverride).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL, {
@@ -487,6 +501,30 @@ describe('Slack /backend command', () => {
 
     expect(resolver.deleteChannelOverride).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL);
     expect(switchBackend).toHaveBeenCalledWith(AUTO_REPLY_CHANNEL);
+  });
+
+  it('parses global scope and switches the process-wide default runner', async () => {
+    const { resolver } = createBackendResolverStub();
+    const switchDefaultBackend = vi.fn();
+    const switchBackend = vi.fn();
+
+    const result = await executeSlackBackendCommand({
+      text: 'set codex --model gpt-new --effort medium --scope global',
+      channelId: AUTO_REPLY_CHANNEL,
+      resolver,
+      agentRunner: { switchDefaultBackend, switchBackend } as unknown as AgentRunner,
+      modelDiscovery: vi.fn().mockResolvedValue({
+        backend: 'codex',
+        source: 'test source',
+        status: 'available',
+        models: [{ id: 'gpt-new', supportedEfforts: ['low', 'medium', 'high'] }],
+      }),
+    });
+
+    expect(resolver.setDefault).toHaveBeenCalledWith('codex', 'gpt-new', 'medium');
+    expect(switchDefaultBackend).toHaveBeenCalledOnce();
+    expect(switchBackend).not.toHaveBeenCalled();
+    expect(result).toContain('全体の既定');
   });
 
   it('rejects a backend outside ALLOWED_BACKENDS without changing state', async () => {
@@ -1090,6 +1128,66 @@ describe('processMessage', () => {
       )
     ).toBe(true);
     expect(lastUpdate.text).not.toContain('返信候補');
+  });
+
+  it('generates an AI title for the Slack session and records the completed turn', async () => {
+    const client = {
+      chat: {
+        postMessage: vi.fn().mockResolvedValue({ ts: '1783402634.549099' }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const run = vi.fn().mockResolvedValue({
+      result: 'Slackセッションの短いタイトル',
+      sessionId: 'provider-title',
+    });
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onBackendReady?.();
+      callbacks.onText?.('ok', 'ok');
+      callbacks.onComplete?.({ result: 'ok', sessionId: 'provider-main' });
+      return { result: 'ok', sessionId: 'provider-main' };
+    });
+    const agentRunner = {
+      run,
+      runStream,
+      destroy: vi.fn(),
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      slack: { streaming: true, showThinking: true, replySuggestions: false },
+      sessionTitle: { mode: 'ai' },
+    } as Config;
+    const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+
+    await processMessageWithoutMinimumDisplayDelay(
+      AUTO_REPLY_CHANNEL,
+      runKey,
+      THREAD_TS,
+      'Slackの長い依頼を短いタイトルにしてください',
+      '1783402632.322829',
+      client,
+      agentRunner,
+      config
+    );
+
+    const appSessionId = getActiveSessionId(runKey);
+    expect(appSessionId).toBeDefined();
+    await vi.waitFor(() =>
+      expect(getSessionEntry(appSessionId!)?.title).toBe('Slackセッションの短いタイトル')
+    );
+    expect(getSessionEntry(appSessionId!)?.messageCount).toBe(1);
+    expect(run).toHaveBeenCalledWith(
+      expect.stringContaining('Slackの長い依頼を短いタイトルにしてください'),
+      expect.objectContaining({
+        channelId: `session-title:${appSessionId}`,
+        settingsChannelId: AUTO_REPLY_CHANNEL,
+        platform: 'slack',
+        internalTask: true,
+      })
+    );
   });
 
   it('uses the same byte limit for completed Block Kit text and message splitting', async () => {

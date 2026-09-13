@@ -124,11 +124,13 @@ describe('usage monitor parsers', () => {
             {
               label: '5時間',
               usedPercent: 5,
+              windowDurationMins: 300,
               resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
             },
             {
               label: '週次',
               usedPercent: 9.64064,
+              windowDurationMins: 10_080,
               resetsAt: Date.parse('2026-09-01T00:00:00.000Z') / 1000,
             },
           ],
@@ -141,16 +143,96 @@ describe('usage monitor parsers', () => {
             {
               label: '5時間',
               usedPercent: 0,
+              windowDurationMins: 300,
               resetsAt: Date.parse('2026-08-31T08:00:06.000Z') / 1000,
             },
             {
               label: '週次',
               usedPercent: 0,
+              windowDurationMins: 10_080,
               resetsAt: Date.parse('2026-09-02T00:00:00.000Z') / 1000,
             },
           ],
         },
       ],
+    });
+  });
+
+  it('maps window durations for known Antigravity quota buckets', () => {
+    const { groups } = parseAntigravityStatus({
+      quota: {
+        'gemini-5h': { remaining_fraction: 1 },
+        'gemini-weekly': { remaining_fraction: 1 },
+        '3p-5h': { remaining_fraction: 1 },
+        '3p-weekly': { remaining_fraction: 1 },
+      },
+    });
+
+    expect(
+      Object.fromEntries(
+        groups.flatMap((group) =>
+          group.windows.map((window) => [
+            `${group.id}:${window.label}`,
+            window.windowDurationMins,
+          ])
+        )
+      )
+    ).toEqual({
+      'gemini:5時間': 300,
+      'gemini:週次': 10_080,
+      'third-party:5時間': 300,
+      'third-party:週次': 10_080,
+    });
+  });
+
+  it('clears stale Antigravity usage after its reported reset time', () => {
+    const { groups } = parseAntigravityStatus(
+      {
+        quota: {
+          'gemini-weekly': {
+            remaining_fraction: 0.7779,
+            reset_time: '2026-09-11T05:15:22.000Z',
+          },
+        },
+      },
+      Date.parse('2026-09-11T06:29:00.000Z')
+    );
+
+    expect(groups[0]?.windows).toEqual([
+      {
+        label: '週次',
+        usedPercent: 0,
+        windowDurationMins: 10_080,
+        resetsAt: undefined,
+      },
+    ]);
+  });
+
+  it('infers window durations only from delimited Antigravity quota bucket tokens', () => {
+    const { groups } = parseAntigravityStatus({
+      quota: {
+        'future-weekly': { remaining_fraction: 1 },
+        'future-5h': { remaining_fraction: 1 },
+        'future-15h': { remaining_fraction: 1 },
+        weekend: { remaining_fraction: 1 },
+      },
+    });
+
+    expect(
+      Object.fromEntries(
+        groups.map((group) => [
+          group.id,
+          {
+            label: group.windows[0]?.label,
+            windowDurationMins: group.windows[0]?.windowDurationMins,
+          },
+        ])
+      )
+    ).toEqual({
+      'future-weekly': { label: '週次', windowDurationMins: 10_080 },
+      'future-5h': { label: 'future-5h', windowDurationMins: 300 },
+      'future-15h': { label: 'future-15h', windowDurationMins: undefined },
+      weekend: { label: 'weekend', windowDurationMins: undefined },
     });
   });
 
@@ -184,6 +266,56 @@ describe('usage monitor parsers', () => {
         },
       ],
     });
+  });
+
+  it('stores provider renames without replacing the xangi title, even without quota', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-title-'));
+    clearSessions();
+    initSessions(dataDir);
+    const appId = createSession('title-context', {
+      platform: 'web',
+      backend: 'antigravity',
+      title: 'My title',
+    });
+    setProviderSessionId(appId, 'title-conversation', 'antigravity');
+    for (const title of ['Provider title', 'Renamed title']) {
+      applyAntigravitySessionUsage(
+        parseAntigravityStatus({ conversation_id: 'title-conversation', conversation_title: title })
+      );
+      expect(getSessionEntry(appId)?.providerTitle).toBe(title);
+      expect(getSessionEntry(appId)?.title).toBe('My title');
+    }
+    applyAntigravitySessionUsage(parseAntigravityStatus({ conversation_id: 'title-conversation' }));
+    applyAntigravitySessionUsage(
+      parseAntigravityStatus({ conversation_id: 'other', conversation_title: 'Wrong title' })
+    );
+    expect(getSessionEntry(appId)?.providerTitle).toBe('Renamed title');
+    clearSessions();
+  });
+
+  it.each([
+    ['a'.repeat(1000), 'a'.repeat(50)],
+    ['a'.repeat(49) + '\uD83D\uDE00tail', 'a'.repeat(49)],
+    ['a'.repeat(48) + '\uD83D\uDE00tail', 'a'.repeat(48) + '\uD83D\uDE00'],
+  ])('bounds provider titles without splitting surrogate pairs (case %#)', async (title, expected) => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-provider-title-limit-'));
+    clearSessions();
+    initSessions(dataDir);
+    const appId = createSession('title-limit', {
+      platform: 'web',
+      backend: 'antigravity',
+      title: 'My title',
+    });
+    setProviderSessionId(appId, 'title-limit-conversation', 'antigravity');
+    applyAntigravitySessionUsage(
+      parseAntigravityStatus({
+        conversation_id: 'title-limit-conversation',
+        conversation_title: `  ${title}  `,
+      })
+    );
+    expect(getSessionEntry(appId)?.providerTitle).toBe(expected);
+    expect(getSessionEntry(appId)?.title).toBe('My title');
+    clearSessions();
   });
 
   it('persists Antigravity cost when a status update omits context', async () => {

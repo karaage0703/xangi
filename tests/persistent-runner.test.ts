@@ -349,6 +349,23 @@ describe('PersistentRunner', () => {
     expect(result2.result).toBe('response 2');
   });
 
+  it('records provider model per persistent request and excludes child usage', async () => {
+    const { getMockProcess } = await import('child_process');
+    const onModel = vi.fn();
+    const first = runner.runStream('first', { onModel });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const proc = getMockProcess();
+    const emit = (event: unknown) => proc.stdout.emit('data', JSON.stringify(event) + '\n');
+    emit({ type: 'assistant', message: { model: 'main-a', content: [] } });
+    emit({ type: 'assistant', parent_tool_use_id: 'child', message: { model: 'child', content: [] } });
+    emit({ type: 'result', result: 'ok', session_id: 'test-session-123' });
+    expect((await first).models).toEqual(['main-a']);
+    expect(onModel.mock.calls.flat()).toEqual(['main-a']);
+    const second = runner.runStream('second', { onModel });
+    emit({ type: 'result', result: 'ok', session_id: 'test-session-123' });
+    expect((await second).model).toBeUndefined();
+  });
+
   it('should preserve streamed text when result only has final text', async () => {
     // 問題2のテスト: ツール呼び出し前に出力されたテキストが result で消えないこと
     const { getMockProcess } = await import('child_process');

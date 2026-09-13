@@ -302,6 +302,9 @@ xangi setup
 # config / service healthの診断（秘密値は表示しない）
 xangi doctor
 
+# xangi本体とは独立したAIにエラー調査・修正・再確認を任せる
+xangi rescue
+
 # 実行中instanceのWeb UIアクセス先・bind・Chat/Workspace疎通をJSONで表示
 xangi tool web_status
 
@@ -330,7 +333,7 @@ AIコーディングツールだけをセットアップする場合は、xangi�
 bash <(curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/setup-ai-tools.sh) codex
 ```
 
-最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`から選びます。状態確認だけなら`check`を指定します。Codexに必要なNode.jsとnpmが無い場合は、nvmを導入したあとTerminalをいったん閉じ、新しいTerminalで`command -v nvm`、`nvm install --lts`の順に実行するガイドを表示します。
+最後の引数は`codex`、`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`から選びます。状態確認だけなら`check`を指定します。Codexは[OpenAI公式のstandalone installer](https://learn.chatgpt.com/docs/codex/cli#getting-started)から導入するため、Node.jsとnpmは不要です。GitHub Copilot CLIの導入に必要なNode.jsとnpmが無い場合は、nvmの導入手順を表示します。
 
 OpenCodeは`setup-ai-tools.sh opencode`で公式installerから導入し、OpenCode自身の認証画面を開きます。その後の`xangi setup`で、既存のOpenCode設定・認証を使うか、OpenAI互換ローカルLLMを使うかを選べます。ローカルLLMを選ぶとbase URL、model ID、context/output上限を確認し、xangiのconfig directoryへ専用`opencode.json`をmode 0600で保存します。通常のOpenCode設定は上書きせず、xangi実行時だけ`OPENCODE_CONFIG`と`AGENT_MODEL`を適用します。
 
@@ -350,7 +353,7 @@ managed版の`xangi uninstall`は定期update、OS service、xangi本体の順�
 
 開発checkoutの`./bin/xangi`は、`git pull`後もGit管理外の古い`dist/`を実行しないよう、`npm ci`で入れたlocal `tsx`から現在のsourceを起動します。配布bundleはsourceを含まないため、同梱`dist`とNode runtimeを使い、AIが参照するREADMEと利用者向けdocsも同梱します。
 
-Discordの許可ユーザーIDとDiscord、Slack、LINE、Telegramのtokenは`xangi settings`で入力します。一時GUIは`127.0.0.1`だけにbindし、one-time URLとHost検証を使い、保存済み値をbrowserへ返しません。保存後はserverを閉じ、OS別config directoryの`secrets.json`へmode 0600でatomic保存します。利用者が`read`や`printf`を組み立てたり、tokenをAIとの会話へ貼り付けたりする必要はありません。明示的な環境変数は互換性のため引き続き優先されます。
+Discordの許可ユーザーID、Discord / Slack / LINE / Telegramのtoken、任意のAIプロバイダーAPIキーは`xangi settings`で入力します。一時GUIは`127.0.0.1`だけにbindし、one-time URLとHost検証を使い、保存済み値をbrowserへ返しません。保存後はserverを閉じ、OS別config directoryの`secrets.json`へmode 0600でatomic保存します。利用者が`read`や`printf`を組み立てたり、tokenをAIとの会話へ貼り付けたりする必要はありません。明示的な環境変数は互換性のため引き続き優先されます。
 
 GitHub Releaseでは共通入口を`install.sh`として公開します。`packaging/bootstrap.sh`がOSとCPUを検出し、同じReleaseにある`xangi-installer-<darwin|linux>-<arm64|x64>.sh`を選びます。pipe起動時はtarget installerへ`XANGI_INSTALL_DEFER_SETUP=1`を渡し、署名検証済みCLIの配置だけを完了して、AI setupとservice起動を別の`xangi setup`へ分離します。target installerは`packaging/build-installer.mjs`で生成し、xangi本体のEd25519署名済みmanifest/artifactを照合します。検証前にarchiveを展開せず、公開鍵と`releases/latest`の更新確認用manifest URLをversion領域外へ保存し、検証済みbundle、`current`、launcher、`~/.local/bin/xangi`を確定します。setupやservice起動が失敗してもxangi本体はrollbackせず、`xangi setup`または`xangi install`で再開できます。artifact URLはrelease versionへ固定し、更新時はlatest manifestの署名を検証してから新しいartifactを取得します。AIコーディングツールはRelease assetの`setup-ai-tools.sh`でxangiとは独立して導入・認証できます。通常のTerminalから実行した`xangi setup`が対話型オンボーディングを担当し、完了後にserviceを起動します。初回install後はLaunchAgentまたはsystemd user timerが6時間ごとに`xangi update`を実行します。workspaceテンプレートは選択時にrepositoryの最新commitを取得して空の初回だけ適用し、利用者の編集を更新・merge・上書きしません。
 
@@ -595,11 +598,15 @@ docker build -t myapp . && \
 | `/backend set grok --effort max`                            | Grokをmax effortで実行                 |
 | `/backend set antigravity --effort high`                    | Antigravityをhigh effortで実行         |
 | `/backend reset`                                            | デフォルト（.env設定）に戻す           |
+| `/backend show scope:global`                                | 全体の既定backend・modelを表示         |
+| `/backend set codex model:gpt-5.6-sol effort:medium scope:global` | 全体の既定を次のturnから変更      |
+| `/backend reset scope:global`                               | 全体の明示model・effort指定を解除       |
 
 切り替え時は自動的に新しいセッションが開始されます（会話履歴は引き継がれません）。
 Discord と Slack の両方で利用できます。Slack では App 設定に `/backend` を登録し、
-Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>]|reset` にしてください。
+Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset` にしてください。
 設定はチャンネルID単位で `CHANNEL_OVERRIDES` へ永続化され、同じチャンネル内のスレッドにも再起動なしで次のメッセージから反映されます。
+`scope:global`（Slackでは`--scope global`）は`AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT`と稼働中の既定ランナーを同時更新します。effortは選択モデルが対応する値だけ保存できます。実行中turnは旧ランナーで完了し、次のturnから全体へ反映されます。明示的なチャンネルoverrideは維持されます。
 
 `/models [backend]` は Discord、Slack、Web、Telegram、LINE で共通です。引数を省略すると `ALLOWED_BACKENDS` に含まれる全バックエンド、指定するとそのバックエンドだけを表示します。閲覧専用で、現在のバックエンドやモデル設定は変更しません。
 
@@ -621,6 +628,7 @@ AIへの自然言語指示から設定を変える場合は、任意のスラッ
 ```bash
 xangi tool runtime_settings --name autoreply --action set --value on
 xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.4 --effort high
+xangi tool runtime_settings --name backend --action set --backend codex --model gpt-5.6-sol --effort medium --scope global
 xangi tool runtime_settings --name llmmode --action set --value chat
 ```
 
@@ -661,7 +669,9 @@ Web UIではProject画面の「Workspaceを追加」から、xangi processがア
 
 #### effort オプション
 
-Claude Code、Codex、OpenCode、Grok、GitHub Copilot CLIでは`low` / `medium` / `high` / `max`、Antigravityでは`low` / `medium` / `high`をチャンネルごとに設定可能です。xangiは各CLIの実引数へeffortを渡します。Cursorでは明示モデルとeffortを指定すると、CLI仕様のparameterized model（例: `claude-opus-4-8[effort=high]`）へ変換します。`auto[effort=...]`はCursor CLIで無効なため、Cursorのeffort設定ではモデルの明示指定が必須です。利用プランが対象モデルに対応しない場合はCursor CLIが実行時にエラーを返します。Local LLMの段階指定はCLI backendの`effort`とは別に`/llmeffort`で設定し、OpenAI互換APIのトップレベル`reasoning_effort`へ送ります。対応値は`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`で、接続先が値を実装している必要があります。`default`はチャンネル設定を削除し、`LOCAL_LLM_REASONING_EFFORT`またはprovider既定へ戻します。Antigravityで`max`を指定した場合は設定を保存せずエラーを返します。Claude Codeのpersistentモードでは切り替え時にセッションがリセットされます。
+effort候補はbackendのCLI対応範囲と、取得できたモデル固有情報の積集合です。Codexはapp-serverの`supportedReasoningEfforts`、GitHub Copilotは公式SDKの同名metadata、OpenCodeは`models --verbose`のvariant一覧、GrokはCLI生成のmodel cacheを使って候補を絞ります。Cursor / AntigravityでモデルID自体に`low` / `medium` / `high` / `xhigh` / `max`等が含まれる場合は、その値だけを候補にし、同じeffortをCLI引数へ重ねません。Cursorの`auto`にはeffortを設定できません。Claude Codeは機械可読なモデル一覧を提供しないため、現行CLI全体の`low` / `medium` / `high` / `xhigh` / `max`を表示します。
+
+モデル固有情報を取得できない場合はbackend範囲へfallbackします。Codexは`low` / `medium` / `high` / `xhigh` / `max` / `ultra`、OpenCode / Cursorは`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`、GrokとGitHub Copilotは`low` / `medium` / `high` / `xhigh` / `max`、Antigravityは`low` / `medium` / `high`です。OpenCodeのvariant名はモデル・provider・利用者設定ごとに異なるため、verbose metadataが取得できたモデルでは実在する標準effort名だけを表示します。Local LLMの段階指定はCLI backendの`effort`とは別に`/llmeffort`で設定し、OpenAI互換APIのトップレベル`reasoning_effort`へ送ります。対応値は`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`で、接続先が値を実装している必要があります。`default`はチャンネル設定を削除し、`LOCAL_LLM_REASONING_EFFORT`またはprovider既定へ戻します。Claude Codeのpersistentモードでは切り替え時にセッションがリセットされます。
 
 ## AIによる自律操作
 
@@ -1317,7 +1327,7 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `SESSION_TITLE_MODE` | `prefix`: 冒頭切り出し、`ai`: AIによる短いタイトル生成 | `ai`       |
 | `DISCORD_SESSION_TITLE_AI_ONCE` | `true`で、xangiが新規作成したDiscordスレッドの最初のturnだけAIタイトルを許可。`false`で従来の全セッション命名へ戻す | `true` |
 
-`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
+`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Web・SlackではWeb Chatのセッション名を更新します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
 
 デフォルトでは、AIによる更新をxangiが新規作成したスレッドの最初のturnだけに制限します。既存スレッド、手動で付け直したスレッド名、`/new`後の新しい内部セッションは自動変更しません。従来どおり各セッションでAI命名する場合は`DISCORD_SESSION_TITLE_AI_ONCE=false`を設定します。
 
@@ -1390,11 +1400,15 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `AGENT_BACKEND`                 | 組み込み、またはリンク済み拡張が宣言したバックエンドID                                                                  | `claude-code`                |
 | `AGENT_MODEL`                   | 使用するモデル                                                                                                          | -                            |
+| `AGENT_EFFORT`                  | 全体の既定effort（選択backend・modelが対応する値）                                                                       | -                            |
 | `WORKSPACE_PATH`                | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
 | `XANGI_WORKSPACE`               | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
 | `SKIP_PERMISSIONS`              | デフォルトで許可スキップ（非対話実行で待ち状態を防ぐため既定有効。明示的に `false` で無効化）                           | `true`                       |
 | `TIMEOUT_MS`                    | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `1800000`                    |
 | `XANGI_TOOL_SERVER_PORT`        | 内部ツールサーバーの固定ポート。未設定時は前回ポートを再利用（使用中なら自動割り当て）                                  | 前回ポート再利用             |
+| `XANGI_REMOTE_WORKERS_CONFIG`   | remote worker登録JSONの絶対path。portと同時設定した場合だけ有効                                                        | 未設定                       |
+| `XANGI_REMOTE_WORKER_HOST`      | worker専用WebSocketのbind先。Tailnetから接続する場合は`0.0.0.0`を明示                                                 | `127.0.0.1`                  |
+| `XANGI_REMOTE_WORKER_PORT`      | worker専用WebSocket port。内部tool serverとは分離                                                                      | 未設定                       |
 | `XANGI_CONFIG_STRICT`           | 環境変数の不正値（数値でない・範囲外・enum typo 等）を起動エラーに格上げ。デフォルトは警告 + デフォルト値フォールバック | `false`                      |
 | `TIMEOUT_MAX_MS`                | タイムアウト延長の絶対上限（ミリ秒）                                                                                    | `36000000`                   |
 | `TIMEOUT_EXTEND_ENABLED`        | 延長ボタン (`[延長]`) の有効/無効                                                                                       | `true`                       |
@@ -1432,6 +1446,14 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 ### WebチャットUI
 
+`/settings`では、共通`runtime_settings`が扱う7項目（backend、llmmode、autoreply、notify、threadmode、replysuggestions、respondtobots）と、日常運用で使う非秘密の起動設定を変更できる。チャンネル固有設定はプラットフォームを選び、接続先から取得したチャンネル名で対象を選択する。保存値には対応するチャンネルIDを使い、選択したチャンネルの保存済み設定と現在の実効値を各項目に表示する。各項目には「即時反映」「次のturnから」「再起動後」を表示する。
+
+起動設定APIは許可リストにある型・範囲検証済みの項目だけを既存`.env`へ保存し、現在のprocess環境は変更しない。接続token、許可ユーザー、AIプロバイダーのAPIキーは、Web UIの書き込み専用入力から既存の`SecretStore`へ保存できる。保存済みの秘密値はWebへ返さず、入力欄にも再表示しない。「設定済み／未設定」だけを返し、保存後は再起動すると反映される。明示的な環境変数がある場合はそちらが優先される。任意の環境変数名は受け付けない。
+
+「接続とAPIキー」にはCodex、OpenCode、Claude Code、Cursor Agent、Grok CLI、Antigravity、GitHub Copilot CLIを常に表示する。状態は「ログイン済み」「APIキー設定済み」「未認証」「判定不能」「未インストール」のいずれかで、CLIのversionも併記する。判定はモデル生成を行わない非対話コマンドまたは既存SDKのアカウント問い合わせを使用し、アカウント名、CLIの生出力、credentialはWebへ返さない。通信障害や未対応出力は「未認証」と断定せず「判定不能」にする。インストール済みCLIは確認ダイアログから公式の自己更新コマンドを実行できる。サーバーは任意コマンドを受け付けず、対応CLIごとに固定した実行ファイルと引数だけを`shell`なしで起動し、生のコマンド出力はWebへ返さない。更新後のCLIは次の実行から使用され、xangi自体は自動再起動しない。
+
+Slackのチャンネル名取得にはBot Token Scopeの`channels:read`（パブリック）と`groups:read`（プライベート）が必要になる。不足時は設定画面に追加すべきscopeと、Slack Appをワークスペースへ再インストールする手順を表示する。
+
 応答に添付された自己完結HTMLは、外部通信とform送信を止めたsandbox内でインラインプレビューし、元ファイルは別に保存できる。
 
 添付の転送中はPC・スマートフォンともファイル名、複数選択時の順番、進捗率を入力欄の直上に表示する。音声・動画はbyte Range配信に対応し、スマートフォンでもmetadata取得・seek・再生を行える。
@@ -1442,13 +1464,15 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `WEB_CHAT_PORT`    | WebチャットUIのポート                                                                                                                                                                    | `18888`    |
 | `WEB_CHAT_HOST`    | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`  |
 
-Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、自走、slash commandとskill GUIを提供する。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。自走ボタンは`INTER_INSTANCE_CHAT_ENABLED=true`のWebセッションだけに表示する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、slash commandとskill GUIを提供する。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。HTTP版の指名問い合わせは送信元ごとの通常Web Sessionへ履歴とprovider文脈を保存する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackセッションは読み取り専用で、Webセッションへの分岐だけを利用できる。
+
+指名問い合わせは既定で`INTER_INSTANCE_CHAT_PEERS`に登録したURLへBearer認証付きHTTPで送る。受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`へカンマ区切りで指定でき、未設定または`*`は正しい共有tokenを持つ全instanceを許可する。
 
 Web ProjectはDiscordのチャンネルに相当する論理的な会話グループで、Projectごとに追加プロンプト、ワークスペース、既定のbackend / model / effortを設定できる。新規会話は作成時のProjectワークスペースを固定し、後からProject設定を変えても既存会話の作業ディレクトリは変わらない。既存のWeb会話を別Projectへ移しても、ワークスペースは安全のため元のスナップショットを維持する。Project設定は次のturnから使われ、会話内の`/backend set`はProject設定より優先する。Project作成時にディレクトリ、Gitリポジトリ、`AGENTS.md`は生成しない。Project定義は`DATA_DIR/web-projects.json`、各会話との関連とワークスペースのスナップショットはセッション情報へ保存する。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/JSONL/YAML/TOML、C/C++・Rust・Go、Astro・Vue・Svelte・Sass系を含む主要コード形式、ログ・diff・patch・TSV・CFGを開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
-Chat / Files / Schedules / Monitor / Extensionsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
+Chat / Files / Schedules / Monitor / Extensions / Settingsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / Settings / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
 
 - hidden path、`.git`、`.xangi`、`.workspace_rag`、依存物、build/coverage成果物、symlinkは一覧・読込・保存のすべてで拒否する
 - ファイル作成・削除・rename・Git操作は行わず、既存の表示可能ファイルだけを保存する
@@ -1559,7 +1583,7 @@ curl -i "$XANGI_TOOL_SERVER/github-token"
 
 OpenCode backend は `opencode run --format json --agent build` を使用し、JSONイベントをxangiのストリーミング応答とtool履歴へ変換します。`SKIP_PERMISSIONS=true`（既定）では非対話実行用の`--auto`を渡します。信頼できないworkspaceでは`SKIP_PERMISSIONS=false`を指定してください。
 
-`AGENT_MODEL` はOpenCodeの`provider/model`形式で`--model`へ渡します。チャンネルのeffortは`--variant low|medium|high|max`へ、provider sessionは`--session`へ渡すため、xangiの同一セッションで会話をresumeできます。custom providerでは、使用するeffort名と同じmodel variantをOpenCode設定に定義してください。OpenCodeが終了コード0と同時にJSONの`error`イベントを返す場合も、xangiは成功扱いにせずエラーを通知します。
+`AGENT_MODEL` はOpenCodeの`provider/model`形式で`--model`へ渡します。チャンネルのeffortは選択モデルの`none|minimal|low|medium|high|xhigh|max`のうち実在する標準variantを`--variant`へ、provider sessionは`--session`へ渡すため、xangiの同一セッションで会話をresumeできます。custom providerでは、使用するeffort名と同じmodel variantをOpenCode設定に定義してください。OpenCodeが終了コード0と同時にJSONの`error`イベントを返す場合も、xangiは成功扱いにせずエラーを通知します。
 
 workspaceの`AGENTS.md`と`.agents/skills`の読み込みはOpenCode自身へ委譲します。custom providerやOpenAI互換endpointを使う場合は、設定ファイルの絶対pathを`OPENCODE_CONFIG`に指定できます。`xangi setup`でOpenAI互換ローカルLLMを選ぶと、この設定ファイルと`low` / `medium` / `high` / `max` variantを自動生成します。
 
@@ -1583,9 +1607,23 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 ### Antigravity CLI（`AGENT_BACKEND=antigravity` 時）
 
+既定のprint timeoutの余裕は起動・終了処理のためのもので、途中回答の取得を保証するものではありません。MCP初期化などが余裕時間を超える環境では、`ANTIGRAVITY_PRINT_TIMEOUT`をさらに短く調整してください。明示した値はそのまま使用します。
+
+Agy 1.1.28はprint timeout時に途中回答を返し、終了コード0・`SUCCESS`になる場合があります。xangiはstderrの `[agy] print timeout after ... with turn in progress; returning partial output` を終了時に確認し、本文と会話IDを保持して「時間上限に達したため未完了」と通知します。空本文でも通知を返します。非ゼロ終了、通常のエラー、最終resultの欠落は従来どおりエラーです。途中回答を受け取った場合は同じ会話で続きを依頼してください。自動再送はしません。
+
+1.1.28からURL取得も既定では承認が必要です。無人実行で拒否された場合は未実行操作の通知を確認し、Agyの対話モードの権限設定・承認画面で必要なURLへのアクセスを許可してから再依頼してください。すべての権限を省略する設定へ自動変更はしません。設定後は同じ実行ユーザー・作業ディレクトリで目的のURLだけを読む依頼を試し、拒否されないことを確認してください。
+
+1.1.28は一時的なAPIエラーを以前より長く再試行します。時間不足が続く場合はxangiの `TIMEOUT_MS` とAgyの `ANTIGRAVITY_PRINT_TIMEOUT` の両方を確認してください。後者が未指定なら、xangiの期限から30秒（短い処理では全体の10%）を差し引きます。xangi側の期限が先に到達するとプロセスが終了されるため、Agyの途中回答通知を必ず受け取りたい場合はAgy側を短めに設定し、終了処理の余裕を設けてください（例: `TIMEOUT_MS=1800000`、`ANTIGRAVITY_PRINT_TIMEOUT=1740s`）。余裕時間は環境に合わせて調整します。
+
+Agy 1.1.27以降のJSON / stream-json最終結果に`denied_actions`がある場合、回答本文に権限不足で未実行となった操作の通知を追加します。`SUCCESS`でも本文が空なら、この通知を回答として返します。通知のためにタスクを再実行したり、権限を自動変更したりはしません。旧版でこのフィールドがない場合は従来どおりです。
+
+statuslineの`conversation_title`は、`conversation_id`が一致する最新のAntigravityセッションへ補助情報として保存し、Monitor詳細の「AI側の会話名」に表示します。xangiのタイトルは上書きしません。反映は利用量取得時に行い、既存のstatusline設定をそのまま使用できます。
+
+1.1.27で追加された一時的なモデル相談`/model <name> <prompt>`は、対話CLI向けです。1.1.27の実機では`agy -p '/model <name> <prompt>' --output-format json`が`/model takes no arguments`（終了コード2）となるため、xangiのヘッドレス経路では未対応です。`--disable-slash-commands`の既定動作は維持します。
+
 Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
 
-非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトと同じ値（通常 `1800s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
+非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトから最大30秒（全体の10%を上限）を差し引いた値（通常 `1770s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
 
 ストリーミングでは `--output-format stream-json` を使用します。`step_update.text_delta` を逐次表示し、`init` / `result` の `conversation_id` を provider session として保持します。tool の `ACTIVE` は進捗として通知します。tool 単体の `ERROR` は agent が回復できるため即座に会話全体を失敗させず、最終 `result` を待ちます。`tool_info.output` と `subagent_info` は互換性のため受理しますが、大容量または機密情報を含み得るtool出力をチャットへそのまま転送せず、子agentのconversation IDで親sessionを上書きしません。
 
@@ -1727,3 +1765,21 @@ xangi は **デフォルトで AI の許可確認をスキップ**します（`S
 
 1. 該当チャンネルで `/new` コマンドを実行してセッションをリセットする
 2. それでも解消しない場合は、xangiを再起動する（`./bin/xangi service restart`）
+
+Remote workerはmacOSとLinux/WSL2で`xangi worker install --pair`・`restart`・`status`を利用できます。Linux/WSL2ではsystemd user managerが必要です。詳細は[remote workers](remote-workers.md)を参照してください。
+
+### 実行モデルの確認と履歴
+
+`runtime_settings backend --action show` と Web Chat の `/backend show` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。直近の実行には全バックエンド共通でeffort状態も表示します。providerが実効値を報告した場合はその値を、xangiが明示指定しただけの場合は未確認の設定値を、どちらも無い場合はバックエンド委任・実効値不明と表示します。設定名やエイリアスだけでは実際のモデルやeffortを確認したことにはなりません。
+
+全バックエンドの実行ごとに、当時の指定モデルとeffort、確認できたモデル名とeffort、確認元、開始・更新時刻、完了・失敗状態を保存します。プロバイダーから取得できた値は「確認済み」、設定しか取得できなければ「設定値・実行未確認」、取得できなければ「不明」です。同じ実行中に複数モデルが報告された場合もすべて表示します。
+
+Codexは対象turnのrollout、Grokはmain sessionの実行履歴、Antigravityはstreamで確認したeffort付きモデルIDから実効effortを取得します。Copilotの`auto`など、providerが実効値を返さない場合は推測せず不明と表示します。
+
+Web Chat の会話内と Monitor の詳細にある「モデル実行履歴」で、turn ごとの記録を確認できます。過去の会話に記録がなければ「記録なし」と表示し、現在のデフォルト設定で過去のモデルを補完しません。導入前の実行を自動で復元する機能ではありません。
+
+Codexの過去モデルに限り、元のrolloutが残っていれば `npx tsx scripts/recover-codex-model-history.ts --sessions /data/sessions.json --transcripts /data/logs/sessions --session APP_SESSION_ID` で復元候補をJSON表示できます（既定はdry-run、`--codex-home DIR`で保存先指定）。元のworkspace path、provider session、時刻が一致する証拠だけを採用します。適用する場合は対象xangiを停止してから `--apply-offline` を追加します。バックアップとatomic renameを使い `modelHistory` だけを更新し、会話の更新日時・タイトル・活動状態・トランスクリプトは変更しません。証拠のない実行は不明のままです。
+
+通常の実行表示はモデル名と短いローカル日時（例: `2026/09/09 00:24`）に絞り、確認済み・完了の文言とchannel IDは省きます。設定値しか分からない場合の未確認注記は残ります。
+
+Grokは実行したセッション・作業ディレクトリ・時間範囲に一致するネイティブのprimary turn記録からモデルを取得します。GitHub Copilotは応答メッセージのモデル情報も取得します。CursorのAuto実行で内部モデルが公開されない場合は、`Auto（自動選択・内部モデル不明）`と表示・保存します。過去の設定やキャッシュされたモデル候補を実モデルとして補完しません。

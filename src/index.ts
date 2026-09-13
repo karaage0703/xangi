@@ -5,6 +5,7 @@ import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
 import { startSlackBot } from './slack.js';
+import { listDiscordSettingsChannels, type SettingsChannelListers } from './settings-channels.js';
 import { initSettings, loadSettings } from './settings.js';
 import { Scheduler, type Platform } from './scheduler.js';
 import { initSessions } from './sessions.js';
@@ -17,7 +18,7 @@ import { startWebChat } from './web-chat.js';
 import { startLineBot } from './line.js';
 import { startTelegramBot } from './telegram.js';
 import { getEventsConfig } from './events-emitter.js';
-import { startInterInstanceChat, getInterChatConfig } from './inter-instance-chat/index.js';
+import { getInterChatConfig } from './inter-instance-chat/index.js';
 import { registerDiscordTimeoutUi } from './discord/ui.js';
 import {
   buildSlashCommands,
@@ -59,6 +60,7 @@ async function main() {
   const destinationLabelResolverRef: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   } = {};
+  const settingsChannelListers: SettingsChannelListers = {};
   const externalChatUrlResolvers: ExternalChatUrlResolvers = {};
   const platformStartupTasks: Promise<void>[] = [];
 
@@ -169,7 +171,8 @@ async function main() {
   // 意図せずHTTP portが開かないようにする。
   const webChatEnabled = process.env.WEB_CHAT_ENABLED === 'true';
   const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
-  if (webChatEnabled || eventsServerEnabled) {
+  const interChatCfg = getInterChatConfig();
+  if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled) {
     startWebChat({
       agentRunner,
       historyPrefetch: config.historyPrefetch,
@@ -180,6 +183,7 @@ async function main() {
       skillsRef,
       discordRemoteInputRef,
       destinationLabelResolverRef,
+      settingsChannelListers,
       externalChatUrlResolvers,
       workspaceRegistry,
       uiEnabled: webChatEnabled,
@@ -227,12 +231,6 @@ async function main() {
     );
   }
 
-  // インスタンス間チャット起動 (INTER_INSTANCE_CHAT_ENABLED=true のときのみ実体起動)
-  const interChatCfg = getInterChatConfig();
-  if (interChatCfg.enabled) {
-    startInterInstanceChat();
-  }
-
   // GitHub認証を初期化（秘密鍵をメモリに読み込む）
   const { initGitHubAuth } = await import('./github-auth.js');
   initGitHubAuth();
@@ -245,6 +243,7 @@ async function main() {
     eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler, { dataDir }),
     backendResolver: resolver,
     config,
+    agentRunner,
     scheduler,
   });
 
@@ -267,6 +266,7 @@ async function main() {
       platform === 'discord'
         ? resolveCachedDiscordDestinationLabel(client, destinationId)
         : undefined;
+    settingsChannelListers.discord = () => listDiscordSettingsChannels(client);
     externalChatUrlResolvers.discord = async ({ contextKey }) => {
       const channel = await client.channels.fetch(contextKey).catch(() => null);
       if (!channel) return undefined;
@@ -380,6 +380,7 @@ async function main() {
         },
         scheduler,
         externalChatUrlResolvers,
+        settingsChannelListers,
       }).then(() => {
         console.log('[xangi] Slack bot started');
       })

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
-import { BackendResolver } from '../src/backend-resolver.js';
+import { BackendResolver, type ResolvedBackend } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
 import {
@@ -28,6 +28,42 @@ function makeConfig(platform: Config['agent']['platform']): Config {
 }
 
 describe('DynamicRunnerManager platform routing', () => {
+  it('retires the previous default runner only after its active turn finishes', async () => {
+    const config = makeConfig('discord');
+    let resolved: ResolvedBackend = { backend: 'codex', model: 'old-model', effort: 'low' };
+    const resolver = {
+      resolve: vi.fn(() => resolved),
+      getDefault: vi.fn(() => resolved),
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver);
+    let finish!: (value: { result: string; sessionId: string }) => void;
+    const shutdown = vi.fn();
+    const oldRunner = {
+      run: vi.fn(
+        () =>
+          new Promise<{ result: string; sessionId: string }>((resolve) => {
+            finish = resolve;
+          })
+      ),
+      runStream: vi.fn(),
+      shutdown,
+    };
+    (manager as unknown as { defaultRunner: typeof oldRunner }).defaultRunner = oldRunner;
+
+    const activeTurn = manager.run('before');
+    await vi.waitFor(() => expect(oldRunner.run).toHaveBeenCalledOnce());
+    expect(oldRunner.run).toHaveBeenCalledWith('before', expect.objectContaining({ effort: 'low' }));
+    resolved = { backend: 'codex', model: 'new-model', effort: 'medium' };
+    manager.switchDefaultBackend();
+    expect(shutdown).not.toHaveBeenCalled();
+
+    finish({ result: 'ok', sessionId: 'old-session' });
+    await activeTurn;
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(manager.resolveForChannel()).toEqual(resolved);
+    manager.shutdown();
+  });
+
   it('records timing-safe CLI trajectory metadata without wrapping Local LLM', async () => {
     const workdir = mkdtempSync(join(tmpdir(), 'dynamic-runner-trajectory-'));
     const previous = process.env.XANGI_TOOL_TRAJECTORY_LOG;

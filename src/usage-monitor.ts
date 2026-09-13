@@ -7,6 +7,7 @@ import { getSafeEnv } from './safe-env.js';
 import {
   updateSessionContextUsageByProviderSession,
   updateSessionEstimatedCostByProviderSession,
+  updateSessionProviderTitle,
 } from './sessions.js';
 
 const TIMEOUT_MS = 5000;
@@ -43,6 +44,7 @@ export interface AccountUsageProvider {
 
 interface AntigravityStatusPayload {
   conversation_id?: string;
+  conversation_title?: string;
   plan_tier?: string;
   cost?: number;
   context_window?: {
@@ -139,6 +141,27 @@ function jsonLines(output: string): unknown[] {
       return [];
     }
   });
+}
+
+function codexAppServerInput(request: Record<string, unknown>): string {
+  return `${[
+    {
+      method: 'initialize',
+      id: 1,
+      params: {
+        clientInfo: {
+          name: 'xangi-usage-monitor',
+          title: 'xangi usage monitor',
+          version: '0.1.0',
+        },
+        capabilities: { experimentalApi: true },
+      },
+    },
+    { method: 'initialized', params: {} },
+    request,
+  ]
+    .map((value) => JSON.stringify(value))
+    .join('\n')}\n`;
 }
 
 export function parseCodexRateLimits(output: string): AccountUsageGroup[] {
@@ -286,39 +309,53 @@ export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsa
   return windows.length ? [{ id: 'copilot', label: 'GitHub Copilot', windows }] : [];
 }
 
-export function parseAntigravityStatus(payload: unknown): {
+export function parseAntigravityStatus(
+  payload: unknown,
+  now?: number
+): {
   groups: AccountUsageGroup[];
   conversationId?: string;
+  conversationTitle?: string;
   context?: { usedTokens: number; contextWindow: number };
   estimatedCost?: number;
 } {
   const status = payload as AntigravityStatusPayload;
   const knownQuotaBuckets: Record<
     string,
-    { groupId: string; groupLabel: string; windowLabel: string; order: number }
+    {
+      groupId: string;
+      groupLabel: string;
+      windowLabel: string;
+      windowDurationMins: number;
+      order: number;
+    }
   > = {
     'gemini-5h': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     'gemini-weekly': {
       groupId: 'gemini',
       groupLabel: 'Geminiモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
     '3p-5h': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '5時間',
+      windowDurationMins: 300,
       order: 0,
     },
     '3p-weekly': {
       groupId: 'third-party',
       groupLabel: 'サードパーティモデル',
       windowLabel: '週次',
+      windowDurationMins: 10_080,
       order: 1,
     },
   };
@@ -333,13 +370,21 @@ export function parseAntigravityStatus(payload: unknown): {
   for (const [id, quota] of Object.entries(status?.quota ?? {})) {
     if (typeof quota.remaining_fraction !== 'number') continue;
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
+    const expired = now !== undefined && Number.isFinite(resetMs) && resetMs <= now;
     const known = knownQuotaBuckets[id];
     const window = {
-      label: known?.windowLabel ?? (/week/i.test(id) ? '週次' : id),
-      usedPercent: Number(
-        Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)
-      ),
-      resetsAt: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+      label: known?.windowLabel ?? (/(?:^|-)weekly(?:-|$)/i.test(id) ? '週次' : id),
+      usedPercent: expired
+        ? 0
+        : Number(Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)),
+      windowDurationMins:
+        known?.windowDurationMins ??
+        (/(?:^|-)weekly(?:-|$)/i.test(id)
+          ? 10_080
+          : /(?:^|-)5h(?:-|$)/i.test(id)
+            ? 300
+            : undefined),
+      resetsAt: Number.isFinite(resetMs) && !expired ? resetMs / 1000 : undefined,
     };
     if (!known) {
       fallbackGroups.push({
@@ -385,6 +430,9 @@ export function parseAntigravityStatus(payload: unknown): {
   return {
     groups,
     conversationId: status?.conversation_id,
+    ...(typeof status?.conversation_title === 'string'
+      ? { conversationTitle: status.conversation_title }
+      : {}),
     ...(typeof status?.cost === 'number' && Number.isFinite(status.cost) && status.cost >= 0
       ? { estimatedCost: status.cost }
       : {}),
@@ -397,10 +445,12 @@ export function parseAntigravityStatus(payload: unknown): {
 
 export function applyAntigravitySessionUsage(parsed: {
   conversationId?: string;
+  conversationTitle?: string;
   context?: { usedTokens: number; contextWindow: number };
   estimatedCost?: number;
 }): { contextUpdated: boolean; costUpdated: boolean } {
   if (!parsed.conversationId) return { contextUpdated: false, costUpdated: false };
+  updateSessionProviderTitle('antigravity', parsed.conversationId, parsed.conversationTitle);
   return {
     contextUpdated: parsed.context
       ? updateSessionContextUsageByProviderSession('antigravity', parsed.conversationId, {
@@ -501,7 +551,7 @@ async function readAntigravityUsage(): Promise<AccountUsageProvider> {
   const dataDir =
     process.env.DATA_DIR || resolve(process.env.WORKSPACE_PATH || process.cwd(), '.xangi');
   const payload = JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'));
-  const parsed = parseAntigravityStatus(payload);
+  const parsed = parseAntigravityStatus(payload, Date.now());
   const groups = parsed.groups;
   applyAntigravitySessionUsage(parsed);
   if (!groups.length) throw new Error('Antigravity status payload has no quota');
@@ -538,25 +588,7 @@ export async function readAccountUsage(
   ]
 ): Promise<AccountUsageResponse> {
   if (cached && Date.now() - Date.parse(cached.updatedAt) < CACHE_MS) return cached;
-  const input =
-    [
-      {
-        method: 'initialize',
-        id: 1,
-        params: {
-          clientInfo: {
-            name: 'xangi-usage-monitor',
-            title: 'xangi usage monitor',
-            version: '0.1.0',
-          },
-          capabilities: { experimentalApi: true },
-        },
-      },
-      { method: 'initialized', params: {} },
-      { method: 'account/rateLimits/read', id: 3 },
-    ]
-      .map((value) => JSON.stringify(value))
-      .join('\n') + '\n';
+  const input = codexAppServerInput({ method: 'account/rateLimits/read', id: 3 });
   const codexReader = async (): Promise<AccountUsageProvider> => {
     const output = await runner(input, (value) =>
       jsonLines(value).some((item) => (item as { id?: number }).id === 3)
@@ -584,25 +616,11 @@ export async function readCodexContextUsage(
   threadId: string,
   runner: CommandRunner = runCodexAppServer
 ): Promise<{ usedTokens: number; contextWindow: number } | undefined> {
-  const input =
-    [
-      {
-        method: 'initialize',
-        id: 1,
-        params: {
-          clientInfo: {
-            name: 'xangi-usage-monitor',
-            title: 'xangi usage monitor',
-            version: '0.1.0',
-          },
-          capabilities: { experimentalApi: true },
-        },
-      },
-      { method: 'initialized', params: {} },
-      { method: 'thread/resume', id: 2, params: { threadId, excludeTurns: true } },
-    ]
-      .map((value) => JSON.stringify(value))
-      .join('\n') + '\n';
+  const input = codexAppServerInput({
+    method: 'thread/resume',
+    id: 2,
+    params: { threadId, excludeTurns: true },
+  });
   const output = await runner(input, (value) =>
     jsonLines(value).some((item) => (item as { id?: number }).id === 2)
   );

@@ -7,48 +7,17 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-
-interface Entry {
-  role?: string;
-  content?: unknown;
-  createdAt?: string;
-}
+import {
+  formatHistory,
+  getSessionsDirs,
+  readHistoryEntries,
+  sessionHistoryPath,
+} from './session-history.js';
 
 interface SlackHistoryFlags {
   channel?: string;
   count?: string;
   'max-chars'?: string;
-}
-
-function getSessionsDirs(): string[] {
-  const workdir = process.env.WORKSPACE_PATH || process.cwd();
-  const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
-  return [...new Set([join(dataDir, 'logs', 'sessions'), join(workdir, 'logs', 'sessions')])];
-}
-
-function fmtContent(content: unknown, maxChars: number): string {
-  let text: string;
-  if (typeof content === 'string') {
-    text = content;
-  } else if (Array.isArray(content)) {
-    text = content
-      .map((x) => {
-        if (typeof x === 'string') return x;
-        if (x && typeof x === 'object') {
-          const obj = x as { text?: string };
-          return obj.text ?? JSON.stringify(x);
-        }
-        return String(x);
-      })
-      .join(' ');
-  } else if (content && typeof content === 'object') {
-    const obj = content as { result?: string };
-    text = obj.result ?? JSON.stringify(content);
-  } else {
-    text = String(content ?? '');
-  }
-  text = text.replace(/\r?\n/g, ' ');
-  return text.length > maxChars ? text.slice(0, maxChars) + '…' : text;
 }
 
 /**
@@ -107,36 +76,12 @@ export function slackHistoryCmd(flags: Record<string, string>): string {
     return `(no slack session found for channel ${channel} in ${getSessionsDirs().join(' or ')})`;
   }
 
-  const path = getSessionsDirs()
-    .map((dir) => join(dir, `${session}.jsonl`))
-    .find(existsSync);
+  const path = sessionHistoryPath(session);
   if (!path) {
     return `(failed to read ${session}.jsonl)`;
   }
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch {
-    return `(failed to read ${session}.jsonl)`;
-  }
-
-  const msgs: Entry[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      msgs.push(JSON.parse(trimmed) as Entry);
-    } catch {
-      // skip malformed
-    }
-  }
-
-  const tail = msgs.slice(-count);
-  const lines = [`# slack channel: ${channel} (session: ${session})`];
-  for (const m of tail) {
-    const ts = m.createdAt ?? '';
-    const role = m.role ?? '?';
-    lines.push(`[${ts}] [${role}] ${fmtContent(m.content, maxChars)}`);
-  }
-  return lines.join('\n');
+  const entries = readHistoryEntries(path);
+  return entries
+    ? formatHistory(entries, `# slack channel: ${channel} (session: ${session})`, count, maxChars)
+    : `(failed to read ${session}.jsonl)`;
 }

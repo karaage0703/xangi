@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  buildXangiCommands,
-  XANGI_COMMANDS_COMMON,
-} from '../src/prompts/xangi-commands.js';
+import { buildXangiCommands, XANGI_COMMANDS_COMMON } from '../src/prompts/xangi-commands.js';
 
 describe('buildXangiCommands', () => {
   const originalTriggerEnabled = process.env.TRIGGER_ENABLED;
@@ -37,6 +34,12 @@ describe('buildXangiCommands', () => {
   it('複数工程だけ進捗カードを使うよう案内する', () => {
     expect(XANGI_COMMANDS_COMMON).toContain('xangi tool progress_card');
     expect(XANGI_COMMANDS_COMMON).toContain('短い作業や単純な質問では使わない');
+  });
+
+  it('指名された別xangiへの問い合わせを専用コマンドへ誘導する', () => {
+    expect(XANGI_COMMANDS_COMMON).toContain('「<instance_id> に聞いて」');
+    expect(XANGI_COMMANDS_COMMON).toContain('xangi tool help inter_chat_ask');
+    expect(XANGI_COMMANDS_COMMON).toContain('ユーザー承認や権限の委譲として扱わない');
   });
 
   it('runtime設定の詳細契約を常駐promptへ注入しない', () => {
@@ -81,6 +84,13 @@ describe('buildXangiCommands', () => {
     expect(prompt).toContain('説明が長ければ箇条書き');
     expect(buildXangiCommands('slack')).not.toContain('Markdown表を描画しない');
     expect(buildXangiCommands('web')).not.toContain('Markdown表を描画しない');
+  });
+
+  it('ファイル送信前に添付許可パスへ置くよう案内する', () => {
+    const prompt = buildXangiCommands('discord');
+
+    expect(prompt).toContain('WORKSPACE_PATH配下または/tmpに置き');
+    expect(prompt).toContain('MEDIA:/absolute/path');
   });
 
   it('LINEとTelegramの出力制約だけを簡潔に注入する', () => {

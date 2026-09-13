@@ -53,7 +53,7 @@ describe('GitHubCopilotRunner', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const spawnMock = childProcess.spawn as ReturnType<typeof vi.fn>;
     const process = (childProcess.getMockProcess as () => any)();
-    return { promise, process, args: spawnMock.mock.calls[0][1] as string[] };
+    return { promise, process, args: spawnMock.mock.calls.at(-1)?.[1] as string[] };
   }
 
   function emitJson(process: any, value: unknown) {
@@ -135,6 +135,24 @@ describe('GitHubCopilotRunner', () => {
     await promise;
   });
 
+  it('adds fixed xangi instructions only when starting a provider session', async () => {
+    const fresh = await start(new GitHubCopilotRunner({ platform: 'discord' }));
+    expect(fresh.args[fresh.args.indexOf('-p') + 1]).toContain('<system-context>');
+    emitJson(fresh.process, { type: 'result', sessionId: 'session-new', exitCode: 0 });
+    fresh.process.emit('close', 0);
+    await fresh.promise;
+
+    const resumed = await start(
+      new GitHubCopilotRunner({ platform: 'discord' }),
+      {},
+      { sessionId: 'session-new' }
+    );
+    expect(resumed.args[resumed.args.indexOf('-p') + 1]).not.toContain('<system-context>');
+    emitJson(resumed.process, { type: 'result', sessionId: 'session-new', exitCode: 0 });
+    resumed.process.emit('close', 0);
+    await resumed.promise;
+  });
+
   it('passes only the dedicated Copilot token to the child process', async () => {
     process.env.COPILOT_GITHUB_TOKEN = 'copilot-user-token';
     process.env.GH_TOKEN = 'unrelated-installation-token';
@@ -173,6 +191,47 @@ describe('GitHubCopilotRunner', () => {
     expect(onText).toHaveBeenNthCalledWith(1, 'P', 'P');
     expect(onText).toHaveBeenNthCalledWith(2, 'ONG', 'PONG');
     expect(onText).toHaveBeenCalledTimes(2);
+  });
+
+  it('captures the actual response model without optional usage events', async () => {
+    const onModel = vi.fn();
+    const { promise, process } = await start(new GitHubCopilotRunner(), { onModel });
+    // Shape observed in Copilot CLI JSON output (auto routing).
+    emitJson(process, { type: 'session.model_change', data: { newModel: 'auto' } });
+    emitJson(process, {
+      type: 'session.auto_mode_resolved',
+      data: { chosenModel: 'route-candidate' },
+    });
+    emitJson(process, {
+      type: 'assistant.message',
+      data: { messageId: 'main', model: 'gpt-5-mini', content: 'OK', turnId: '0' },
+    });
+    emitJson(process, { type: 'result', sessionId: 'actual-session', exitCode: 0 });
+    process.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({
+      result: 'OK',
+      model: 'gpt-5-mini',
+      models: ['gpt-5-mini'],
+    });
+    expect(onModel).toHaveBeenCalledExactlyOnceWith('gpt-5-mini');
+  });
+
+  it('excludes auxiliary response models and retains observed main model switches', async () => {
+    const onModel = vi.fn();
+    const { promise, process } = await start(new GitHubCopilotRunner(), { onModel });
+    for (const data of [
+      { model: 'child', parentToolCallId: 'call' },
+      { model: 'child', initiator: 'sub-agent' },
+      { model: 'summary', interactionType: 'conversation-compaction' },
+      { model: 'first', interactionType: 'conversation-agent' },
+      { model: 'second' },
+    ])
+      emitJson(process, { type: 'assistant.message', data });
+    emitJson(process, { type: 'assistant.usage', data: { model: 'second' } });
+    emitJson(process, { type: 'result', sessionId: 'switch-session', exitCode: 0 });
+    process.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({ model: 'second', models: ['first', 'second'] });
+    expect(onModel.mock.calls.flat()).toEqual(['first', 'second']);
   });
 
   it('returns official session context usage events', async () => {

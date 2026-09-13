@@ -8,7 +8,7 @@ import {
   LocalLlmRunner,
   loadMessagesFromTranscript,
 } from '../src/local-llm/runner.js';
-import type { TranscriptEntry } from '../src/transcript-logger.js';
+import { readSessionMessages, type TranscriptEntry } from '../src/transcript-logger.js';
 import { FRIENDLY_FALLBACK_MESSAGE } from '../src/local-llm/pseudo-toolcall.js';
 
 describe('isSessionRelatedError', () => {
@@ -285,7 +285,10 @@ describe('Local LLM agent step limit', () => {
             toolCalls: [{ id: `call-${calls}`, name: 'glob', arguments: { pattern: '*.none' } }],
           };
         }
-        return { content: 'completed: inspection; remaining: implementation', finishReason: 'stop' };
+        return {
+          content: 'completed: inspection; remaining: implementation',
+          finishReason: 'stop',
+        };
       },
     };
 
@@ -544,9 +547,8 @@ describe('local-llm runner: idempotent tool cache', () => {
     });
 
     it('handles missing idempotentResultCache (backward compat for restored sessions)', async () => {
-      const { cacheIdempotentResult, getCachedIdempotentResult } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { cacheIdempotentResult, getCachedIdempotentResult } =
+        await import('../src/local-llm/runner.js');
       const session = {
         messages: [],
         updatedAt: Date.now(),
@@ -687,18 +689,16 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
 
   describe('recordToolCallAndDetectLoop', () => {
     it('returns kind=none for the first call', async () => {
-      const { recordToolCallAndDetectLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndDetectLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const sig = toolCallSignature('exec', { command: 'ls' });
       expect(recordToolCallAndDetectLoop(session, sig).kind).toBe('none');
     });
 
     it('detects exact loop after 3 identical calls', async () => {
-      const { recordToolCallAndDetectLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndDetectLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const sig = toolCallSignature('tool_search', { query: 'arxiv' });
       const r1 = recordToolCallAndDetectLoop(session, sig);
@@ -711,9 +711,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('detects similar loop with near-duplicate args (3rd call)', async () => {
-      const { recordToolCallAndDetectLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndDetectLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       // 3 different but very similar queries (Jaccard >= 0.85 each pair)
       const s1 = toolCallSignature('tool_search', { query: 'arxiv recent papers' });
@@ -729,9 +728,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('does not fire similar for unrelated calls', async () => {
-      const { recordToolCallAndDetectLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndDetectLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const calls = [
         toolCallSignature('exec', { command: 'ls -la' }),
@@ -744,9 +742,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('exact detection takes precedence over similar', async () => {
-      const { recordToolCallAndDetectLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndDetectLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const sig = toolCallSignature('exec', { command: 'echo test | wc -c' });
       recordToolCallAndDetectLoop(session, sig);
@@ -756,9 +753,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('returns boolean true via recordToolCallAndCheckLoop wrapper on either kind', async () => {
-      const { recordToolCallAndCheckLoop, toolCallSignature } = await import(
-        '../src/local-llm/runner.js'
-      );
+      const { recordToolCallAndCheckLoop, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const sig = toolCallSignature('tool_search', { query: 'foo' });
       recordToolCallAndCheckLoop(session, sig);
@@ -767,11 +763,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('starts a fresh loop window after a successful file mutation', async () => {
-      const {
-        recordToolCallAndDetectLoop,
-        resetToolLoopHistoryAfterMutation,
-        toolCallSignature,
-      } = await import('../src/local-llm/runner.js');
+      const { recordToolCallAndDetectLoop, resetToolLoopHistoryAfterMutation, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const testSig = toolCallSignature('exec', { command: 'npm test' });
 
@@ -785,11 +778,8 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
     });
 
     it('does not reset the loop window after a read-only tool', async () => {
-      const {
-        recordToolCallAndDetectLoop,
-        resetToolLoopHistoryAfterMutation,
-        toolCallSignature,
-      } = await import('../src/local-llm/runner.js');
+      const { recordToolCallAndDetectLoop, resetToolLoopHistoryAfterMutation, toolCallSignature } =
+        await import('../src/local-llm/runner.js');
       const session = makeSession();
       const sig = toolCallSignature('exec', { command: 'npm test' });
 
@@ -803,7 +793,9 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
 });
 
 describe('local-llm runner: compactOldToolResults (Prune)', () => {
-  function makeSessionWith(messages: Array<Record<string, unknown>>): import('../src/local-llm/runner.js').Session {
+  function makeSessionWith(
+    messages: Array<Record<string, unknown>>
+  ): import('../src/local-llm/runner.js').Session {
     return {
       messages: messages as never,
       updatedAt: Date.now(),
@@ -962,11 +954,18 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
     rmSync(workdir, { recursive: true, force: true });
   });
 
-  function makeRunnerReturning(content: string): LocalLlmRunner {
+  function makeRunnerReturning(content: string, withUsage = false): LocalLlmRunner {
     const runner = new LocalLlmRunner({ workdir, model: 'test' });
     // 実ネットワークを使わず固定応答を返す mock に差し替える
     (runner as unknown as { llm: { chat: () => Promise<unknown> } }).llm = {
-      chat: async () => ({ content, finishReason: 'stop', toolCalls: [] }),
+      chat: async () => ({
+        content,
+        finishReason: 'stop',
+        toolCalls: [],
+        usage: withUsage
+          ? { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 }
+          : undefined,
+      }),
     };
     return runner;
   }
@@ -991,6 +990,24 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
     const runner = makeRunnerReturning('明日は晴れ、最高25℃だよ');
     const { result } = await runner.run('天気は？', { sessionId: 's3', channelId: 'c3' });
     expect(result).toBe('明日は晴れ、最高25℃だよ');
+  });
+
+  it('persists provider usage in the assistant transcript', async () => {
+    const runner = makeRunnerReturning('done', true);
+    await runner.run('q', {
+      sessionId: 'provider-session',
+      channelId: 'usage-channel',
+      appSessionId: 'usage-app',
+    });
+
+    const assistant = readSessionMessages(workdir, 'usage-app').find(
+      (entry) => entry.role === 'assistant'
+    );
+    expect(assistant?.content).toMatchObject({
+      result: 'done',
+      sessionId: 'provider-session',
+      usage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 },
+    });
   });
 });
 
@@ -1071,10 +1088,14 @@ describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStre
   it('falls back to a friendly message (not empty → no ✅) when every stream is drift-only', async () => {
     // 毎回 strict drift だけを吐く → hold buffer が drop → 空 → retry 上限 → 友好的 fallback
     const runner = makeStreamRunner([['<|channel>thought\n<channel|>']]);
-    const { result } = await runner.runStream('明日の天気合ってる？', {}, {
-      sessionId: 'st1',
-      channelId: 'ch1',
-    });
+    const { result } = await runner.runStream(
+      '明日の天気合ってる？',
+      {},
+      {
+        sessionId: 'st1',
+        channelId: 'ch1',
+      }
+    );
     expect(result).toBe(FRIENDLY_FALLBACK_MESSAGE);
     expect(result).not.toBe('');
   });
@@ -1085,10 +1106,14 @@ describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStre
       ['<|channel>thought\n<channel|>'],
       ['明日は晴れ時々曇り、最高20℃だよ🐾'],
     ]);
-    const { result } = await runner.runStream('明日の天気合ってる？', {}, {
-      sessionId: 'st2',
-      channelId: 'ch2',
-    });
+    const { result } = await runner.runStream(
+      '明日の天気合ってる？',
+      {},
+      {
+        sessionId: 'st2',
+        channelId: 'ch2',
+      }
+    );
     expect(result).toBe('明日は晴れ時々曇り、最高20℃だよ🐾');
   });
 

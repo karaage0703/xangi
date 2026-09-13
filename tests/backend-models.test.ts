@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyGrokModelMetadata,
   discoverBackendModels,
   formatBackendModels,
   parseAntigravityModels,
@@ -46,11 +47,34 @@ describe('backend model parsers', () => {
   it('parses Cursor account model output', () => {
     expect(
       parseCursorModels(
-        'Available models\n\nauto - Auto (current, default)\ngpt-5.6-sol-high - GPT-5.6 Sol 1M High\n'
+        'Available models\n\nauto - Auto (current, default)\ngpt-5.6-sol - GPT-5.6 Sol\ngpt-5.6-sol-high - GPT-5.6 Sol 1M High\ngpt-5.6-sol-xhigh - GPT-5.6 Sol 1M Extra High\ncomposer-2.5 - Composer 2.5\n'
       )
     ).toEqual([
-      { id: 'auto', displayName: 'Auto', isDefault: true },
-      { id: 'gpt-5.6-sol-high', displayName: 'GPT-5.6 Sol 1M High', isDefault: false },
+      { id: 'auto', displayName: 'Auto', isDefault: true, supportedEfforts: [] },
+      {
+        id: 'gpt-5.6-sol',
+        displayName: 'GPT-5.6 Sol',
+        isDefault: false,
+        supportedEfforts: ['high', 'xhigh', 'medium'],
+      },
+      {
+        id: 'gpt-5.6-sol-high',
+        displayName: 'GPT-5.6 Sol 1M High',
+        isDefault: false,
+        supportedEfforts: ['high'],
+      },
+      {
+        id: 'gpt-5.6-sol-xhigh',
+        displayName: 'GPT-5.6 Sol 1M Extra High',
+        isDefault: false,
+        supportedEfforts: ['xhigh'],
+      },
+      {
+        id: 'composer-2.5',
+        displayName: 'Composer 2.5',
+        isDefault: false,
+        supportedEfforts: [],
+      },
     ]);
   });
 
@@ -68,13 +92,75 @@ describe('backend model parsers', () => {
       parseAntigravityModels(
         'Available models:\ngemini-3.6-flash-high\nGemini 3.5 Flash (Medium)\n'
       )
-    ).toEqual([{ id: 'gemini-3.6-flash-high' }, { id: 'Gemini 3.5 Flash (Medium)' }]);
+    ).toEqual([
+      { id: 'gemini-3.6-flash-high', supportedEfforts: ['high'] },
+      { id: 'Gemini 3.5 Flash (Medium)', supportedEfforts: ['medium'] },
+    ]);
+  });
+
+  it('applies Grok model-specific reasoning effort metadata', () => {
+    const models = parseGrokModels('  * grok-4.6 (default)\n  - grok-4.5\n');
+    expect(
+      applyGrokModelMetadata(
+        models,
+        JSON.stringify({
+          models: {
+            'grok-4.6': {
+              info: {
+                supports_reasoning_effort: true,
+                reasoning_efforts: [{ value: 'low' }, { value: 'high' }, { value: 'xhigh' }],
+              },
+            },
+            'grok-4.5': {
+              info: {
+                supports_reasoning_effort: true,
+                reasoning_efforts: [{ value: 'low' }, { value: 'high' }],
+              },
+            },
+          },
+        })
+      )
+    ).toEqual([
+      { id: 'grok-4.6', isDefault: true, supportedEfforts: ['low', 'high', 'xhigh'] },
+      { id: 'grok-4.5', isDefault: false, supportedEfforts: ['low', 'high'] },
+    ]);
   });
 
   it('parses OpenCode provider/model output', () => {
     expect(parseOpenCodeModels('opencode/big-pickle\ndspark/qwen3.8-27b\n')).toEqual([
       { id: 'opencode/big-pickle' },
       { id: 'dspark/qwen3.8-27b' },
+    ]);
+  });
+
+  it('parses model-specific OpenCode variants from verbose output', () => {
+    expect(
+      parseOpenCodeModels(
+        [
+          'openai/gpt-5.4',
+          JSON.stringify(
+            {
+              name: 'GPT-5.4',
+              variants: { none: {}, low: {}, high: {}, xhigh: {}, fast: {} },
+            },
+            null,
+            2
+          ),
+          'anthropic/claude-sonnet-4-6',
+          JSON.stringify({ name: 'Claude Sonnet 4.6', variants: { high: {}, max: {} } }, null, 2),
+        ].join('\n')
+      )
+    ).toEqual([
+      {
+        id: 'openai/gpt-5.4',
+        displayName: 'GPT-5.4',
+        supportedEfforts: ['none', 'low', 'high', 'xhigh'],
+      },
+      {
+        id: 'anthropic/claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
+        supportedEfforts: ['high', 'max'],
+      },
     ]);
   });
 
@@ -96,8 +182,16 @@ describe('backend model parsers', () => {
         })
       )
     ).toEqual([
-      { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
-      { id: 'gemini-3.6-flash-medium', displayName: 'Gemini 3.6 Flash (Medium)' },
+      {
+        id: 'gemini-3.6-flash-high',
+        displayName: 'Gemini 3.6 Flash (High)',
+        supportedEfforts: ['high'],
+      },
+      {
+        id: 'gemini-3.6-flash-medium',
+        displayName: 'Gemini 3.6 Flash (Medium)',
+        supportedEfforts: ['medium'],
+      },
     ]);
 
     expect(
@@ -105,8 +199,16 @@ describe('backend model parsers', () => {
         'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\ngemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)\n'
       )
     ).toEqual([
-      { id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' },
-      { id: 'gemini-3.6-flash-medium', displayName: 'Gemini 3.6 Flash (Medium)' },
+      {
+        id: 'gemini-3.6-flash-high',
+        displayName: 'Gemini 3.6 Flash (High)',
+        supportedEfforts: ['high'],
+      },
+      {
+        id: 'gemini-3.6-flash-medium',
+        displayName: 'Gemini 3.6 Flash (Medium)',
+        supportedEfforts: ['medium'],
+      },
     ]);
   });
 });
@@ -130,13 +232,37 @@ describe('discoverBackendModels', () => {
     expect(runner).not.toHaveBeenCalled();
   });
 
-  it('does not hard-code GitHub Copilot models when listing is unsupported', async () => {
-    const runner = vi.fn<ModelDiscoveryCommandRunner>();
-    const result = await discoverBackendModels('github-copilot', { runner });
+  it('uses GitHub Copilot SDK model effort metadata', async () => {
+    const result = await discoverBackendModels('github-copilot', {
+      copilotModelLister: async () => [
+        {
+          id: 'auto',
+          name: 'Auto',
+          capabilities: {
+            supports: { vision: false, reasoningEffort: false },
+            limits: { max_context_window_tokens: 1 },
+          },
+        },
+        {
+          id: 'gpt-test',
+          name: 'GPT Test',
+          capabilities: {
+            supports: { vision: false, reasoningEffort: true },
+            limits: { max_context_window_tokens: 1 },
+          },
+          supportedReasoningEfforts: ['low', 'high', 'xhigh'],
+        },
+      ],
+    });
 
-    expect(result.status).toBe('unsupported');
-    expect(result.models).toEqual([]);
-    expect(runner).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'available',
+      source: 'GitHub Copilot SDK listModels',
+      models: [
+        { id: 'auto', supportedEfforts: [] },
+        { id: 'gpt-test', supportedEfforts: ['low', 'high', 'xhigh'] },
+      ],
+    });
   });
 
   it('uses each backend official CLI command', async () => {
@@ -181,7 +307,14 @@ describe('discoverBackendModels', () => {
       status: 'available',
       source: 'cursor-agent models',
     });
-    await expect(discoverBackendModels('grok', { runner })).resolves.toMatchObject({
+    await expect(
+      discoverBackendModels('grok', {
+        runner,
+        grokModelMetadataReader: async () => {
+          throw new Error('not available in fixture');
+        },
+      })
+    ).resolves.toMatchObject({
       status: 'available',
       source: 'grok models',
       models: [
@@ -191,7 +324,7 @@ describe('discoverBackendModels', () => {
     });
     await expect(discoverBackendModels('opencode', { runner })).resolves.toMatchObject({
       status: 'available',
-      source: 'opencode models',
+      source: 'opencode models --verbose',
       models: [{ id: 'opencode/big-pickle' }, { id: 'dspark/qwen3.8-27b' }],
     });
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
@@ -203,7 +336,7 @@ describe('discoverBackendModels', () => {
       ['codex', ['app-server', '--stdio']],
       ['cursor-agent', ['models']],
       ['grok', ['models']],
-      ['opencode', ['models']],
+      ['opencode', ['models', '--verbose']],
       ['agy', ['--output-format', 'json', 'models']],
     ]);
   });
@@ -220,7 +353,13 @@ describe('discoverBackendModels', () => {
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',
       source: 'agy models (legacy fallback)',
-      models: [{ id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' }],
+      models: [
+        {
+          id: 'gemini-3.6-flash-high',
+          displayName: 'Gemini 3.6 Flash (High)',
+          supportedEfforts: ['high'],
+        },
+      ],
     });
     expect(runner.mock.calls.map(([command, args]) => [command, args])).toEqual([
       ['agy', ['--output-format', 'json', 'models']],
@@ -268,7 +407,13 @@ describe('discoverBackendModels', () => {
 
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
       status: 'available',
-      models: [{ id: 'gemini-3.6-flash-high', displayName: 'Gemini 3.6 Flash (High)' }],
+      models: [
+        {
+          id: 'gemini-3.6-flash-high',
+          displayName: 'Gemini 3.6 Flash (High)',
+          supportedEfforts: ['high'],
+        },
+      ],
     });
   });
 

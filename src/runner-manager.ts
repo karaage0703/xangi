@@ -191,17 +191,19 @@ export class RunnerManager extends EventEmitter implements AgentRunner {
     }
   }
 
+  /** リクエスト対象のランナーを取得し、復元対象のセッションを反映する。 */
+  private prepareRunner(options?: RunOptions): PersistentRunner {
+    const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
+    const runner = this.getOrCreateRunner(channelId);
+    if (options?.sessionId) runner.setSessionId(options.sessionId);
+    return runner;
+  }
+
   /**
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
-    const runner = this.getOrCreateRunner(channelId);
-    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
-    if (options?.sessionId) {
-      runner.setSessionId(options.sessionId);
-    }
-    return runner.run(prompt, options);
+    return this.prepareRunner(options).run(prompt, options);
   }
 
   /**
@@ -212,13 +214,7 @@ export class RunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const channelId = options?.channelId ?? RunnerManager.DEFAULT_CHANNEL;
-    const runner = this.getOrCreateRunner(channelId);
-    // セッションIDが渡されていればランナーに設定（プロセス再起動時の復元用）
-    if (options?.sessionId) {
-      runner.setSessionId(options.sessionId);
-    }
-    return runner.runStream(prompt, callbacks, options);
+    return this.prepareRunner(options).runStream(prompt, callbacks, options);
   }
 
   /**

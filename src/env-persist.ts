@@ -26,6 +26,55 @@ export interface UpdateEnvResult {
   reason?: string;
 }
 
+/** Multiple `.env` values updated in one read/write cycle. `undefined` removes the key. */
+export function updateEnvKeyValues(updates: Record<string, string | undefined>): UpdateEnvResult {
+  const envPath = resolveEnvFilePath();
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (/[\r\n]/.test(key) || (value !== undefined && /[\r\n]/.test(value))) {
+      return { ok: false, envPath, reason: 'Environment keys and values must be single-line' };
+    }
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(envPath, 'utf-8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return {
+      ok: false,
+      envPath,
+      reason:
+        code === 'ENOENT'
+          ? `.env file not found at ${envPath} (set XANGI_ENV_PATH or mount a writable .env to enable persistence)`
+          : `Failed to read ${envPath}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  for (const [key, value] of Object.entries(updates)) {
+    const pattern = new RegExp(`^${escapeRegExp(key)}=.*(?:\\n|$)`, 'm');
+    if (value === undefined) {
+      content = content.replace(pattern, '');
+    } else {
+      const newLine = `${key}=${value}\n`;
+      content = pattern.test(content)
+        ? content.replace(pattern, newLine)
+        : `${content.trimEnd()}\n${newLine}`;
+    }
+  }
+
+  try {
+    writeFileSync(envPath, content, 'utf-8');
+    return { ok: true, envPath };
+  } catch (e) {
+    return {
+      ok: false,
+      envPath,
+      reason: `Failed to write ${envPath}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 /**
  * `.env` ファイルの 1 行 (`KEY=VALUE`) を更新する。
  * 既存行があれば置換、なければ末尾に追加。

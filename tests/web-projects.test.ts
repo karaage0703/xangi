@@ -75,6 +75,14 @@ describe('WebProjectStore', () => {
       model: 'gpt-5.6-sol',
       effort: 'high',
     });
+
+    const ultra = store.create({
+      name: '深い調査',
+      backend: 'codex',
+      model: 'gpt-6-astra',
+      effort: 'ultra',
+    });
+    expect(WebProjectStore.fromDataDir(root).get(ultra.id)?.effort).toBe('ultra');
   });
 
   it('clears Project backend settings and rejects model-only settings', () => {

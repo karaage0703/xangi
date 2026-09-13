@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ALL_AGENT_BACKENDS, type AgentBackend, type EffortLevel } from './config.js';
+import {
+  ALL_AGENT_BACKENDS,
+  EFFORT_LEVELS,
+  type AgentBackend,
+  type EffortLevel,
+} from './config.js';
 
 const PROJECTS_FILE = 'web-projects.json';
 const PROJECTS_VERSION = 1;
 const MAX_NAME_LENGTH = 80;
 const MAX_PROMPT_LENGTH = 20_000;
 const MAX_MODEL_LENGTH = 200;
-const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'max'];
 
 export interface WebProjectBackendSettings {
   backend?: AgentBackend;

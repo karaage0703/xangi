@@ -85,6 +85,32 @@ describe('CursorRunner', () => {
     return { command, args };
   }
 
+  it('preserves provider-reported Auto routing without inventing an underlying model', async () => {
+    const runner = new CursorRunner();
+    const onModelSelection = vi.fn();
+    const onModel = vi.fn();
+    const parser = (runner as any).createStreamParser({ onModelSelection, onModel });
+    parser.handleEvent(
+      { type: 'system', subtype: 'init', model: 'Auto', session_id: 'actual-session' },
+      'stream'
+    );
+    parser.handleEvent({ type: 'result', result: 'OK', session_id: 'actual-session' }, 'stream');
+    expect(parser.finalize()).toEqual({
+      result: 'OK',
+      sessionId: 'actual-session',
+      modelSelection: 'Auto',
+    });
+    expect(onModelSelection).toHaveBeenCalledWith('Auto');
+    expect(onModel).not.toHaveBeenCalled();
+  });
+
+  it('does not treat assistant text or user model fields as routing evidence', () => {
+    const parser = (new CursorRunner() as any).createStreamParser({});
+    parser.handleEvent({ type: 'user', model: 'Auto' }, 'stream');
+    parser.handleEvent({ type: 'assistant', message: { content: 'I am Auto' } }, 'stream');
+    expect(parser.finalize().modelSelection).toBeUndefined();
+  });
+
   it('builds non-interactive JSON args with trust and force by default', async () => {
     const runner = new CursorRunner({ skipPermissions: true });
     const { command, args } = await getSpawnArgs(runner, 'run');
@@ -106,6 +132,15 @@ describe('CursorRunner', () => {
     expect(prompt).toContain('## Web固有ルール');
     expect(prompt).not.toContain('## Discord固有ルール');
     expect(prompt).not.toContain('## Slack固有ルール');
+  });
+
+  it('omits fixed xangi instructions when resuming a provider session', async () => {
+    const runner = new CursorRunner({ platform: 'discord' });
+    const { args } = await getSpawnArgs(runner, 'run', { sessionId: 'chat-123' });
+    const prompt = args[args.indexOf('-p') + 1];
+
+    expect(prompt).toContain('hello');
+    expect(prompt).not.toContain('## Discord固有ルール');
   });
 
   it('uses auto model by default to avoid Cursor CLI global model drift', async () => {
@@ -166,6 +201,21 @@ describe('CursorRunner', () => {
     await expect(runner.run('hello', { effort: 'low' })).rejects.toThrow(
       'Cursor effort requires an explicit model'
     );
+  });
+
+  it('rejects effort when Auto is explicitly selected', async () => {
+    const runner = new CursorRunner({ model: 'auto' });
+
+    await expect(runner.run('hello', { effort: 'low' })).rejects.toThrow(
+      'Cursor effort requires an explicit model'
+    );
+  });
+
+  it('does not duplicate an effort already encoded in the model ID', async () => {
+    const runner = new CursorRunner({ model: 'gpt-5.6-sol-high' });
+    const { args } = await getSpawnArgs(runner, 'run', { effort: 'high' });
+
+    expect(args[args.indexOf('--model') + 1]).toBe('gpt-5.6-sol-high');
   });
 
   it('builds stream-json args with partial output', async () => {

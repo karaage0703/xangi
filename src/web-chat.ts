@@ -1,12 +1,13 @@
+import { latestModelExecution } from './model-execution-display.js';
 /**
  * Web チャット UI — 複数スレッド並存・並列ストリーミング対応版
  *
  * 各 Web セッションは contextKey = `web-chat:<appSessionId>` で独立。
  * 同時に複数のセッションを保持・操作できる。
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
 import {
-  createReadStream,
   readFileSync,
   writeFileSync,
   existsSync,
@@ -15,7 +16,7 @@ import {
   mkdirSync,
   realpathSync,
 } from 'fs';
-import { join, dirname, extname, basename, relative, isAbsolute, resolve } from 'path';
+import { join, dirname, extname, basename, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
 import type { DiscordRemoteInputBridge } from './discord/message-handler.js';
@@ -35,7 +36,6 @@ import {
   removeSession,
   closeSession,
   getSessionLifecycle,
-  setAutoTalk,
   WEB_CHAT_CONTEXT_PREFIX,
   subscribeSessionChanges,
 } from './sessions.js';
@@ -72,8 +72,7 @@ import {
 } from './session-title.js';
 import { isSchedulerRunId } from './scheduler-run.js';
 import { handleInterChatRequest } from './inter-instance-chat/web-server.js';
-import { flowFromHostPlatform, getInterChatConfig } from './inter-instance-chat/index.js';
-import { setupAutoTalk } from './inter-instance-chat/auto-talk.js';
+import { getInterChatConfig } from './inter-instance-chat/index.js';
 import { resolveAccessUrls, formatAccessUrls, primaryAccessUrl } from './access-urls.js';
 import { resolveWebChatHost, resolveWebChatPort } from './web-status.js';
 import { handleEventsStreamRequest } from './events-stream-server.js';
@@ -95,10 +94,16 @@ import type { BackendResolver, ChannelOverride } from './backend-resolver.js';
 import { discoverBackendModels } from './backend-models.js';
 import {
   getSupportedEffortLevels,
-  requiresExplicitModelForEffort,
+  getSupportedEffortLevelsForModel,
+  hasUsableModelForEffort,
   supportsEffort,
 } from './backend-effort.js';
-import type { Platform, Schedule, ScheduleInput, Scheduler } from './scheduler.js';
+import type { Platform, Scheduler } from './scheduler.js';
+import {
+  parseWebScheduleInput,
+  scheduleForWebResponse,
+  WEB_SCHEDULE_NEW_SESSION_ID,
+} from './web-schedules.js';
 import type { Skill } from './skills.js';
 import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
 import { processManager } from './process-manager.js';
@@ -129,6 +134,33 @@ import {
   type ExternalChatPlatform,
   type ExternalChatUrlResolvers,
 } from './external-chat-link.js';
+import {
+  acceptsSameHostMutation,
+  readJsonBody as readBody,
+  readRawBody,
+  sendJson,
+  serveFile,
+  uploadMaxBytes,
+} from './web-http.js';
+import { isRealFileWithin, parseDisplayedUserAttachments } from './web-file-security.js';
+import {
+  updateWebRuntimeSetting,
+  webChannelRuntimeSettingsSnapshot,
+  webRuntimeSettingsSnapshot,
+} from './web-runtime-settings.js';
+import {
+  updateWebConnectionSetting,
+  updateWebStartupSetting,
+  webConnectionSettingsSnapshot,
+  webStartupSettingsSnapshot,
+} from './web-startup-settings.js';
+import { updateBackendTool, type BackendToolUpdateResult } from './backend-auth-status.js';
+import {
+  listSettingsChannelsWithTimeout,
+  settingsChannelListErrorMessage,
+  type SettingsChannelListers,
+  type SettingsPlatform,
+} from './settings-channels.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -137,9 +169,6 @@ const SESSION_LIST_LIMIT = 100;
 const SESSION_LIST_MAX_LIMIT = 200;
 const SESSION_MESSAGE_LIMIT = 50;
 const SESSION_MESSAGE_MAX_LIMIT = 200;
-const MEBIBYTE = 1024 * 1024;
-const DEFAULT_UPLOAD_MAX_BYTES = 64 * MEBIBYTE;
-const WEB_SCHEDULE_NEW_SESSION_ID = '__new__';
 const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
   '.html',
   '.htm',
@@ -150,154 +179,52 @@ const ACTIVE_DOWNLOAD_EXTENSIONS = new Set([
   '.css',
   '.xml',
 ]);
+const FILE_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.aac': 'audio/aac',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.flac': 'audio/flac',
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.yaml': 'application/x-yaml; charset=utf-8',
+  '.yml': 'application/x-yaml; charset=utf-8',
+  '.zip': 'application/zip',
+};
 
-function acceptsSameHostMutation(req: IncomingMessage): boolean {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  const host = req.headers.host;
-  if (!host) return false;
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
-
-function isRealPathWithin(root: string, target: string): boolean {
-  try {
-    const realRoot = realpathSync(root);
-    const realTarget = realpathSync(target);
-    const fromRoot = relative(realRoot, realTarget);
-    return fromRoot === '' || (!fromRoot.startsWith('..') && !isAbsolute(fromRoot));
-  } catch {
-    return false;
-  }
-}
-
-function isRealFileWithin(root: string, target: string): boolean {
-  try {
-    return isAbsolute(target) && isRealPathWithin(root, target) && statSync(target).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function parseDisplayedUserAttachments(
-  content: string,
-  allowedRoots: string[]
-): { content: string; attachments: string[] } {
-  const attachments: string[] = [];
-  const displayLines: string[] = [];
-  const lines = content.split('\n');
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const marker = line.match(/^\[添付ファイル\](?:[ \t]+(.+?))?[ \t]*$/);
-    if (!marker) {
-      displayLines.push(line);
-      continue;
-    }
-
-    const candidates: string[] = [];
-    if (marker[1]) candidates.push(marker[1].trim());
-
-    while (index + 1 < lines.length) {
-      const bullet = lines[index + 1].match(/^[ \t]*-[ \t]+(.+?)[ \t]*$/);
-      if (!bullet) break;
-      index += 1;
-      candidates.push(bullet[1].trim());
-    }
-
-    for (const candidate of candidates) {
-      if (
-        allowedRoots.some((root) => isRealFileWithin(root, candidate)) &&
-        !attachments.includes(candidate)
-      ) {
-        attachments.push(candidate);
-      }
-    }
-  }
-
-  return {
-    content: displayLines
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim(),
-    attachments,
-  };
-}
-
-function uploadMaxBytes(): number {
-  const configuredMb = Number(process.env.WEB_CHAT_UPLOAD_MAX_MB);
-  if (!Number.isSafeInteger(configuredMb) || configuredMb <= 0) {
-    return DEFAULT_UPLOAD_MAX_BYTES;
-  }
-  const configuredBytes = configuredMb * MEBIBYTE;
-  return Number.isSafeInteger(configuredBytes) ? configuredBytes : DEFAULT_UPLOAD_MAX_BYTES;
-}
-
-function serveFile(
+function serveDownload(
   req: IncomingMessage,
   res: ServerResponse,
   filePath: string,
-  mime: string,
-  disposition?: string,
-  extraHeaders: Record<string, string> = {}
+  sourceText = false
 ): void {
-  const size = statSync(filePath).size;
-  const baseHeaders: Record<string, string | number> = {
-    'Content-Type': mime,
-    'Content-Length': size,
-    'Accept-Ranges': 'bytes',
-    'X-Content-Type-Options': 'nosniff',
-    ...extraHeaders,
-  };
-  if (disposition) baseHeaders['Content-Disposition'] = disposition;
-
-  const range = req.headers.range;
-  if (range) {
-    const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
-    let start = 0;
-    let end = size - 1;
-    if (match && size > 0) {
-      if (match[1]) {
-        start = Number(match[1]);
-        end = match[2] ? Number(match[2]) : end;
-      } else if (match[2]) {
-        const suffixLength = Number(match[2]);
-        start = Math.max(0, size - suffixLength);
-      }
-    }
-    if (
-      !match ||
-      (!match[1] && !match[2]) ||
-      !Number.isSafeInteger(start) ||
-      !Number.isSafeInteger(end) ||
-      start < 0 ||
-      end < start ||
-      start >= size
-    ) {
-      res.writeHead(416, {
-        'Content-Range': `bytes */${size}`,
-        'Accept-Ranges': 'bytes',
-      });
-      res.end();
-      return;
-    }
-    end = Math.min(end, size - 1);
-    res.writeHead(206, {
-      ...baseHeaders,
-      'Content-Length': end - start + 1,
-      'Content-Range': `bytes ${start}-${end}/${size}`,
-    });
-    if (req.method === 'HEAD') res.end();
-    else createReadStream(filePath, { start, end }).pipe(res);
-    return;
-  }
-
-  res.writeHead(200, baseHeaders);
-  if (req.method === 'HEAD') res.end();
-  else createReadStream(filePath).pipe(res);
+  const ext = extname(filePath).toLowerCase();
+  const mime =
+    sourceText && (ext === '.ts' || ext === '.tsx')
+      ? FILE_MIME_TYPES['.txt']
+      : FILE_MIME_TYPES[ext];
+  const disposition =
+    !mime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)
+      ? `attachment; filename="${encodeURIComponent(basename(filePath))}"`
+      : undefined;
+  serveFile(req, res, filePath, mime || 'application/octet-stream', disposition);
 }
 
 /** appSessionId に対応する contextKey を返す */
@@ -347,6 +274,7 @@ interface WebChatOptions {
   destinationLabelResolverRef?: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
   };
+  settingsChannelListers?: SettingsChannelListers;
   skillsRef?: { current: Skill[] };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
@@ -354,6 +282,7 @@ interface WebChatOptions {
   extensionUpdateRequest?: typeof createExtensionUpdateRequest;
   workspaceRegistry?: WorkspaceRegistry;
   externalChatUrlResolvers?: ExternalChatUrlResolvers;
+  updateBackend?: (id: string) => Promise<BackendToolUpdateResult>;
 }
 
 export function startWebChat(options: WebChatOptions): void {
@@ -388,6 +317,26 @@ export function startWebChat(options: WebChatOptions): void {
     }
     return { workspace, browser };
   };
+  const resolveRequestedWorkspaceFile = async (rawUrl: string) => {
+    const url = new URL(rawUrl, 'http://localhost');
+    const requestedPath = url.searchParams.get('path') || '';
+    if (!requestedPath) throw new WebProjectError('Forbidden', 403);
+    let workspace: WorkspaceEntry;
+    try {
+      workspace = await resolveWorkspace(url.searchParams.get('workspaceId') || undefined);
+    } catch (error) {
+      throw new WebProjectError(
+        'Workspace not found',
+        error instanceof WebProjectError ? error.status : 404
+      );
+    }
+    return {
+      workspace,
+      filePath: isAbsolute(requestedPath)
+        ? resolve(requestedPath)
+        : resolve(workspace.path, requestedPath),
+    };
+  };
   const webProjects = WebProjectStore.fromDataDir(dataDir);
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
@@ -418,7 +367,28 @@ export function startWebChat(options: WebChatOptions): void {
     return { backend: project.backend, model: project.model, effort: project.effort };
   };
 
-  const parseProjectBackendSettings = (body: Record<string, unknown>) => {
+  const validateDiscoveredModelEffort = async (
+    backend: AgentBackend,
+    model: string | undefined,
+    effort: EffortLevel | undefined,
+    createError: (message: string) => Error
+  ): Promise<void> => {
+    if (!effort) return;
+    const discovery = await (options.discoverModels ?? discoverBackendModels)(backend);
+    if (discovery.status !== 'available') return;
+    const selectedModel = model
+      ? discovery.models.find((candidate) => candidate.id === model)
+      : discovery.models.find((candidate) => candidate.isDefault);
+    if (!selectedModel) return;
+    const supportedEfforts = getSupportedEffortLevelsForModel(backend, selectedModel);
+    if (!supportedEfforts.includes(effort)) {
+      throw createError(
+        `モデル ${selectedModel.id} のeffortは ${supportedEfforts.join(', ') || '未対応'} です`
+      );
+    }
+  };
+
+  const parseProjectBackendSettings = async (body: Record<string, unknown>) => {
     const backend = body.backend ? String(body.backend) : undefined;
     const model = body.model ? String(body.model).trim() : undefined;
     const effort = body.effort ? String(body.effort) : undefined;
@@ -443,9 +413,15 @@ export function startWebChat(options: WebChatOptions): void {
         400
       );
     }
-    if (effort && requiresExplicitModelForEffort(backend as AgentBackend) && !model) {
+    if (effort && !hasUsableModelForEffort(backend as AgentBackend, model)) {
       throw new WebProjectError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
     }
+    await validateDiscoveredModelEffort(
+      backend as AgentBackend,
+      model,
+      effort as EffortLevel | undefined,
+      (message) => new WebProjectError(message, 400)
+    );
     return {
       backend: backend as AgentBackend,
       model: model || null,
@@ -529,47 +505,10 @@ export function startWebChat(options: WebChatOptions): void {
     return result.result;
   });
 
-  const scheduleInputFromBody = (body: Record<string, unknown>): ScheduleInput => {
-    const platform = String(body.platform || 'web').trim() as Platform;
-    if (!['discord', 'slack', 'telegram', 'web'].includes(platform)) {
-      throw new Error('platform must be discord, slack, telegram, or web');
-    }
-    const type = String(body.type || '');
-    if (type !== 'cron' && type !== 'once' && type !== 'startup') {
-      throw new Error('type must be cron, once, or startup');
-    }
-    const message = String(body.message || '').trim();
-    if (!message) throw new Error('実行内容を入力してください');
-
-    let channelId = String(body.channelId || body.sessionId || '').trim();
-    let projectId: string | undefined;
-    if (platform === 'web') {
-      const project = resolveProject(body.projectId);
-      channelId = WEB_SCHEDULE_NEW_SESSION_ID;
-      projectId = project?.id;
-    } else if (!channelId) {
-      throw new Error('送信先IDを入力してください');
-    }
-
-    return {
-      type,
-      expression: type === 'cron' ? String(body.expression || '').trim() : undefined,
-      runAt: type === 'once' ? String(body.runAt || '').trim() : undefined,
-      message,
-      channelId,
-      platform,
-      label: String(body.label || '').trim() || undefined,
-      projectId,
-    };
-  };
-
-  const scheduleForResponse = (schedule: Schedule) => ({
-    ...schedule,
-    destinationLabel: options.destinationLabelResolverRef?.current?.(
-      schedule.platform,
-      schedule.channelId
-    ),
-  });
+  const scheduleInputFromBody = (body: Record<string, unknown>) =>
+    parseWebScheduleInput(body, (projectId) => resolveProject(projectId)?.id);
+  const scheduleForResponse = (schedule: Parameters<typeof scheduleForWebResponse>[0]) =>
+    scheduleForWebResponse(schedule, options.destinationLabelResolverRef?.current);
 
   // WEB_CHAT_UPLOAD_ACCEPT: 未設定なら全許可。設定時は HTML <input accept> にそのまま渡しつつ、
   // バックエンドでも .ext 部分を抽出して拡張子検証する。MIME パターン (image/* など) は
@@ -594,10 +533,9 @@ export function startWebChat(options: WebChatOptions): void {
         .filter((s) => s.startsWith('.'))
     : [];
 
-  const interChatEnabled = getInterChatConfig().enabled;
-
-  // 自走モード（auto-talk）の準備。inter-chat 有効時のみ実体起動。
-  const autoTalkHandle = interChatEnabled ? setupAutoTalk({ agentRunner }) : null;
+  const interChatConfig = getInterChatConfig();
+  const interChatEnabled = interChatConfig.enabled;
+  const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
 
   const buildSessionsResponse = (
     query: {
@@ -641,16 +579,19 @@ export function startWebChat(options: WebChatOptions): void {
         s.platform === 'discord' || s.platform === 'slack'
           ? deriveSessionOrigin(workdir, s.id)
           : undefined;
-      const backend =
-        s.platform === 'web'
-          ? resolveWebSessionBackend(s.id)
-          : s.agent
-            ? {
-                backend: s.agent.backend,
-                model: s.agent.model,
-                effort: s.agent.effort,
-                source: 'session' as const,
-              }
+      const execution = latestModelExecution(s);
+      // Historical sessions must not inherit today's project or CLI defaults.
+      const backend = s.agent
+        ? {
+            backend: s.agent.backend,
+            model: s.agent.model,
+            effort: s.agent.effort,
+            source: 'session' as const,
+          }
+        : execution
+          ? { backend: execution.backend, source: 'session' as const }
+          : s.platform === 'web' && s.messageCount === 0 && lifecycle === 'open'
+            ? resolveWebSessionBackend(s.id)
             : undefined;
       const schedulerElapsedMs = Date.parse(s.updatedAt) - Date.parse(s.createdAt);
       const processingTime =
@@ -678,8 +619,6 @@ export function startWebChat(options: WebChatOptions): void {
         lifecycle,
         closedAt: s.closedAt,
         closeReason: s.closeReason,
-        autoTalk: s.autoTalk === true,
-        autoTalkActive: autoTalkHandle?.isActive(s.id) ?? false,
         sessionMode:
           s.agent?.sessionMode ??
           (s.agent?.backend && resolveExtensionAgentBackend(s.agent.backend)
@@ -692,10 +631,15 @@ export function startWebChat(options: WebChatOptions): void {
         projectId: s.projectId,
         cwd: s.workspacePath ?? workdir,
         backend,
+        modelExecution: execution,
+        modelHistory: s.modelHistory,
+        nextBackend:
+          s.platform === 'web' && lifecycle === 'open' ? resolveWebSessionBackend(s.id) : undefined,
         contextUsage: s.contextUsage,
         tokenUsage: s.tokenUsage,
         processingTime,
         estimatedCost: s.estimatedCost,
+        providerTitle: s.providerTitle,
         progressCard: s.progressCard,
         origin,
       };
@@ -734,8 +678,6 @@ export function startWebChat(options: WebChatOptions): void {
           isActive: false,
           isCurrent: false,
           lifecycle: 'closed' as const,
-          autoTalk: false,
-          autoTalkActive: false,
           sessionMode: 'stateful' as const,
           timeoutAt: undefined,
           maxTimeoutAt: undefined,
@@ -847,6 +789,107 @@ export function startWebChat(options: WebChatOptions): void {
   };
   const unsubscribeSessionChanges = subscribeSessionChanges(invalidateSessionSnapshots);
 
+  const handleExtensionMutation = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    operation: () => Promise<void>
+  ): Promise<void> => {
+    if (!acceptsSameHostMutation(req)) {
+      sendJson(res, 403, { error: 'cross-origin extension changes are not allowed' });
+      return;
+    }
+    try {
+      await operation();
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const sendExtensionConversation = (
+    res: ServerResponse,
+    action: string,
+    request: { displayName: string; prompt: string; displayMessage: string },
+    extra: Record<string, unknown> = {}
+  ): void => {
+    const sessionId = createWebSession({ title: `${action}: ${request.displayName}` });
+    invalidateSessionSnapshots();
+    sendJson(res, 200, {
+      sessionId,
+      prompt: request.prompt,
+      displayMessage: request.displayMessage,
+      ...extra,
+    });
+  };
+
+  const handleWorkspaceOperation = async (
+    res: ServerResponse,
+    operation: () => Promise<unknown>
+  ): Promise<void> => {
+    if (options.config?.features?.workspaceSwitching === false) {
+      sendJson(res, 403, { error: 'workspace access is disabled' });
+      return;
+    }
+    try {
+      sendJson(res, 200, await operation(), { 'Cache-Control': 'no-store' });
+    } catch (error) {
+      const status = error instanceof WorkspaceBrowserError ? error.status : 500;
+      sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const handleProjectMutation = async (
+    res: ServerResponse,
+    operation: () => Promise<{ status?: number; body: Record<string, unknown> }>
+  ): Promise<void> => {
+    try {
+      const result = await operation();
+      sendJson(res, result.status ?? 200, result.body);
+    } catch (error) {
+      const status = error instanceof WebProjectError ? error.status : 400;
+      sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const assertProjectSettingsEnabled = (
+    body: Record<string, unknown>
+  ): { workspace: boolean; backend: boolean } => {
+    const workspace = body.workspaceId !== undefined;
+    const backend = ['backend', 'model', 'effort'].some((key) => body[key] !== undefined);
+    if (workspace && options.config?.features?.workspaceSwitching === false) {
+      throw new WebProjectError('workspace switching is disabled', 403);
+    }
+    if (backend && options.config?.features?.backendSwitching === false) {
+      throw new WebProjectError('backend switching is disabled', 403);
+    }
+    return { workspace, backend };
+  };
+
+  const sendSessionHistory = (
+    res: ServerResponse,
+    rawUrl: string,
+    encodedSessionId: string,
+    key: 'history' | 'tools'
+  ): void => {
+    const appSessionId = decodeURIComponent(encodedSessionId);
+    const entry = getSessionEntry(appSessionId);
+    const transcriptPath = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
+    if (!entry && !existsSync(transcriptPath)) {
+      sendJson(res, 404, { error: 'session not found' });
+      return;
+    }
+    const threadId =
+      (entry ? sessionThreadId(entry) : null) ||
+      deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
+    const requestedLimit = Number(new URL(rawUrl, 'http://localhost').searchParams.get('limit'));
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 100;
+    const entries = threadId
+      ? key === 'history'
+        ? readTurnHistory(threadId, limit)
+        : readToolHistory(threadId, limit)
+      : [];
+    sendJson(res, 200, { [key]: entries }, { 'Cache-Control': 'no-store' });
+  };
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url || '/';
     const url = rawUrl.split('?')[0];
@@ -861,15 +904,14 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
-    // inter-instance-chat の HTML / API は専用ハンドラに委譲
-    if (url === '/inter-chat' || url === '/inter-chat/' || url.startsWith('/api/inter-chat')) {
+    // inter-instance-chat のHTTP APIは専用ハンドラに委譲
+    if (url.startsWith('/api/inter-chat')) {
       try {
-        const handled = await handleInterChatRequest(req, res);
+        const handled = await handleInterChatRequest(req, res, agentRunner, workdir);
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
@@ -882,8 +924,7 @@ export function startWebChat(options: WebChatOptions): void {
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
@@ -894,8 +935,7 @@ export function startWebChat(options: WebChatOptions): void {
     // dispatch so enabling an event endpoint does not also enable Web UI,
     // Workspace editing, schedules, or session mutation APIs.
     if (!uiEnabled && !isHeadlessCompanionRequest(req.method, url)) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'Web UI is disabled' }));
+      sendJson(res, 404, { error: 'Web UI is disabled' });
       return;
     }
 
@@ -906,8 +946,7 @@ export function startWebChat(options: WebChatOptions): void {
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
@@ -920,8 +959,7 @@ export function startWebChat(options: WebChatOptions): void {
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
@@ -938,6 +976,8 @@ export function startWebChat(options: WebChatOptions): void {
       url === '/workspace/' ||
       url === '/extensions' ||
       url === '/extensions/' ||
+      url === '/settings' ||
+      url === '/settings/' ||
       /^\/chat\/[^/]+\/?$/.test(url)
     ) {
       try {
@@ -987,8 +1027,180 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', port }));
+      sendJson(res, 200, { status: 'ok', port });
+      return;
+    }
+
+    if (url === '/api/runtime-settings' && req.method === 'GET') {
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      sendJson(res, 200, webRuntimeSettingsSnapshot(options.config, options.resolver), {
+        'Cache-Control': 'no-store',
+      });
+      return;
+    }
+
+    if (url === '/api/runtime-settings/channels' && req.method === 'GET') {
+      const platform = new URL(rawUrl, 'http://localhost').searchParams.get('platform');
+      if (platform !== 'discord' && platform !== 'slack') {
+        sendJson(res, 400, { error: 'platform must be discord or slack' });
+        return;
+      }
+      const enabled = options.config?.[platform]?.enabled;
+      const lister = options.settingsChannelListers?.[platform as SettingsPlatform];
+      if (enabled === false) {
+        sendJson(res, 200, {
+          platform,
+          status: 'disabled',
+          channels: [],
+          message: `${platform === 'discord' ? 'Discord' : 'Slack'}接続が無効です`,
+        });
+        return;
+      }
+      if (!lister) {
+        sendJson(res, 200, {
+          platform,
+          status: enabled ? 'starting' : 'disabled',
+          channels: [],
+          message: enabled
+            ? '接続準備中です。少し待って再読み込みしてください'
+            : `${platform === 'discord' ? 'Discord' : 'Slack'}接続が無効です`,
+        });
+        return;
+      }
+      try {
+        sendJson(res, 200, {
+          platform,
+          status: 'available',
+          channels: await listSettingsChannelsWithTimeout(lister),
+        });
+      } catch (error) {
+        sendJson(res, 200, {
+          platform,
+          status: 'unavailable',
+          channels: [],
+          message: settingsChannelListErrorMessage(platform, error),
+        });
+      }
+      return;
+    }
+
+    if (url === '/api/runtime-settings/channel' && req.method === 'GET') {
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      const requestUrl = new URL(rawUrl, 'http://localhost');
+      const platform = requestUrl.searchParams.get('platform');
+      const channelId = requestUrl.searchParams.get('channelId')?.trim();
+      if (platform !== 'discord' && platform !== 'slack') {
+        sendJson(res, 400, { error: 'platform must be discord or slack' });
+        return;
+      }
+      if (!channelId || !/^[A-Za-z0-9_-]{1,128}$/.test(channelId)) {
+        sendJson(res, 400, { error: 'channelId is invalid' });
+        return;
+      }
+      sendJson(
+        res,
+        200,
+        webChannelRuntimeSettingsSnapshot(platform, channelId, options.config, options.resolver),
+        { 'Cache-Control': 'no-store' }
+      );
+      return;
+    }
+
+    if (url === '/api/runtime-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (!options.config || !options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const message = await updateWebRuntimeSetting(body, {
+          config: options.config,
+          resolver: options.resolver,
+          agentRunner,
+          modelDiscovery: options.discoverModels,
+        });
+        sendJson(res, 200, {
+          message,
+          settings: webRuntimeSettingsSnapshot(options.config, options.resolver),
+        });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/startup-settings' && req.method === 'GET') {
+      sendJson(res, 200, { groups: webStartupSettingsSnapshot() }, { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url === '/api/startup-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const message = updateWebStartupSetting(await readBody(req));
+        sendJson(res, 200, { message, groups: webStartupSettingsSnapshot() });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/connection-settings' && req.method === 'GET') {
+      sendJson(res, 200, await webConnectionSettingsSnapshot(), { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url === '/api/connection-settings' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const message = await updateWebConnectionSetting(await readBody(req));
+        sendJson(res, 200, { message, ...(await webConnectionSettingsSnapshot()) });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/backend-tools/update' && req.method === 'POST') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      if (options.config?.features?.runtimeSettings === false) {
+        sendJson(res, 403, { error: 'runtime settings are disabled' });
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        const result = await (options.updateBackend ?? updateBackendTool)(String(body.id ?? ''));
+        sendJson(res, 200, { ...result, ...(await webConnectionSettingsSnapshot()) });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -1000,7 +1212,6 @@ export function startWebChat(options: WebChatOptions): void {
           uploadAccept: uploadAccept || null,
           uploadMaxBytes: uploadMaxBytes(),
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
-          interChatEnabled,
           allowedBackends: options.resolver?.getSelectableBackends() ?? [],
           completionShowElapsed: options.config?.completion.showElapsed ?? true,
         })
@@ -1011,13 +1222,11 @@ export function startWebChat(options: WebChatOptions): void {
     // Project設定フォーム向けの構造化モデル一覧。
     if (url === '/api/models' && req.method === 'GET') {
       if (options.config?.features?.backendSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'backend switching is disabled' }));
+        sendJson(res, 403, { error: 'backend switching is disabled' });
         return;
       }
       if (!options.resolver) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'backend resolver is not available' }));
+        sendJson(res, 503, { error: 'backend resolver is not available' });
         return;
       }
       const backend = new URL(rawUrl, 'http://localhost').searchParams.get(
@@ -1032,7 +1241,7 @@ export function startWebChat(options: WebChatOptions): void {
         );
         return;
       }
-      const discovery = await discoverBackendModels(backend);
+      const discovery = await (options.discoverModels ?? discoverBackendModels)(backend);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(
         JSON.stringify({
@@ -1047,13 +1256,11 @@ export function startWebChat(options: WebChatOptions): void {
     // create a fresh conversation for every run, optionally inside a logical Project.
     if (url === '/api/schedules' && req.method === 'GET') {
       if (options.config?.scheduler.enabled === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        sendJson(res, 403, { error: 'scheduler is disabled' });
         return;
       }
       if (!options.scheduler) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        sendJson(res, 503, { error: 'scheduler is not available' });
         return;
       }
       res.writeHead(200, {
@@ -1072,8 +1279,7 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url === '/api/agent-runs' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ runs: agentRuns.list() }));
+      sendJson(res, 200, { runs: agentRuns.list() }, { 'Cache-Control': 'no-store' });
       return;
     }
 
@@ -1081,12 +1287,10 @@ export function startWebChat(options: WebChatOptions): void {
     if (agentRunMatch && req.method === 'GET') {
       const run = agentRuns.get(decodeURIComponent(agentRunMatch[1]));
       if (!run) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Agent Runが見つかりません' }));
+        sendJson(res, 404, { error: 'Agent Runが見つかりません' });
         return;
       }
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ run }));
+      sendJson(res, 200, { run }, { 'Cache-Control': 'no-store' });
       return;
     }
 
@@ -1115,9 +1319,15 @@ export function startWebChat(options: WebChatOptions): void {
             400
           );
         }
-        if (effort && requiresExplicitModelForEffort(backend) && !model) {
+        if (effort && !hasUsableModelForEffort(backend, model)) {
           throw new AgentRunError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
         }
+        await validateDiscoveredModelEffort(
+          backend,
+          model,
+          effort,
+          (message) => new AgentRunError(message, 400)
+        );
 
         const workspace = await resolveWorkspace(body.workspaceId);
         const appSessionId = createWebSession({
@@ -1175,35 +1385,29 @@ export function startWebChat(options: WebChatOptions): void {
           }
         })();
 
-        res.writeHead(202, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ run }));
+        sendJson(res, 202, { run });
       } catch (error) {
         const status = error instanceof AgentRunError ? error.status : 400;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
 
     if (url === '/api/schedules' && req.method === 'POST') {
       if (options.config?.scheduler.enabled === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        sendJson(res, 403, { error: 'scheduler is disabled' });
         return;
       }
       if (!options.scheduler) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        sendJson(res, 503, { error: 'scheduler is not available' });
         return;
       }
       try {
         const body = await readBody(req);
         const schedule = options.scheduler.add(scheduleInputFromBody(body));
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ schedule: scheduleForResponse(schedule) }));
+        sendJson(res, 201, { schedule: scheduleForResponse(schedule) });
       } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -1211,20 +1415,17 @@ export function startWebChat(options: WebChatOptions): void {
     const scheduleMatch = url.match(/^\/api\/schedules\/([^/]+)$/);
     if (scheduleMatch && req.method === 'PATCH') {
       if (options.config?.scheduler.enabled === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        sendJson(res, 403, { error: 'scheduler is disabled' });
         return;
       }
       if (!options.scheduler) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        sendJson(res, 503, { error: 'scheduler is not available' });
         return;
       }
       const id = decodeURIComponent(scheduleMatch[1]);
       const current = options.scheduler.get(id);
       if (!current) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'スケジュールが見つかりません' }));
+        sendJson(res, 404, { error: 'スケジュールが見つかりません' });
         return;
       }
       try {
@@ -1238,35 +1439,29 @@ export function startWebChat(options: WebChatOptions): void {
         if (typeof body.enabled === 'boolean' && body.enabled !== schedule?.enabled) {
           schedule = options.scheduler.toggle(id);
         }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ schedule: schedule ? scheduleForResponse(schedule) : schedule }));
+        sendJson(res, 200, { schedule: schedule ? scheduleForResponse(schedule) : schedule });
       } catch (error) {
         const status = error instanceof WebProjectError ? error.status : 400;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
 
     if (scheduleMatch && req.method === 'DELETE') {
       if (options.config?.scheduler.enabled === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is disabled' }));
+        sendJson(res, 403, { error: 'scheduler is disabled' });
         return;
       }
       if (!options.scheduler) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'scheduler is not available' }));
+        sendJson(res, 503, { error: 'scheduler is not available' });
         return;
       }
       const removed = options.scheduler.remove(decodeURIComponent(scheduleMatch[1]));
       if (!removed) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'スケジュールが見つかりません' }));
+        sendJson(res, 404, { error: 'スケジュールが見つかりません' });
         return;
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      sendJson(res, 200, { ok: true });
       return;
     }
 
@@ -1275,25 +1470,15 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/api/extensions' && req.method === 'GET') {
       try {
         const catalog = await listDevelopmentExtensionCatalog();
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        });
-        res.end(JSON.stringify(catalog));
+        sendJson(res, 200, catalog, { 'Cache-Control': 'no-store' });
       } catch (error) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
 
     if (url === '/api/extensions/repositories' && req.method === 'POST') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const raw = await readRawBody(req, 8 * 1024);
         const body = JSON.parse(raw) as unknown;
         if (
@@ -1315,95 +1500,38 @@ export function startWebChat(options: WebChatOptions): void {
           await loadExtensionManifest(source.manifestPath, { requireEntrypoint: false })
         ).id;
         const setup = await createExtensionSetupRequest(extensionId);
-        const sessionId = createWebSession({ title: `Setup: ${setup.displayName}` });
-        invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            sessionId,
-            prompt: setup.prompt,
-            displayMessage: setup.displayMessage,
-            source,
-          })
-        );
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendExtensionConversation(res, 'Setup', setup, { source });
+      });
       return;
     }
 
     const extensionInstallMatch = url.match(/^\/api\/extensions\/([^/]+)\/install$/);
     if (extensionInstallMatch && req.method === 'POST') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const extension = await installDevelopmentExtension(
           decodeURIComponent(extensionInstallMatch[1]),
           workdir
         );
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ extension }));
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendJson(res, 200, { extension });
+      });
       return;
     }
 
     const extensionSetupMatch = url.match(/^\/api\/extensions\/([^/]+)\/setup$/);
     if (extensionSetupMatch && req.method === 'POST') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const setup = await createExtensionSetupRequest(decodeURIComponent(extensionSetupMatch[1]));
-        const sessionId = createWebSession({ title: `Setup: ${setup.displayName}` });
-        invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            sessionId,
-            prompt: setup.prompt,
-            displayMessage: setup.displayMessage,
-          })
-        );
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendExtensionConversation(res, 'Setup', setup);
+      });
       return;
     }
 
     const extensionUpdateMatch = url.match(/^\/api\/extensions\/([^/]+)\/update$/);
     if (extensionUpdateMatch && req.method === 'POST') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const update = await requestExtensionUpdate(decodeURIComponent(extensionUpdateMatch[1]));
-        const sessionId = createWebSession({ title: `Update: ${update.displayName}` });
-        invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            sessionId,
-            prompt: update.prompt,
-            displayMessage: update.displayMessage,
-            info: update.info,
-          })
-        );
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendExtensionConversation(res, 'Update', update, { info: update.info });
+      });
       return;
     }
 
@@ -1411,29 +1539,12 @@ export function startWebChat(options: WebChatOptions): void {
       /^\/api\/extensions\/([^/]+)\/uninstall$/
     );
     if (extensionUninstallConversationMatch && req.method === 'POST') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const uninstall = await createExtensionUninstallRequest(
           decodeURIComponent(extensionUninstallConversationMatch[1])
         );
-        const sessionId = createWebSession({ title: `Remove: ${uninstall.displayName}` });
-        invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            sessionId,
-            prompt: uninstall.prompt,
-            displayMessage: uninstall.displayMessage,
-          })
-        );
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendExtensionConversation(res, 'Remove', uninstall);
+      });
       return;
     }
 
@@ -1470,8 +1581,7 @@ export function startWebChat(options: WebChatOptions): void {
         });
         res.end(body);
       } catch (error) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -1479,8 +1589,7 @@ export function startWebChat(options: WebChatOptions): void {
     const extensionServiceMatch = url.match(/^\/api\/extensions\/([^/]+)\/service(\/.*)$/);
     if (extensionServiceMatch && ['GET', 'PUT', 'POST'].includes(req.method || '')) {
       if (req.method !== 'GET' && !acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
+        sendJson(res, 403, { error: 'cross-origin extension changes are not allowed' });
         return;
       }
       try {
@@ -1507,110 +1616,58 @@ export function startWebChat(options: WebChatOptions): void {
         });
         res.end(responseBody);
       } catch (error) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
 
     const extensionUninstallMatch = url.match(/^\/api\/extensions\/([^/]+)$/);
     if (extensionUninstallMatch && req.method === 'DELETE') {
-      if (!acceptsSameHostMutation(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'cross-origin extension changes are not allowed' }));
-        return;
-      }
-      try {
+      await handleExtensionMutation(req, res, async () => {
         const extension = await uninstallDevelopmentExtension(
           decodeURIComponent(extensionUninstallMatch[1])
         );
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ extension }));
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        sendJson(res, 200, { extension });
+      });
       return;
     }
 
     // Workspace browser/editor. Paths are always workspace-relative and validated again
     // by WorkspaceBrowser before filesystem access.
     if (url === '/api/workspace/entries' && req.method === 'GET') {
-      if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
-        return;
-      }
-      try {
+      await handleWorkspaceOperation(res, async () => {
         const requestUrl = new URL(rawUrl, 'http://localhost');
         const directory = requestUrl.searchParams.get('path')?.trim() || '';
         const { browser } = await resolveWorkspaceBrowser(
           requestUrl.searchParams.get('workspaceId')
         );
-        const result = await browser.list(directory);
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        });
-        res.end(JSON.stringify(result));
-      } catch (error) {
-        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        return browser.list(directory);
+      });
       return;
     }
 
     if (url === '/api/workspace/file' && req.method === 'GET') {
-      if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
-        return;
-      }
-      try {
+      await handleWorkspaceOperation(res, async () => {
         const requestUrl = new URL(rawUrl, 'http://localhost');
         const filePath = requestUrl.searchParams.get('path')?.trim() || '';
         const { browser } = await resolveWorkspaceBrowser(
           requestUrl.searchParams.get('workspaceId')
         );
-        const result = await browser.read(filePath);
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        });
-        res.end(JSON.stringify(result));
-      } catch (error) {
-        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        return browser.read(filePath);
+      });
       return;
     }
 
     if (url === '/api/workspace/file' && req.method === 'PUT') {
-      if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace access is disabled' }));
-        return;
-      }
-      try {
+      await handleWorkspaceOperation(res, async () => {
         const body = await readBody(req);
         const { browser } = await resolveWorkspaceBrowser(body.workspaceId);
-        const result = await browser.write(
+        return browser.write(
           typeof body.path === 'string' ? body.path : '',
           body.content,
           body.version
         );
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        });
-        res.end(JSON.stringify(result));
-      } catch (error) {
-        const status = error instanceof WorkspaceBrowserError ? error.status : 500;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+      });
       return;
     }
 
@@ -1650,8 +1707,7 @@ export function startWebChat(options: WebChatOptions): void {
         const body = await readBody(req);
         const input = String(body.input || '').trim();
         if (!input.startsWith('/')) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'command must start with /' }));
+          sendJson(res, 400, { error: 'command must start with /' });
           return;
         }
         const commandSessionId = body.appSessionId ? String(body.appSessionId) : undefined;
@@ -1673,8 +1729,7 @@ export function startWebChat(options: WebChatOptions): void {
 
         if (result.kind === 'action' && result.action === 'retitle') {
           if (!commandSessionId || !commandSession || commandSession.platform !== 'web') {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Web会話を開いてから実行してください' }));
+            sendJson(res, 400, { error: 'Web会話を開いてから実行してください' });
             return;
           }
           const sessionWorkspace = await resolveSessionWorkspace(commandSessionId);
@@ -1684,8 +1739,7 @@ export function startWebChat(options: WebChatOptions): void {
               .map((message) => message.content as string)
           );
           if (!titleSource) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'タイトル生成に使える会話がありません' }));
+            sendJson(res, 400, { error: 'タイトル生成に使える会話がありません' });
             return;
           }
           const title = await generateAiSessionTitle({
@@ -1718,21 +1772,17 @@ export function startWebChat(options: WebChatOptions): void {
             return;
           }
           if (body.confirm !== true) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ...result, confirmationRequired: true }));
+            sendJson(res, 200, { ...result, confirmationRequired: true });
             return;
           }
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ...result, confirmationRequired: false }));
+          sendJson(res, 200, { ...result, confirmationRequired: false });
           requestProcessRestart(250);
           return;
         }
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
+        sendJson(res, 200, result);
       } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -1740,8 +1790,7 @@ export function startWebChat(options: WebChatOptions): void {
     // Web Projectは会話を束ねる論理単位。workspaceやディレクトリは作成しない。
     if (url === '/api/workspaces' && req.method === 'GET') {
       if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        sendJson(res, 403, { error: 'workspace switching is disabled' });
         return;
       }
       const workspaces = workspaceRegistry
@@ -1749,15 +1798,13 @@ export function startWebChat(options: WebChatOptions): void {
             workspaceRegistry.list().map((workspace) => workspaceRegistry.resolveById(workspace.id))
           )
         : [await resolveWorkspace()];
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ workspaces }));
+      sendJson(res, 200, { workspaces }, { 'Cache-Control': 'no-store' });
       return;
     }
 
     if (url === '/api/workspaces' && req.method === 'POST') {
       if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        sendJson(res, 403, { error: 'workspace switching is disabled' });
         return;
       }
       try {
@@ -1767,11 +1814,9 @@ export function startWebChat(options: WebChatOptions): void {
           String(body.name || ''),
           String(body.path || '')
         );
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ workspace }));
+        sendJson(res, 201, { workspace });
       } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -1779,8 +1824,7 @@ export function startWebChat(options: WebChatOptions): void {
     const workspaceMatch = url.match(/^\/api\/workspaces\/([^/]+)$/);
     if (workspaceMatch && req.method === 'DELETE') {
       if (options.config?.features?.workspaceSwitching === false) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
+        sendJson(res, 403, { error: 'workspace switching is disabled' });
         return;
       }
       try {
@@ -1788,151 +1832,93 @@ export function startWebChat(options: WebChatOptions): void {
         const workspaceId = decodeURIComponent(workspaceMatch[1]);
         const workspace = workspaceRegistry.getById(workspaceId);
         if (!workspace) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Workspaceが見つかりません' }));
+          sendJson(res, 404, { error: 'Workspaceが見つかりません' });
           return;
         }
         if (workspace.isDefault) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'default Workspaceは登録解除できません' }));
+          sendJson(res, 409, { error: 'default Workspaceは登録解除できません' });
           return;
         }
         const project = webProjects
           .list()
           .find((candidate) => candidate.workspaceId === workspace.id);
         if (project) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `WorkspaceはProject「${project.name}」で使用中です` }));
+          sendJson(res, 409, { error: `WorkspaceはProject「${project.name}」で使用中です` });
           return;
         }
         const session = listAllSessions().find(
           (candidate) => candidate.workspaceId === workspace.id
         );
         if (session) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Workspaceは既存の会話で使用中です' }));
+          sendJson(res, 409, { error: 'Workspaceは既存の会話で使用中です' });
           return;
         }
 
         const removed = await workspaceRegistry.unregister(workspace.id);
         workspaceBrowsers.delete(workspace.id);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ workspace: removed }));
+        sendJson(res, 200, { workspace: removed });
       } catch (error) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 409, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
 
     if (url === '/api/projects' && req.method === 'GET') {
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      });
-      res.end(JSON.stringify({ projects: webProjects.list() }));
+      sendJson(res, 200, { projects: webProjects.list() }, { 'Cache-Control': 'no-store' });
       return;
     }
 
     if (url === '/api/projects' && req.method === 'POST') {
-      try {
+      await handleProjectMutation(res, async () => {
         const body = await readBody(req);
-        if (
-          options.config?.features?.workspaceSwitching === false &&
-          body.workspaceId !== undefined
-        ) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
-          return;
-        }
-        if (
-          options.config?.features?.backendSwitching === false &&
-          ['backend', 'model', 'effort'].some((key) => body[key] !== undefined)
-        ) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'backend switching is disabled' }));
-          return;
-        }
+        assertProjectSettingsEnabled(body);
         const workspace = await resolveWorkspace(body.workspaceId);
         const project = webProjects.create({
           name: String(body.name || ''),
           prompt: String(body.prompt || ''),
-          ...parseProjectBackendSettings(body),
+          ...(await parseProjectBackendSettings(body)),
           workspaceId: workspace.id,
         });
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ project }));
-      } catch (error) {
-        const status = error instanceof WebProjectError ? error.status : 400;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        return { status: 201, body: { project } };
+      });
       return;
     }
 
     const projectMatch = url.match(/^\/api\/projects\/([^/]+)$/);
     if (projectMatch && req.method === 'DELETE') {
-      try {
+      await handleProjectMutation(res, async () => {
         const projectId = decodeURIComponent(projectMatch[1]);
-        const project = webProjects.get(projectId);
-        if (!project) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Projectが見つかりません' }));
-          return;
-        }
+        const project = resolveProject(projectId)!;
         const schedule = options.scheduler
           ?.list()
           .find((candidate) => candidate.projectId === projectId);
         if (schedule) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Projectはスケジュールで使用中です' }));
-          return;
+          throw new WebProjectError('Projectはスケジュールで使用中です', 409);
         }
         const movedSessions = listAllSessions().filter(
           (candidate) => candidate.platform === 'web' && candidate.projectId === projectId
         );
         for (const session of movedSessions) updateSessionProject(session.id, undefined);
         webProjects.remove(projectId);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ project, movedSessionCount: movedSessions.length }));
-      } catch (error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        return { body: { project, movedSessionCount: movedSessions.length } };
+      });
       return;
     }
     if (projectMatch && req.method === 'PATCH') {
-      try {
+      await handleProjectMutation(res, async () => {
         const projectId = decodeURIComponent(projectMatch[1]);
         const body = await readBody(req);
-        const hasWorkspaceUpdate = body.workspaceId !== undefined;
-        if (hasWorkspaceUpdate && options.config?.features?.workspaceSwitching === false) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'workspace switching is disabled' }));
-          return;
-        }
+        const { workspace: hasWorkspaceUpdate, backend: hasBackendUpdate } =
+          assertProjectSettingsEnabled(body);
         if (hasWorkspaceUpdate) await resolveWorkspace(body.workspaceId);
-        const hasBackendUpdate = ['backend', 'model', 'effort'].some(
-          (key) => body[key] !== undefined
-        );
-        if (hasBackendUpdate && options.config?.features?.backendSwitching === false) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'backend switching is disabled' }));
-          return;
-        }
         const project = webProjects.update(projectId, {
           name: body.name === undefined ? undefined : String(body.name),
           prompt: body.prompt === undefined ? undefined : String(body.prompt),
-          ...(hasBackendUpdate ? parseProjectBackendSettings(body) : {}),
+          ...(hasBackendUpdate ? await parseProjectBackendSettings(body) : {}),
           ...(hasWorkspaceUpdate ? { workspaceId: String(body.workspaceId || 'default') } : {}),
         });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ project }));
-      } catch (error) {
-        const status = error instanceof WebProjectError ? error.status : 400;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-      }
+        return { body: { project } };
+      });
       return;
     }
 
@@ -1940,11 +1926,9 @@ export function startWebChat(options: WebChatOptions): void {
     if (url === '/api/usage' && req.method === 'GET') {
       try {
         const usage = await readAccountUsage();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(usage));
+        sendJson(res, 200, usage);
       } catch (error) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, 503, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -2076,58 +2060,14 @@ export function startWebChat(options: WebChatOptions): void {
     // `/history` は Even Terminal の会話履歴APIが使用済みなので分離する。
     const historyMatch = url.match(/^\/api\/sessions\/([^/]+)\/turn-history$/);
     if (historyMatch && req.method === 'GET') {
-      const appSessionId = decodeURIComponent(historyMatch[1]);
-      const entry = getSessionEntry(appSessionId);
-      const transcriptPath = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
-      if (!entry && !existsSync(transcriptPath)) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
-        return;
-      }
-      const threadId =
-        (entry ? sessionThreadId(entry) : null) ||
-        deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
-      const requestedLimit = Number(new URL(rawUrl, 'http://localhost').searchParams.get('limit'));
-      const history = threadId
-        ? readTurnHistory(
-            threadId,
-            Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 100
-          )
-        : [];
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      });
-      res.end(JSON.stringify({ history }));
+      sendSessionHistory(res, rawUrl, historyMatch[1], 'history');
       return;
     }
 
     // 旧クライアント互換: ツールだけを返す従来endpointも維持する
     const toolHistoryMatch = url.match(/^\/api\/sessions\/([^/]+)\/tool-history$/);
     if (toolHistoryMatch && req.method === 'GET') {
-      const appSessionId = decodeURIComponent(toolHistoryMatch[1]);
-      const entry = getSessionEntry(appSessionId);
-      const transcriptPath = join(workdir, 'logs', 'sessions', `${appSessionId}.jsonl`);
-      if (!entry && !existsSync(transcriptPath)) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
-        return;
-      }
-      const threadId =
-        (entry ? sessionThreadId(entry) : null) ||
-        deriveActivityThreadIdFromFirstMessage(workdir, appSessionId);
-      const requestedLimit = Number(new URL(rawUrl, 'http://localhost').searchParams.get('limit'));
-      const tools = threadId
-        ? readToolHistory(
-            threadId,
-            Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 100
-          )
-        : [];
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      });
-      res.end(JSON.stringify({ tools }));
+      sendSessionHistory(res, rawUrl, toolHistoryMatch[1], 'tools');
       return;
     }
 
@@ -2137,8 +2077,7 @@ export function startWebChat(options: WebChatOptions): void {
       const appSessionId = decodeURIComponent(externalChatLinkMatch[1]);
       const entry = getSessionEntry(appSessionId);
       if (!entry) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
+        sendJson(res, 404, { error: 'session not found' });
         return;
       }
       const source =
@@ -2150,8 +2089,7 @@ export function startWebChat(options: WebChatOptions): void {
       const platform = source?.platform as ExternalChatPlatform | undefined;
       const resolver = platform ? options.externalChatUrlResolvers?.[platform] : undefined;
       if (!source || !platform || !resolver) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'external chat link unavailable' }));
+        sendJson(res, 404, { error: 'external chat link unavailable' });
         return;
       }
       const platformMessageId = readSessionMessages(workdir, source.id).find(
@@ -2163,19 +2101,18 @@ export function startWebChat(options: WebChatOptions): void {
           platformMessageId,
         });
         if (!externalUrl || !isAllowedExternalChatUrl(platform, externalUrl)) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'external chat link unavailable' }));
+          sendJson(res, 404, { error: 'external chat link unavailable' });
           return;
         }
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-store',
-        });
-        res.end(JSON.stringify({ platform, url: externalUrl, sourceSessionId: source.id }));
+        sendJson(
+          res,
+          200,
+          { platform, url: externalUrl, sourceSessionId: source.id },
+          { 'Cache-Control': 'no-store' }
+        );
       } catch (error) {
         console.warn('[web-chat] Failed to resolve external chat link:', error);
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'failed to resolve external chat link' }));
+        sendJson(res, 502, { error: 'failed to resolve external chat link' });
       }
       return;
     }
@@ -2290,6 +2227,8 @@ export function startWebChat(options: WebChatOptions): void {
           isActive: activity?.active === true,
           activity,
           messages,
+          modelExecution: latestModelExecution(entry),
+          modelHistory: entry?.modelHistory ?? [],
           limit,
           before,
           hasMore,
@@ -2307,19 +2246,16 @@ export function startWebChat(options: WebChatOptions): void {
       const messageId = decodeURIComponent(editMsgMatch[2]);
       const body = await readBody(req);
       if (typeof body.content !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'content (string) required' }));
+        sendJson(res, 400, { error: 'content (string) required' });
         return;
       }
       const updated = updateMessageContent(workdir, appSessionId, messageId, body.content);
       if (!updated) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Message not found' }));
+        sendJson(res, 404, { error: 'Message not found' });
         return;
       }
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: updated }));
+      sendJson(res, 200, { ok: true, message: updated });
       return;
     }
 
@@ -2329,13 +2265,11 @@ export function startWebChat(options: WebChatOptions): void {
       const messageId = decodeURIComponent(editMsgMatch[2]);
       const ok = deleteTranscriptMessage(workdir, appSessionId, messageId);
       if (!ok) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Message not found' }));
+        sendJson(res, 404, { error: 'Message not found' });
         return;
       }
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      sendJson(res, 200, { ok: true });
       return;
     }
 
@@ -2345,8 +2279,7 @@ export function startWebChat(options: WebChatOptions): void {
       const body = await readBody(req);
       const entry = getSessionEntry(appSessionId);
       if (!entry) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
+        sendJson(res, 404, { error: 'session not found' });
         return;
       }
       if (body.title) {
@@ -2354,21 +2287,18 @@ export function startWebChat(options: WebChatOptions): void {
       }
       if (body.projectId !== undefined) {
         if (entry.platform !== 'web') {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Web会話だけProjectへ移動できます' }));
+          sendJson(res, 409, { error: 'Web会話だけProjectへ移動できます' });
           return;
         }
         if (busySessions.has(appSessionId)) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: '実行中の会話はProjectへ移動できません' }));
+          sendJson(res, 409, { error: '実行中の会話はProjectへ移動できません' });
           return;
         }
         const project = resolveProject(body.projectId);
         updateSessionProject(appSessionId, project?.id);
       }
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      sendJson(res, 200, { ok: true });
       return;
     }
 
@@ -2383,12 +2313,10 @@ export function startWebChat(options: WebChatOptions): void {
           `[web-chat] Created new web session ${newAppId}${project ? ` in Project ${project.id}` : ''}`
         );
         invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, sessionId: newAppId }));
+        sendJson(res, 200, { ok: true, sessionId: newAppId });
       } catch (error) {
         const status = error instanceof WebProjectError ? error.status : 400;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -2411,8 +2339,7 @@ export function startWebChat(options: WebChatOptions): void {
       }
       console.log(`[web-chat] Resumed session ${sourceId} into new web session ${newAppId}`);
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, sessionId: newAppId, sourceId }));
+      sendJson(res, 200, { ok: true, sessionId: newAppId, sourceId });
       return;
     }
 
@@ -2423,33 +2350,28 @@ export function startWebChat(options: WebChatOptions): void {
       );
       const sourceEntry = getSessionEntry(sourceId);
       if (!sourceEntry || sourceEntry.platform !== 'discord') {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Discordセッションが見つかりません' }));
+        sendJson(res, 404, { error: 'Discordセッションが見つかりません' });
         return;
       }
       const bridge = options.discordRemoteInputRef?.current;
       if (!bridge) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Discordが起動していません' }));
+        sendJson(res, 503, { error: 'Discordが起動していません' });
         return;
       }
       try {
         const body = await readBody(req);
         const message = String(body.message || '').trim();
         if (!message) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'メッセージを入力してください' }));
+          sendJson(res, 400, { error: 'メッセージを入力してください' });
           return;
         }
         const result = await bridge.continueSession({ appSessionId: sourceId, message });
         invalidateSessionSnapshots();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, ...result }));
+        sendJson(res, 200, { ok: true, ...result });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const status = message.includes('処理中') ? 409 : 500;
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: message }));
+        sendJson(res, status, { error: message });
       }
       return;
     }
@@ -2463,13 +2385,11 @@ export function startWebChat(options: WebChatOptions): void {
       );
       const entry = getSessionEntry(targetId);
       if (!entry?.contextKey || !agentRunner.getTimeoutState) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ active: false }));
+        sendJson(res, 200, { active: false });
         return;
       }
       const state = agentRunner.getTimeoutState(entry.contextKey);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(state));
+      sendJson(res, 200, state);
       return;
     }
 
@@ -2484,13 +2404,11 @@ export function startWebChat(options: WebChatOptions): void {
       );
       const entry = getSessionEntry(targetId);
       if (!entry?.contextKey) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
+        sendJson(res, 404, { error: 'session not found' });
         return;
       }
       if (!agentRunner.extendTimeout) {
-        res.writeHead(501, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unsupported', reason: 'runner does not support extend' }));
+        sendJson(res, 501, { error: 'unsupported', reason: 'runner does not support extend' });
         return;
       }
       const body = await readBody(req);
@@ -2544,8 +2462,7 @@ export function startWebChat(options: WebChatOptions): void {
         return;
       }
       // no_active_request その他
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: result.reason || 'no_active_request' }));
+      sendJson(res, 404, { error: result.reason || 'no_active_request' });
       return;
     }
 
@@ -2568,57 +2485,7 @@ export function startWebChat(options: WebChatOptions): void {
           `(platform=${entry?.platform}, stopped=${stopped})`
       );
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, stopped }));
-      return;
-    }
-
-    // POST /api/sessions/:id/autotalk — 自走モード ON/OFF
-    // body: { enabled: boolean }
-    if (url.match(/^\/api\/sessions\/[^/]+\/autotalk$/) && req.method === 'POST') {
-      const targetId = decodeURIComponent(
-        url.replace('/api/sessions/', '').replace('/autotalk', '')
-      );
-      const body = await readBody(req);
-      const enabled = body.enabled === true;
-      const entry = getSessionEntry(targetId);
-      if (!entry) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
-        return;
-      }
-      if (entry.platform !== 'web') {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'autotalk is only available for web sessions' }));
-        return;
-      }
-      const interCfg = getInterChatConfig();
-      if (!interCfg.enabled) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error:
-              'INTER_INSTANCE_CHAT_ENABLED=true が必要です（自走発話は inter-chat に流れます）',
-          })
-        );
-        return;
-      }
-      setAutoTalk(targetId, enabled);
-      if (autoTalkHandle) {
-        if (enabled) autoTalkHandle.enable(targetId);
-        else autoTalkHandle.disable(targetId);
-      }
-      console.log(`[web-chat] autotalk ${enabled ? 'ON' : 'OFF'} for session ${targetId}`);
-      invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          appSessionId: targetId,
-          autoTalk: enabled,
-          active: autoTalkHandle?.isActive(targetId) ?? false,
-        })
-      );
+      sendJson(res, 200, { ok: true, stopped });
       return;
     }
 
@@ -2628,8 +2495,7 @@ export function startWebChat(options: WebChatOptions): void {
       const targetId = decodeURIComponent(closeSessionMatch[1]);
       const entry = getSessionEntry(targetId);
       if (!entry) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'session not found' }));
+        sendJson(res, 404, { error: 'session not found' });
         return;
       }
       const body = await readBody(req);
@@ -2645,8 +2511,7 @@ export function startWebChat(options: WebChatOptions): void {
       closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
       busySessions.delete(targetId);
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, lifecycle: 'closed' }));
+      sendJson(res, 200, { ok: true, lifecycle: 'closed' });
       return;
     }
 
@@ -2655,7 +2520,6 @@ export function startWebChat(options: WebChatOptions): void {
       url.startsWith('/api/sessions/') &&
       !url.includes('/resume') &&
       !url.includes('/stop') &&
-      !url.includes('/autotalk') &&
       !url.includes('/messages/') &&
       req.method === 'DELETE'
     ) {
@@ -2676,8 +2540,7 @@ export function startWebChat(options: WebChatOptions): void {
 
       console.log(`[web-chat] Deleted session ${targetId}`);
       invalidateSessionSnapshots();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      sendJson(res, 200, { ok: true });
       return;
     }
 
@@ -2689,8 +2552,7 @@ export function startWebChat(options: WebChatOptions): void {
         const maxBytes = uploadMaxBytes();
         const declaredBytes = Number(req.headers['content-length']);
         if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Upload too large', maxBytes }));
+          sendJson(res, 413, { error: 'Upload too large', maxBytes });
           req.resume();
           return;
         }
@@ -2701,8 +2563,7 @@ export function startWebChat(options: WebChatOptions): void {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           receivedBytes += buffer.length;
           if (receivedBytes > maxBytes) {
-            res.writeHead(413, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Upload too large', maxBytes }));
+            sendJson(res, 413, { error: 'Upload too large', maxBytes });
             req.resume();
             return;
           }
@@ -2713,8 +2574,7 @@ export function startWebChat(options: WebChatOptions): void {
         const contentType = req.headers['content-type'] || '';
         const boundaryMatch = contentType.match(/boundary=(.+)/);
         if (!boundaryMatch) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No boundary in content-type' }));
+          sendJson(res, 400, { error: 'No boundary in content-type' });
           return;
         }
         const boundary = '--' + boundaryMatch[1];
@@ -2754,17 +2614,14 @@ export function startWebChat(options: WebChatOptions): void {
         }
 
         if (files.length === 0 && rejected.length > 0) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'All files rejected', rejected }));
+          sendJson(res, 400, { error: 'All files rejected', rejected });
           return;
         }
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ files, rejected }));
+        sendJson(res, 200, { files, rejected });
       } catch (err) {
         console.error('[web-chat] Upload error:', err);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Upload failed' }));
+        sendJson(res, 500, { error: 'Upload failed' });
       }
       return;
     }
@@ -2782,44 +2639,7 @@ export function startWebChat(options: WebChatOptions): void {
         res.end('Not found');
         return;
       }
-      const ext = extname(filePath).toLowerCase();
-      const mimeTypes: Record<string, string> = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.svg': 'image/svg+xml',
-        '.pdf': 'application/pdf',
-        '.aac': 'audio/aac',
-        '.mp3': 'audio/mpeg',
-        '.mp4': 'video/mp4',
-        '.wav': 'audio/wav',
-        '.m4a': 'audio/mp4',
-        '.ogg': 'audio/ogg',
-        '.flac': 'audio/flac',
-        '.html': 'text/html; charset=utf-8',
-        '.htm': 'text/html; charset=utf-8',
-        '.css': 'text/css; charset=utf-8',
-        '.js': 'application/javascript; charset=utf-8',
-        '.mjs': 'application/javascript; charset=utf-8',
-        '.json': 'application/json; charset=utf-8',
-        '.txt': 'text/plain; charset=utf-8',
-        '.md': 'text/markdown; charset=utf-8',
-        '.csv': 'text/csv; charset=utf-8',
-        '.xml': 'application/xml; charset=utf-8',
-        '.yaml': 'application/x-yaml; charset=utf-8',
-        '.yml': 'application/x-yaml; charset=utf-8',
-        '.zip': 'application/zip',
-      };
-      // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
-      // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
-      const mappedMime = mimeTypes[ext];
-      const disposition =
-        !mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)
-          ? `attachment; filename="${encodeURIComponent(basename(filePath))}"`
-          : undefined;
-      serveFile(req, res, filePath, mappedMime || 'application/octet-stream', disposition);
+      serveDownload(req, res, filePath);
       return;
     }
 
@@ -2827,25 +2647,15 @@ export function startWebChat(options: WebChatOptions): void {
       url.startsWith('/api/artifact-preview') &&
       (req.method === 'GET' || req.method === 'HEAD')
     ) {
-      const urlObj = new URL(rawUrl, 'http://localhost');
-      const requestedPath = urlObj.searchParams.get('path') || '';
-      const requestedWorkspaceId = urlObj.searchParams.get('workspaceId') || undefined;
-      if (!requestedPath) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return;
-      }
-      let selectedWorkspace: WorkspaceEntry;
+      let requestedFile;
       try {
-        selectedWorkspace = await resolveWorkspace(requestedWorkspaceId);
+        requestedFile = await resolveRequestedWorkspaceFile(rawUrl);
       } catch (error) {
         res.writeHead(error instanceof WebProjectError ? error.status : 404);
-        res.end('Workspace not found');
+        res.end(error instanceof Error ? error.message : 'Workspace not found');
         return;
       }
-      const filePath = isAbsolute(requestedPath)
-        ? resolve(requestedPath)
-        : resolve(selectedWorkspace.path, requestedPath);
+      const { filePath, workspace: selectedWorkspace } = requestedFile;
       const extension = extname(filePath).toLowerCase();
       if (
         !existsSync(filePath) ||
@@ -2858,13 +2668,10 @@ export function startWebChat(options: WebChatOptions): void {
         return;
       }
       if (downloadAllowedExts.length > 0 && !downloadAllowedExts.includes(extension)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error: 'Forbidden',
-            reason: `Extension ${extension} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
-          })
-        );
+        sendJson(res, 403, {
+          error: 'Forbidden',
+          reason: `Extension ${extension} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
+        });
         return;
       }
       serveFile(req, res, filePath, 'text/html; charset=utf-8', undefined, {
@@ -2889,25 +2696,15 @@ export function startWebChat(options: WebChatOptions): void {
     }
 
     if (url.startsWith('/api/workspace-file') && (req.method === 'GET' || req.method === 'HEAD')) {
-      const urlObj = new URL(rawUrl, 'http://localhost');
-      const requestedPath = urlObj.searchParams.get('path') || '';
-      const requestedWorkspaceId = urlObj.searchParams.get('workspaceId') || undefined;
-      if (!requestedPath) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return;
-      }
-      let selectedWorkspace: WorkspaceEntry;
+      let requestedFile;
       try {
-        selectedWorkspace = await resolveWorkspace(requestedWorkspaceId);
+        requestedFile = await resolveRequestedWorkspaceFile(rawUrl);
       } catch (error) {
         res.writeHead(error instanceof WebProjectError ? error.status : 404);
-        res.end('Workspace not found');
+        res.end(error instanceof Error ? error.message : 'Workspace not found');
         return;
       }
-      const filePath = isAbsolute(requestedPath)
-        ? resolve(requestedPath)
-        : resolve(selectedWorkspace.path, requestedPath);
+      const { filePath, workspace: selectedWorkspace } = requestedFile;
       if (!existsSync(filePath)) {
         res.writeHead(404);
         res.end('Not found');
@@ -2924,54 +2721,13 @@ export function startWebChat(options: WebChatOptions): void {
       const ext = extname(filePath).toLowerCase();
       // WEB_CHAT_DOWNLOAD_ACCEPT で許可拡張子が絞られているならチェック
       if (downloadAllowedExts.length > 0 && !downloadAllowedExts.includes(ext)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error: 'Forbidden',
-            reason: `Extension ${ext || '(none)'} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
-          })
-        );
+        sendJson(res, 403, {
+          error: 'Forbidden',
+          reason: `Extension ${ext || '(none)'} not in WEB_CHAT_DOWNLOAD_ACCEPT allowlist`,
+        });
         return;
       }
-      const mimeTypes: Record<string, string> = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.svg': 'image/svg+xml',
-        '.pdf': 'application/pdf',
-        '.aac': 'audio/aac',
-        '.mp3': 'audio/mpeg',
-        '.mp4': 'video/mp4',
-        '.wav': 'audio/wav',
-        '.m4a': 'audio/mp4',
-        '.ogg': 'audio/ogg',
-        '.flac': 'audio/flac',
-        '.html': 'text/html; charset=utf-8',
-        '.htm': 'text/html; charset=utf-8',
-        '.css': 'text/css; charset=utf-8',
-        '.js': 'application/javascript; charset=utf-8',
-        '.mjs': 'application/javascript; charset=utf-8',
-        '.json': 'application/json; charset=utf-8',
-        '.ts': 'text/plain; charset=utf-8',
-        '.tsx': 'text/plain; charset=utf-8',
-        '.txt': 'text/plain; charset=utf-8',
-        '.md': 'text/markdown; charset=utf-8',
-        '.csv': 'text/csv; charset=utf-8',
-        '.xml': 'application/xml; charset=utf-8',
-        '.yaml': 'application/x-yaml; charset=utf-8',
-        '.yml': 'application/x-yaml; charset=utf-8',
-        '.zip': 'application/zip',
-      };
-      // 拡張子に対応する mime があれば inline 表示、無ければ Content-Disposition: attachment で
-      // ファイル名付きダウンロードに落とす (LLM が出力する任意拡張子のファイルでも開ける)
-      const mappedMime = mimeTypes[ext];
-      const disposition =
-        !mappedMime || ACTIVE_DOWNLOAD_EXTENSIONS.has(ext)
-          ? `attachment; filename="${encodeURIComponent(basename(filePath))}"`
-          : undefined;
-      serveFile(req, res, filePath, mappedMime || 'application/octet-stream', disposition);
+      serveDownload(req, res, filePath, true);
       return;
     }
 
@@ -2984,8 +2740,7 @@ export function startWebChat(options: WebChatOptions): void {
         const message = (body.message || '').toString();
 
         if (!message.trim()) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'message is required' }));
+          sendJson(res, 400, { error: 'message is required' });
           return;
         }
 
@@ -3005,8 +2760,7 @@ export function startWebChat(options: WebChatOptions): void {
         // entry 確認 / web 以外への送信は弾く
         const entry = getSessionEntry(appSessionId);
         if (!entry) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `Session ${appSessionId} not found` }));
+          sendJson(res, 404, { error: `Session ${appSessionId} not found` });
           return;
         }
         if (entry.platform !== 'web') {
@@ -3019,15 +2773,13 @@ export function startWebChat(options: WebChatOptions): void {
           return;
         }
         if (getSessionLifecycle(appSessionId) === 'closed') {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Session is closed' }));
+          sendJson(res, 409, { error: 'Session is closed' });
           return;
         }
 
         // 並行送信ロック
         if (busySessions.has(appSessionId)) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Session is busy' }));
+          sendJson(res, 409, { error: 'Session is busy' });
           return;
         }
         busySessions.add(appSessionId);
@@ -3099,9 +2851,6 @@ export function startWebChat(options: WebChatOptions): void {
           }
 
           console.log(`[web-chat] Message (session ${appSessionId}): ${message.slice(0, 100)}`);
-
-          // INTER_INSTANCE_CHAT_ENABLED=true なら自分の jsonl にも流す（他 xangi へ伝播）
-          flowFromHostPlatform(message, 'user');
 
           const threadId = threadIdFor('web', appSessionId);
           const turnId = turnIdFor('web', `${Date.now()}`);
@@ -3280,9 +3029,6 @@ export function startWebChat(options: WebChatOptions): void {
                     updateSessionTitle(appSessionId, truncateSessionTitle(message));
                   }
                   invalidateSessionSnapshots();
-
-                  // INTER_INSTANCE_CHAT_ENABLED=true なら agent 応答も自分の jsonl に流す
-                  flowFromHostPlatform(stripReplySuggestionMarkup(completedResult.result), 'agent');
                 },
                 onError: (error) => {
                   sendSSE('error', { message: error.message });
@@ -3383,8 +3129,10 @@ export function startWebChat(options: WebChatOptions): void {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。
     if (uiEnabled) {
       console.log(`[web-chat] Chat UI: ${primaryAccessUrl(port, host)}`);
-    } else {
+    } else if (eventsServerEnabled) {
       console.log(`[xangi-events] Headless companion API: ${primaryAccessUrl(port, host)}`);
+    } else {
+      console.log(`[inter-instance-chat] HTTP API: ${primaryAccessUrl(port, host)}`);
     }
     // Tailscale が動いてれば LAN/Tailnet 経由のアクセス URL も出す（best-effort）。
     // host を loopback / 特定 IP に絞っている場合は到達できない経路を出さないよう、
@@ -3393,8 +3141,14 @@ export function startWebChat(options: WebChatOptions): void {
       .then((urls) => {
         if (uiEnabled) console.log(formatAccessUrls('web-chat', urls));
         // pull 型 events SSE の URL も併せて出す。consumer (pet 等) はこれに繋ぐ。
-        const eventsUrls = urls.map((u) => `${u}/api/events/stream`);
-        console.log(formatAccessUrls('xangi-events (SSE)', eventsUrls));
+        if (eventsServerEnabled) {
+          const eventsUrls = urls.map((u) => `${u}/api/events/stream`);
+          console.log(formatAccessUrls('xangi-events (SSE)', eventsUrls));
+        }
+        if (interChatEnabled) {
+          const interChatUrls = urls.map((u) => `${u}/api/inter-chat/ask`);
+          console.log(formatAccessUrls('inter-instance-chat', interChatUrls));
+        }
       })
       .catch(() => {
         // resolveAccessUrls 内で握り潰すが念のため
@@ -3415,31 +3169,4 @@ function isHeadlessCompanionRequest(method: string | undefined, url: string): bo
   if (url === '/api/sessions' && method === 'GET') return true;
   if (isInboxPath(url) && method === 'POST') return true;
   return false;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function readBody(req: import('http').IncomingMessage): Promise<Record<string, any>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString();
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-async function readRawBody(req: import('http').IncomingMessage, maxBytes: number): Promise<string> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const value = chunk as Buffer;
-    total += value.length;
-    if (total > maxBytes) throw new Error('extension request body is too large');
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }

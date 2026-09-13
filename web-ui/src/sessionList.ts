@@ -1,7 +1,3 @@
-export function shouldShowAutoTalk(interChatEnabled: boolean, platform: string): boolean {
-  return interChatEnabled && platform === 'web';
-}
-
 export type SessionListStatus = 'running' | 'waiting' | 'completed';
 
 export function sessionListStatus(session: {

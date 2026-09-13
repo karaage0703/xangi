@@ -50,43 +50,51 @@ function getBotId(): string | undefined {
   return process.env.DISCORD_BOT_ID;
 }
 
+async function fetchWithRateLimitRetry(
+  path: string,
+  options: RequestInit,
+  tracker: DiscordRateLimitTracker | undefined,
+  errorMessage: (status: number, body: string) => string
+): Promise<Response> {
+  let lastBody = '';
+  for (let attempt = 0; attempt <= MAX_DISCORD_RETRIES; attempt++) {
+    const response = await fetch(`${API_BASE}${path}`, options);
+    if (response.status === 429 && attempt < MAX_DISCORD_RETRIES) {
+      lastBody = await response.text().catch(() => '');
+      const waitMs = getRetryAfterMs(lastBody, response);
+      if (tracker) tracker.waitMs += waitMs;
+      await sleep(waitMs);
+      continue;
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => lastBody);
+      throw new Error(errorMessage(response.status, body));
+    }
+    return response;
+  }
+  throw new Error(errorMessage(429, lastBody));
+}
+
 async function discordFetch(
   path: string,
   options?: RequestInit,
   tracker?: DiscordRateLimitTracker
 ): Promise<unknown> {
   const token = getToken();
-  let lastBody = '';
-
-  for (let attempt = 0; attempt <= MAX_DISCORD_RETRIES; attempt++) {
-    const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchWithRateLimitRetry(
+    path,
+    {
       ...options,
       headers: {
         Authorization: `Bot ${token}`,
         'Content-Type': 'application/json',
         ...options?.headers,
       },
-    });
-
-    if (res.status === 429 && attempt < MAX_DISCORD_RETRIES) {
-      lastBody = await res.text().catch(() => '');
-      const waitMs = getRetryAfterMs(lastBody, res);
-      if (tracker) tracker.waitMs += waitMs;
-      await sleep(waitMs);
-      continue;
-    }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => lastBody);
-      throw new Error(`Discord API error ${res.status}: ${body}`);
-    }
-
-    // 204 No Content
-    if (res.status === 204) return null;
-    return res.json();
-  }
-
-  throw new Error(`Discord API error 429: ${lastBody}`);
+    },
+    tracker,
+    (status, body) => `Discord API error ${status}: ${body}`
+  );
+  return res.status === 204 ? null : res.json();
 }
 
 function withRateLimitNotice(result: string, tracker: DiscordRateLimitTracker): string {
@@ -483,34 +491,20 @@ async function mediaSend(
 
   const body = Buffer.concat(parts);
 
-  let lastBody = '';
-  for (let attempt = 0; attempt <= MAX_DISCORD_RETRIES; attempt++) {
-    const res = await fetch(`${API_BASE}/channels/${channelId}/messages`, {
+  await fetchWithRateLimitRetry(
+    `/channels/${channelId}/messages`,
+    {
       method: 'POST',
       headers: {
         Authorization: `Bot ${token}`,
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
       },
       body,
-    });
-
-    if (res.status === 429 && attempt < MAX_DISCORD_RETRIES) {
-      lastBody = await res.text().catch(() => '');
-      const waitMs = getRetryAfterMs(lastBody, res);
-      if (tracker) tracker.waitMs += waitMs;
-      await sleep(waitMs);
-      continue;
-    }
-
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => lastBody);
-      throw new Error(`Failed to upload file: ${res.status} ${errBody}`);
-    }
-
-    return `📎 ファイルを送信しました: ${fileName}`;
-  }
-
-  throw new Error(`Failed to upload file: 429 ${lastBody}`);
+    },
+    tracker,
+    (status, errorBody) => `Failed to upload file: ${status} ${errorBody}`
+  );
+  return `📎 ファイルを送信しました: ${fileName}`;
 }
 
 // ─── Router ─────────────────────────────────────────────────────────

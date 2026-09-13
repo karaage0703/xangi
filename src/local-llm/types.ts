@@ -50,6 +50,7 @@ export type LLMToolChoice =
   'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface LLMChatOptions {
+  onModel?: (model: string) => void;
   tools?: LLMTool[];
   toolChoice?: LLMToolChoice;
   temperature?: number;

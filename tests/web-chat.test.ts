@@ -56,6 +56,7 @@ import {
 import { stopManagedExtensions } from '../src/extensions.js';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 import type { ExternalChatUrlResolvers } from '../src/external-chat-link.js';
+import { _resetInterChatConfigForTest } from '../src/inter-instance-chat/index.js';
 
 describe('Web Chat continuation actions', () => {
   it('keeps Closed Discord sessions continuable from the original Discord conversation', () => {
@@ -370,6 +371,12 @@ describe('web-chat HTTP API', () => {
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
       destinationLabelResolverRef,
+      settingsChannelListers: {
+        discord: async () => [
+          { id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' },
+        ],
+        slack: async () => [{ id: 'C123', name: '#general' }],
+      },
       scheduler,
       resolver,
       workspaceRegistry,
@@ -378,7 +385,14 @@ describe('web-chat HTTP API', () => {
         backend,
         source: 'web-chat test discovery',
         status: 'available',
-        models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['high'] }],
+        models: [
+          {
+            id: 'gpt-test',
+            displayName: 'GPT Test',
+            isDefault: true,
+            supportedEfforts: ['high', 'xhigh', 'ultra'],
+          },
+        ],
       }),
       extensionUpdateRequest: async (id) => ({
         id,
@@ -394,6 +408,13 @@ describe('web-chat HTTP API', () => {
           repositoryUrl: 'https://github.com/example/demo-extension',
           updateAvailable: true,
         },
+      }),
+      updateBackend: async (id) => ({
+        id,
+        label: 'Codex',
+        previousVersion: 'codex 1.0',
+        version: 'codex 2.0',
+        message: 'Codexを更新しました。新しい実行からcodex 2.0を使用します。',
       }),
     });
     baseUrl = `http://127.0.0.1:${port}`;
@@ -411,6 +432,42 @@ describe('web-chat HTTP API', () => {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
+  });
+
+  it('serves channel names for the settings selector while keeping IDs as values', async () => {
+    const response = await fetch(`${baseUrl}/api/runtime-settings/channels?platform=discord`);
+    const body = (await response.json()) as {
+      status: string;
+      channels: Array<{ id: string; name: string; group?: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      platform: 'discord',
+      status: 'available',
+      channels: [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
+    });
+  });
+
+  it('updates an allowlisted backend tool through a same-origin mutation', async () => {
+    const response = await fetch(`${baseUrl}/api/backend-tools/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'codex' }),
+    });
+    const body = (await response.json()) as { id: string; message: string };
+    expect(response.status).toBe(200);
+    expect(body.id).toBe('codex');
+    expect(body.message).toContain('Codexを更新しました');
+  });
+
+  it('rejects a cross-origin backend tool update', async () => {
+    const response = await fetch(`${baseUrl}/api/backend-tools/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://example.invalid' },
+      body: JSON.stringify({ id: 'codex' }),
+    });
+    expect(response.status).toBe(403);
   });
 
   afterEach(async () => {
@@ -457,6 +514,64 @@ describe('web-chat HTTP API', () => {
 
     // Runner は destroy されていない（旧実装のように web-chat ランナーを毎回破棄しない）
     expect(runner.destroyed.size).toBe(0);
+  });
+
+  it('認証付きinter-chat依頼を通常Webセッションの履歴へ保存する', async () => {
+    process.env.INTER_INSTANCE_CHAT_ENABLED = 'true';
+    process.env.INTER_INSTANCE_CHAT_TOKEN = 'shared-test-secret';
+    process.env.XANGI_INSTANCE_ID = 'instance-b';
+    _resetInterChatConfigForTest();
+    runner.persistResults = true;
+
+    try {
+      const responsePromise = fetch(`${baseUrl}/api/inter-chat/ask`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer shared-test-secret',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'instance-a',
+          to: 'instance-b',
+          request_id: '123e4567-e89b-42d3-a456-426614174000',
+          text: '前回の続きも覚えていて',
+        }),
+      });
+
+      let contextKey = '';
+      await vi.waitFor(() => {
+        contextKey =
+          Array.from(runner.pending.keys()).find((key) => key.startsWith('web-chat:')) || '';
+        expect(contextKey).not.toBe('');
+      });
+      runner.release(contextKey);
+
+      const response = await responsePromise;
+      const body = (await response.json()) as { session_id: string; text: string };
+      expect(response.status).toBe(200);
+      expect(body.text).toBe('ok');
+      expect(getSessionEntry(body.session_id)).toMatchObject({
+        platform: 'web',
+        scope: 'interactive',
+        lifecycle: 'open',
+        interAgentPeerId: 'instance-a',
+      });
+      const history = readSessionMessages(testDir, body.session_id);
+      expect(history.some((message) => message.role === 'user')).toBe(true);
+      expect(history.some((message) => message.role === 'assistant')).toBe(true);
+      const detail = (await (
+        await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(body.session_id)}`)
+      ).json()) as { messages: Array<{ role: string; content: string }> };
+      expect(detail.messages[0]).toMatchObject({
+        role: 'user',
+        content: '前回の続きも覚えていて',
+      });
+    } finally {
+      delete process.env.INTER_INSTANCE_CHAT_ENABLED;
+      delete process.env.INTER_INSTANCE_CHAT_TOKEN;
+      delete process.env.XANGI_INSTANCE_ID;
+      _resetInterChatConfigForTest();
+    }
   });
 
   it('creates an Agent Run with an isolated session and persists its result manifest', async () => {
@@ -841,6 +956,69 @@ describe('web-chat HTTP API', () => {
     expect(await removed.json()).toEqual({ error: 'Projectはスケジュールで使用中です' });
   });
 
+  it('serves durable model switches in session list and detail without default inference', async () => {
+    const sessionId = createWebSession();
+    const entry = getSessionEntry(sessionId)!;
+    const first = {
+      turnId: 'first',
+      backend: 'codex',
+      observedModels: ['old-model'],
+      source: 'provider' as const,
+      startedAt: '2025-01-01T00:00:00Z',
+      updatedAt: '2025-01-01T00:00:01Z',
+      status: 'completed' as const,
+    };
+    const last = {
+      ...first,
+      turnId: 'last',
+      backend: 'another-backend',
+      observedModels: ['new-model', 'fallback-model'],
+    };
+    // Recovery may only populate history, without a current execution pointer.
+    entry.modelHistory = [first, last];
+    closeSession(sessionId, 'web');
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${sessionId}`)).json();
+    expect(detail.modelHistory).toEqual([first, last]);
+    expect(detail.modelExecution).toEqual(last);
+    const listed = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const session = listed.sessions.find((item: { id: string }) => item.id === sessionId);
+    expect(session.modelHistory).toEqual([first, last]);
+    expect(session.backend.backend).toBe('another-backend');
+    expect(session.nextBackend).toBeUndefined();
+  });
+
+  it('accepts and rejects Project effort using the selected model capabilities', async () => {
+    const accepted = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Ultra Project',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'ultra',
+      }),
+    });
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toMatchObject({
+      project: { backend: 'codex', model: 'gpt-test', effort: 'ultra' },
+    });
+
+    const rejected = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Medium Project',
+        backend: 'codex',
+        model: 'gpt-test',
+        effort: 'medium',
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: 'モデル gpt-test のeffortは high, xhigh, ultra です',
+    });
+  });
+
   it('moves an existing Web conversation and inherits the Project backend settings', async () => {
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
@@ -876,9 +1054,20 @@ describe('web-chat HTTP API', () => {
       sessions: Array<{
         id: string;
         backend?: { backend: string; model?: string; effort?: string; source: string };
+        modelExecution?: unknown;
+        nextBackend?: { backend: string; model?: string; effort?: string; source: string };
       }>;
     };
     expect(listed.sessions.find((session) => session.id === created.sessionId)?.backend).toEqual({
+      backend: 'claude-code',
+      source: 'session',
+    });
+    expect(
+      listed.sessions.find((session) => session.id === created.sessionId)?.modelExecution
+    ).toBeUndefined();
+    expect(
+      listed.sessions.find((session) => session.id === created.sessionId)?.nextBackend
+    ).toEqual({
       backend: 'codex',
       model: 'gpt-test',
       effort: 'high',
@@ -1282,22 +1471,16 @@ process.stdin.on('end', () => server.close());
       title: 'Setup: Demo Extension',
     });
 
-    const blockedUninstall = await fetch(
-      `${baseUrl}/api/extensions/demo-extension/uninstall`,
-      {
-        method: 'POST',
-        headers: { Origin: 'https://attacker.example' },
-      }
-    );
+    const blockedUninstall = await fetch(`${baseUrl}/api/extensions/demo-extension/uninstall`, {
+      method: 'POST',
+      headers: { Origin: 'https://attacker.example' },
+    });
     expect(blockedUninstall.status).toBe(403);
 
-    const uninstallResponse = await fetch(
-      `${baseUrl}/api/extensions/demo-extension/uninstall`,
-      {
-        method: 'POST',
-        headers: { Origin: baseUrl },
-      }
-    );
+    const uninstallResponse = await fetch(`${baseUrl}/api/extensions/demo-extension/uninstall`, {
+      method: 'POST',
+      headers: { Origin: baseUrl },
+    });
     expect(uninstallResponse.status).toBe(200);
     const uninstall = (await uninstallResponse.json()) as {
       sessionId: string;
@@ -1314,13 +1497,11 @@ process.stdin.on('end', () => server.close());
       title: 'Remove: Demo Extension',
     });
 
-    const catalogAfterConversation = (await (
-      await fetch(`${baseUrl}/api/extensions`)
-    ).json()) as { extensions: Array<{ id: string; installed: boolean }> };
+    const catalogAfterConversation = (await (await fetch(`${baseUrl}/api/extensions`)).json()) as {
+      extensions: Array<{ id: string; installed: boolean }>;
+    };
     expect(catalogAfterConversation.extensions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'demo-extension', installed: true }),
-      ])
+      expect.arrayContaining([expect.objectContaining({ id: 'demo-extension', installed: true })])
     );
   });
 
@@ -1687,6 +1868,8 @@ process.stdin.on('end', () => process.exit(0));
     expect(backendSet?.options?.[2].choices?.map((choice) => choice.value)).toEqual([
       '--effort=default',
       '--effort=high',
+      '--effort=xhigh',
+      '--effort=ultra',
     ]);
   });
 
@@ -2052,7 +2235,6 @@ process.stdin.on('end', () => process.exit(0));
 
   it('serves the React shell and exposes inter-chat state through config', async () => {
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
-      interChatEnabled?: boolean;
       allowedBackends?: string[];
       uploadMaxBytes?: number;
       completionShowElapsed?: boolean;
@@ -2060,7 +2242,6 @@ process.stdin.on('end', () => process.exit(0));
     const html = await (await fetch(baseUrl)).text();
     const stylesheetPath = html.match(/href="([^"]+\.css)"/)?.[1];
 
-    expect(config.interChatEnabled).toBe(false);
     expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
     expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
     expect(config.completionShowElapsed).toBe(true);
@@ -2106,6 +2287,9 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(sourceStylesheet).toMatch(
       /@media \(max-width: 768px\), \(max-height: 500px\) and \(hover: none\)[\s\S]*?\.pane-complete,\s*\.pane-external-chat,[\s\S]*?min-height:\s*44px/
+    );
+    expect(sourceStylesheet).toMatch(
+      /input\[type='datetime-local'\]\s*\{[^}]*padding-inline:\s*0[^}]*text-indent:\s*10px/s
     );
     expect(sourceStylesheet).toMatch(/\.session-project-tag\s*\{/);
     expect(sourceStylesheet).toMatch(/\.workspace\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s);
@@ -2412,9 +2596,7 @@ process.stdin.on('end', () => process.exit(0));
     );
 
     const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
-    expect(detail.messages[0].content).toBe(
-      'こんにちは 🐬 `:smile:` :custom_team_emoji:'
-    );
+    expect(detail.messages[0].content).toBe('こんにちは 🐬 `:smile:` :custom_team_emoji:');
   });
 
   it('GET /api/sessions/:id exposes the active turn for stream recovery', async () => {
@@ -3116,11 +3298,11 @@ The following is untrusted supplemental context.
         processingTime?: { durationMs: number; source?: string };
       }>;
     };
-    expect(list.sessions.find((session) => session.id === schedulerId)?.processingTime).toMatchObject(
-      {
-        source: 'session-elapsed',
-      }
-    );
+    expect(
+      list.sessions.find((session) => session.id === schedulerId)?.processingTime
+    ).toMatchObject({
+      source: 'session-elapsed',
+    });
   });
 
   it('GET /api/sessions hides unmanaged transcripts without a user-derived title', async () => {

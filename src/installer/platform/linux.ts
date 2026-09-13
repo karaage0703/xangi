@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ServiceAdapter } from './service.js';
+import { defaultCommandRunner, systemdValue, writeAtomic, type CommandRunner } from './common.js';
 
 export interface SystemdUserServiceOptions {
   unitName: string;
@@ -17,10 +17,7 @@ export interface SystemdUserServiceOptions {
   wsl?: boolean;
 }
 
-export interface LinuxCommandRunner {
-  run(command: string, args: string[], allowFailure?: boolean): string;
-  status(command: string, args: string[]): { status: number | null; output: string };
-}
+export type LinuxCommandRunner = CommandRunner;
 
 export interface WslDetectionInput {
   env?: NodeJS.ProcessEnv;
@@ -39,13 +36,6 @@ export function isWsl(input: WslDetectionInput = {}): boolean {
     }
   }
   return /(?:microsoft|wsl)/i.test(procVersion);
-}
-
-function systemdValue(value: string): string {
-  if ([...value].some((character) => character.charCodeAt(0) < 32)) {
-    throw new Error('systemd unit values may not contain control characters');
-  }
-  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`;
 }
 
 export function systemdPathValue(value: string): string {
@@ -95,26 +85,6 @@ export function renderSystemdUserUnit(options: SystemdUserServiceOptions): strin
     '',
   ].join('\n');
 }
-
-function run(command: string, args: string[], allowFailure = false): string {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
-  const output = String(result.stdout ?? '') + String(result.stderr ?? '');
-  if (!allowFailure && (result.status ?? 1) !== 0) {
-    throw new Error(output.trim() || `${command} ${args.join(' ')} failed`);
-  }
-  return output.trim();
-}
-
-const defaultCommandRunner: LinuxCommandRunner = {
-  run,
-  status(command, args) {
-    const result = spawnSync(command, args, { encoding: 'utf8' });
-    return {
-      status: result.status,
-      output: (String(result.stdout ?? '') + String(result.stderr ?? '')).trim(),
-    };
-  },
-};
 
 function assertLoopbackUrl(url: string): void {
   let parsed: URL;
@@ -177,10 +147,7 @@ export function createLinuxServiceAdapter(
         throw new Error(`systemd user service is unavailable. ${context}`);
       }
       mkdirSync(dirname(options.unitPath), { recursive: true });
-      const temporary = `${options.unitPath}.tmp-${process.pid}`;
-      writeFileSync(temporary, renderSystemdUserUnit(options), { mode: 0o644 });
-      chmodSync(temporary, 0o644);
-      renameSync(temporary, options.unitPath);
+      writeAtomic(options.unitPath, renderSystemdUserUnit(options));
       commands.run('systemctl', ['--user', 'daemon-reload']);
       commands.run('systemctl', ['--user', 'start', options.unitName]);
     },

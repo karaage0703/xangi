@@ -37,8 +37,6 @@ export interface Session {
   isActive: boolean;
   lifecycle?: 'open' | 'closed';
   sessionMode?: 'stateful' | 'stateless';
-  autoTalk: boolean;
-  autoTalkActive: boolean;
   timeoutAt?: number;
   maxTimeoutAt?: number;
   timeoutMs?: number;
@@ -163,7 +161,6 @@ export interface RuntimeConfig {
   uploadAccept: string | null;
   uploadMaxBytes: number;
   timeoutExtendEnabled: boolean;
-  interChatEnabled: boolean;
   allowedBackends: string[];
   completionShowElapsed: boolean;
 }
@@ -235,12 +232,6 @@ export interface MutationResponse {
 
 export interface StopSessionResponse extends MutationResponse {
   stopped: boolean;
-}
-
-export interface AutoTalkResponse extends MutationResponse {
-  appSessionId: string;
-  autoTalk: boolean;
-  active: boolean;
 }
 
 export interface UpdateMessageResponse extends MutationResponse {

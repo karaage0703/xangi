@@ -20,11 +20,7 @@ import {
   discordToolHistoryByMessageId,
 } from '../src/discord/ui.js';
 import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
-import {
-  clearSettingsCache,
-  initSettings,
-  loadSettings,
-} from '../src/settings.js';
+import { clearSettingsCache, initSettings, loadSettings } from '../src/settings.js';
 
 let discordCommandsTempDir: string;
 
@@ -450,7 +446,9 @@ describe('Discord Commands', () => {
         effort: undefined,
       });
       expect(switchBackend).toHaveBeenCalledWith('channel-123');
-      expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining('次のturnから適用'));
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining('次のturnから適用')
+      );
       expect(interaction.reply).not.toHaveBeenCalled();
     });
 
@@ -485,6 +483,60 @@ describe('Discord Commands', () => {
       );
       expect(switchBackend).not.toHaveBeenCalled();
       expect(interaction.reply).not.toHaveBeenCalled();
+    });
+
+    it('applies global scope through the live default runner without resetting one channel', async () => {
+      const interaction = createBackendInteraction('gpt-global');
+      const originalGetString = interaction.options.getString;
+      interaction.options.getString = (name: string) =>
+        name === 'type'
+          ? 'codex'
+          : name === 'scope'
+            ? 'global'
+            : name === 'effort'
+              ? 'medium'
+            : originalGetString(name);
+      let currentDefault = {
+        backend: 'codex' as AgentBackend,
+        model: 'gpt-old',
+        effort: undefined as EffortLevel | undefined,
+      };
+      const setDefault = vi.fn(
+        (backend: AgentBackend, model?: string, effort?: EffortLevel) => {
+          currentDefault = { backend, model: model ?? '', effort };
+        }
+      );
+      const switchDefaultBackend = vi.fn();
+      const switchBackend = vi.fn();
+      const handler = createInteractionHandler({
+        config: { agent: {}, discord: { allowedUsers: ['user-123'] } } as Config,
+        resolver: {
+          getDefault: () => currentDefault,
+          getSelectableBackends: () => ['codex'],
+          isBackendSelectable: () => true,
+          setDefault,
+        } as unknown as BackendResolver,
+        agentRunner: { switchDefaultBackend, switchBackend } as unknown as AgentRunner,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+        workspaceRegistry: {} as never,
+        discoverModels: vi.fn().mockResolvedValue({
+          backend: 'codex',
+          source: 'test',
+          status: 'available',
+          models: [{ id: 'gpt-global', supportedEfforts: ['low', 'medium', 'high'] }],
+        }),
+      });
+
+      await handler(interaction as never);
+
+      expect(setDefault).toHaveBeenCalledWith('codex', 'gpt-global', 'medium');
+      expect(switchDefaultBackend).toHaveBeenCalledOnce();
+      expect(switchBackend).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining('全体の既定バックエンド設定')
+      );
     });
   });
 
@@ -766,11 +818,16 @@ describe('Discord Commands', () => {
       const setSubcommand = backend.options.find((opt: any) => opt.name === 'set');
       const modelOption = setSubcommand.options.find((opt: any) => opt.name === 'model');
       const effortOption = setSubcommand.options.find((opt: any) => opt.name === 'effort');
+      const scopeOption = setSubcommand.options.find((opt: any) => opt.name === 'scope');
 
       expect(modelOption.autocomplete).toBe(true);
       expect(modelOption.choices).toBeUndefined();
       expect(effortOption.autocomplete).toBe(true);
       expect(effortOption.choices).toBeUndefined();
+      expect(scopeOption.choices.map((choice: any) => choice.value)).toEqual([
+        'channel',
+        'global',
+      ]);
     });
 
     it('returns only currently selectable backend candidates', async () => {
@@ -850,6 +907,47 @@ describe('Discord Commands', () => {
         { name: 'デフォルト', value: 'none' },
         { name: 'medium', value: 'medium' },
         { name: 'high', value: 'high' },
+        { name: 'xhigh', value: 'xhigh' },
+      ]);
+    });
+
+    it('returns every effort advertised by the default Codex model', async () => {
+      const resolver = {
+        isBackendSelectable: (backend: string) => backend === 'codex',
+      } as BackendResolver;
+      const discover = vi.fn().mockResolvedValue({
+        backend: 'codex',
+        source: 'codex app-server model/list',
+        status: 'available',
+        models: [
+          {
+            id: 'gpt-frontier',
+            isDefault: true,
+            supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          },
+        ],
+      });
+
+      await expect(
+        getDiscordAutocompleteChoices(
+          {
+            commandName: 'backend',
+            focusedName: 'effort',
+            focusedValue: '',
+            backend: 'codex',
+          },
+          [],
+          resolver,
+          discover
+        )
+      ).resolves.toEqual([
+        { name: 'デフォルト', value: 'none' },
+        { name: 'low', value: 'low' },
+        { name: 'medium', value: 'medium' },
+        { name: 'high', value: 'high' },
+        { name: 'xhigh', value: 'xhigh' },
+        { name: 'max', value: 'max' },
+        { name: 'ultra', value: 'ultra' },
       ]);
     });
 

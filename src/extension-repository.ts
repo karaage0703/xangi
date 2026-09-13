@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { loadExtensionManifest, type ExtensionManifest } from './extensions.js';
 import { streamTarListing } from './installer/tar-listing.js';
+import { readLimitedResponseBody } from './response-body.js';
 
 const execFileAsync = promisify(execFile);
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
@@ -373,31 +374,7 @@ async function downloadBytes(url: string, maxBytes: number): Promise<Uint8Array>
   });
   if (!response.ok)
     throw new Error(`Extension repository download failed: HTTP ${response.status}`);
-  const declared = response.headers.get('content-length');
-  if (declared !== null && Number(declared) > maxBytes) {
-    throw new Error('Extension repository download exceeds 50 MB');
-  }
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error('Extension repository download exceeds 50 MB');
-    }
-    chunks.push(value);
-  }
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
+  return readLimitedResponseBody(response, maxBytes, 'Extension repository download exceeds 50 MB');
 }
 
 export async function extractExtensionTarGzip(

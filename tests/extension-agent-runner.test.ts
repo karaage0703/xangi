@@ -52,6 +52,20 @@ describe('ExtensionAgentRunner', () => {
     expect(fetchFn.mock.calls[0][0].toString()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/agent$/);
   });
 
+  it('retains explicit extension model evidence and reports it before completion', async () => {
+    await installExtensionBackendFixture('example-backend', 'Example backend');
+    const backend = resolveExtensionAgentBackend('example-backend')!;
+    const runner = new ExtensionAgentRunner({ backend, fetchFn: vi.fn(async () => new Response(JSON.stringify({
+      schemaVersion: 1, result: 'ok', models: ['a', 'b'], model: 'a',
+    }))) });
+    const onModel = vi.fn();
+    const onComplete = vi.fn();
+    const result = await runner.runStream('hello', { onModel, onComplete });
+    expect(result).toMatchObject({ models: ['a', 'b'], model: 'a' });
+    expect(onModel.mock.calls.flat()).toEqual(['a', 'b', 'a']);
+    expect(onComplete).toHaveBeenCalledWith(result);
+  });
+
   it('rejects malformed extension responses', async () => {
     await installExtensionBackendFixture('example-backend', 'Example backend');
     const backend = resolveExtensionAgentBackend('example-backend')!;

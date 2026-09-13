@@ -54,7 +54,6 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await writeFile(join(project, 'docs', 'en', 'usage.md'), '# Usage\n');
   await writeFile(join(project, 'web', 'index.html'), '<main>Web Chat</main>\n');
   await writeFile(join(project, 'web', 'monitor.html'), '<main>Monitor</main>\n');
-  await writeFile(join(project, 'web', 'inter-chat.html'), '<main>Inter Chat</main>\n');
   await mkdir(join(project, 'web', 'app', 'assets'), { recursive: true });
   await writeFile(
     join(project, 'web', 'app', 'index.html'),
@@ -198,7 +197,7 @@ describe('packaging/build-bundle.sh', () => {
     expect(entries).toContain(`${root}/bin/xangi-cmd`);
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
-    expect(entries).toContain(`${root}/web/inter-chat.html`);
+    expect(entries).not.toContain(`${root}/web/inter-chat.html`);
     expect(entries).toContain(`${root}/web/app/index.html`);
     expect(entries).toContain(`${root}/web/app/assets/app.js`);
     expect(entries).toContain(`${root}/web/app/assets/app.css`);

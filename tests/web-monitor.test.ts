@@ -24,7 +24,12 @@ import {
   sessionLine,
   sessionProgressSummary,
   usageGroupPresentation,
+  usageBarWidth,
+  usageDisplayPace,
+  usageDisplayPercent,
   usagePacePercent,
+  DEFAULT_USAGE_DISPLAY_MODE,
+  resolveUsageDisplayMode,
   visibleUsageGroups,
   type MonitorSession,
   totalSessionTokens,
@@ -60,6 +65,36 @@ describe('Monitor account usage', () => {
     expect(usagePacePercent(window, reset - 2 * 60 * 60 * 1000)).toBe(0);
     expect(usagePacePercent(window, reset + 60 * 1000)).toBe(100);
     expect(usagePacePercent({ resetsAt: reset / 1000 }, reset)).toBeUndefined();
+  });
+
+  it('displays used and remaining percentages with rounded, clamped values', () => {
+    expect(usageDisplayPercent(42.6, 'used')).toBe(43);
+    expect(usageDisplayPercent(42.6, 'remaining')).toBe(57);
+    expect(usageDisplayPercent(-10, 'used')).toBe(0);
+    expect(usageDisplayPercent(110, 'remaining')).toBe(0);
+  });
+
+  it('uses used or remaining values for the usage bar width', () => {
+    expect(usageBarWidth(42.6, 'used')).toBe(42.6);
+    expect(usageBarWidth(42.6, 'remaining')).toBe(57.4);
+    expect(usageBarWidth(-10, 'remaining')).toBe(100);
+    expect(usageBarWidth(110, 'used')).toBe(100);
+  });
+
+  it('mirrors and clamps the pace marker in remaining mode', () => {
+    expect(usageDisplayPace(40, 'used')).toBe(40);
+    expect(usageDisplayPace(40, 'remaining')).toBe(60);
+    expect(usageDisplayPace(-10, 'used')).toBe(0);
+    expect(usageDisplayPace(110, 'remaining')).toBe(0);
+  });
+
+  it('keeps used as the default usage display mode unless remaining is explicitly selected', () => {
+    expect(DEFAULT_USAGE_DISPLAY_MODE).toBe('used');
+    expect(resolveUsageDisplayMode(null)).toBe('used');
+    expect(resolveUsageDisplayMode(undefined)).toBe('used');
+    expect(resolveUsageDisplayMode('invalid')).toBe('used');
+    expect(resolveUsageDisplayMode('used')).toBe('used');
+    expect(resolveUsageDisplayMode('remaining')).toBe('remaining');
   });
 
   it('labels the shared Codex quota bucket', () => {

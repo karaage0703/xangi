@@ -13,7 +13,14 @@ const discoverModels = async (backend: AgentBackend): Promise<BackendModelDiscov
   backend,
   source: 'test discovery',
   status: 'available',
-  models: [{ id: 'gpt-test', displayName: 'GPT Test', supportedEfforts: ['medium', 'high'] }],
+  models: [
+    {
+      id: 'gpt-test',
+      displayName: 'GPT Test',
+      isDefault: true,
+      supportedEfforts: ['medium', 'high', 'xhigh', 'ultra'],
+    },
+  ],
 });
 
 class FakeResolver {
@@ -185,6 +192,8 @@ describe('Web slash command adapter', () => {
       { name: 'デフォルト', value: '--effort=default' },
       { name: 'medium', value: '--effort=medium' },
       { name: 'high', value: '--effort=high' },
+      { name: 'xhigh', value: '--effort=xhigh' },
+      { name: 'ultra', value: '--effort=ultra' },
     ]);
 
     const models = commands.find((command) => command.name === 'models');
@@ -222,6 +231,26 @@ describe('Web slash command adapter', () => {
     await executeWebCommand('/backend reset', context);
     expect(resolver.cleared).toBe(true);
     expect(resolver.override).toBeUndefined();
+  });
+
+  it('uses the default model effort capabilities when the model is omitted', async () => {
+    const context = {
+      appSessionId: 'web-1',
+      workdir,
+      resolver: resolver as unknown as BackendResolver,
+      discoverModels,
+    };
+
+    await executeWebCommand('/backend set codex --effort=ultra', context);
+    expect(resolver.override).toEqual({
+      backend: 'codex',
+      model: undefined,
+      effort: 'ultra',
+    });
+
+    await expect(executeWebCommand('/backend set codex --effort=low', context)).rejects.toThrow(
+      'モデル `gpt-test` のeffortは medium, high, xhigh, ultra です'
+    );
   });
 
   it('rejects the removed lite Local LLM mode', async () => {

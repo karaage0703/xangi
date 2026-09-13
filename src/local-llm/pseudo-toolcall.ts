@@ -6,12 +6,12 @@
 //
 // このモジュールは drift の検出 (containsPseudoToolCall) と除去 (stripPseudoToolCalls) を提供する。
 // runner は最終 chatStream 完了後に containsPseudoToolCall で drift を検知し、検知時は
-// LLM にフィードバックして再生成させる (Step C)。retry でも drift なら strip して
-// 親切な fallback メッセージに差し替える (Step D)。
+// LLM にフィードバックして再生成させる。retry でも drift なら strip して
+// 親切な fallback メッセージに差し替える。
 
 /**
  * Strict drift = LLM が「tool 呼びたい」気持ちを擬似テキストで吐いた状態。
- * このパターンが見つかったら Step C で LLM に feedback して retry を要求する
+ * このパターンが見つかったら LLM に feedback して retry を要求する
  * (実応答が欠けてる/置き換えられてる可能性が高いため)。
  */
 const COMPLETE_STRICT_DRIFT_PATTERNS: RegExp[] = [
@@ -100,14 +100,14 @@ Choose ONE of the following:
 
 Do NOT repeat the pseudo tool_call text. Do NOT write \`thought\\ncall:...\` or \`<|channel>...\`.`;
 
-/** Step D の親切な fallback メッセージ */
+/** 再生成でも復旧しない場合の親切な fallback メッセージ */
 export const FRIENDLY_FALLBACK_MESSAGE =
   'ごめん、うまく応答を組み立てられなかった。質問をシンプルにして、もう一度試してくれる？';
 
 // ============================================================================
 // parse-and-execute rescue + structured feedback
 //
-// 旧 Step C/D は drift を「検出 → generic prompt で retry → strip して fallback」
+// 旧処理は drift を「検出 → generic prompt で retry → strip して fallback」
 // しかしなかったため、出力意図が parseable な擬似 tool_call (例: `call:fn{args}`)
 // も意図ごと捨てて空 fallback に落ちる事故があった。本セクションは drift から意図を
 // 救済する 3 層を提供する:
@@ -268,9 +268,6 @@ const SAFE_XANGI_SUBCOMMANDS = new Set([
 ]);
 
 const SHELL_METACHAR_PATTERN = /[|&;`$<>]/;
-const PARENTHESIS_PATTERN = /\$\(|`/;
-const REDIRECT_PATTERN = />>?\s*\S/;
-const AND_OR_PATTERN = /&&|\|\|/;
 
 export interface SafetyCheck {
   safe: boolean;
@@ -285,12 +282,7 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
   if (name === 'exec' || name === 'bash') {
     const cmd = String(args.command ?? args.script ?? args.code ?? '');
     if (!cmd) return { safe: false, reason: 'empty command' };
-    if (
-      SHELL_METACHAR_PATTERN.test(cmd) ||
-      PARENTHESIS_PATTERN.test(cmd) ||
-      REDIRECT_PATTERN.test(cmd) ||
-      AND_OR_PATTERN.test(cmd)
-    ) {
+    if (SHELL_METACHAR_PATTERN.test(cmd)) {
       return {
         safe: false,
         reason:
@@ -452,7 +444,7 @@ export class StreamingDriftBuffer {
   /**
    * stream 終了時に呼ぶ。残った hold buffer を返す (呼び出し側で最終 drift 検証に通す)。
    * 安全側で「partial のまま残った場合」は drop 扱いにせず最終応答にマージして
-   * Step C/D の通常フロー (containsPseudoToolCall + retry + strip) で処理する。
+   * 通常の再生成フロー (containsPseudoToolCall + retry + strip) で処理する。
    */
   flush(): { release: string; droppedAny: boolean } {
     const release = this.buf;
