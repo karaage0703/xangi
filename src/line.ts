@@ -13,7 +13,13 @@ import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
 import type { AgentRunner, RunResult } from './agent-runner.js';
 import { buildCompletionSummary, type CompletionDisplayOptions } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
-import { ensureSession, getActiveSessionId, getSessionEntry, archiveSession } from './sessions.js';
+import {
+  ensureSession,
+  getActiveSessionId,
+  getSessionEntry,
+  getProviderSessionId,
+  archiveSession,
+} from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
@@ -282,6 +288,21 @@ async function handleRequest(
   }
 }
 
+/**
+ * runner へ渡す resume 用のセッション ID を決める。
+ *
+ * **これが undefined だと毎ターン新規セッションになる。** codex なら `resume <id>`、
+ * grok / cursor なら `--resume <id>`、antigravity なら `--conversation <id>` ……と
+ * 引数の形は違うが、いずれも `options.sessionId` が無ければ会話を引き継がない。
+ * Claude Code だけは persistent-runner が別経路で保つため影響を受けない。
+ *
+ * `/reset` は `archiveSession` で `activeByContext` から外すので、ここは自然に
+ * undefined を返し、次のターンが新規セッションになる。
+ */
+export function resolveResumeSessionId(contextKey: string): string | undefined {
+  return getProviderSessionId(contextKey);
+}
+
 async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
   if (event.type !== 'message') return;
   const message = event.message;
@@ -420,7 +441,7 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
         userText: text,
       },
       {},
-      { channelId: contextKey, appSessionId }
+      { channelId: contextKey, appSessionId, sessionId: resolveResumeSessionId(contextKey) }
     );
   } catch (err) {
     runError = err;
