@@ -116,6 +116,7 @@ When another message arrives from the same user while a turn is running, it is q
 - Serialization is per `line:<userId>`. Other users are never blocked
 - `/reset`, `/new` and `/clear` bypass the queue and reply immediately. Queued turns are invalidated by the reset, so they never run against an archived session
 - Waiting adds to the elapsed time, so responses exceed `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45s) more often and go out via the Push API, which consumes the free message quota
+- A turn that waited shows the loading indicator again when its own processing starts. The one shown on arrival is dismissed as soon as the previous turn replies
 
 ## Session boundaries (when to clear context)
 

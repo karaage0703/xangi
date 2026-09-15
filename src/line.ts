@@ -88,6 +88,11 @@ export class LineChatQueue {
   private readonly tails = new Map<string, Promise<void>>();
   private readonly generations = new Map<string, number>();
 
+  /** その contextKey で実行中・待機中のターンがあるか */
+  isBusy(contextKey: string): boolean {
+    return this.tails.has(contextKey);
+  }
+
   getGeneration(contextKey: string): number {
     return this.generations.get(contextKey) ?? 0;
   }
@@ -544,6 +549,22 @@ async function fetchLineMedia(
   }
 }
 
+/**
+ * ローディング表示を出す。
+ *
+ * **受信時とターン開始時の両方で呼ぶ。** 直列化を入れる前は受信＝処理開始だったので
+ * 受信時の1回で足りていたが、待機が入ると、待っている間に前のターンの返信が届いて
+ * 表示が消える。待ち時間はむしろ直列化後の方が長いので、表示が要る場面で出なくなる。
+ */
+function showLoading(ctx: HandlerContext, userId: string): void {
+  if (!ctx.loadingAnimationEnabled) return;
+  ctx.client
+    .showLoadingAnimation({ chatId: userId, loadingSeconds: ctx.loadingAnimationSeconds })
+    .catch((err) => {
+      console.warn('[xangi-line] showLoadingAnimation failed (non-fatal):', err);
+    });
+}
+
 export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
   if (event.type !== 'message') return;
   const message = event.message;
@@ -662,13 +683,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // 即時 ACK: Loading animation を webhook 受信直後・Runner 起動前に叩く。
   // 失敗してもユーザ体験は (loading 出ない) 程度なので致命的でない。warn のみ。
   // 1:1 DM のみ機能、グループ・ルームでは LINE 側で無視されるが API call 自体は成功する。
-  if (ctx.loadingAnimationEnabled) {
-    ctx.client
-      .showLoadingAnimation({ chatId: userId, loadingSeconds: ctx.loadingAnimationSeconds })
-      .catch((err) => {
-        console.warn('[xangi-line] showLoadingAnimation failed (non-fatal):', err);
-      });
-  }
+  showLoading(ctx, userId);
 
   // Slow response 制御: replyToken は LINE 仕様で 60s で失効するため、threshold ms
   // (default 45s) を超えそうな時は (a) 先に replyToken で「考え中」テンプレを送って
@@ -696,6 +711,8 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // キューに積む。ここから先が Runner を起動する経路。
   // 世代を控えておき、待っている間に /reset が入ったターンは実行しない。
   const queuedGeneration = ctx.queue.getGeneration(contextKey);
+  // 待たされるターンだけ、開始時に表示を出し直す。待たないターンで二重に出さない。
+  const willWait = ctx.queue.isBusy(contextKey);
 
   await ctx.queue.enqueue(contextKey, async () => {
     if (ctx.queue.getGeneration(contextKey) !== queuedGeneration) {
@@ -705,6 +722,8 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       );
       return;
     }
+
+    if (willWait) showLoading(ctx, userId);
 
     // Idle reset: 既存 session の最終発話から idleResetMs 以上経過していたら
     // session を archive (logs/sessions/*.jsonl は残る) し、ensureSession で
