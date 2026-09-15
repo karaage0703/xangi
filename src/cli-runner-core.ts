@@ -303,6 +303,8 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
        * これを stale と同じに扱うと、待てば済むところで会話履歴を捨てることになる。
        */
       isBusyError?: (error: unknown) => boolean;
+      /** busy で待ち直すときの一行。黙って回復すると、後から追えない */
+      busyWarning?: (sessionId: string, waitMs: number) => string;
       args: () => string[];
       warning: (sessionId: string) => string;
       onComplete?: (result: RunResult) => void;
@@ -348,11 +350,14 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
     options: RunOptions,
     retry: {
       isBusyError?: (error: unknown) => boolean;
+      busyWarning?: (sessionId: string, waitMs: number) => string;
       onComplete?: (result: RunResult) => void;
     }
   ): Promise<{ kind: 'resolved'; result: RunResult } | { kind: 'exhausted'; error: unknown }> {
     let lastError: unknown = new Error('resume busy');
     for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
+      const warning = retry.busyWarning?.(options.sessionId ?? '', waitMs);
+      if (warning) console.warn(warning);
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       try {
         const result = await this.executeStreamCore(args, callbacks, {
