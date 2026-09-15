@@ -415,6 +415,8 @@ export class CodexRunner extends CliRunnerBase {
       return await this.executeStreamWithResumeRetry(args, scopedCallbacks, options, {
         isStaleError: (error) => this.isStaleResumeError(error),
         isBusyError: (error) => this.isBusyResumeError(error),
+        busyWarning: (id, waitMs) =>
+          `[codex] Thread ${id} still has an active writer; retrying the same thread in ${waitMs}ms`,
         args: () =>
           this.buildArgs(this.buildTaggedPrompt(rawPrompt, this.systemPrompt), {
             ...options,
