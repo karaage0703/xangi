@@ -63,6 +63,29 @@ interface CodexEvent {
 /**
  * Codex CLI を実行するランナー（0.98.0 対応）
  */
+/**
+ * resume の失敗を分類する。
+ *
+ * **`already has an active writer` を stale と同じに扱ってはならない。**
+ * これは「スレッドが消えた」ではなく「直前のターンがまだ書き込み中」で、意味が逆。
+ * 待てば同じスレッドへ入れるのに、新しいセッションで再実行すると会話履歴が消える。
+ * しかもユーザーからは会話が切れたことが見えない。
+ *
+ * 実測（codex-cli 0.154.0 / 実機の LINE）: resume で終了したターンの直後に
+ * 150〜170ms の間隔で resume すると断続的に衝突する。500ms 待って同じ
+ * sessionId で投げ直すと通った。失敗はモデルを呼ぶ前に約 1.2 秒で判明する。
+ */
+export type ResumeErrorKind = 'busy' | 'stale' | 'other';
+
+export function classifyResumeError(error: unknown): ResumeErrorKind {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('already has an active writer')) return 'busy';
+  if (message.includes('thread/resume failed') || message.includes('no rollout found')) {
+    return 'stale';
+  }
+  return 'other';
+}
+
 export class CodexRunner extends CliRunnerBase {
   protected readonly command = 'codex';
   protected readonly displayName = 'Codex CLI';
@@ -237,8 +260,11 @@ export class CodexRunner extends CliRunnerBase {
   }
 
   private isStaleResumeError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return message.includes('thread/resume failed') || message.includes('no rollout found');
+    return classifyResumeError(error) === 'stale';
+  }
+
+  private isBusyResumeError(error: unknown): boolean {
+    return classifyResumeError(error) === 'busy';
   }
 
   private extractUsage(event: CodexEvent): RunResult['usage'] | undefined {
@@ -272,16 +298,38 @@ export class CodexRunner extends CliRunnerBase {
     let stdout: string;
     try {
       stdout = await this.collectOutput(args, options?.channelId, collectOpts);
-    } catch (error) {
-      if (!options?.sessionId || !this.isStaleResumeError(error)) {
-        throw error;
+    } catch (firstError) {
+      let error = firstError;
+      // busy は「まだ書き込み中」。待って同じセッションへ投げ直せば通る。
+      let recovered: string | undefined;
+      let busyExhausted = false;
+      if (options?.sessionId && this.isBusyResumeError(error)) {
+        const retried = await this.collectOutputWhileBusy(
+          args,
+          options.channelId,
+          collectOpts,
+          (e) => this.isBusyResumeError(e)
+        );
+        if (retried.kind === 'resolved') recovered = retried.output;
+        else {
+          error = retried.error;
+          busyExhausted = true;
+        }
       }
-      console.warn(
-        `[codex] Resume failed for stale thread ${options.sessionId.slice(0, 8)}..., retrying with a new session`
-      );
-      const retryPrompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt);
-      const retryArgs = this.buildArgs(retryPrompt, { ...options, sessionId: undefined });
-      stdout = await this.collectOutput(retryArgs, options?.channelId, collectOpts);
+      if (recovered !== undefined) {
+        stdout = recovered;
+      } else {
+        // 待っても通らなかった busy は、ここで初めて stale と同じ扱いにする。
+        if (!options?.sessionId || !(busyExhausted || this.isStaleResumeError(error))) {
+          throw error;
+        }
+        console.warn(
+          `[codex] Resume failed for stale thread ${options.sessionId.slice(0, 8)}..., retrying with a new session`
+        );
+        const retryPrompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt);
+        const retryArgs = this.buildArgs(retryPrompt, { ...options, sessionId: undefined });
+        stdout = await this.collectOutput(retryArgs, options?.channelId, collectOpts);
+      }
     }
 
     let sessionId = '';
@@ -366,6 +414,7 @@ export class CodexRunner extends CliRunnerBase {
     try {
       return await this.executeStreamWithResumeRetry(args, scopedCallbacks, options, {
         isStaleError: (error) => this.isStaleResumeError(error),
+        isBusyError: (error) => this.isBusyResumeError(error),
         args: () =>
           this.buildArgs(this.buildTaggedPrompt(rawPrompt, this.systemPrompt), {
             ...options,

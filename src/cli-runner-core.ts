@@ -1,5 +1,11 @@
 import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
+
+/**
+ * resume が「まだ書き込み中」で弾かれたときの待ち時間。
+ * 実測（codex-cli 0.154.0）では 500ms で毎回通った。残りは保険。
+ */
+const BUSY_RESUME_RETRY_WAITS_MS = [500, 1000, 2000];
 import { StringDecoder } from 'string_decoder';
 import type {
   AgentRunner,
@@ -292,6 +298,11 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
     options: RunOptions | undefined,
     retry: {
       isStaleError: (error: unknown) => boolean;
+      /**
+       * 一時的な失敗。**同じセッションへ投げ直せば通る。**
+       * これを stale と同じに扱うと、待てば済むところで会話履歴を捨てることになる。
+       */
+      isBusyError?: (error: unknown) => boolean;
       args: () => string[];
       warning: (sessionId: string) => string;
       onComplete?: (result: RunResult) => void;
@@ -303,8 +314,17 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         notifyOnError: false,
         onComplete: retry.onComplete,
       });
-    } catch (error) {
-      if (!options?.sessionId || !retry.isStaleError(error)) {
+    } catch (firstError) {
+      let error = firstError;
+      let busyExhausted = false;
+      if (options?.sessionId && retry.isBusyError?.(error)) {
+        const busyResult = await this.retryWhileBusy(args, callbacks, options, retry);
+        if (busyResult.kind === 'resolved') return busyResult.result;
+        error = busyResult.error;
+        busyExhausted = true;
+      }
+      // 待っても通らなかった busy は、ここで初めて stale と同じ扱いにする。
+      if (!options?.sessionId || !(busyExhausted || retry.isStaleError(error))) {
         callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
         throw error;
       }
@@ -314,6 +334,62 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         onComplete: retry.onComplete,
       });
     }
+  }
+
+  /**
+   * busy の間だけ、同じセッションへ投げ直す。
+   *
+   * 実測では毎回1回目（500ms）で通ったが、上限を持たせて打ち切れるようにしておく。
+   * 打ち切ったときは呼び出し元が従来どおり新しいセッションへ落とす。
+   */
+  private async retryWhileBusy(
+    args: string[],
+    callbacks: StreamCallbacks,
+    options: RunOptions,
+    retry: {
+      isBusyError?: (error: unknown) => boolean;
+      onComplete?: (result: RunResult) => void;
+    }
+  ): Promise<{ kind: 'resolved'; result: RunResult } | { kind: 'exhausted'; error: unknown }> {
+    let lastError: unknown = new Error('resume busy');
+    for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      try {
+        const result = await this.executeStreamCore(args, callbacks, {
+          channelId: options.channelId,
+          notifyOnError: false,
+          onComplete: retry.onComplete,
+        });
+        return { kind: 'resolved', result };
+      } catch (retryError) {
+        lastError = retryError;
+        if (!retry.isBusyError?.(retryError)) break;
+      }
+    }
+    return { kind: 'exhausted', error: lastError };
+  }
+
+  /**
+   * 非ストリーミング実行で busy の間だけ、同じ引数で投げ直す。
+   * `retryWhileBusy` の collectOutput 版。
+   */
+  protected async collectOutputWhileBusy(
+    args: string[],
+    channelId: string | undefined,
+    collectOpts: Parameters<CliRunnerBase['collectOutput']>[2],
+    isBusyError: (error: unknown) => boolean
+  ): Promise<{ kind: 'resolved'; output: string } | { kind: 'exhausted'; error: unknown }> {
+    let lastError: unknown = new Error('resume busy');
+    for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      try {
+        return { kind: 'resolved', output: await this.collectOutput(args, channelId, collectOpts) };
+      } catch (retryError) {
+        lastError = retryError;
+        if (!isBusyError(retryError)) break;
+      }
+    }
+    return { kind: 'exhausted', error: lastError };
   }
 
   protected executeStreamCore(
