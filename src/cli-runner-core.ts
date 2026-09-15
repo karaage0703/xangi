@@ -119,6 +119,9 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
   protected readonly timeoutController: TimeoutController;
   /** 同時実行されている子プロセスを channelId で索く（並列セッション対応） */
   protected readonly activeProcesses = new Map<string, ChildProcess>();
+  /** busy retry の待機を停止するための AbortController */
+  private readonly retryWaits = new Map<string, AbortController>();
+  private retryWaitWithoutChannel: AbortController | null = null;
 
   /** spawn する実行ファイル名（例: 'codex'） */
   protected abstract readonly command: string;
@@ -318,15 +321,15 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       });
     } catch (firstError) {
       let error = firstError;
-      let busyExhausted = false;
       if (options?.sessionId && retry.isBusyError?.(error)) {
         const busyResult = await this.retryWhileBusy(args, callbacks, options, retry);
         if (busyResult.kind === 'resolved') return busyResult.result;
         error = busyResult.error;
-        busyExhausted = true;
       }
-      // 待っても通らなかった busy は、ここで初めて stale と同じ扱いにする。
-      if (!options?.sessionId || !(busyExhausted || retry.isStaleError(error))) {
+      // busy が続いた場合、または途中で stale になった場合だけ新規セッションへ落とす。
+      // ENOENT など別種のエラーへ変わった場合は、そのエラーを隠さず返す。
+      const canStartNewSession = retry.isBusyError?.(error) || retry.isStaleError(error);
+      if (!options?.sessionId || !canStartNewSession) {
         callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
         throw error;
       }
@@ -358,7 +361,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
     for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
       const warning = retry.busyWarning?.(options.sessionId ?? '', waitMs);
       if (warning) console.warn(warning);
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      await this.waitBeforeBusyRetry(waitMs, options.channelId);
       try {
         const result = await this.executeStreamCore(args, callbacks, {
           channelId: options.channelId,
@@ -386,7 +389,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
   ): Promise<{ kind: 'resolved'; output: string } | { kind: 'exhausted'; error: unknown }> {
     let lastError: unknown = new Error('resume busy');
     for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      await this.waitBeforeBusyRetry(waitMs, channelId);
       try {
         return { kind: 'resolved', output: await this.collectOutput(args, channelId, collectOpts) };
       } catch (retryError) {
@@ -395,6 +398,36 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       }
     }
     return { kind: 'exhausted', error: lastError };
+  }
+
+  /** busy retry の待機。cancel() されたら次のプロセスを起動せず reject する。 */
+  private waitBeforeBusyRetry(waitMs: number, channelId?: string): Promise<void> {
+    const controller = new AbortController();
+    if (channelId) this.retryWaits.set(channelId, controller);
+    else this.retryWaitWithoutChannel = controller;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (channelId) {
+          if (this.retryWaits.get(channelId) === controller) this.retryWaits.delete(channelId);
+        } else if (this.retryWaitWithoutChannel === controller) {
+          this.retryWaitWithoutChannel = null;
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, waitMs);
+      controller.signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          cleanup();
+          reject(new Error(`${this.displayName} request cancelled`));
+        },
+        { once: true }
+      );
+    });
   }
 
   protected executeStreamCore(
@@ -523,6 +556,12 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
    */
   cancel(channelId?: string): boolean {
     if (channelId) {
+      const retryWait = this.retryWaits.get(channelId);
+      if (retryWait) {
+        console.log(`[${this.logPrefix}] Cancelling busy retry for channel ${channelId}`);
+        retryWait.abort();
+        return true;
+      }
       const proc = this.activeProcesses.get(channelId);
       if (proc) {
         console.log(`[${this.logPrefix}] Cancelling request for channel ${channelId}`);
@@ -532,6 +571,11 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         return true;
       }
       return false;
+    }
+    if (this.retryWaitWithoutChannel) {
+      console.log(`[${this.logPrefix}] Cancelling busy retry`);
+      this.retryWaitWithoutChannel.abort();
+      return true;
     }
     if (!this.currentProcess) {
       return false;
@@ -543,7 +587,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
   }
 
   hasRunner(channelId: string): boolean {
-    return this.activeProcesses.has(channelId);
+    return this.activeProcesses.has(channelId) || this.retryWaits.has(channelId);
   }
 
   getTimeoutState(channelId?: string): TimeoutState {

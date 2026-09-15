@@ -302,7 +302,6 @@ export class CodexRunner extends CliRunnerBase {
       let error = firstError;
       // busy は「まだ書き込み中」。待って同じセッションへ投げ直せば通る。
       let recovered: string | undefined;
-      let busyExhausted = false;
       if (options?.sessionId && this.isBusyResumeError(error)) {
         const retried = await this.collectOutputWhileBusy(
           args,
@@ -313,14 +312,16 @@ export class CodexRunner extends CliRunnerBase {
         if (retried.kind === 'resolved') recovered = retried.output;
         else {
           error = retried.error;
-          busyExhausted = true;
         }
       }
       if (recovered !== undefined) {
         stdout = recovered;
       } else {
-        // 待っても通らなかった busy は、ここで初めて stale と同じ扱いにする。
-        if (!options?.sessionId || !(busyExhausted || this.isStaleResumeError(error))) {
+        // busy が続いた場合、または途中で stale になった場合だけ新規セッションへ落とす。
+        if (
+          !options?.sessionId ||
+          !(this.isBusyResumeError(error) || this.isStaleResumeError(error))
+        ) {
           throw error;
         }
         console.warn(

@@ -115,4 +115,30 @@ describe('busy のときの再試行', () => {
     await assertion;
     expect(runner.calls).toHaveLength(1);
   });
+
+  it('No.8 busy後にotherへ変わったら新セッションへ落とさず返す', async () => {
+    const runner = new StubbedCodexRunner([busyError(), new Error('spawn codex ENOENT')]);
+
+    const assertion = expect(
+      runner.run('大阪です', { sessionId: SESSION_ID })
+    ).rejects.toThrow('spawn codex ENOENT');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1]).toContain('resume');
+  });
+
+  it('No.9 busyの待機中にcancelしたら再起動しない', async () => {
+    const runner = new StubbedCodexRunner([busyError(), codexOutput('再起動してはいけない')]);
+    const assertion = expect(
+      runner.run('大阪です', { sessionId: SESSION_ID, channelId: 'line:user' })
+    ).rejects.toThrow('request cancelled');
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.hasRunner('line:user')).toBe(true);
+    expect(runner.cancel('line:user')).toBe(true);
+    await assertion;
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.hasRunner('line:user')).toBe(false);
+  });
 });
