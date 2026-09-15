@@ -356,6 +356,24 @@ export function resolveContentSource(
 }
 
 /**
+ * コンテンツ取得先と認証を組にして決める。
+ *
+ * Channel Access Token は LINE の api-data endpoint 専用。external の
+ * originalContentUrl は LINE 外のサーバーなので、Bearer を送ってはならない。
+ */
+export function resolveContentRequest(
+  contentProvider: { type?: string; originalContentUrl?: string } | undefined,
+  messageId: string,
+  channelAccessToken: string
+): { url: string; authHeader?: Record<string, string> } {
+  const url = resolveContentSource(contentProvider, messageId);
+  if (contentProvider?.type === 'external' && contentProvider.originalContentUrl) {
+    return { url };
+  }
+  return { url, authHeader: lineContentAuthHeader(channelAccessToken) };
+}
+
+/**
  * スタンプをテキストにする。
  *
  * **メッセージスタンプは入力文字を主に置く。** keywords はスタンプ側の属性だが、
@@ -451,18 +469,18 @@ async function fetchLineMedia(
   messageId: string,
   ctx: HandlerContext
 ): Promise<string | null> {
-  const url = resolveContentSource(message.contentProvider, messageId);
+  const { url, authHeader } = resolveContentRequest(
+    message.contentProvider,
+    messageId,
+    ctx.channelAccessToken
+  );
   // 拡張子は保存名の見た目のためだけに付ける。実体の判定はしない。
   // **file は webhook に fileName が載っているので、その拡張子を使う。**
   // .bin にすると「拡張子は .bin だが中身は PDF だ」という余計な但し書きを
   // エージェントが付ける羽目になる。
   const ext = extensionForMedia(message);
   try {
-    return await downloadFile(
-      url,
-      `line_${messageId}.${ext}`,
-      lineContentAuthHeader(ctx.channelAccessToken)
-    );
+    return await downloadFile(url, `line_${messageId}.${ext}`, authHeader);
   } catch (err) {
     console.error(`[xangi-line] failed to download ${message.type} (${messageId}):`, err);
     return null;

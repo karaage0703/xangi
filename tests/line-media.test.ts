@@ -3,6 +3,7 @@ import {
   lineContentUrl,
   lineContentAuthHeader,
   resolveContentSource,
+  resolveContentRequest,
   stickerToText,
   locationToText,
   mediaNoticeText,
@@ -36,6 +37,23 @@ describe('コンテンツの取得先', () => {
 
   it('No.3 コンテンツ取得にBearer認証が付く', () => {
     expect(lineContentAuthHeader('tok_abc')).toEqual({ Authorization: 'Bearer tok_abc' });
+  });
+
+  it('LINE提供コンテンツの取得だけにBearer認証を付ける', () => {
+    expect(resolveContentRequest({ type: 'line' }, '123456', 'tok_abc')).toEqual({
+      url: 'https://api-data.line.me/v2/bot/message/123456/content',
+      authHeader: { Authorization: 'Bearer tok_abc' },
+    });
+  });
+
+  it('外部提供URLへChannel Access Tokenを送らない', () => {
+    expect(
+      resolveContentRequest(
+        { type: 'external', originalContentUrl: 'https://media.example.com/video.mp4' },
+        '123456',
+        'tok_secret'
+      )
+    ).toEqual({ url: 'https://media.example.com/video.mp4' });
   });
 });
 
