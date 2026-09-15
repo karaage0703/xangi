@@ -109,6 +109,15 @@ This keeps long-running conversations alive past 60s. `LINE_SLOW_RESPONSE_ENABLE
 
 The Push API is free for the first 200 messages per month on personal Official Accounts; usage above the quota is billed. If you regularly trigger slow responses with a local LLM (Gemma, etc.), consider increasing the threshold or using a faster backend.
 
+## Concurrent messages (turn serialization)
+
+When another message arrives from the same user while a turn is running, it is queued and processed after the current turn finishes. Nothing is dropped. This matches Telegram (Discord and Slack reply "still processing" and drop the message instead).
+
+- Serialization is per `line:<userId>`. Other users are never blocked
+- `/reset`, `/new` and `/clear` bypass the queue and reply immediately. Queued turns are invalidated by the reset, so they never run against an archived session
+- Waiting adds to the elapsed time, so responses exceed `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45s) more often and go out via the Push API, which consumes the free message quota
+- A turn that waited shows the loading indicator again when its own processing starts. The one shown on arrival is dismissed as soon as the previous turn replies
+
 ## Session boundaries (when to clear context)
 
 LINE has no explicit conversation boundaries like Slack's threads or Discord's "new chat" button. If every message reuses the same session forever, the context window bloats and topics get tangled. xangi uses a two-layer approach to start fresh sessions:

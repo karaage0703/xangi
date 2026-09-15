@@ -115,6 +115,15 @@ LINE reply token は 60s で失効するため、応答に時間がかかると�
 
 Push API は LINE 公式アカウントの個人プランで月 200 通まで無料、超過後は従量課金。Local LLM (Gemma 等) の運用で頻繁に slow response 発火するなら、`LINE_SLOW_RESPONSE_THRESHOLD_MS` を緩めるか、より速い推論バックエンドを検討する。
 
+## 連投時の扱い (ターンの直列化)
+
+処理中に同じユーザーから次のメッセージが届いたら、キューに積んで前のターンの完了後に処理する。捨てない。Telegram と同じ方式 (Discord / Slack は「処理中です」と返して捨てる)。
+
+- 直列化の単位は `line:<userId>`。別のユーザーは待たされない
+- `/reset` `/new` `/clear` はキューを経由せず即座に応答する。待機中のターンはリセットで無効化され、archive 済み session に対して実行されることはない
+- 待った分だけ経過時間が延びるため、`LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45 秒) を超えて Push API での応答になる頻度が上がる。Push は無料通数を消費する
+- 待たされたターンは、自分の処理が始まる時点でローディング表示を出し直す。受信時に出した表示は、前のターンの返信が届いた時点で消えるため
+
 ## Session 境界 (会話履歴のクリアタイミング)
 
 LINE には Slack の「スレッド」「New チャンネル」や Discord の「New ボタン」のような明示的な会話境界が無く、reply フローが永続的に 1 本の session に積み続けると context window が肥大化したり、トピックが混ざる。xangi は時間ベース + コマンドベースの 2 段で session を切る:

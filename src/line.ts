@@ -68,6 +68,64 @@ const RESET_REPLY_TEXT = '最初からお話するね！何かあった？';
 const ERROR_FALLBACK_TEXT = 'ごめんなさい、ちょっと調子わるいみたい…';
 
 /**
+ * 同一 contextKey のターンを直列化するキュー。
+ *
+ * LINE には Discord の `turnCoordinator` や Telegram の `enqueueForChat` に当たる
+ * 仕組みが無く、連投すると同じユーザーのランが並行して起動していた。claude-code では
+ * `PersistentRunner` の内部キューに救われるが、`CliRunnerBase` 系 (codex / grok /
+ * cursor / antigravity / github-copilot / opencode) はリクエストのたびに spawn するため、
+ * 同じセッションを二重に resume して失敗する。さらに `registerManagedCliProcess` は
+ * `channelId` を鍵にするので、2 本目の登録が 1 本目を上書きし、上書きされた側は
+ * `/stop` もタイムアウトも効かなくなる。
+ *
+ * 弾く (Discord / Slack) ではなく積む (Telegram) 方を採る。追加メッセージを失わない。
+ *
+ * `generation` はリセット用。`/reset` 等はキューを経由せず即応答し、世代を進めることで
+ * 待機中のターンを無効化する。積んだままにすると、archive 済みのセッションに対して
+ * 古い発言が実行されてしまう。
+ */
+export class LineChatQueue {
+  private readonly tails = new Map<string, Promise<void>>();
+  private readonly generations = new Map<string, number>();
+
+  /** その contextKey で実行中・待機中のターンがあるか */
+  isBusy(contextKey: string): boolean {
+    return this.tails.has(contextKey);
+  }
+
+  getGeneration(contextKey: string): number {
+    return this.generations.get(contextKey) ?? 0;
+  }
+
+  /** 待機中のターンを無効化する (リセット系コマンド用) */
+  nextGeneration(contextKey: string): void {
+    this.generations.set(contextKey, this.getGeneration(contextKey) + 1);
+  }
+
+  /**
+   * contextKey ごとに task を直列化する。
+   * 直前の task が失敗しても後続を止めない (`then(task, task)`)。
+   */
+  enqueue(contextKey: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.tails.get(contextKey) ?? Promise.resolve();
+    const result = previous.then(task, task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined
+    );
+
+    this.tails.set(contextKey, tail);
+    void tail.then(() => {
+      if (this.tails.get(contextKey) === tail) {
+        this.tails.delete(contextKey);
+      }
+    });
+
+    return result;
+  }
+}
+
+/**
  * テキストが reset コマンドに一致するか判定する。
  * 前後の空白を除き lowercase した比較。日本語パターンは normalize 不要 (元のまま)。
  */
@@ -173,6 +231,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   const completionNotifyAfterMs = options.completionNotifyAfterMs ?? 10_000;
 
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
+  const queue = new LineChatQueue();
 
   const server = createServer(async (req, res) => {
     try {
@@ -183,6 +242,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
         agentRunner,
         resolver,
         client,
+        queue,
         allowedUsers,
         allowAll,
         loadingAnimationEnabled,
@@ -220,12 +280,14 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   return server;
 }
 
-interface HandlerContext {
+export interface HandlerContext {
   path: string;
   channelSecret: string;
   /** コンテンツ取得 (api-data.line.me) の Bearer に使う。client は内部に隠している */
   channelAccessToken: string;
   agentRunner: AgentRunner;
+  /** 同一 contextKey のターンを直列化するキュー */
+  queue: LineChatQueue;
   resolver: BackendResolver;
   client: LineBotClient;
   allowedUsers: string[];
@@ -286,7 +348,7 @@ async function handleRequest(
 
   const events = payload.events ?? [];
   for (const event of events) {
-    handleEvent(event, ctx).catch((err) => {
+    handleLineEvent(event, ctx).catch((err) => {
       console.error('[xangi-line] handleEvent error:', err);
     });
   }
@@ -487,7 +549,23 @@ async function fetchLineMedia(
   }
 }
 
-async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
+/**
+ * ローディング表示を出す。
+ *
+ * **受信時とターン開始時の両方で呼ぶ。** 直列化を入れる前は受信＝処理開始だったので
+ * 受信時の1回で足りていたが、待機が入ると、待っている間に前のターンの返信が届いて
+ * 表示が消える。待ち時間はむしろ直列化後の方が長いので、表示が要る場面で出なくなる。
+ */
+function showLoading(ctx: HandlerContext, userId: string): void {
+  if (!ctx.loadingAnimationEnabled) return;
+  ctx.client
+    .showLoadingAnimation({ chatId: userId, loadingSeconds: ctx.loadingAnimationSeconds })
+    .catch((err) => {
+      console.warn('[xangi-line] showLoadingAnimation failed (non-fatal):', err);
+    });
+}
+
+export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
   if (event.type !== 'message') return;
   const message = event.message;
   if (!message) return;
@@ -579,6 +657,10 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
   // 新 session を発番、確認テキストを返して Runner 起動はしない。
   // ユーザが明示的に「新しく話したい」と言ったときの即時応答経路。
   if (ctx.resetTextPatterns.length > 0 && isResetCommand(text, ctx.resetTextPatterns)) {
+    // キューを経由しない。実行中のターンの完了を待つと、リセットが即応答でなくなる。
+    // 世代を進めて、リセット前に積まれたターンが archive 済みセッションに対して
+    // 実行されるのを防ぐ。
+    ctx.queue.nextGeneration(contextKey);
     const activeId = getActiveSessionId(contextKey);
     if (activeId) {
       archiveSession(activeId);
@@ -598,34 +680,10 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
     return;
   }
 
-  // Idle reset: 既存 session の最終発話から idleResetMs 以上経過していたら
-  // session を archive (logs/sessions/*.jsonl は残る) し、ensureSession で
-  // 新規発番する。LINE は UI 境界が無いため時間ベースで会話クラスタを区切る。
-  if (ctx.idleResetEnabled && ctx.idleResetMs > 0) {
-    const activeId = getActiveSessionId(contextKey);
-    if (activeId) {
-      const entry = getSessionEntry(activeId);
-      if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
-        archiveSession(activeId);
-        console.log(
-          `[xangi-line] idle reset for user ${userId.slice(0, 8)}…, last=${entry.updatedAt}, archived ${activeId}`
-        );
-      }
-    }
-  }
-
   // 即時 ACK: Loading animation を webhook 受信直後・Runner 起動前に叩く。
   // 失敗してもユーザ体験は (loading 出ない) 程度なので致命的でない。warn のみ。
   // 1:1 DM のみ機能、グループ・ルームでは LINE 側で無視されるが API call 自体は成功する。
-  if (ctx.loadingAnimationEnabled) {
-    ctx.client
-      .showLoadingAnimation({ chatId: userId, loadingSeconds: ctx.loadingAnimationSeconds })
-      .catch((err) => {
-        console.warn('[xangi-line] showLoadingAnimation failed (non-fatal):', err);
-      });
-  }
-
-  const appSessionId = ensureSession(contextKey, { platform: 'line' });
+  showLoading(ctx, userId);
 
   // Slow response 制御: replyToken は LINE 仕様で 60s で失効するため、threshold ms
   // (default 45s) を超えそうな時は (a) 先に replyToken で「考え中」テンプレを送って
@@ -650,86 +708,122 @@ async function handleEvent(event: webhook.Event, ctx: HandlerContext): Promise<v
     }, ctx.slowResponseThresholdMs);
   }
 
-  // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
-  // 45 秒の「考え中」は replyToken が生きているうちに届く。
-  const attachmentPaths: string[] = [];
-  if (pendingMedia && messageId) {
-    const saved = await fetchLineMedia(message, messageId, ctx);
-    if (saved) {
-      attachmentPaths.push(saved);
-      text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
+  // キューに積む。ここから先が Runner を起動する経路。
+  // 世代を控えておき、待っている間に /reset が入ったターンは実行しない。
+  const queuedGeneration = ctx.queue.getGeneration(contextKey);
+  // 待たされるターンだけ、開始時に表示を出し直す。待たないターンで二重に出さない。
+  const willWait = ctx.queue.isBusy(contextKey);
+
+  await ctx.queue.enqueue(contextKey, async () => {
+    if (ctx.queue.getGeneration(contextKey) !== queuedGeneration) {
+      if (slowTimer !== null) clearTimeout(slowTimer);
+      console.log(
+        `[xangi-line] skip queued turn for user ${userId.slice(0, 8)}… (session was reset)`
+      );
+      return;
     }
-    // 取得できなければ text は mediaNoticeText のまま。
-    // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
-  }
 
-  const startTime = Date.now();
-  let runResult: RunResult | null = null;
-  let runError: unknown = null;
+    if (willWait) showLoading(ctx, userId);
 
-  try {
-    runResult = await runWithBubbleEvents(
-      ctx.agentRunner,
-      buildPromptWithAttachments(text, attachmentPaths),
-      {
-        threadId: threadIdFor('line', userId),
-        turnId: turnIdFor('line', messageId ?? String(Date.now())),
-        threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
-        platform: 'line',
-        userText: text,
-      },
-      {},
-      { channelId: contextKey, appSessionId, sessionId: resolveResumeSessionId(contextKey) }
-    );
-  } catch (err) {
-    runError = err;
-    console.error('[xangi-line] run failed:', err);
-  } finally {
-    if (slowTimer !== null) {
-      clearTimeout(slowTimer);
+    // Idle reset: 既存 session の最終発話から idleResetMs 以上経過していたら
+    // session を archive (logs/sessions/*.jsonl は残る) し、ensureSession で
+    // 新規発番する。LINE は UI 境界が無いため時間ベースで会話クラスタを区切る。
+    if (ctx.idleResetEnabled && ctx.idleResetMs > 0) {
+      const activeId = getActiveSessionId(contextKey);
+      if (activeId) {
+        const entry = getSessionEntry(activeId);
+        if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
+          archiveSession(activeId);
+          console.log(
+            `[xangi-line] idle reset for user ${userId.slice(0, 8)}…, last=${entry.updatedAt}, archived ${activeId}`
+          );
+        }
+      }
     }
-  }
 
-  const elapsedMs = Date.now() - startTime;
-  const rawReplyText = runError ? ERROR_FALLBACK_TEXT : runResult?.result || '…';
-  const completionSummary =
-    !runError && elapsedMs >= ctx.completionNotifyAfterMs
-      ? buildCompletionSummary({ elapsedMs }, ctx.completionDisplay)
-      : undefined;
-  const replyText = appendLineCompletionSummary(rawReplyText, completionSummary);
+    const appSessionId = ensureSession(contextKey, { platform: 'line' });
 
-  // 送信経路の決定:
-  //   - slow notice が発火済 → reply token 消費済なので push 必須
-  //   - 発火していない + 経過時間が threshold 未満 → reply 可
-  //   - 発火していない + 経過時間が threshold 以上 → タイマー実行前に completed したか、
-  //     slow response 無効化中。reply token はまだ生きてる可能性あるが安全側で push にフォールバック
-  const usePush =
-    slowFiredRef.value || (ctx.slowResponseEnabled && elapsedMs >= ctx.slowResponseThresholdMs);
-
-  try {
-    if (usePush) {
-      await ctx.client.pushMessage({
-        to: userId,
-        messages: [{ type: 'text', text: replyText }],
-      });
-    } else {
-      await ctx.client.replyMessage({
-        replyToken,
-        messages: [{ type: 'text', text: replyText }],
-      });
+    // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
+    // 45 秒の「考え中」は replyToken が生きているうちに届く。
+    const attachmentPaths: string[] = [];
+    if (pendingMedia && messageId) {
+      const saved = await fetchLineMedia(message, messageId, ctx);
+      if (saved) {
+        attachmentPaths.push(saved);
+        text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
+      }
+      // 取得できなければ text は mediaNoticeText のまま。
+      // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
     }
-  } catch (sendErr) {
-    console.error('[xangi-line] final send failed:', sendErr);
-    // reply が失敗 (token 失効など) なら push にフォールバック (まだ試してない場合のみ)
-    if (!usePush) {
-      try {
+
+    const startTime = Date.now();
+    let runResult: RunResult | null = null;
+    let runError: unknown = null;
+
+    try {
+      runResult = await runWithBubbleEvents(
+        ctx.agentRunner,
+        buildPromptWithAttachments(text, attachmentPaths),
+        {
+          threadId: threadIdFor('line', userId),
+          turnId: turnIdFor('line', messageId ?? String(Date.now())),
+          threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+          platform: 'line',
+          userText: text,
+        },
+        {},
+        { channelId: contextKey, appSessionId, sessionId: resolveResumeSessionId(contextKey) }
+      );
+    } catch (err) {
+      runError = err;
+      console.error('[xangi-line] run failed:', err);
+    } finally {
+      if (slowTimer !== null) {
+        clearTimeout(slowTimer);
+      }
+    }
+
+    const elapsedMs = Date.now() - startTime;
+    const rawReplyText = runError ? ERROR_FALLBACK_TEXT : runResult?.result || '…';
+    const completionSummary =
+      !runError && elapsedMs >= ctx.completionNotifyAfterMs
+        ? buildCompletionSummary({ elapsedMs }, ctx.completionDisplay)
+        : undefined;
+    const replyText = appendLineCompletionSummary(rawReplyText, completionSummary);
+
+    // 送信経路の決定:
+    //   - slow notice が発火済 → reply token 消費済なので push 必須
+    //   - 発火していない + 経過時間が threshold 未満 → reply 可
+    //   - 発火していない + 経過時間が threshold 以上 → タイマー実行前に completed したか、
+    //     slow response 無効化中。reply token はまだ生きてる可能性あるが安全側で push にフォールバック
+    const usePush =
+      slowFiredRef.value || (ctx.slowResponseEnabled && elapsedMs >= ctx.slowResponseThresholdMs);
+
+    try {
+      if (usePush) {
         await ctx.client.pushMessage({
           to: userId,
           messages: [{ type: 'text', text: replyText }],
         });
-      } catch (pushErr) {
-        console.error('[xangi-line] push fallback also failed:', pushErr);
+      } else {
+        await ctx.client.replyMessage({
+          replyToken,
+          messages: [{ type: 'text', text: replyText }],
+        });
+      }
+    } catch (sendErr) {
+      console.error('[xangi-line] final send failed:', sendErr);
+      // reply が失敗 (token 失効など) なら push にフォールバック (まだ試してない場合のみ)
+      if (!usePush) {
+        try {
+          await ctx.client.pushMessage({
+            to: userId,
+            messages: [{ type: 'text', text: replyText }],
+          });
+        } catch (pushErr) {
+          console.error('[xangi-line] push fallback also failed:', pushErr);
+        }
       }
     }
-  }
+  });
 }
