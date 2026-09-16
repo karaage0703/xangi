@@ -288,7 +288,10 @@ export async function handlePetInboxRequest(
         {
           sessionId,
           channelId: ctxKey,
+          settingsChannelId: ctxKey,
           appSessionId,
+          workdir: entry.workspacePath,
+          platform: 'web',
         }
       );
     } catch (err) {

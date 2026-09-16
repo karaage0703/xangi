@@ -13,11 +13,17 @@ import type { AddressInfo } from 'net';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { AgentRunner, RunResult, StreamCallbacks } from '../src/agent-runner.js';
+import type {
+  AgentRunner,
+  RunOptions,
+  RunResult,
+  StreamCallbacks,
+} from '../src/agent-runner.js';
 
 interface RecordedRun {
   prompt: string;
   callbacks: StreamCallbacks;
+  options?: RunOptions;
 }
 
 function makeStubRunner(opts: { onRun?: (rec: RecordedRun) => void } = {}): AgentRunner {
@@ -25,8 +31,8 @@ function makeStubRunner(opts: { onRun?: (rec: RecordedRun) => void } = {}): Agen
     async run(): Promise<RunResult> {
       return { result: 'stub', sessionId: 'stub-session' };
     },
-    async runStream(prompt, callbacks): Promise<RunResult> {
-      opts.onRun?.({ prompt, callbacks });
+    async runStream(prompt, callbacks, options): Promise<RunResult> {
+      opts.onRun?.({ prompt, callbacks, options });
       const result: RunResult = { result: 'echo', sessionId: 'stub-session' };
       callbacks.onComplete?.(result);
       return result;
@@ -172,9 +178,16 @@ describe('pet-inbox-server', () => {
   });
 
   it('accepts device inbox POST and returns a filtered events URL', async () => {
+    const { createWebSession } = await import('../src/sessions.js');
+    const appSessionId = createWebSession({
+      title: 'Game session',
+      workspaceId: 'game',
+      workspacePath: '/workspace/game',
+    });
     const res = await postJson(`${server.url}/api/device/inbox`, {
       text: 'hello glasses',
       source: 'g2',
+      appSessionId,
     });
     expect(res.status).toBe(202);
     const body = res.body as Record<string, unknown>;
@@ -186,6 +199,13 @@ describe('pet-inbox-server', () => {
     expect(server.lastRun!.prompt).toContain('hello glasses');
     expect(server.lastRun!.prompt).toContain('[プラットフォーム: Web (Device:g2)]');
     expect(server.lastRun!.prompt).toContain('<xangi_reply_suggestions>');
+    expect(server.lastRun!.options).toMatchObject({
+      appSessionId,
+      channelId: `web-chat:${appSessionId}`,
+      settingsChannelId: `web-chat:${appSessionId}`,
+      workdir: '/workspace/game',
+      platform: 'web',
+    });
   });
 
   it('uses Web reply suggestion settings for terminal inbox', async () => {
