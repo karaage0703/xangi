@@ -158,7 +158,7 @@ Content-Type: application/json
 ## スケジューラー
 
 定期実行やリマインダーを設定できます。AI に自然言語で頼むと、AI が `xangi tool schedule_add` などを呼び出してスケジュールを登録します。
-スケジュール実行結果には、成功・失敗とも所要時間が表示されます。Discord・Slack・Telegramでは結果末尾、Webではメッセージヘッダーに表示されます。
+スケジュール実行結果には、成功・失敗とも所要時間が表示されます。Discord・Slack・Telegram・LINEでは結果末尾、Webではメッセージヘッダーに表示されます。
 
 ### 操作方法
 
@@ -209,7 +209,7 @@ Content-Type: application/json
 
 ### `xangi tool schedule_*`
 
-AI ／ シェルから直接スケジュール操作できます。`schedule_add`では送信先を曖昧にしないため、`--channel`が必須です。Web Chatへ送る場合は`--platform web`とWeb session IDを指定します。
+AI ／ シェルから直接スケジュール操作できます。`schedule_add`では送信先を曖昧にしないため、`--channel`が必須です。Web Chatへ送る場合は`--platform web`とWeb session IDを指定します。LINEへ送る場合は`--platform line`とLINEのuserIdを指定します（LINEのターンから登録する場合は、platformとchannelが自動で入ります）。
 
 ```bash
 # スケジュール追加（自然言語）
@@ -221,6 +221,9 @@ xangi tool schedule_add --input "cron 0 9 * * * おはよう" --channel <channel
 
 # Webセッションに送りたい場合
 xangi tool schedule_add --input "毎日 9:00 状況確認" --platform web --channel <sessionId>
+
+# LINEに送りたい場合
+xangi tool schedule_add --input "毎日 7:00 今日の予定" --platform line --channel <LINEのuserId>
 
 # 一覧表示
 xangi tool schedule_list
@@ -498,7 +501,7 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 - `channel`（必須）: ターンを起動して結果を投稿するチャンネル ID
 - `message`（必須）: エージェントへの指示（最大 4000 文字）
 - `source`（任意）: 発火元の識別子（英数と `_.:-`、最大 64 文字）。表示ラベル・レート制限の単位になる
-- `platform`（任意）: `discord`（デフォルト）、`slack`、`telegram`、`web`
+- `platform`（任意）: `discord`（デフォルト）、`slack`、`telegram`、`web`、`line`
 
 成功すると `202 { "ok": true, "triggerId": "trg_..." }` が即座に返ります（ターンの完了は待ちません）。Discord / Slack / Telegramではチャンネルに `⚡ trigger: <source>` のラベルが投稿され、続けてエージェントの応答が流れます。Webでは `web-chat:<sessionId>` と生の`sessionId`のどちらも受け付け、同じWeb会話へ新しいターンが追加されます。
 

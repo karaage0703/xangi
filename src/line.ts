@@ -19,6 +19,8 @@ import {
   getSessionEntry,
   getProviderSessionId,
   archiveSession,
+  createSchedulerSession,
+  closeSession,
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
@@ -28,6 +30,8 @@ import { splitMessage } from './message-split.js';
 import { listenHttpServer } from './http-server-startup.js';
 import { readRawBody } from './web-http.js';
 import type { Config } from './config.js';
+import type { Scheduler } from './scheduler.js';
+import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -198,6 +202,8 @@ export interface LineBotOptions extends Omit<
   resetTextPatterns?: readonly string[];
   completionDisplay?: CompletionDisplayOptions;
   completionNotifyAfterMs?: number;
+  /** 指定すると LINE 宛のスケジュール配信・エージェント実行を登録する */
+  scheduler?: Scheduler;
 }
 
 /**
@@ -232,6 +238,16 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
 
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
   const queue = new LineChatQueue();
+
+  if (options.scheduler) {
+    registerLineSchedulerBridge({
+      scheduler: options.scheduler,
+      client,
+      queue,
+      agentRunner,
+      completionDisplay,
+    });
+  }
 
   const server = createServer(async (req, res) => {
     try {
@@ -278,6 +294,126 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
     );
   }
   return server;
+}
+
+export interface LineScheduleTarget {
+  /** push 先の LINE userId */
+  userId: string;
+  /** セッションとキューの単位になる contextKey */
+  contextKey: string;
+}
+
+/**
+ * スケジュールの channelId から push 先を解決する。
+ *
+ * LINE のターンから `xangi tool schedule_add` を叩くと `XANGI_CHANNEL_ID` の
+ * contextKey (`line:<userId>`) がそのまま channelId になる。Web UI や
+ * `--channel` で生の userId を渡す経路もあるため、両形式を受け付ける。
+ */
+export function parseLineScheduleTarget(channelId: string): LineScheduleTarget {
+  const withPrefix = channelId.match(/^line:(U[0-9a-f]{32})$/i);
+  if (withPrefix) {
+    return { userId: withPrefix[1], contextKey: channelId };
+  }
+  if (/^U[0-9a-f]{32}$/i.test(channelId)) {
+    return { userId: channelId, contextKey: `${LINE_CONTEXT_PREFIX}${channelId}` };
+  }
+  throw new Error(`[xangi-line] Unsupported schedule channelId: ${channelId}`);
+}
+
+async function pushLineText(client: LineBotClient, userId: string, text: string): Promise<void> {
+  const chunks = splitMessage(text, LINE_TEXT_MESSAGE_MAX);
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      await client.pushMessage({ to: userId, messages: [{ type: 'text', text: chunks[i] }] });
+    } catch (error) {
+      throw new Error(`[xangi-line] Scheduled push chunk ${i + 1} failed: ${String(error)}`);
+    }
+  }
+}
+
+/**
+ * scheduler に LINE 宛の送信とエージェント実行を登録する。
+ *
+ * LINE には送信済みメッセージの編集 API が無いため、Discord / Slack のように
+ * 「考え中」を差し替える方式は採らず、完了時に結果だけを push する。
+ */
+export function registerLineSchedulerBridge(deps: {
+  scheduler: Scheduler;
+  client: LineBotClient;
+  queue: LineChatQueue;
+  agentRunner: AgentRunner;
+  completionDisplay?: CompletionDisplayOptions;
+}): void {
+  const { scheduler, client, queue, agentRunner, completionDisplay } = deps;
+
+  // pushMessage は非冪等。応答待ちのタイムアウト時は LINE 側で成功済みの
+  // 可能性があるため、自動再試行せず at-most-once を優先する。
+  scheduler.registerSender('line', async (channelId, message) => {
+    const { userId } = parseLineScheduleTarget(channelId);
+    await pushLineText(client, userId, message);
+  });
+
+  scheduler.registerAgentRunner('line', async (prompt, channelId, schedule, runContext) => {
+    const { userId, contextKey } = parseLineScheduleTarget(channelId);
+
+    const deliver = async (text: string): Promise<void> => {
+      try {
+        await pushLineText(client, userId, text);
+        runContext?.onDelivery?.({ platform: 'line', destinationId: userId });
+      } catch (pushError) {
+        // ここで throw すると scheduler が run 全体を再試行し、一部だけ
+        // 届いていた場合に二重投函になる。at-most-once を優先する。
+        console.error('[xangi-line] scheduled push failed:', pushError);
+      }
+    };
+
+    let agentResult = '';
+    // メッセージハンドラと同じキューを通し、同一ユーザーのターンと並行実行しない。
+    await queue.enqueue(contextKey, async () => {
+      runContext?.onStart?.();
+      const appSessionId = createSchedulerRunId('line');
+      createSchedulerSession(appSessionId, contextKey, {
+        platform: 'line',
+        title: schedule?.label || prompt,
+      });
+      const startedAt = Date.now();
+      try {
+        const runResult = await runWithBubbleEvents(
+          agentRunner,
+          prompt,
+          {
+            threadId: threadIdFor('line', userId),
+            turnId: turnIdFor('line', appSessionId),
+            threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+            platform: 'line',
+            userText: prompt,
+          },
+          {},
+          { channelId: contextKey, appSessionId }
+        );
+        agentResult = runResult.result || '…';
+        await deliver(
+          appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
+        );
+      } catch (error) {
+        console.error('[xangi-line] scheduled run failed:', error);
+        await deliver(
+          appendScheduleRunCompletion(
+            ERROR_FALLBACK_TEXT,
+            Date.now() - startedAt,
+            completionDisplay,
+            'error'
+          )
+        );
+        // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
+        throw error;
+      } finally {
+        closeSession(appSessionId, 'other');
+      }
+    });
+    return agentResult;
+  });
 }
 
 export interface HandlerContext {

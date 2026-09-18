@@ -28,13 +28,19 @@ import { ValidationError } from '../errors.js';
 type SchedulePlatform = Schedule['platform'];
 
 function isSchedulePlatform(value: string): value is SchedulePlatform {
-  return value === 'discord' || value === 'slack' || value === 'telegram' || value === 'web';
+  return (
+    value === 'discord' ||
+    value === 'slack' ||
+    value === 'telegram' ||
+    value === 'web' ||
+    value === 'line'
+  );
 }
 
 function resolveSchedulePlatform(flags: Record<string, string>): SchedulePlatform {
   const value = flags['platform'] || process.env.XANGI_PLATFORM || 'discord';
   if (!isSchedulePlatform(value)) {
-    throw new Error(`--platform must be discord, slack, telegram, or web: ${value}`);
+    throw new Error(`--platform must be discord, slack, telegram, web, or line: ${value}`);
   }
   return value;
 }
@@ -208,7 +214,7 @@ async function scheduleUpdate(
   }
   if (hasPlatform && !isSchedulePlatform(flags['platform'])) {
     throw new ValidationError(
-      `--platform must be discord, slack, telegram, or web: ${flags['platform']}`
+      `--platform must be discord, slack, telegram, web, or line: ${flags['platform']}`
     );
   }
 

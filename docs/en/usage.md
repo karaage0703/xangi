@@ -156,7 +156,7 @@ Content-Type: application/json
 ## Scheduler
 
 Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi tool schedule_add` etc. on your behalf.
-Scheduled results show elapsed time on both success and failure. Discord, Slack, and Telegram use a result footer, while Web shows it in the message header.
+Scheduled results show elapsed time on both success and failure. Discord, Slack, Telegram, and LINE use a result footer, while Web shows it in the message header.
 
 ### How to Operate
 
@@ -207,7 +207,7 @@ For more fine-grained control, cron expressions are also supported:
 
 ### `xangi tool schedule_*`
 
-Operate schedules directly from the AI or shell. `schedule_add` requires `--channel` so the destination is always explicit. For Web Chat, also pass `--platform web` and the Web session ID.
+Operate schedules directly from the AI or shell. `schedule_add` requires `--channel` so the destination is always explicit. For Web Chat, also pass `--platform web` and the Web session ID. For LINE, pass `--platform line` and the LINE user ID (turns started from LINE fill in the platform and channel automatically).
 
 ```bash
 # Add a schedule (natural language)
@@ -219,6 +219,9 @@ xangi tool schedule_add --input "cron 0 9 * * * good morning" --channel <channel
 
 # Send to a Web session
 xangi tool schedule_add --input "Every day 9:00 status check" --platform web --channel <sessionId>
+
+# Send to LINE
+xangi tool schedule_add --input "Every day 7:00 today's plan" --platform line --channel <LINE userId>
 
 # List schedules
 xangi tool schedule_list
@@ -496,7 +499,7 @@ curl -X POST "$XANGI_TOOL_SERVER/api/trigger" \
 - `channel` (required): channel ID where the turn runs and results are posted
 - `message` (required): instruction for the agent (max 4000 chars)
 - `source` (optional): identifier of the event origin (alphanumerics plus `_.:-`, max 64 chars). Used as the display label and the rate-limit key
-- `platform` (optional): `discord` (default), `slack`, `telegram`, or `web`
+- `platform` (optional): `discord` (default), `slack`, `telegram`, `web`, or `line`
 
 On success it returns `202 { "ok": true, "triggerId": "trg_..." }` immediately (it does not wait for the turn to finish). Discord, Slack, and Telegram receive a `⚡ trigger: <source>` label followed by the agent response. Web accepts either `web-chat:<sessionId>` or the raw `sessionId` and appends a new turn to that Web conversation.
 

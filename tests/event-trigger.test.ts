@@ -137,7 +137,8 @@ describe('EventTrigger validation', () => {
         .status
     ).toBe(400);
     expect(
-      (await trigger.handleHttp({ channel: 'c1', message: 'hi', platform: 'line' }, AUTH)).status
+      (await trigger.handleHttp({ channel: 'c1', message: 'hi', platform: 'mastodon' }, AUTH))
+        .status
     ).toBe(400);
   });
 

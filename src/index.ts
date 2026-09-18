@@ -197,6 +197,7 @@ async function main() {
       startLineBot({
         agentRunner,
         resolver,
+        scheduler,
         channelSecret: config.line.channelSecret!,
         channelAccessToken: config.line.channelAccessToken!,
         allowedUsers: lineAllowed,

@@ -13,8 +13,8 @@ export function parseWebScheduleInput(
   resolveProjectId: WebScheduleProjectResolver
 ): ScheduleInput {
   const platform = String(body.platform || 'web').trim() as Platform;
-  if (!['discord', 'slack', 'telegram', 'web'].includes(platform)) {
-    throw new Error('platform must be discord, slack, telegram, or web');
+  if (!['discord', 'slack', 'telegram', 'web', 'line'].includes(platform)) {
+    throw new Error('platform must be discord, slack, telegram, web, or line');
   }
   const type = String(body.type || '');
   if (type !== 'cron' && type !== 'once' && type !== 'startup') {
