@@ -17,6 +17,94 @@ export const TRANSIENT_RETRY_DELAY_MS = process.env.VITEST ? 50 : 15_000;
 /** スケジュール一覧の項目間区切り（splitMessage用） */
 export const SCHEDULE_SEPARATOR = '{{SPLIT}}';
 
+/** Schedulerの解釈・表示に使うIANA timezone。設定不正時はホストtimezoneへ戻す。 */
+export function resolveScheduleTimeZone(env: NodeJS.ProcessEnv = process.env): string {
+  const candidates = [env.TZ?.trim(), Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC'];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: candidate }).format(0);
+      return candidate;
+    } catch {
+      // 次の安全な候補へfallbackする。
+    }
+  }
+  return 'UTC';
+}
+
+interface ZonedDateParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function zonedDateParts(date: Date, timeZone: string): ZonedDateParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes): number =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: value('year'),
+    month: value('month'),
+    day: value('day'),
+    hour: value('hour'),
+    minute: value('minute'),
+    second: value('second'),
+  };
+}
+
+/** 保存ISOを、localeに依存しない時刻とIANA timezoneへ整形する。 */
+export function formatScheduleDateTime(
+  value: string | Date,
+  timeZone = resolveScheduleTimeZone()
+): string {
+  const parts = zonedDateParts(value instanceof Date ? value : new Date(value), timeZone);
+  const pad = (number: number): string => String(number).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)} [${timeZone}]`;
+}
+
+function dateFromZonedParts(parts: ZonedDateParts, timeZone: string): Date | null {
+  const desiredUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+  let candidate = desiredUtc;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const actual = zonedDateParts(new Date(candidate), timeZone);
+    const actualUtc = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+      actual.second
+    );
+    candidate += desiredUtc - actualUtc;
+  }
+  const resolved = new Date(candidate);
+  const verified = zonedDateParts(resolved, timeZone);
+  return Object.entries(parts).every(
+    ([key, value]) => verified[key as keyof ZonedDateParts] === value
+  )
+    ? resolved
+    : null;
+}
+
 // ─── Types ───────────────────────────────────────────────────────────
 export type ScheduleType = 'cron' | 'once' | 'startup';
 export type Platform = 'discord' | 'slack' | 'telegram' | 'web' | 'line';
@@ -376,7 +464,7 @@ export class Scheduler {
         () => {
           this.executeJob(schedule);
         },
-        { timezone: 'Asia/Tokyo' }
+        { timezone: resolveScheduleTimeZone() }
       );
       this.cronJobs.set(schedule.id, task);
       this.log(
@@ -399,7 +487,7 @@ export class Scheduler {
       this.timers.set(schedule.id, timer);
       const runDate = new Date(schedule.runAt);
       this.log(
-        `[scheduler] Timer set: ${schedule.id} → ${runDate.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} (${Math.round(delay / 1000)}s)`
+        `[scheduler] Timer set: ${schedule.id} → ${formatScheduleDateTime(runDate)} (${Math.round(delay / 1000)}s)`
       );
     }
   }
@@ -593,10 +681,7 @@ export function formatScheduleList(
   const header = statusHeader.length > 0 ? statusHeader.join('\n') + '\n\n' : '';
   return header + sections.join('\n' + SCHEDULE_SEPARATOR + '\n') + '\n';
 }
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-}
+const formatTime = formatScheduleDateTime;
 /**
  * cron式を人間が読める形式に変換
  * @param expression cron式 (分 時 日 月 曜日)
@@ -789,18 +874,18 @@ export function parseScheduleInput(input: string): {
     const hour = parseInt(timeMatch[1], 10);
     const min = parseInt(timeMatch[2], 10);
     const now = new Date();
-    // Asia/Tokyo で設定
-    const jstOffset = 9 * 60; // JST = UTC+9
-    const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const jstMinutes = utcMinutes + jstOffset;
+    const timeZone = resolveScheduleTimeZone();
+    const current = zonedDateParts(now, timeZone);
     const targetMinutes = hour * 60 + min;
-    // JSTベースで今日か明日かを判定
-    const currentJstMinutes = jstMinutes % (24 * 60);
-    let diffMinutes = targetMinutes - currentJstMinutes;
-    if (diffMinutes <= 0) {
-      diffMinutes += 24 * 60; // 明日
+    const currentMinutes = current.hour * 60 + current.minute;
+    if (targetMinutes <= currentMinutes) {
+      const nextDay = new Date(Date.UTC(current.year, current.month - 1, current.day + 1));
+      current.year = nextDay.getUTCFullYear();
+      current.month = nextDay.getUTCMonth() + 1;
+      current.day = nextDay.getUTCDate();
     }
-    const runAt = new Date(now.getTime() + diffMinutes * 60 * 1000);
+    const runAt = dateFromZonedParts({ ...current, hour, minute: min, second: 0 }, timeZone);
+    if (!runAt) return null;
     return {
       type: 'once',
       runAt: runAt.toISOString(),
@@ -814,10 +899,12 @@ export function parseScheduleInput(input: string): {
     const dateStr = dateTimeMatch[1];
     const hour = parseInt(dateTimeMatch[2], 10);
     const min = parseInt(dateTimeMatch[3], 10);
-    // JST として解釈
-    const runAt = new Date(
-      `${dateStr}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00+09:00`
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const runAt = dateFromZonedParts(
+      { year, month, day, hour, minute: min, second: 0 },
+      resolveScheduleTimeZone()
     );
+    if (!runAt) return null;
     return {
       type: 'once',
       runAt: runAt.toISOString(),

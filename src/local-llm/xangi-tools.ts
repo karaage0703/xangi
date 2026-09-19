@@ -229,7 +229,12 @@ function schedulePlatformEnv(platform?: ChatPlatform): Record<string, string> | 
     : undefined;
 }
 
-function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
+type XangiCommandRunner = (args: string[], env?: Record<string, string>) => Promise<ToolResult>;
+
+export function createScheduleAddHandler(
+  defaultPlatform?: ChatPlatform,
+  executeCommand: XangiCommandRunner = runXangiCmd
+): ToolHandler {
   return {
     name: 'schedule_add',
     description:
@@ -253,14 +258,14 @@ function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
       },
       required: ['input'],
     },
-    async execute(args): Promise<ToolResult> {
+    async execute(args, context): Promise<ToolResult> {
       const flags: Record<string, string> = { input: String(args.input) };
       if (args.channel) flags.channel = String(args.channel);
       if (args.platform) flags.platform = String(args.platform);
-      return runXangiCmd(
-        ['schedule_add', ...flagsToArgs(flags)],
-        schedulePlatformEnv(defaultPlatform)
-      );
+      return executeCommand(['schedule_add', ...flagsToArgs(flags)], {
+        ...schedulePlatformEnv(defaultPlatform),
+        ...currentChannelEnv(context.channelId),
+      });
     },
   };
 }

@@ -21,6 +21,7 @@ describe('schedule creation from mixed-platform tool context', () => {
     vi.stubEnv('DATA_DIR', dir);
     vi.stubEnv('XANGI_TOOL_SERVER', undefined);
     vi.stubEnv('XANGI_PLATFORM', undefined);
+    vi.stubEnv('TZ', 'Asia/Tokyo');
     initSessions(dir);
     scheduler = new Scheduler(dir, { quiet: true });
     startToolServer({ scheduler });
@@ -82,7 +83,7 @@ describe('schedule creation from mixed-platform tool context', () => {
 
     await expect(
       runToolCommand(['schedule_add', '--input', '1分後 テスト'], { env })
-    ).resolves.toContain('スケジュールを追加しました');
+    ).resolves.toMatch(/スケジュールを追加しました[\s\S]*Run at: .+ \[Asia\/Tokyo\]/);
     expect(scheduler.list()[0]).toMatchObject({
       platform: 'line',
       channelId: `line:${userId}`,

@@ -699,6 +699,8 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 
 - サーバーのシステムタイムゾーン（`TZ` 環境変数）に従う
 - Docker環境では `TZ=Asia/Tokyo` 等を設定推奨
+- `TZ`にはIANA time zone（例: `America/New_York`、`Europe/Berlin`）を指定する
+- 保存形式はUTC ISO 8601を維持し、一覧・登録結果・cron実行は設定timezoneへ変換する
 
 **実行の堅牢化:**
 

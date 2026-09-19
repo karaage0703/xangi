@@ -702,6 +702,8 @@ Manages periodic execution and reminders:
 
 - Follows the server's system timezone (`TZ` environment variable)
 - In Docker environments, setting `TZ=Asia/Tokyo` etc. is recommended
+- Set `TZ` to an IANA time zone such as `America/New_York` or `Europe/Berlin`
+- Persistence stays in UTC ISO 8601; lists, creation receipts, and cron execution use the configured time zone
 
 **Execution Resilience:**
 

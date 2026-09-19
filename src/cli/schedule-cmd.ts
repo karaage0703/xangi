@@ -17,6 +17,8 @@ import { join } from 'path';
 import {
   parseScheduleInput,
   formatScheduleList,
+  formatScheduleDateTime,
+  resolveScheduleTimeZone,
   validateScheduleInput,
   type Scheduler,
   type Schedule,
@@ -136,6 +138,22 @@ function toScheduleInput(schedule: Schedule): ScheduleInput {
   };
 }
 
+function formatScheduleAdded(schedule: Schedule): string {
+  const details = [
+    `✅ スケジュールを追加しました (ID: ${schedule.id})`,
+    `Platform: ${schedule.platform}`,
+    `Timezone: ${resolveScheduleTimeZone()}`,
+  ];
+  if (schedule.type === 'once' && schedule.runAt) {
+    details.push(`Run at: ${formatScheduleDateTime(schedule.runAt)}`);
+  } else if (schedule.type === 'cron' && schedule.expression) {
+    details.push(`Cron: ${schedule.expression} [${resolveScheduleTimeZone()}]`);
+  } else {
+    details.push('Run at: startup');
+  }
+  return details.join('\n');
+}
+
 async function scheduleList(scheduler?: Scheduler): Promise<string> {
   const schedules = scheduler?.list() ?? loadSchedules();
   if (schedules.length === 0) {
@@ -182,7 +200,7 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
 
   if (scheduler) {
     const newSchedule = scheduler.add(scheduleInput);
-    return `✅ スケジュールを追加しました (ID: ${newSchedule.id})`;
+    return formatScheduleAdded(newSchedule);
   }
 
   const schedules = loadSchedules();
@@ -200,7 +218,7 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
   schedules.push(newSchedule);
   saveSchedules(schedules);
 
-  return `✅ スケジュールを追加しました (ID: ${newSchedule.id})`;
+  return formatScheduleAdded(newSchedule);
 }
 
 const SCHEDULE_UPDATE_FLAGS = new Set(['id', 'input', 'message', 'channel', 'platform']);
