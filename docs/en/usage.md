@@ -207,10 +207,12 @@ For more fine-grained control, cron expressions are also supported:
 
 ### `xangi tool schedule_*`
 
-Operate schedules directly from the AI or shell. `schedule_add` requires `--channel` so the destination is always explicit. For Web Chat, also pass `--platform web` and the Web session ID. For LINE, pass `--platform line` and the LINE user ID (turns started from LINE fill in the platform and channel automatically).
+Operate schedules directly from the AI or shell. `schedule_add` may omit `--channel` when the schedule targets the current conversation; the destination of that turn is used. Pass `--channel` explicitly for any other destination. The platform is resolved in this order: explicit `--platform`, `XANGI_PLATFORM`, inference from the destination, then `discord`. For Web Chat, also pass `--platform web` and the Web session ID. For LINE, pass `--platform line` and the LINE user ID.
 
 ```bash
 # Add a schedule (natural language)
+# Omitting the destination targets the current conversation
+xangi tool schedule_add --input "Every day 9:00 good morning"
 xangi tool schedule_add --input "Every day 9:00 good morning" --channel <channelId>
 xangi tool schedule_add --input "30 minutes later, meeting" --channel <channelId>
 xangi tool schedule_add --input "15:00 review" --channel <channelId>

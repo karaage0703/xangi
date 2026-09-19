@@ -209,10 +209,12 @@ Content-Type: application/json
 
 ### `xangi tool schedule_*`
 
-AI ／ シェルから直接スケジュール操作できます。`schedule_add`では送信先を曖昧にしないため、`--channel`が必須です。Web Chatへ送る場合は`--platform web`とWeb session IDを指定します。LINEへ送る場合は`--platform line`とLINEのuserIdを指定します（LINEのターンから登録する場合は、platformとchannelが自動で入ります）。
+AI ／ シェルから直接スケジュール操作できます。`schedule_add`は、いま会話しているチャンネルへ登録する場合は`--channel`を省略でき、そのターンの送信先が使われます。別の宛先へ送る場合は`--channel`で明示してください。platformは「`--platform`の明示 → `XANGI_PLATFORM` → 送信先からの推測 → `discord`」の順で決まります。Web Chatへ送る場合は`--platform web`とWeb session IDを、LINEへ送る場合は`--platform line`とLINEのuserIdを指定します。
 
 ```bash
 # スケジュール追加（自然言語）
+# 送信先を省略すると、いま会話しているチャンネルへ登録される
+xangi tool schedule_add --input "毎日 9:00 おはよう"
 xangi tool schedule_add --input "毎日 9:00 おはよう" --channel <channelId>
 xangi tool schedule_add --input "30分後 ミーティング" --channel <channelId>
 xangi tool schedule_add --input "15:00 レビュー" --channel <channelId>
