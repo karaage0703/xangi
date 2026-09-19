@@ -80,7 +80,7 @@ describe('Local LLM xangi tools by platform', () => {
       input: { type: 'string' },
       message: { type: 'string' },
       channel: { type: 'string' },
-      platform: { enum: ['discord', 'slack', 'telegram', 'web'] },
+      platform: { enum: ['discord', 'slack', 'telegram', 'web', 'line'] },
     });
   });
 

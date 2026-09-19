@@ -93,7 +93,15 @@ async function executeCommand(
     if (runtimeConfig?.scheduler?.enabled === false) {
       throw new ValidationError('schedule is disabled by SCHEDULER_ENABLED=false');
     }
-    return scheduleCmd(command, flags, scheduleManager ?? undefined);
+    const scheduleFlags =
+      command === 'schedule_add'
+        ? {
+            ...(context?.channelId ? { channel: context.channelId } : {}),
+            ...(context?.platform ? { platform: context.platform } : {}),
+            ...flags,
+          }
+        : flags;
+    return scheduleCmd(command, scheduleFlags, scheduleManager ?? undefined);
   } else if (command.startsWith('system_')) {
     return systemCmd(command, flags);
   } else if (command === 'help') {

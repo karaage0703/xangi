@@ -21,7 +21,8 @@ export function buildCliEnv(
     platform === 'discord' ||
     platform === 'slack' ||
     platform === 'telegram' ||
-    platform === 'web'
+    platform === 'web' ||
+    platform === 'line'
   ) {
     env.XANGI_PLATFORM = platform;
   } else {

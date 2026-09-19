@@ -19,7 +19,7 @@ export const SCHEDULE_SEPARATOR = '{{SPLIT}}';
 
 // ─── Types ───────────────────────────────────────────────────────────
 export type ScheduleType = 'cron' | 'once' | 'startup';
-export type Platform = 'discord' | 'slack' | 'telegram' | 'web';
+export type Platform = 'discord' | 'slack' | 'telegram' | 'web' | 'line';
 export interface Schedule {
   id: string;
   type: ScheduleType;
