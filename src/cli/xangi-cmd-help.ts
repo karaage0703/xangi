@@ -136,7 +136,10 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'schedule',
     summary: 'スケジュールを追加',
     usage:
-      'xangi tool schedule_add --input <自然言語またはcron> --channel <id> --platform <discord|slack|telegram|web|line>',
+      'xangi tool schedule_add --input <自然言語またはcron> [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
+    notes: [
+      '送信先を省略すると現在の会話を使用。platformは明示指定、XANGI_PLATFORM、送信先からの推測、discordの順で決定する。',
+    ],
   },
   {
     name: 'schedule_update',
