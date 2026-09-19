@@ -24,6 +24,7 @@ import {
 } from '../scheduler.js';
 import { WEB_CHAT_CONTEXT_PREFIX, webAppSessionId } from '../sessions.js';
 import { ValidationError } from '../errors.js';
+import { parseLineScheduleTarget } from '../line-schedule-target.js';
 
 type SchedulePlatform = Schedule['platform'];
 
@@ -168,6 +169,15 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
     channelId: targetChannel,
     platform,
   };
+  if (platform === 'line') {
+    try {
+      parseLineScheduleTarget(targetChannel);
+    } catch {
+      throw new ValidationError(
+        'LINEの送信先が不正です。現在の会話へ送る場合はchannelとplatformを省略して再実行してください。'
+      );
+    }
+  }
   validateForCommand(scheduleInput);
 
   if (scheduler) {

@@ -69,6 +69,26 @@ describe('schedule creation from mixed-platform tool context', () => {
     expect(scheduler.list()).toHaveLength(0);
   });
 
+  it('rejects an invented LINE destination at registration and accepts a corrected retry', async () => {
+    const env = buildCliEnv(`line:${userId}`, 'line', dir);
+
+    await expect(
+      runToolCommand(
+        ['schedule_add', '--input', '1分後 テスト', '--channel', 'current', '--platform', 'line'],
+        { env }
+      )
+    ).rejects.toThrow('現在の会話へ送る場合はchannelとplatformを省略して再実行');
+    expect(scheduler.list()).toHaveLength(0);
+
+    await expect(
+      runToolCommand(['schedule_add', '--input', '1分後 テスト'], { env })
+    ).resolves.toContain('スケジュールを追加しました');
+    expect(scheduler.list()[0]).toMatchObject({
+      platform: 'line',
+      channelId: `line:${userId}`,
+    });
+  });
+
   it('preserves explicit flags and forwards an explicit environment platform', async () => {
     const env = buildCliEnv('12345', 'telegram', dir);
     await runToolCommand(['schedule_add', '--input', '1分後 テスト'], { env });

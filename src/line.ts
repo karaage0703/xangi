@@ -32,6 +32,10 @@ import { readRawBody } from './web-http.js';
 import type { Config } from './config.js';
 import type { Scheduler } from './scheduler.js';
 import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
+import { NonRetryableError } from './errors.js';
+import { parseLineScheduleTarget, type LineScheduleTarget } from './line-schedule-target.js';
+
+export { parseLineScheduleTarget, type LineScheduleTarget } from './line-schedule-target.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -294,31 +298,6 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
     );
   }
   return server;
-}
-
-export interface LineScheduleTarget {
-  /** push 先の LINE userId */
-  userId: string;
-  /** セッションとキューの単位になる contextKey */
-  contextKey: string;
-}
-
-/**
- * スケジュールの channelId から push 先を解決する。
- *
- * LINE のターンから `xangi tool schedule_add` を叩くと `XANGI_CHANNEL_ID` の
- * contextKey (`line:<userId>`) がそのまま channelId になる。Web UI や
- * `--channel` で生の userId を渡す経路もあるため、両形式を受け付ける。
- */
-export function parseLineScheduleTarget(channelId: string): LineScheduleTarget {
-  const withPrefix = channelId.match(/^line:(U[0-9a-f]{32})$/i);
-  if (withPrefix) {
-    return { userId: withPrefix[1], contextKey: channelId };
-  }
-  if (/^U[0-9a-f]{32}$/i.test(channelId)) {
-    return { userId: channelId, contextKey: `${LINE_CONTEXT_PREFIX}${channelId}` };
-  }
-  throw new Error(`[xangi-line] Unsupported schedule channelId: ${channelId}`);
 }
 
 async function pushLineText(client: LineBotClient, userId: string, text: string): Promise<void> {

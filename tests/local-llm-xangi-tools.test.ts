@@ -84,6 +84,13 @@ describe('Local LLM xangi tools by platform', () => {
     });
   });
 
+  it('allows schedule_add to use the current conversation without inventing a channel id', () => {
+    const tool = getXangiTools('line').find((candidate) => candidate.name === 'schedule_add');
+    expect(tool).toBeDefined();
+    expect(tool!.parameters.required).toEqual(['input']);
+    expect(tool!.parameters.properties.channel.description).toContain('現在の会話では省略');
+  });
+
   it('omits disabled scheduler, lifecycle, and runtime settings tools', () => {
     process.env.SCHEDULER_ENABLED = 'false';
     process.env.XANGI_SELF_LIFECYCLE = 'off';

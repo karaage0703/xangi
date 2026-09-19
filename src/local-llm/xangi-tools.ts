@@ -233,7 +233,7 @@ function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
   return {
     name: 'schedule_add',
     description:
-      'スケジュールを追加する。例: "30分後 ミーティング", "15:00 レビュー", "毎日 9:00 おはよう", "cron 0 9 * * * おはよう"',
+      'スケジュールを追加する。現在の会話へ送る場合はchannelとplatformを省略する。例: "30分後 ミーティング", "15:00 レビュー", "毎日 9:00 おはよう", "cron 0 9 * * * おはよう"',
     parameters: {
       type: 'object',
       properties: {
@@ -241,20 +241,21 @@ function createScheduleAddHandler(defaultPlatform?: ChatPlatform): ToolHandler {
           type: 'string',
           description: 'スケジュール設定（例: "毎日 9:00 おはよう"）',
         },
-        channel: { type: 'string', description: '送信先チャンネルID' },
+        channel: {
+          type: 'string',
+          description: '別の送信先を指定する場合の実ID（現在の会話では省略）',
+        },
         platform: {
           type: 'string',
           description: 'プラットフォーム（discord/slack/telegram/line）',
           enum: ['discord', 'slack', 'telegram', 'line'],
         },
       },
-      required: ['input', 'channel'],
+      required: ['input'],
     },
     async execute(args): Promise<ToolResult> {
-      const flags: Record<string, string> = {
-        input: String(args.input),
-        channel: String(args.channel),
-      };
+      const flags: Record<string, string> = { input: String(args.input) };
+      if (args.channel) flags.channel = String(args.channel);
       if (args.platform) flags.platform = String(args.platform);
       return runXangiCmd(
         ['schedule_add', ...flagsToArgs(flags)],

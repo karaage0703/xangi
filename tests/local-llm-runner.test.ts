@@ -233,6 +233,61 @@ describe('Local LLM agent step limit', () => {
     expect(loadAgentStepLimit({ LOCAL_LLM_AGENT_STEPS: '1.5' })).toBeUndefined();
   });
 
+  it('feeds a validation error back to the model so it can correct and retry', async () => {
+    delete process.env.LOCAL_LLM_AGENT_STEPS;
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-agent-tool-retry-'));
+    const validPath = join(workdir, 'valid.txt');
+    writeFileSync(validPath, 'retry succeeded');
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    let calls = 0;
+
+    (
+      runner as unknown as {
+        llm: { chat: (messages: Array<{ role: string; content: string }>) => Promise<unknown> };
+      }
+    ).llm = {
+      chat: async (messages) => {
+        calls++;
+        if (calls === 1) {
+          return {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [
+              { id: 'invalid-call', name: 'read', arguments: { path: join(workdir, 'missing.txt') } },
+            ],
+          };
+        }
+        if (calls === 2) {
+          expect(messages.at(-1)).toMatchObject({
+            role: 'tool',
+            content: expect.stringContaining('Error:'),
+          });
+          return {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 'corrected-call', name: 'read', arguments: { path: validPath } }],
+          };
+        }
+        expect(messages.at(-1)).toMatchObject({
+          role: 'tool',
+          content: expect.stringContaining('retry succeeded'),
+        });
+        return { content: '修正して再実行できました', finishReason: 'stop', toolCalls: [] };
+      },
+    };
+
+    try {
+      const { result } = await runner.run('ツールを実行して', {
+        sessionId: 'agent-tool-retry',
+        channelId: 'agent-tool-retry',
+      });
+      expect(result).toBe('修正して再実行できました');
+      expect(calls).toBe(3);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
   it('does not stop after the former fixed 10 tool rounds when no limit is configured', async () => {
     delete process.env.LOCAL_LLM_AGENT_STEPS;
     const workdir = mkdtempSync(join(tmpdir(), 'xangi-agent-steps-'));
