@@ -249,6 +249,8 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
       client,
       queue,
       agentRunner,
+      allowedUsers,
+      allowAll,
       completionDisplay,
     });
   }
@@ -322,28 +324,42 @@ export function registerLineSchedulerBridge(deps: {
   client: LineBotClient;
   queue: LineChatQueue;
   agentRunner: AgentRunner;
+  allowedUsers: readonly string[];
+  allowAll: boolean;
   completionDisplay?: CompletionDisplayOptions;
 }): void {
-  const { scheduler, client, queue, agentRunner, completionDisplay } = deps;
+  const { scheduler, client, queue, agentRunner, allowedUsers, allowAll, completionDisplay } = deps;
+
+  const requireAllowedTarget = (channelId: string): LineScheduleTarget => {
+    const target = parseLineScheduleTarget(channelId);
+    if (!allowAll && !allowedUsers.includes(target.userId)) {
+      throw new NonRetryableError(
+        `[xangi-line] Scheduled target is not in LINE_ALLOWED_USER: ${target.userId}`
+      );
+    }
+    return target;
+  };
 
   // pushMessage は非冪等。応答待ちのタイムアウト時は LINE 側で成功済みの
   // 可能性があるため、自動再試行せず at-most-once を優先する。
   scheduler.registerSender('line', async (channelId, message) => {
-    const { userId } = parseLineScheduleTarget(channelId);
+    const { userId } = requireAllowedTarget(channelId);
     await pushLineText(client, userId, message);
   });
 
   scheduler.registerAgentRunner('line', async (prompt, channelId, schedule, runContext) => {
-    const { userId, contextKey } = parseLineScheduleTarget(channelId);
+    const { userId, contextKey } = requireAllowedTarget(channelId);
 
     const deliver = async (text: string): Promise<void> => {
       try {
         await pushLineText(client, userId, text);
         runContext?.onDelivery?.({ platform: 'line', destinationId: userId });
       } catch (pushError) {
-        // ここで throw すると scheduler が run 全体を再試行し、一部だけ
-        // 届いていた場合に二重投函になる。at-most-once を優先する。
-        console.error('[xangi-line] scheduled push failed:', pushError);
+        // pushMessage は非冪等で、途中チャンクまで届いている可能性がある。
+        // 失敗を成功扱いにはせず、かつ agent 全体の再実行も止める。
+        throw new NonRetryableError('[xangi-line] Scheduled result delivery failed', {
+          cause: pushError,
+        });
       }
     };
 
@@ -358,35 +374,39 @@ export function registerLineSchedulerBridge(deps: {
       });
       const startedAt = Date.now();
       try {
-        const runResult = await runWithBubbleEvents(
-          agentRunner,
-          prompt,
-          {
-            threadId: threadIdFor('line', userId),
-            turnId: turnIdFor('line', appSessionId),
-            threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
-            platform: 'line',
-            userText: prompt,
-          },
-          {},
-          { channelId: contextKey, appSessionId }
-        );
+        let runResult: RunResult;
+        try {
+          runResult = await runWithBubbleEvents(
+            agentRunner,
+            prompt,
+            {
+              threadId: threadIdFor('line', userId),
+              turnId: turnIdFor('line', appSessionId),
+              threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+              platform: 'line',
+              userText: prompt,
+            },
+            {},
+            { channelId: contextKey, appSessionId }
+          );
+        } catch (error) {
+          console.error('[xangi-line] scheduled run failed:', error);
+          await deliver(
+            appendScheduleRunCompletion(
+              ERROR_FALLBACK_TEXT,
+              Date.now() - startedAt,
+              completionDisplay,
+              'error'
+            )
+          );
+          // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
+          throw error;
+        }
+
         agentResult = runResult.result || '…';
         await deliver(
           appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
         );
-      } catch (error) {
-        console.error('[xangi-line] scheduled run failed:', error);
-        await deliver(
-          appendScheduleRunCompletion(
-            ERROR_FALLBACK_TEXT,
-            Date.now() - startedAt,
-            completionDisplay,
-            'error'
-          )
-        );
-        // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
-        throw error;
       } finally {
         closeSession(appSessionId, 'other');
       }

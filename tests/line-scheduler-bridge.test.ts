@@ -77,6 +77,8 @@ describe('registerLineSchedulerBridge', () => {
       client,
       queue: new LineChatQueue(),
       agentRunner: createRunner('unused'),
+      allowedUsers: [USER_ID],
+      allowAll: false,
     });
 
     const sender = scheduler.getSender('line');
@@ -110,6 +112,8 @@ describe('registerLineSchedulerBridge', () => {
       client,
       queue: new LineChatQueue(),
       agentRunner,
+      allowedUsers: [USER_ID],
+      allowAll: false,
     });
 
     const runner = scheduler.getAgentRunner('line');
@@ -166,6 +170,8 @@ describe('registerLineSchedulerBridge', () => {
       client,
       queue: new LineChatQueue(),
       agentRunner,
+      allowedUsers: [USER_ID],
+      allowAll: false,
     });
 
     const runner = scheduler.getAgentRunner('line');
@@ -173,5 +179,53 @@ describe('registerLineSchedulerBridge', () => {
 
     const pushed = pushMessage.mock.calls.at(-1)?.[0] as { messages: Array<{ text: string }> };
     expect(pushed.messages[0].text).toContain('ごめんなさい');
+  });
+
+  it('rejects scheduled targets outside the LINE allowlist before running the agent', async () => {
+    const scheduler = new Scheduler(tmpDir, { quiet: true });
+    const { client, pushMessage } = createClient();
+    const agentRunner = createRunner('must not run');
+    registerLineSchedulerBridge({
+      scheduler,
+      client,
+      queue: new LineChatQueue(),
+      agentRunner,
+      allowedUsers: [],
+      allowAll: false,
+    });
+
+    await expect(scheduler.getSender('line')?.(USER_ID, 'reminder')).rejects.toMatchObject({
+      name: 'NonRetryableError',
+      retryable: false,
+    });
+    await expect(scheduler.getAgentRunner('line')?.('run', USER_ID)).rejects.toMatchObject({
+      name: 'NonRetryableError',
+      retryable: false,
+    });
+    expect(agentRunner.runStream).not.toHaveBeenCalled();
+    expect(pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports final delivery failure without retrying the completed agent run', async () => {
+    const scheduler = new Scheduler(tmpDir, { quiet: true });
+    const pushFailure = Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' });
+    const pushMessage = vi.fn().mockRejectedValue(pushFailure);
+    const client = { pushMessage } as unknown as LineBotClient;
+    const agentRunner = createRunner('generated once');
+    registerLineSchedulerBridge({
+      scheduler,
+      client,
+      queue: new LineChatQueue(),
+      agentRunner,
+      allowedUsers: [USER_ID],
+      allowAll: false,
+    });
+
+    await expect(scheduler.getAgentRunner('line')?.('run', USER_ID)).rejects.toMatchObject({
+      name: 'NonRetryableError',
+      retryable: false,
+    });
+    expect(agentRunner.runStream).toHaveBeenCalledOnce();
+    expect(pushMessage).toHaveBeenCalledOnce();
   });
 });

@@ -52,6 +52,8 @@ describe('schedule creation from mixed-platform tool context', () => {
           return result;
         }),
       } as unknown as AgentRunner,
+      allowedUsers: [userId],
+      allowAll: false,
     });
     // Fake only scheduling timers; HTTP continues to use the real event loop.
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
