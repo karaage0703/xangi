@@ -34,6 +34,8 @@ describe('loadContextBudget', () => {
       expect(cb.contextKeepLast).toBe(20);
       expect(cb.toolResultMaxChars).toBe(8000);
       expect(cb.maxSessionMessages).toBe(100);
+      expect(cb.compactionThresholdTokens).toBe(9830);
+      expect(cb.compactionKeepTokens).toBe(3276);
     });
   });
 
@@ -55,6 +57,8 @@ describe('loadContextBudget', () => {
       const cb = loadContextBudget(env);
       // 65536 - 8000 - 4096 - 1000 = 52440 tokens, * 3 = 157320 chars
       expect(cb.contextMaxChars).toBe(157320);
+      expect(cb.compactionThresholdTokens).toBe(19660);
+      expect(cb.compactionKeepTokens).toBe(6553);
     });
 
     it('SYSTEM/OUTPUT/SAFETY を個別に指定できる', () => {
@@ -96,6 +100,39 @@ describe('loadContextBudget', () => {
       expect(cb.contextKeepLast).toBe(10);
       expect(cb.toolResultMaxChars).toBe(4000);
       expect(cb.maxSessionMessages).toBe(50);
+      expect(cb.compactionThresholdRatio).toBe(0.3);
+      expect(cb.compactionThresholdTokens).toBe(9830);
+      expect(cb.compactionKeepTokens).toBe(3276);
+      expect(cb.compactionCooldownMs).toBe(60_000);
+      expect(cb.imageEstimateTokens).toBe(2048);
+    });
+
+    it('compaction の閾値・保持量・cooldownを上書きできる', () => {
+      const cb = loadContextBudget({
+        LOCAL_LLM_NUM_CTX: '131072',
+        LOCAL_LLM_COMPACTION_THRESHOLD_RATIO: '0.25',
+        LOCAL_LLM_COMPACTION_KEEP_TOKENS: '9000',
+        LOCAL_LLM_COMPACTION_COOLDOWN_MS: '120000',
+        LOCAL_LLM_IMAGE_ESTIMATE_TOKENS: '1536',
+      } as NodeJS.ProcessEnv);
+
+      expect(cb.compactionThresholdRatio).toBe(0.25);
+      expect(cb.compactionThresholdTokens).toBe(32768);
+      expect(cb.compactionKeepTokens).toBe(9000);
+      expect(cb.compactionCooldownMs).toBe(120_000);
+      expect(cb.imageEstimateTokens).toBe(1536);
+    });
+
+    it('invalid NUM_CTX and keep tokens fall back to a valid compaction budget', () => {
+      const cb = loadContextBudget({
+        LOCAL_LLM_NUM_CTX: 'not-a-number',
+        LOCAL_LLM_COMPACTION_KEEP_TOKENS: 'also-invalid',
+      } as NodeJS.ProcessEnv);
+
+      expect(cb.numCtx).toBe(32768);
+      expect(cb.compactionThresholdTokens).toBe(9830);
+      expect(cb.compactionKeepTokens).toBe(3276);
+      expect(cb.compactionKeepTokens).toBeLessThan(cb.compactionThresholdTokens);
     });
   });
 });

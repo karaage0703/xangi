@@ -19,6 +19,8 @@ import {
   resetTranscriptStorageForTests,
   deleteSessionTranscript,
   getSessionLogPathForRead,
+  logCompactionCheckpoint,
+  readLatestCompactionCheckpoint,
 } from '../src/transcript-logger.js';
 
 describe('transcript-logger edit/delete', () => {
@@ -351,5 +353,54 @@ describe('transcript-logger edit/delete', () => {
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it('stores compaction checkpoints separately without exposing them as chat messages', () => {
+    const first = logPrompt(workdir, sessionId, 'old question');
+    const kept = logPrompt(workdir, sessionId, 'kept question');
+
+    expect(
+      logCompactionCheckpoint(workdir, sessionId, {
+        version: 1,
+        summary: 'old conversation summary',
+        firstKeptMessageId: kept.id,
+        createdAt: '2026-09-17T00:00:00.000Z',
+        estimatedTokensBefore: 40_000,
+        estimatedTokensAfter: 12_000,
+        messageCountBefore: 42,
+        messageCountAfter: 11,
+        trigger: 'tokens',
+      })
+    ).toBe(true);
+
+    expect(readSessionMessages(workdir, sessionId).map((entry) => entry.id)).toEqual([
+      first.id,
+      kept.id,
+    ]);
+    expect(readLatestCompactionCheckpoint(workdir, sessionId)).toMatchObject({
+      summary: 'old conversation summary',
+      firstKeptMessageId: kept.id,
+      estimatedTokensBefore: 40_000,
+    });
+  });
+
+  it('deleting a transcript also deletes its compaction checkpoints', () => {
+    const kept = logPrompt(workdir, sessionId, 'kept question');
+    expect(
+      logCompactionCheckpoint(workdir, sessionId, {
+        version: 1,
+        summary: 'summary',
+        firstKeptMessageId: kept.id,
+        createdAt: '2026-09-17T00:00:00.000Z',
+        estimatedTokensBefore: 100,
+        estimatedTokensAfter: 20,
+        messageCountBefore: 10,
+        messageCountAfter: 2,
+        trigger: 'messages',
+      })
+    ).toBe(true);
+
+    expect(deleteSessionTranscript(workdir, sessionId)).toBe(true);
+    expect(readLatestCompactionCheckpoint(workdir, sessionId)).toBeNull();
   });
 });

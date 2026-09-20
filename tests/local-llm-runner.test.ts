@@ -7,8 +7,15 @@ import {
   formatLlmError,
   LocalLlmRunner,
   loadMessagesFromTranscript,
+  loadContextBudget,
+  planSessionCompaction,
+  compactSessionWithCheckpoint,
 } from '../src/local-llm/runner.js';
-import { readSessionMessages, type TranscriptEntry } from '../src/transcript-logger.js';
+import {
+  logCompactionCheckpoint,
+  readSessionMessages,
+  type TranscriptEntry,
+} from '../src/transcript-logger.js';
 import { FRIENDLY_FALLBACK_MESSAGE } from '../src/local-llm/pseudo-toolcall.js';
 
 describe('isSessionRelatedError', () => {
@@ -112,7 +119,15 @@ describe('formatLlmError', () => {
 
 describe('LocalLlmRunner mode', () => {
   const savedEnv: Record<string, string | undefined> = {};
-  const envKeys = ['LOCAL_LLM_MODE', 'LOCAL_LLM_BASE_URL', 'LOCAL_LLM_MODEL'];
+  const envKeys = [
+    'LOCAL_LLM_MODE',
+    'LOCAL_LLM_BASE_URL',
+    'LOCAL_LLM_MODEL',
+    'LOCAL_LLM_NUM_CTX',
+    'LOCAL_LLM_COMPACTION_THRESHOLD_RATIO',
+    'LOCAL_LLM_COMPACTION_KEEP_TOKENS',
+    'LOCAL_LLM_CONTEXT_KEEP_LAST',
+  ];
 
   beforeEach(() => {
     for (const key of envKeys) {
@@ -210,6 +225,53 @@ describe('LocalLlmRunner mode', () => {
         expect.any(Array),
         expect.not.objectContaining({ tools: expect.anything() })
       );
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('compacts before the next main chat call and sends the checkpoint with the live tail', async () => {
+    process.env.LOCAL_LLM_MODE = 'chat';
+    process.env.LOCAL_LLM_NUM_CTX = '1000';
+    process.env.LOCAL_LLM_COMPACTION_THRESHOLD_RATIO = '0.002';
+    process.env.LOCAL_LLM_COMPACTION_KEEP_TOKENS = '1';
+    process.env.LOCAL_LLM_CONTEXT_KEEP_LAST = '1';
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-compaction-integration-'));
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const messageSnapshots: Array<import('../src/local-llm/types.js').LLMMessage[]> = [];
+    const responses = ['initial answer', 'Goal: continue the integration test', 'continued answer'];
+    const chat = vi.fn(async (messages: import('../src/local-llm/types.js').LLMMessage[]) => {
+      messageSnapshots.push(structuredClone(messages));
+      return {
+        content: responses[messageSnapshots.length - 1],
+        finishReason: 'stop',
+        toolCalls: [],
+      };
+    });
+    (runner as unknown as { llm: { chat: typeof chat } }).llm = { chat };
+
+    try {
+      const options = {
+        sessionId: 'compaction-integration',
+        channelId: 'compaction-integration',
+        appSessionId: 'compaction-integration',
+      };
+      await runner.run('first question', options);
+      const result = await runner.run('second question', options);
+
+      expect(result.result).toBe('continued answer');
+      expect(chat).toHaveBeenCalledTimes(3);
+      expect(chat.mock.calls[1][1]).toMatchObject({ toolChoice: 'none', temperature: 0 });
+      expect(messageSnapshots[2]).toEqual([
+        {
+          role: 'user',
+          content: '[Conversation checkpoint]\nGoal: continue the integration test',
+        },
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('second question'),
+        }),
+      ]);
     } finally {
       rmSync(workdir, { recursive: true, force: true });
     }
@@ -397,9 +459,9 @@ describe('loadMessagesFromTranscript', () => {
 
     const restored = loadMessagesFromTranscript(workdir, 'sess1');
     expect(restored).toEqual([
-      { role: 'user', content: 'こんにちは' },
-      { role: 'assistant', content: 'やあ' },
-      { role: 'user', content: 'YouTubeまとめて' },
+      { role: 'user', content: 'こんにちは', transcriptEntryId: 'm1' },
+      { role: 'assistant', content: 'やあ', transcriptEntryId: 'm2' },
+      { role: 'user', content: 'YouTubeまとめて', transcriptEntryId: 'm3' },
     ]);
   });
 
@@ -430,7 +492,9 @@ describe('loadMessagesFromTranscript', () => {
     ]);
 
     const restored = loadMessagesFromTranscript(workdir, 'sess3');
-    expect(restored).toEqual([{ role: 'assistant', content: 'plain text response' }]);
+    expect(restored).toEqual([
+      { role: 'assistant', content: 'plain text response', transcriptEntryId: 'm1' },
+    ]);
   });
 
   it('skips entries with empty content', () => {
@@ -446,7 +510,7 @@ describe('loadMessagesFromTranscript', () => {
     ]);
 
     const restored = loadMessagesFromTranscript(workdir, 'sess4');
-    expect(restored).toEqual([{ role: 'user', content: 'real' }]);
+    expect(restored).toEqual([{ role: 'user', content: 'real', transcriptEntryId: 'm3' }]);
   });
 
   it('does not include tool_calls or images in restored messages', () => {
@@ -456,6 +520,280 @@ describe('loadMessagesFromTranscript', () => {
     const restored = loadMessagesFromTranscript(workdir, 'sess5');
     expect(restored[0].toolCalls).toBeUndefined();
     expect(restored[0].images).toBeUndefined();
+  });
+
+  it('restores the latest checkpoint summary plus entries from its boundary', () => {
+    writeJsonl('sess6', [
+      { id: 'm1', role: 'user', content: 'old q', createdAt: '2026-05-17T15:00:00Z' },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: { result: 'old a' },
+        createdAt: '2026-05-17T15:00:01Z',
+      },
+      { id: 'm3', role: 'user', content: 'kept q', createdAt: '2026-05-17T15:01:00Z' },
+      {
+        id: 'm4',
+        role: 'assistant',
+        content: { result: 'kept a' },
+        createdAt: '2026-05-17T15:01:01Z',
+      },
+    ]);
+    expect(
+      logCompactionCheckpoint(workdir, 'sess6', {
+        version: 1,
+        summary: 'Goal: continue the kept task',
+        firstKeptMessageId: 'm3',
+        createdAt: '2026-09-17T00:00:00.000Z',
+        estimatedTokensBefore: 40_000,
+        estimatedTokensAfter: 12_000,
+        messageCountBefore: 4,
+        messageCountAfter: 3,
+        trigger: 'tokens',
+      })
+    ).toBe(true);
+
+    expect(loadMessagesFromTranscript(workdir, 'sess6')).toEqual([
+      {
+        role: 'user',
+        content: '[Conversation checkpoint]\nGoal: continue the kept task',
+      },
+      { role: 'user', content: 'kept q', transcriptEntryId: 'm3' },
+      { role: 'assistant', content: 'kept a', transcriptEntryId: 'm4' },
+    ]);
+  });
+});
+
+describe('local-llm runner: cache-aware session compaction', () => {
+  function makeSession(
+    messages: import('../src/local-llm/types.js').LLMMessage[]
+  ): import('../src/local-llm/runner.js').Session {
+    return {
+      messages,
+      updatedAt: Date.now(),
+      activeToolNames: new Set(),
+      recentToolCallSigs: [],
+      recentNormSigs: [],
+      idempotentResultCache: new Map(),
+    };
+  }
+
+  it('plans one batch at a user boundary without splitting a tool call/result group', () => {
+    const messages = [
+      { role: 'user' as const, content: 'old request '.repeat(40), transcriptEntryId: 'u1' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [{ id: 't1', name: 'read', arguments: { path: '/tmp/a' } }],
+      },
+      { role: 'tool' as const, content: 'old result '.repeat(80), toolCallId: 't1' },
+      { role: 'assistant' as const, content: 'old answer '.repeat(20) },
+      { role: 'user' as const, content: 'current request', transcriptEntryId: 'u2' },
+    ];
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '1000' } as NodeJS.ProcessEnv),
+      compactionThresholdTokens: 10,
+      compactionKeepTokens: 20,
+      contextKeepLast: 1,
+      maxSessionMessages: 100,
+    };
+
+    const plan = planSessionCompaction(messages, budget);
+
+    expect(plan?.prefix.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    expect(plan?.tail).toEqual([messages[4]]);
+    expect(plan?.firstKeptMessageId).toBe('u2');
+  });
+
+  it('uses the message-count fallback even when the token tail would cover all history', () => {
+    const messages: import('../src/local-llm/types.js').LLMMessage[] = [];
+    for (let turn = 1; turn <= 30; turn++) {
+      messages.push({ role: 'user', content: 'q', transcriptEntryId: `u${turn}` });
+      messages.push({ role: 'assistant', content: 'a' });
+    }
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '131072' } as NodeJS.ProcessEnv),
+      maxSessionMessages: 50,
+      contextKeepLast: 10,
+    };
+
+    const plan = planSessionCompaction(messages, budget);
+
+    expect(plan?.trigger).toBe('messages');
+    expect(plan?.prefix).toHaveLength(50);
+    expect(plan?.tail).toHaveLength(10);
+    expect(plan?.firstKeptMessageId).toBe('u26');
+  });
+
+  it('estimates vision input by image count instead of encoded base64 length', () => {
+    const messages: import('../src/local-llm/types.js').LLMMessage[] = [];
+    for (let turn = 1; turn <= 8; turn++) {
+      messages.push({
+        role: 'user',
+        content: 'screen',
+        images: [{ base64: 'x'.repeat(200_000), mimeType: 'image/jpeg' }],
+        transcriptEntryId: `u${turn}`,
+      });
+      messages.push({ role: 'assistant', content: 'short reply' });
+    }
+    const budget = loadContextBudget({ LOCAL_LLM_NUM_CTX: '131072' } as NodeJS.ProcessEnv);
+
+    expect(planSessionCompaction(messages, budget)).toBeNull();
+
+    for (let turn = 9; turn <= 20; turn++) {
+      messages.push({
+        role: 'user',
+        content: 'screen',
+        images: [{ base64: 'x'.repeat(200_000), mimeType: 'image/jpeg' }],
+        transcriptEntryId: `u${turn}`,
+      });
+      messages.push({ role: 'assistant', content: 'short reply' });
+    }
+    expect(planSessionCompaction(messages, budget)?.trigger).toBe('tokens');
+  });
+
+  it('compacts atomically and removes images only from the summary request', async () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: 'old image request '.repeat(30),
+        images: [{ base64: 'secret-base64', mimeType: 'image/png' }],
+        transcriptEntryId: 'u1',
+      },
+      { role: 'assistant' as const, content: 'old answer '.repeat(40) },
+      { role: 'user' as const, content: 'latest request', transcriptEntryId: 'u2' },
+    ];
+    const session = makeSession(messages);
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '1000' } as NodeJS.ProcessEnv),
+      compactionThresholdTokens: 10,
+      compactionKeepTokens: 20,
+      contextKeepLast: 1,
+      maxSessionMessages: 100,
+    };
+    const persisted: unknown[] = [];
+
+    const result = await compactSessionWithCheckpoint(session, budget, {
+      summarize: async (summaryMessages) => {
+        expect(summaryMessages[0].images).toBeUndefined();
+        expect(summaryMessages[0].content).toContain('[image omitted from checkpoint]');
+        return 'Goal: answer the latest request';
+      },
+      persist: (checkpoint) => {
+        persisted.push(checkpoint);
+        return true;
+      },
+      now: 1000,
+    });
+
+    expect(result.status).toBe('compacted');
+    expect(session.messages).toEqual([
+      {
+        role: 'user',
+        content: '[Conversation checkpoint]\nGoal: answer the latest request',
+      },
+      messages[2],
+    ]);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ firstKeptMessageId: 'u2' });
+  });
+
+  it('keeps the original history and applies cooldown when summarization fails', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'old '.repeat(100), transcriptEntryId: 'u1' },
+      { role: 'assistant' as const, content: 'answer '.repeat(100) },
+      { role: 'user' as const, content: 'latest', transcriptEntryId: 'u2' },
+    ];
+    const session = makeSession(messages);
+    const original = structuredClone(messages);
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '1000' } as NodeJS.ProcessEnv),
+      compactionThresholdTokens: 10,
+      compactionKeepTokens: 20,
+      compactionCooldownMs: 60_000,
+      contextKeepLast: 1,
+      maxSessionMessages: 100,
+    };
+    let calls = 0;
+
+    const first = await compactSessionWithCheckpoint(session, budget, {
+      summarize: async () => {
+        calls += 1;
+        throw new Error('summary unavailable');
+      },
+      persist: () => true,
+      now: 1000,
+    });
+    const second = await compactSessionWithCheckpoint(session, budget, {
+      summarize: async () => {
+        calls += 1;
+        return 'should not run';
+      },
+      persist: () => true,
+      now: 2000,
+    });
+
+    expect(first.status).toBe('failed');
+    expect(second.status).toBe('cooldown');
+    expect(calls).toBe(1);
+    expect(session.messages).toEqual(original);
+  });
+
+  it('keeps the original history when checkpoint persistence fails', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'old '.repeat(100), transcriptEntryId: 'u1' },
+      { role: 'assistant' as const, content: 'answer '.repeat(100) },
+      { role: 'user' as const, content: 'latest', transcriptEntryId: 'u2' },
+    ];
+    const session = makeSession(messages);
+    const original = structuredClone(messages);
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '1000' } as NodeJS.ProcessEnv),
+      compactionThresholdTokens: 10,
+      compactionKeepTokens: 20,
+      contextKeepLast: 1,
+      maxSessionMessages: 100,
+    };
+
+    const result = await compactSessionWithCheckpoint(session, budget, {
+      summarize: async () => 'summary that must not be installed',
+      persist: () => false,
+      now: 1000,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('persist');
+    expect(session.messages).toEqual(original);
+  });
+
+  it('does not rewrite a growing 60-turn prefix below the compaction threshold', () => {
+    const messages: import('../src/local-llm/types.js').LLMMessage[] = [];
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '131072' } as NodeJS.ProcessEnv),
+      maxSessionMessages: 200,
+      contextMaxChars: 1_000_000,
+    };
+
+    for (let turn = 1; turn <= 60; turn++) {
+      messages.push({
+        role: 'user',
+        content: `question ${turn}`,
+        transcriptEntryId: `u${turn}`,
+      });
+      messages.push({ role: 'assistant', content: `answer ${turn}` });
+      expect(planSessionCompaction(messages, budget)).toBeNull();
+    }
+
+    expect(messages[0]).toEqual({
+      role: 'user',
+      content: 'question 1',
+      transcriptEntryId: 'u1',
+    });
   });
 });
 

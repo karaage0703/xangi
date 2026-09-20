@@ -1,6 +1,6 @@
 # Remote workers (MVP)
 
-On macOS, `xangi worker start` bootstraps an unregistered LaunchAgent, uses `kickstart` for a registered but stopped agent, and leaves an already running worker untouched. `xangi worker restart` rebuilds the launchd command from the current CLI while preserving pairing credentials, then waits for launchd to finish removing the old service before registering it again. TypeScript checkouts register an absolute loader URL. `status` requires a running launchd process with a PID; check Gateway connectivity separately with `xangi tool remote_worker --action list`.
+On macOS, `xangi worker start` bootstraps an unregistered LaunchAgent, uses `kickstart` for a registered but stopped agent, and leaves an already running worker untouched. `xangi worker restart` rebuilds the launchd command from the current CLI while preserving pairing credentials. It hands replacement to a separate temporary launchd job, so a worker can restart itself without terminating the process responsible for registering its replacement. The helper waits for launchd to remove the old service before registering it again. The command returns after accepting the restart; verify reconnection with `xangi tool remote_worker --action list`. TypeScript checkouts register an absolute loader URL. `status` requires a running launchd process with a PID and does not prove Gateway connectivity.
 
 Remote workers let xangi use compute resources and attached devices on macOS, Linux, and Windows. The worker opens an outbound WebSocket connection to the xangi Gateway, so the worker does not require an inbound port or SSH login.
 
@@ -37,16 +37,25 @@ Run the node with a local configuration:
   "workerId": "my-mac",
   "tokenFile": "/Users/you/.config/xangi/remote-worker.token",
   "workspaceRoots": ["/Users/you/project"],
-  "allowedCommands": ["/usr/bin/git", "/opt/homebrew/bin/node", "/opt/homebrew/bin/npm"]
+  "allowedCommands": [
+    "/usr/bin/git",
+    "/opt/homebrew/bin/node",
+    "/opt/homebrew/bin/npm",
+    "/opt/homebrew/bin/python3.12"
+  ]
 }
 ```
+
+During initial installation, xangi also allowlists Homebrew Node.js, npm, and Python 3 executables that exist on the machine. Existing configurations are not overwritten automatically. Add a required executable to `allowedCommands`, run `xangi worker restart`, and then verify the active policy with `info`.
 
 ```bash
 xangi worker run --config /absolute/path/to/worker.json
 xangi tool remote_worker --action info --worker my-mac
 xangi tool remote_worker --action exec --worker my-mac \
-  --argv-json '["git","status","--short"]' --cwd /Users/you/project
+  --argv-json '["/usr/bin/git","status","--short"]' --cwd /Users/you/project
 ```
+
+`info` returns the `workspaceRoots` and `allowedCommands` loaded by the connected worker under `executionPolicy`. It does not expose the token, Gateway URL, or token/config file paths. After changing the worker configuration, run `xangi worker restart` and use `info` to verify the active policy.
 
 The command allowlist uses exact string matching; absolute executable paths are recommended. The MVP uses `ws://` and therefore assumes an encrypted private network such as a Tailnet. Do not expose the listener to the public Internet; use a future native `wss://` transport or a TLS reverse proxy instead.
 

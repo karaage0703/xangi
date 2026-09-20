@@ -1,12 +1,22 @@
 import { RemoteWorkerNode, loadRemoteWorkerNodeConfig } from '../remote-worker/node.js';
 import { platform } from 'node:os';
 import { installLinuxWorker, manageLinuxWorker } from '../remote-worker/systemd.js';
-import { installMacWorker, manageMacWorker } from '../remote-worker/install.js';
+import {
+  completeMacWorkerRestart,
+  installMacWorker,
+  manageMacWorker,
+} from '../remote-worker/install.js';
 
 export async function workerCmd(
   action: string,
   flags: Record<string, string | boolean>
 ): Promise<string> {
+  if (action === 'restart-handoff') {
+    const label = typeof flags.label === 'string' ? flags.label : '';
+    const requesterPid =
+      typeof flags['requester-pid'] === 'string' ? Number(flags['requester-pid']) : undefined;
+    return completeMacWorkerRestart(label, requesterPid);
+  }
   if (action === 'install') {
     const pair = typeof flags.pair === 'string' ? flags.pair : '';
     const workspace = typeof flags.workspace === 'string' ? flags.workspace : process.cwd();

@@ -269,6 +269,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       "xangi tool remote_worker --action <list|pair-create|info|usb-list|exec> [--worker <id>] [--gateway-url <ws-url>] [--ttl-seconds <10-600>] [--argv-json '<json-array>' --cwd <absolute-path> --timeout-ms <ms>]",
     notes: [
       'pair-createはsingle-useのxangi-pair URIを返す。既定10分で失効する。',
+      'infoは接続中workerの現在有効なworkspace rootとcommand allowlistをexecutionPolicyとして返す。',
       'execはworker側のworkspace rootとcommand allowlistの両方を通る必要がある。',
       'shell文字列ではなくargv JSONを使い、tokenは会話や引数へ渡さない。',
     ],

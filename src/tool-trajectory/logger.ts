@@ -20,7 +20,7 @@ import {
  * 目的:
  * - Local LLM の tool 使用挙動を観察 (drift / loop / tool_search 採用ミス)
  * - 5+1 機構 (loop / 冪等キャッシュ / streaming hold buffer / pseudo tool_call rescue /
- *   context prune) の発火タイミングを構造化記録
+ *   cache-aware compaction) の発火タイミングを構造化記録
  *
  * 設計:
  * - 全 event 共通 fields: ts / event_id / kind / schema_version / appSessionId /
@@ -104,6 +104,7 @@ export interface RunnerEventPayload {
   event:
     | 'streaming_hold_buffer_drop'
     | 'context_prune'
+    | 'context_compaction'
     | 'session_retry'
     | 'idempotent_cache_store'
     | 'terminal_response_reused'

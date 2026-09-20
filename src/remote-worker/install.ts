@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -160,6 +168,23 @@ function replaceLaunchctlService(domain: string, service: string, plistPath: str
   runLaunchctl(['bootstrap', domain, plistPath]);
 }
 
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function waitForProcessExit(pid: number, timeoutMs = 5_000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (processExists(pid)) {
+    if (Date.now() >= deadline) return;
+    Atomics.wait(launchctlWaitBuffer, 0, 0, 25);
+  }
+}
+
 function launchctlDomain(): string {
   if (typeof process.getuid !== 'function') throw new Error('launchd requires a user uid');
   return `gui/${process.getuid()}`;
@@ -189,8 +214,12 @@ function defaultAllowedCommands(): string[] {
     '/usr/bin/npm',
     '/opt/homebrew/bin/node',
     '/opt/homebrew/bin/npm',
+    '/opt/homebrew/bin/python3',
+    '/opt/homebrew/bin/python3.12',
     '/usr/local/bin/node',
     '/usr/local/bin/npm',
+    '/usr/local/bin/python3',
+    '/usr/local/bin/python3.12',
   ];
   return [...new Set([process.execPath, ...candidates.filter(existsSync)])];
 }
@@ -300,8 +329,26 @@ export function manageMacWorker(
         mode: 0o644,
       }
     );
-    replaceLaunchctlService(domain, service, layout.plistPath);
-    return 'Remote worker restarted';
+    const handoffLabel = `${layout.label}.restart-handoff.${process.pid}`;
+    runLaunchctl([
+      'submit',
+      '-l',
+      handoffLabel,
+      '-o',
+      layout.stdoutPath,
+      '-e',
+      layout.stderrPath,
+      '--',
+      invocation.command,
+      ...invocation.args,
+      'worker',
+      'restart-handoff',
+      '--label',
+      handoffLabel,
+      '--requester-pid',
+      String(process.pid),
+    ]);
+    return 'Remote worker restart scheduled; verify Gateway reconnection';
   }
   runLaunchctl(['bootout', service], action === 'uninstall');
   waitForLaunchctlServiceRemoval(service);
@@ -309,6 +356,39 @@ export function manageMacWorker(
   rmSync(layout.plistPath, { force: true });
   if (existsSync(layout.root)) rmSync(layout.root, { recursive: true, force: true });
   return 'Remote worker uninstalled';
+}
+
+export function completeMacWorkerRestart(handoffLabel: string, requesterPid?: number): string {
+  const layout = workerInstallLayout();
+  const expectedPrefix = `${layout.label}.restart-handoff.`;
+  const handoffPid = Number(handoffLabel.slice(expectedPrefix.length));
+  if (
+    !handoffLabel.startsWith(expectedPrefix) ||
+    !Number.isSafeInteger(handoffPid) ||
+    handoffPid <= 0
+  ) {
+    throw new Error('invalid worker restart handoff label');
+  }
+  const domain = launchctlDomain();
+  const service = `${domain}/${layout.label}`;
+  if (requesterPid && Number.isSafeInteger(requesterPid) && requesterPid > 0) {
+    waitForProcessExit(requesterPid);
+    // The worker still needs a brief window to forward the finished CLI result
+    // to the Gateway after the requester process exits.
+    Atomics.wait(launchctlWaitBuffer, 0, 0, 250);
+  }
+  let result = 'Remote worker restarted';
+  try {
+    replaceLaunchctlService(domain, service, layout.plistPath);
+  } catch (error) {
+    result = `Remote worker restart handoff failed: ${error instanceof Error ? error.message : String(error)}`;
+    appendFileSync(layout.stderrPath, `${new Date().toISOString()} ${result}\n`);
+  } finally {
+    // The helper is a separate launchd job, so removing the worker cannot stop it.
+    // Self-removal is the final operation and prevents a failed submitted job from retrying.
+    runLaunchctl(['remove', handoffLabel], true);
+  }
+  return result;
 }
 
 export function readInstalledWorkerConfig(): string {

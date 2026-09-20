@@ -4,7 +4,7 @@ Remote workerはMac、Linux、Windows上の計算資源や接続デバイスをx
 
 初版のcapabilityは次の3つです。
 
-- `system.info`: OS、architecture、CPU数、memory、capabilityを返す
+- `system.info`: OS、architecture、CPU数、memory、capabilityと、現在有効なworkspace/command allowlistを返す
 - `exec`: 許可されたworkspace内で、許可されたcommandをshellを介さずargvで実行する
 - `usb.list`: macOSの`system_profiler`、Linuxの`lsusb`、WindowsのPowerShellでUSBを列挙する
 
@@ -38,7 +38,7 @@ xangi worker status
 xangi worker uninstall
 ```
 
-`start`は未登録のLaunchAgentを登録し、登録済みで停止中なら`kickstart`で起動します。すでに実行中の場合は再起動しません。`restart`は現在のCLIからlaunchd設定を再生成し、既存の認証情報を保持して起動します。launchdの登録解除完了を待ってから再登録するため、削除中のserviceとの競合を避けます。Git checkout更新後も再ペアリングは不要です。TypeScriptから導入した場合は実行用loaderの絶対URLも登録します。`status`はlaunchdのrunning状態とPIDを確認しますが、Gatewayへの接続確認は`remote_worker --action list`で行ってください。
+`start`は未登録のLaunchAgentを登録し、登録済みで停止中なら`kickstart`で起動します。すでに実行中の場合は再起動しません。`restart`は現在のCLIからlaunchd設定を再生成し、既存の認証情報を保持して起動します。worker自身から実行しても停止に巻き込まれないよう、別の一時launchd jobへ再登録処理を引き継いでから受付元を終了します。launchdの登録解除完了を待ってから再登録するため、削除中のserviceとの競合も避けます。コマンドは再起動の受付後に返るため、完了確認は`remote_worker --action list`で再接続を確認してください。Git checkout更新後も再ペアリングは不要です。TypeScriptから導入した場合は実行用loaderの絶対URLも登録します。`status`はlaunchdのrunning状態とPIDを確認しますが、Gatewayへの接続確認は別途必要です。
 
 手動設定も利用できます。tokenを生成し、xangi hostだけが読めるmode 0600のfileへ保存します。token自体を`.env`や会話、command lineへ書かないでください。
 
@@ -77,11 +77,14 @@ Mac側の例です。`gatewayUrl`にはMacから到達できるxangi hostのTail
     "/usr/bin/git",
     "/opt/homebrew/bin/node",
     "/opt/homebrew/bin/npm",
+    "/opt/homebrew/bin/python3.12",
     "/usr/bin/python3",
     "/usr/bin/uname"
   ]
 }
 ```
+
+初回install時は、実機に存在するHomebrewのNode.js・npm・Python 3系も既定allowlistへ追加します。既存設定は自動上書きしないため、必要な実行fileを`allowedCommands`へ追加した後に`xangi worker restart`で反映してください。
 
 ```bash
 xangi worker run --config /absolute/path/to/worker.json
@@ -96,8 +99,10 @@ xangi tool remote_worker --action list
 xangi tool remote_worker --action info --worker karaage-mac
 xangi tool remote_worker --action usb-list --worker karaage-mac
 xangi tool remote_worker --action exec --worker karaage-mac \
-  --argv-json '["git","status","--short"]' --cwd /Users/you/borot
+  --argv-json '["/usr/bin/git","status","--short"]' --cwd /Users/you/borot
 ```
+
+`info`は接続中workerが実際に読み込んでいる`workspaceRoots`と`allowedCommands`を`executionPolicy`として返します。token、Gateway URL、token/config file pathは返しません。設定変更後は`xangi worker restart`を実行し、`info`で反映を確認してください。
 
 `exec`はworker側のworkspace rootとcommand allowlistを両方通った場合だけ実行されます。allowlistは完全一致で比較するため、実行ファイルの絶対pathを推奨します。shell command文字列、redirect、pipeはprotocolとして受け付けません。
 

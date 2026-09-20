@@ -3,7 +3,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { manageMacWorker, workerInstallLayout } from '../src/remote-worker/install.js';
+import {
+  completeMacWorkerRestart,
+  manageMacWorker,
+  workerInstallLayout,
+} from '../src/remote-worker/install.js';
 
 vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 
@@ -11,6 +15,7 @@ describe('launchd service removal deadline', () => {
   let root: string;
   let elapsed: number;
   let removalDelay: number;
+  const handoffLabel = 'dev.xangi.worker.restart-handoff.123';
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'xangi-launchd-wait-'));
@@ -49,16 +54,16 @@ describe('launchd service removal deadline', () => {
   });
 
   it('restarts only after removal taking longer than the 5s exit grace period', () => {
-    expect(manageMacWorker('restart')).toContain('restarted');
+    expect(completeMacWorkerRestart(handoffLabel)).toContain('restarted');
     expect(elapsed).toBe(6_000);
     const commands = vi.mocked(spawnSync).mock.calls.map((call) => call[1]?.[0]);
     expect(commands[0]).toBe('bootout');
-    expect(commands.at(-1)).toBe('bootstrap');
+    expect(commands.at(-1)).toBe('remove');
     expect(commands.filter((command) => command === 'bootstrap')).toHaveLength(1);
     expect(readFileSync(workerInstallLayout().tokenPath, 'utf8')).toBe('test-token');
   });
 
-  it.each(['restart', 'stop', 'uninstall'] as const)(
+  it.each(['stop', 'uninstall'] as const)(
     '%s times out without bootstrap or credential deletion when removal never completes',
     (action) => {
       removalDelay = Infinity;
@@ -73,4 +78,23 @@ describe('launchd service removal deadline', () => {
       expect(existsSync(layout.plistPath)).toBe(true);
     }
   );
+
+  it('records a failed restart handoff and removes the helper without retrying', () => {
+    removalDelay = Infinity;
+    expect(completeMacWorkerRestart(handoffLabel)).toContain('handoff failed');
+    expect(elapsed).toBe(15_000);
+    const commands = vi.mocked(spawnSync).mock.calls.map((call) => call[1]?.[0]);
+    expect(commands).not.toContain('bootstrap');
+    expect(commands.at(-1)).toBe('remove');
+    expect(readFileSync(workerInstallLayout().stderrPath, 'utf8')).toContain(
+      'restart handoff failed'
+    );
+  });
+
+  it('rejects a restart handoff label outside the worker namespace', () => {
+    expect(() => completeMacWorkerRestart('com.example.restart.123')).toThrow(
+      'invalid worker restart handoff label'
+    );
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
 });
