@@ -1316,7 +1316,7 @@ Writes that fail are reported via `console.warn` only — the logger never throw
 
 ### Design Intent
 
-- Target: how the multi-layer defense (loop / idempotent cache / streaming hold buffer / pseudo tool_call rescue / context prune — the 5+1 mechanisms) fires for Local LLM, tool_search adoption results, and the breakdown of drift_rescue safety verdicts.
+- Target: how the multi-layer defense (loop / idempotent cache / streaming hold buffer / pseudo tool_call rescue / cache-aware compaction — the 5+1 mechanisms) fires for Local LLM, tool_search adoption results, and the breakdown of drift_rescue safety verdicts.
 - The runner itself only emits observation events; any dataset conversion or downstream analysis is left to separate tooling that consumes this JSONL.
 
 ## Security
@@ -1670,9 +1670,13 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt (used in derivation)                             | `8000`                                                           |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | Tokens reserved for one response (used in derivation)                                  | `4096`                                                           |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | Safety margin tokens (used in derivation)                                              | `1000`                                                           |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | Most recent N messages are never trimmed                                               | `10`                                                             |
-| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | Max chars for in-context tool results (head/tail trim)                                 | `4000`                                                           |
-| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | Maximum number of messages kept per session                                            | `50`                                                             |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | Minimum recent messages retained after compaction                                      | `10`                                                             |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | Max chars for tool results when inserted                                               | `4000`                                                           |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | Non-token fallback trigger for compaction                                               | `50`                                                             |
+| `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | Batch-compaction trigger ratio relative to `LOCAL_LLM_NUM_CTX`                         | `0.30`                                                           |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | Estimated recent-history tokens retained after compaction                              | 10% of `NUM_CTX` (2000–12000)                                   |
+| `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | Retry delay after summary or checkpoint persistence failure                            | `60000`                                                          |
+| `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | Estimated tokens per image for compaction planning                                     | `2048`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_ENABLED`         | Enable tool deferred loading (`tool_search`)                                           | `true`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_LIMIT`           | Max tools returned per `tool_search` call                                              | `8`                                                              |
 | `LOCAL_LLM_ALWAYS_LOADED_TOOLS`         | Always-loaded tool names (comma-separated). Tools not listed are deferred              | `read,write,edit,exec,glob,grep,send_file,web_fetch,tool_search` |

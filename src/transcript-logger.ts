@@ -41,6 +41,22 @@ export interface TranscriptEntry {
   platformMessageId?: string;
 }
 
+/**
+ * Local LLM が会話履歴を圧縮した時点の復元用チェックポイント。
+ * 通常の会話JSONLとは別のappend-onlyログへ保存し、Web Chatには表示しない。
+ */
+export interface TranscriptCompactionCheckpoint {
+  version: 1;
+  summary: string;
+  firstKeptMessageId: string;
+  createdAt: string;
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  messageCountBefore: number;
+  messageCountAfter: number;
+  trigger: 'tokens' | 'messages' | 'chars';
+}
+
 let centralDataDir: string | null = null;
 let legacyStartupWorkdir: string | null = null;
 
@@ -63,6 +79,10 @@ function transcriptDirectory(root: string): string {
   return join(root, 'logs', 'sessions');
 }
 
+function compactionDirectory(root: string): string {
+  return join(root, 'logs', 'session-compactions');
+}
+
 export function isValidTranscriptSessionId(appSessionId: string): boolean {
   return (
     appSessionId.length > 0 &&
@@ -75,6 +95,13 @@ export function isValidTranscriptSessionId(appSessionId: string): boolean {
 }
 
 function transcriptFileName(appSessionId: string): string {
+  if (!isValidTranscriptSessionId(appSessionId)) {
+    throw new Error('Invalid transcript session ID');
+  }
+  return `${appSessionId}.jsonl`;
+}
+
+function compactionFileName(appSessionId: string): string {
   if (!isValidTranscriptSessionId(appSessionId)) {
     throw new Error('Invalid transcript session ID');
   }
@@ -133,6 +160,13 @@ export function deleteSessionTranscript(workdir: string, appSessionId: string): 
     unlinkSync(candidate);
     deleted = true;
   }
+  const roots = centralDataDir ? [centralDataDir, legacyStartupWorkdir] : [workdir];
+  for (const root of [...new Set(roots.filter(Boolean) as string[])]) {
+    const candidate = join(compactionDirectory(root), compactionFileName(appSessionId));
+    if (!existsSync(candidate)) continue;
+    unlinkSync(candidate);
+    deleted = true;
+  }
   return deleted;
 }
 
@@ -153,13 +187,15 @@ function writeEntry(workdir: string, appSessionId: string, entry: TranscriptEntr
 /**
  * ユーザーのプロンプトを記録
  */
-export function logPrompt(workdir: string, appSessionId: string, prompt: string): void {
-  writeEntry(workdir, appSessionId, {
+export function logPrompt(workdir: string, appSessionId: string, prompt: string): TranscriptEntry {
+  const entry: TranscriptEntry = {
     id: generateMessageId(),
     role: 'user',
     content: prompt,
     createdAt: new Date().toISOString(),
-  });
+  };
+  writeEntry(workdir, appSessionId, entry);
+  return entry;
 }
 
 /**
@@ -169,13 +205,15 @@ export function logResponse(
   workdir: string,
   appSessionId: string,
   json: Record<string, unknown>
-): void {
-  writeEntry(workdir, appSessionId, {
+): TranscriptEntry {
+  const entry: TranscriptEntry = {
     id: generateMessageId(),
     role: 'assistant',
     content: json,
     createdAt: new Date().toISOString(),
-  });
+  };
+  writeEntry(workdir, appSessionId, entry);
+  return entry;
 }
 
 /**
@@ -188,6 +226,61 @@ export function logError(workdir: string, appSessionId: string, error: string): 
     content: error,
     createdAt: new Date().toISOString(),
   });
+}
+
+/** compaction checkpointを会話表示とは別のappend-only JSONLへ保存する。 */
+export function logCompactionCheckpoint(
+  workdir: string,
+  appSessionId: string,
+  checkpoint: TranscriptCompactionCheckpoint
+): boolean {
+  try {
+    if (
+      !readSessionMessages(workdir, appSessionId).some(
+        (entry) => entry.id === checkpoint.firstKeptMessageId
+      )
+    ) {
+      return false;
+    }
+    const root = centralDataDir ?? workdir;
+    const dir = compactionDirectory(root);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, compactionFileName(appSessionId)), `${JSON.stringify(checkpoint)}\n`);
+    return true;
+  } catch (err) {
+    console.warn('[transcript] Failed to write compaction checkpoint:', err);
+    return false;
+  }
+}
+
+/** 最新の有効なcompaction checkpointを取得する。 */
+export function readLatestCompactionCheckpoint(
+  workdir: string,
+  appSessionId: string
+): TranscriptCompactionCheckpoint | null {
+  try {
+    const roots = centralDataDir ? [centralDataDir, legacyStartupWorkdir] : [workdir];
+    for (const root of [...new Set(roots.filter(Boolean) as string[])]) {
+      const filePath = join(compactionDirectory(root), compactionFileName(appSessionId));
+      if (!existsSync(filePath)) continue;
+      const lines = readFileSync(filePath, 'utf-8')
+        .split('\n')
+        .filter((line) => line.trim());
+      for (let index = lines.length - 1; index >= 0; index--) {
+        const checkpoint = JSON.parse(lines[index]) as TranscriptCompactionCheckpoint;
+        if (
+          checkpoint.version === 1 &&
+          typeof checkpoint.summary === 'string' &&
+          typeof checkpoint.firstKeptMessageId === 'string'
+        ) {
+          return checkpoint;
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**

@@ -130,8 +130,8 @@ flowchart LR
 
 ### macOS・Linux・WSL2セットアップ・更新コア
 
-- Remote workerは内部Tool Serverと分離した専用WebSocketへ外向き接続する。事前登録したworkerをfile-backed tokenで認証し、version付きcapabilityを申告する。MVPはsystem情報、worker側workspace/command allowlistで制限したshell非経由argv実行、read-only USB列挙だけを提供する。device書込み、serial制御、自動配置、public network transportはdevice別approvalとTLSを設計するまで含めない
-- Remote workerの常駐管理はmacOSでlaunchd、Linux/WSL2でsystemd user serviceを使い分ける。pairing・0600設定保存は共通化し、restartでは認証情報を保持する。Linuxのuser managerをpairing前に検査する。
+- Remote workerは内部Tool Serverと分離した専用WebSocketへ外向き接続する。事前登録したworkerをfile-backed tokenで認証し、version付きcapabilityを申告する。MVPはsystem情報、worker側workspace/command allowlistで制限したshell非経由argv実行、read-only USB列挙だけを提供する。`system.info`は診断用にworkerが現在読み込んでいるworkspace rootとcommand allowlistも返すが、token・Gateway URL・設定file pathは返さない。device書込み、serial制御、自動配置、public network transportはdevice別approvalとTLSを設計するまで含めない
+- Remote workerの常駐管理はmacOSでlaunchd、Linux/WSL2でsystemd user serviceを使い分ける。pairing・0600設定保存は共通化し、restartでは認証情報を保持する。macOSの自己restartは受付元workerとは別の一時launchd jobへservice再登録をhandoffし、受付応答後のworker停止と置換processの共倒れを防ぐ。Linuxのuser managerをpairing前に検査する。
 - `installer/layout.ts` はapp versionsとworkspace/state/configを分離する。将来のWindows adapterも同じlogical layoutを使う
 - `installer/manifest.ts` と `updater.ts` はEd25519、SHA-256、update lock、staging、atomic current切替を担当する。初回installのservice起動時はhealth確認と失敗時rollbackを行う
 - `installer/platform/darwin.ts` はLaunchAgentだけを担当し、OS固有処理を共通updaterから分離する
@@ -438,11 +438,11 @@ Ollama ネイティブ API は OpenAI の `tool_choice` パラメータを公式
 
 - `isSessionRelatedError()` — Error インスタンスのメッセージを小文字化して、セッション履歴に起因する既知のパターンにマッチするか判定。非Errorオブジェクトは常にfalseを返す
 - `formatLlmError()` — 接続エラー・タイムアウト・認証エラー・レートリミット・サーバーエラーをそれぞれ日本語の分かりやすいメッセージに変換。非Errorオブジェクトにはデフォルトメッセージを返す
-- コンテキスト刈り込み（`trimSession()`）— ツール結果の切り詰め、メッセージ数制限、合計文字数制限を直近メッセージ保護付きで実行（上限値は次節の Context budget で動的計算）
+- cache-aware compaction — token閾値到達時だけ古い完全turnを構造化要約へ置換し、同一Sessionの直近tailを保持する。毎turnの先頭削除は行わない
 
-**Context budget の動的計算（runner.ts: `loadContextBudget`）:**
+**Context budget とcache-aware compaction（runner.ts: `loadContextBudget`）:**
 
-LLM の `--max-model-len` (vLLM) や `num_ctx` (Ollama) と xangi 側のセッション枠を整合させるため、刈り込み上限を env から動的計算する。ハードコード `CONTEXT_MAX_CHARS=120000` は廃止。
+LLM の `--max-model-len` (vLLM) や `num_ctx` (Ollama) と xangi 側のセッション枠を整合させるため、上限を env から動的計算する。履歴は毎turn `slice` / `shift` せず、既定で `NUM_CTX` の30%へ達した時だけ1回のbatch compactionを行う。これによりcompaction境界以外ではprompt prefixが安定し、providerのprefix cacheを再利用できる。
 
 優先順位:
 
@@ -462,9 +462,15 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | system prompt 想定枠       | `8000`     |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | 1 リクエストの最大出力枠   | `4096`     |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | 安全マージン               | `1000`     |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | 直近 N 件は trim しない    | `10`       |
-| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | tool 結果の切り詰め        | `4000`     |
-| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | セッション最大メッセージ数 | `50`       |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | compaction後の最低保持件数 | `10`       |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | 追加時のtool結果切り詰め   | `4000`     |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | token推定以外の発火fallback | `50`       |
+| `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | `NUM_CTX`に対する発火比率  | `0.30`     |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | compaction後の直近tail     | `NUM_CTX`の10%（2000〜12000） |
+| `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | 要約失敗後の再試行間隔     | `60000`    |
+| `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | 画像1枚のtoken概算         | `2048`     |
+
+境界はtranscript IDを持つuser messageだけから選び、assistant tool callと対応するtool resultを分断しない。画像はbase64文字数ではなく1枚あたりの固定token予算で見積もる。古い画像のbase64は要約入力から除外し、直近tail内の画像はそのまま保持する。成功時は要約・最初に保持するmessage ID・前後のtoken/message概算を`DATA_DIR/logs/session-compactions/<appSessionId>.jsonl`へappend-onlyで保存し、再起動時は最新checkpoint＋境界以降の通常transcriptを復元する。この別ログはWeb Chatの会話履歴には表示しない。要約または保存に失敗した場合は元履歴を変更せず、cooldown後まで再試行しない。
 
 `ContextBudget` には計算根拠 (`source: 'explicit' | 'derived'`、各バジェット token 数) を含み、起動時にログ出力する。テスト・チューニング時の根拠追跡用。
 
@@ -585,10 +591,10 @@ Step B (exact 3 回連続) を起点に、以下の 6 機構が同じ tool 繰�
 | 冪等キャッシュ                                | `exec` / `bash` / `python` の `command` / `script` / `code` に冪等パターン (`wc -[clmw]` / `base64` / `(md5\|sha1\|sha224\|sha256\|sha384\|sha512)sum` / `urllib.parse.(quote\|unquote)` / `hashlib` / `printf '%[bs]'`) を含み、副作用パターン (`> redirect` / `rm` / `mv` / `curl` / `git` / `docker` / `kill` 等) を含まない | 2 回目以降は `exec` をスキップして 1 回目の結果を即返却。`Session.idempotentResultCache: Map<string, string>` (FIFO、上限 `IDEMPOTENT_CACHE_LIMIT=32`)                                                                                                                                                                                                                                                                                                                                                                                                       |
 | similar 検出                                  | 正規化シグネチャ (lowercase / 数字→`n` / ASCII 句読点→空白 / 連続空白圧縮) の文字 trigram Jaccard 類似度が `SIMILAR_SIGNATURE_THRESHOLD=0.85` 以上のエントリが直近 `RECENT_TOOL_CALL_BUFFER=8` 件中 `SIMILAR_LOOP_MATCH_COUNT=2` 件以上                                                                                         | `similarToolCallErrorMessage`: small wording tweaks では結果変わらない旨を明示して別 intent/別 tool/終了 を促す。`Session.recentNormSigs: string[]` で正規化履歴を保持                                                                                                                                                                                                                                                                                                                                                                                       |
 | streaming hold buffer                         | streaming chunk 受信時に partial drift pattern (`<\|channel` open のみ / 末尾 `call:fn{...` / 末尾 `thought\n`) を検出                                                                                                                                                                                                          | partial 部分を hold (Discord 表示停止)、次 chunk で完全な strict drift と確定したら drop、通常 text と分かった時点で release。stream 終了時に残骸を `flush()` して最終応答 `fullText` にマージ (Step C/D の検証に通す)                                                                                                                                                                                                                                                                                                                                       |
-| context prune                                 | `trimSession` 内で context 圧縮時に、直近 `contextKeepLast` (=10) 件以外の古い `tool` メッセージを検出                                                                                                                                                                                                                          | 古い tool 結果を `[<tool>] (M chars, pruned from old turn)` 形式の 1 行サマリに置換 (本文削除)。同一 file path の `read` 重複は最新のみ本文保持、それ以外は `(deduped - see latest read of same path below)`。短い結果 (< 200 char) と既に pruned 済はスキップで idempotent。KV cache 効率改善                                                                                                                                                                                                                                                               |
+| cache-aware compaction                        | 履歴token概算が`NUM_CTX`の30%、またはmessage/文字数fallback上限へ到達                                                                                                                                                                                                                                                          | 古い完全turnを1回の構造化checkpointへ置換し、直近tailを保持。古いtool結果の1行化もこの境界でだけ行う。成功checkpointを別JSONLへ永続化し、失敗時は原履歴を維持してcooldownする                                                                                                                                                                                                                                                                                                                                                 |
 | pseudo tool_call rescue + structured feedback | 最終 chatStream で strict drift を検出 (Step C)                                                                                                                                                                                                                                                                                 | drift から `(name, args)` を parse 試行 → `isSafeForRescue` で allowlist 判定 → **(i) safe** なら該当 tool を実 executeTool で救済実行し `[RESCUED TOOL RESULT]` で context 注入、**(ii) unsafe** なら `{kind, attempted_tool, attempted_args, reason, hint, allowed_actions}` の構造化レコードを `[SYSTEM ERROR RECORD]` デリミタ付きで system 注入、**(iii) parse 失敗 / cache HIT / loop 検出** は対応 `kind` (`unparseable_pseudo_call` / `already_executed`) の構造化レコードを返す。Kmax=2 で繰り返し、超過時のみ `FRIENDLY_FALLBACK_MESSAGE` (Step D) |
 
-API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' \| 'similar', repeats? }` を返し、`executeRunLoop` / `executeStreamLoop` 両方で `kind` 別エラーメッセージ (`repeatedToolCallErrorMessage` / `similarToolCallErrorMessage`) を振り分ける。`recordToolCallAndCheckLoop` は boolean wrapper として温存 (後方互換)。`compactOldToolResults(session, recentKeepCount)` は `{ compactedCount, bytesReclaimed }` を返し、`trimSession` の冒頭で呼ばれる。`parsePseudoToolCall(text)` は anchored grammar で `call:fn{args}` を `{name, args}` に分解し失敗時 `null` を返す。`isSafeForRescue(name, args)` は `{safe, reason?}` を返す。
+API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' \| 'similar', repeats? }` を返し、`executeRunLoop` / `executeStreamLoop` 両方で `kind` 別エラーメッセージ (`repeatedToolCallErrorMessage` / `similarToolCallErrorMessage`) を振り分ける。`recordToolCallAndCheckLoop` は boolean wrapper として温存 (後方互換)。`planSessionCompaction`が完全turn境界を選び、`compactSessionWithCheckpoint`が要約・保存成功時だけ原履歴をatomicに置換する。`compactOldToolResults`は要約へ渡す古いprefixのみに適用する。`parsePseudoToolCall(text)` は anchored grammar で `call:fn{args}` を `{name, args}` に分解し失敗時 `null` を返す。`isSafeForRescue(name, args)` は `{safe, reason?}` を返す。
 
 六者役割分担:
 
@@ -596,12 +602,12 @@ API: `recordToolCallAndDetectLoop(session, sig)` が `{ kind: 'none' \| 'exact' 
 - **冪等キャッシュ**: 同じ計算/エンコードを args 完全一致で繰り返す → exec せず即返却 (2 回目で短絡、ループ検出に到達しない)
 - **similar**: args 微差で「同じ意図」を繰り返す → exact より広い検出網 (trigram Jaccard 類似度ベース)
 - **hold buffer**: streaming 中の擬似 tool_call 表示抑止 → Step C/D の前段で「Discord にチャンクが流れる前」に止める
-- **context prune**: 直近以外の古い tool 結果を 1 行サマリに圧縮 → 同じ意図のループが万一通過しても context 膨張を防ぎ、`trimSession` の合計文字数制限まで余裕を作る
+- **cache-aware compaction**: 閾値到達時だけ古い完全turnをcheckpoint化し、以後のprompt prefixを固定 → context膨張を抑えつつ毎turnのcache missを防ぐ
 - **rescue + structured feedback**: 擬似 tool_call として漏れた bot の意図を捨てずに、安全なら救済実行 / 危険なら構造化エラーで self-correct 誘導 → drift fallback で意図が完全消失するのを防ぐ最終層
 
 `TOOLS_USAGE_PROMPT` 側の汎用指針 (「同じ tool を args 微差で繰り返さない」「冪等キャッシュ + ループ検出が効く」「結果薄でも別 args / 別 tool / 終了」) と、xangi 本体の機構が二段防御を成す。`wc -c` / `urllib.parse` / `base64` の具体例は `TOOLS_USAGE_PROMPT` から外し、スキル個別の制約 (sns-post-* の 195 字 / note-taking の URL エンコード等) は各 SKILL.md に書く責務分離。
 
-設計上の決定打: Step A の skill 案内で「次に何をすべきか」が tool_search 結果に書き込まれることが多くのケースで decisive。LLM は skill 経由で正規ルート (`read SKILL.md` → SKILL 内のスクリプト実行) に乗ることで、B/C/D の出番は最終フェイルセーフに留まる。1 つの仕組みに全部負わせず、A→B→C→D + 多段防御 (exact / 冪等キャッシュ / similar / hold buffer / context prune / rescue + structured feedback) の段階的フォールバックで層を分けてある。
+設計上の決定打: Step A の skill 案内で「次に何をすべきか」が tool_search 結果に書き込まれることが多くのケースで decisive。LLM は skill 経由で正規ルート (`read SKILL.md` → SKILL 内のスクリプト実行) に乗ることで、B/C/D の出番は最終フェイルセーフに留まる。1 つの仕組みに全部負わせず、A→B→C→D + 多段防御 (exact / 冪等キャッシュ / similar / hold buffer / cache-aware compaction / rescue + structured feedback) の段階的フォールバックで層を分けてある。
 
 #### 救済 allowlist (rescue safety gate)
 

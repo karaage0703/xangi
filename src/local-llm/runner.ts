@@ -34,6 +34,9 @@ import {
   logResponse,
   logError,
   readSessionMessages,
+  logCompactionCheckpoint,
+  readLatestCompactionCheckpoint,
+  type TranscriptCompactionCheckpoint,
   type TranscriptEntry,
 } from '../transcript-logger.js';
 import { getXangiTools } from './xangi-tools.js';
@@ -57,6 +60,20 @@ import {
 const MAX_TOOL_OUTPUT_CHARS = 8000;
 
 const STEP_LIMIT_PROMPT = `You have reached the configured agent step limit. Do not call tools. Give the user a concise status summary that clearly states what you completed, what remains, and the safest next action.`;
+
+export const CONVERSATION_CHECKPOINT_PREFIX = '[Conversation checkpoint]\n';
+
+const COMPACTION_SYSTEM_PROMPT = `Create a compact handoff checkpoint for the conversation prefix you receive.
+
+Preserve only information needed to continue the conversation correctly. Use these headings when applicable:
+- Goal
+- Constraints
+- Progress
+- Key decisions
+- Next steps
+- Critical context
+
+Preserve exact file paths, function names, commands, identifiers, errors, and unresolved requests. Do not invent facts. Do not answer the user or call tools.`;
 
 /**
  * 1ターン内のagentic iteration上限。
@@ -83,6 +100,12 @@ export interface ContextBudget {
   contextKeepLast: number;
   toolResultMaxChars: number;
   maxSessionMessages: number;
+  compactionThresholdRatio: number;
+  compactionThresholdTokens: number;
+  compactionKeepTokens: number;
+  compactionCooldownMs: number;
+  /** 1画像あたりのcontext token概算。base64長はvision token数と比例しない。 */
+  imageEstimateTokens: number;
   /** 計算根拠（log/test 用） */
   source: 'explicit' | 'derived';
   numCtx?: number;
@@ -102,6 +125,33 @@ export function loadContextBudget(env: NodeJS.ProcessEnv = process.env): Context
   const maxSessionMessages = env.LOCAL_LLM_MAX_SESSION_MESSAGES
     ? parseInt(env.LOCAL_LLM_MAX_SESSION_MESSAGES, 10)
     : 50;
+  const numCtxRaw = env.LOCAL_LLM_NUM_CTX ? parseInt(env.LOCAL_LLM_NUM_CTX, 10) : 32768;
+  const numCtx = Number.isSafeInteger(numCtxRaw) && numCtxRaw > 1 ? numCtxRaw : 32768;
+  const thresholdRatioRaw = env.LOCAL_LLM_COMPACTION_THRESHOLD_RATIO
+    ? parseFloat(env.LOCAL_LLM_COMPACTION_THRESHOLD_RATIO)
+    : 0.3;
+  const compactionThresholdRatio =
+    Number.isFinite(thresholdRatioRaw) && thresholdRatioRaw > 0 && thresholdRatioRaw < 1
+      ? thresholdRatioRaw
+      : 0.3;
+  const compactionThresholdTokens = Math.max(2, Math.floor(numCtx * compactionThresholdRatio));
+  const defaultKeepTokens = Math.min(12_000, Math.max(2_000, Math.floor(numCtx * 0.1)));
+  const keepTokensRaw = env.LOCAL_LLM_COMPACTION_KEEP_TOKENS
+    ? parseInt(env.LOCAL_LLM_COMPACTION_KEEP_TOKENS, 10)
+    : defaultKeepTokens;
+  const requestedKeepTokens =
+    Number.isSafeInteger(keepTokensRaw) && keepTokensRaw > 0 ? keepTokensRaw : defaultKeepTokens;
+  const compactionKeepTokens = Math.min(requestedKeepTokens, compactionThresholdTokens - 1);
+  const cooldownRaw = env.LOCAL_LLM_COMPACTION_COOLDOWN_MS
+    ? parseInt(env.LOCAL_LLM_COMPACTION_COOLDOWN_MS, 10)
+    : 60_000;
+  const compactionCooldownMs =
+    Number.isSafeInteger(cooldownRaw) && cooldownRaw >= 0 ? cooldownRaw : 60_000;
+  const imageEstimateRaw = env.LOCAL_LLM_IMAGE_ESTIMATE_TOKENS
+    ? parseInt(env.LOCAL_LLM_IMAGE_ESTIMATE_TOKENS, 10)
+    : 2048;
+  const imageEstimateTokens =
+    Number.isSafeInteger(imageEstimateRaw) && imageEstimateRaw > 0 ? imageEstimateRaw : 2048;
 
   // 明示優先: LOCAL_LLM_CONTEXT_MAX_CHARS
   if (env.LOCAL_LLM_CONTEXT_MAX_CHARS) {
@@ -112,13 +162,17 @@ export function loadContextBudget(env: NodeJS.ProcessEnv = process.env): Context
         contextKeepLast,
         toolResultMaxChars,
         maxSessionMessages,
+        compactionThresholdRatio,
+        compactionThresholdTokens,
+        compactionKeepTokens,
+        compactionCooldownMs,
+        imageEstimateTokens,
         source: 'explicit',
       };
     }
   }
 
   // 逆算: NUM_CTX から - SYSTEM_BUDGET - OUTPUT_BUDGET - SAFETY
-  const numCtx = env.LOCAL_LLM_NUM_CTX ? parseInt(env.LOCAL_LLM_NUM_CTX, 10) : 32768;
   const systemPromptBudgetTokens = env.LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS
     ? parseInt(env.LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS, 10)
     : 8000;
@@ -139,6 +193,11 @@ export function loadContextBudget(env: NodeJS.ProcessEnv = process.env): Context
     contextKeepLast,
     toolResultMaxChars,
     maxSessionMessages,
+    compactionThresholdRatio,
+    compactionThresholdTokens,
+    compactionKeepTokens,
+    compactionCooldownMs,
+    imageEstimateTokens,
     source: 'derived',
     numCtx,
     systemPromptBudgetTokens,
@@ -282,6 +341,176 @@ export interface Session {
    * deny / ループ遮断されたツールは「実行」に数えない（冪等キャッシュ HIT は数える）。
    */
   lastTurnToolNames?: string[];
+  /** compaction失敗後に再試行できる時刻。失敗ターンごとの要約連打を防ぐ。 */
+  compactionRetryAfter?: number;
+}
+
+export interface SessionCompactionPlan {
+  prefix: LLMMessage[];
+  tail: LLMMessage[];
+  firstKeptMessageId: string;
+  estimatedTokensBefore: number;
+  trigger: 'tokens' | 'messages' | 'chars';
+}
+
+export interface SessionCompactionResult {
+  status: 'skipped' | 'cooldown' | 'compacted' | 'failed';
+  checkpoint?: TranscriptCompactionCheckpoint;
+  error?: string;
+}
+
+function estimateMessageTokens(message: LLMMessage, imageEstimateTokens = 2048): number {
+  const toolCalls = message.toolCalls ? JSON.stringify(message.toolCalls) : '';
+  const textTokens = Math.ceil((message.content.length + toolCalls.length) / CHARS_PER_TOKEN);
+  const imageTokens = (message.images?.length ?? 0) * imageEstimateTokens;
+  return Math.max(1, textTokens + imageTokens);
+}
+
+function estimateMessagesTokens(
+  messages: readonly LLMMessage[],
+  imageEstimateTokens = 2048
+): number {
+  return messages.reduce(
+    (sum, message) => sum + estimateMessageTokens(message, imageEstimateTokens),
+    0
+  );
+}
+
+/**
+ * 履歴を一度だけ置換するためのprefix/tail境界を計画する。
+ * tailは必ずtranscript IDを持つuser messageから始め、tool call/resultを分断しない。
+ */
+export function planSessionCompaction(
+  messages: readonly LLMMessage[],
+  budget: ContextBudget
+): SessionCompactionPlan | null {
+  const estimatedTokensBefore = estimateMessagesTokens(messages, budget.imageEstimateTokens);
+  const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+  const trigger =
+    estimatedTokensBefore >= budget.compactionThresholdTokens
+      ? 'tokens'
+      : messages.length > budget.maxSessionMessages
+        ? 'messages'
+        : totalChars > budget.contextMaxChars
+          ? 'chars'
+          : null;
+  if (!trigger || messages.length < 2) return null;
+
+  let suffixTokens = 0;
+  let tokenStart = messages.length - 1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    suffixTokens += estimateMessageTokens(messages[index], budget.imageEstimateTokens);
+    tokenStart = index;
+    if (suffixTokens >= budget.compactionKeepTokens) break;
+  }
+
+  const minimumMessageStart = Math.max(0, messages.length - Math.max(1, budget.contextKeepLast));
+  const boundaryTarget =
+    trigger === 'tokens' ? Math.min(tokenStart, minimumMessageStart) : minimumMessageStart;
+  let boundary = -1;
+  // token目標以降かつ最低保持件数を満たす範囲で、最初の完全なuser turnを選ぶ。
+  for (let index = Math.max(1, boundaryTarget); index <= minimumMessageStart; index++) {
+    const message = messages[index];
+    if (message.role === 'user' && message.transcriptEntryId) {
+      boundary = index;
+      break;
+    }
+  }
+  // 範囲内に境界が無ければ、より古いuser turnまでtailを広げる。
+  for (let index = boundaryTarget - 1; boundary === -1 && index > 0; index--) {
+    const message = messages[index];
+    if (message.role === 'user' && message.transcriptEntryId) {
+      boundary = index;
+    }
+  }
+  if (boundary <= 0) return null;
+
+  return {
+    prefix: messages.slice(0, boundary),
+    tail: messages.slice(boundary),
+    firstKeptMessageId: messages[boundary].transcriptEntryId as string,
+    estimatedTokensBefore,
+    trigger,
+  };
+}
+
+function prepareMessagesForCompaction(messages: readonly LLMMessage[]): LLMMessage[] {
+  const prepared = messages.map((message) => ({
+    ...message,
+    content:
+      message.images && message.images.length > 0
+        ? `${message.content}\n[image omitted from checkpoint]`
+        : message.content,
+    images: undefined,
+    toolCalls: message.toolCalls?.map((toolCall) => ({
+      ...toolCall,
+      arguments: { ...toolCall.arguments },
+    })),
+  }));
+  const temporarySession: Session = {
+    messages: prepared,
+    updatedAt: 0,
+    activeToolNames: new Set(),
+    recentToolCallSigs: [],
+    recentNormSigs: [],
+    idempotentResultCache: new Map(),
+  };
+  compactOldToolResults(temporarySession, 0);
+  return temporarySession.messages;
+}
+
+/**
+ * 要約生成とcheckpoint保存の両方が成功した時だけsession.messagesを置換する。
+ * 失敗時は原履歴を保持し、cooldown中は再試行しない。
+ */
+export async function compactSessionWithCheckpoint(
+  session: Session,
+  budget: ContextBudget,
+  options: {
+    summarize: (messages: LLMMessage[]) => Promise<string>;
+    persist: (checkpoint: TranscriptCompactionCheckpoint) => boolean;
+    now?: number;
+  }
+): Promise<SessionCompactionResult> {
+  const now = options.now ?? Date.now();
+  if ((session.compactionRetryAfter ?? 0) > now) return { status: 'cooldown' };
+
+  const plan = planSessionCompaction(session.messages, budget);
+  if (!plan) return { status: 'skipped' };
+
+  try {
+    const summary = (await options.summarize(prepareMessagesForCompaction(plan.prefix))).trim();
+    if (!summary) throw new Error('compaction returned an empty summary');
+
+    const compactedMessages: LLMMessage[] = [
+      { role: 'user', content: `${CONVERSATION_CHECKPOINT_PREFIX}${summary}` },
+      ...plan.tail,
+    ];
+    const checkpoint: TranscriptCompactionCheckpoint = {
+      version: 1,
+      summary,
+      firstKeptMessageId: plan.firstKeptMessageId,
+      createdAt: new Date(now).toISOString(),
+      estimatedTokensBefore: plan.estimatedTokensBefore,
+      estimatedTokensAfter: estimateMessagesTokens(compactedMessages, budget.imageEstimateTokens),
+      messageCountBefore: session.messages.length,
+      messageCountAfter: compactedMessages.length,
+      trigger: plan.trigger,
+    };
+    if (!options.persist(checkpoint)) {
+      throw new Error('failed to persist compaction checkpoint');
+    }
+
+    session.messages = compactedMessages;
+    session.compactionRetryAfter = undefined;
+    return { status: 'compacted', checkpoint };
+  } catch (error) {
+    session.compactionRetryAfter = now + budget.compactionCooldownMs;
+    return {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /** 同一 tool_call が何回連続したらループと判定するか */
@@ -605,8 +834,21 @@ export function loadMessagesFromTranscript(workdir: string, appSessionId: string
     return [];
   }
 
+  const checkpoint = readLatestCompactionCheckpoint(workdir, appSessionId);
+  let entriesToRestore = entries;
   const restored: LLMMessage[] = [];
-  for (const e of entries) {
+  if (checkpoint) {
+    const boundary = entries.findIndex((entry) => entry.id === checkpoint.firstKeptMessageId);
+    if (boundary >= 0) {
+      restored.push({
+        role: 'user',
+        content: `${CONVERSATION_CHECKPOINT_PREFIX}${checkpoint.summary}`,
+      });
+      entriesToRestore = entries.slice(boundary);
+    }
+  }
+
+  for (const e of entriesToRestore) {
     if (e.role !== 'user' && e.role !== 'assistant') continue;
     let content = '';
     if (typeof e.content === 'string') {
@@ -618,7 +860,7 @@ export function loadMessagesFromTranscript(workdir: string, appSessionId: string
       }
     }
     if (!content) continue;
-    restored.push({ role: e.role, content });
+    restored.push({ role: e.role, content, transcriptEntryId: e.id });
   }
   return restored;
 }
@@ -827,12 +1069,14 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         `[local-llm] Context budget (derived from NUM_CTX=${cb.numCtx}): contextMaxChars=${cb.contextMaxChars} ` +
           `(historyTokens=${cb.numCtx! - cb.systemPromptBudgetTokens! - cb.outputBudgetTokens! - cb.safetyMarginTokens!}, ` +
           `system=${cb.systemPromptBudgetTokens}, output=${cb.outputBudgetTokens}, safety=${cb.safetyMarginTokens}), ` +
-          `keepLast=${cb.contextKeepLast}, toolResultMax=${cb.toolResultMaxChars}, maxMsgs=${cb.maxSessionMessages}`
+          `keepLast=${cb.contextKeepLast}, toolResultMax=${cb.toolResultMaxChars}, maxMsgs=${cb.maxSessionMessages}, ` +
+          `compactAt=${cb.compactionThresholdTokens} tokens, compactKeep=${cb.compactionKeepTokens} tokens`
       );
     } else {
       console.log(
         `[local-llm] Context budget (explicit): contextMaxChars=${cb.contextMaxChars}, ` +
-          `keepLast=${cb.contextKeepLast}, toolResultMax=${cb.toolResultMaxChars}, maxMsgs=${cb.maxSessionMessages}`
+          `keepLast=${cb.contextKeepLast}, toolResultMax=${cb.toolResultMaxChars}, maxMsgs=${cb.maxSessionMessages}, ` +
+          `compactAt=${cb.compactionThresholdTokens} tokens, compactKeep=${cb.compactionKeepTokens} tokens`
       );
     }
 
@@ -978,8 +1222,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const llmTools = callFlags.tools ? toLLMTools(getAllTools()) : [];
     const prompt = prependRuntimeContext(rawPrompt, this.workdir);
     const userMsg = this.buildUserMessage(prompt);
+    const promptEntry = logPrompt(this.workdir, appSid, prompt);
+    userMsg.transcriptEntryId = promptEntry.id;
     session.messages.push(userMsg);
-    logPrompt(this.workdir, appSid, prompt);
 
     return { sessionId, channelId, appSid, session, callFlags, systemPrompt, llmTools, userMsg };
   }
@@ -1006,6 +1251,65 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.timeoutController.clear(channelId, 'error');
   }
 
+  private async maybeCompactSession(
+    session: Session,
+    appSessionId: string,
+    channelId: string,
+    abortController: AbortController
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const result = await compactSessionWithCheckpoint(session, this.contextBudget, {
+      summarize: async (messages) => {
+        const response = await this.llm.chat(messages, {
+          systemPrompt: COMPACTION_SYSTEM_PROMPT,
+          toolChoice: 'none',
+          maxTokens: 2048,
+          temperature: 0,
+          reasoningEffort: 'none',
+          signal: abortController.signal,
+          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
+        });
+        this.addUsage(channelId, response);
+        return response.content;
+      },
+      persist: (checkpoint) => logCompactionCheckpoint(this.workdir, appSessionId, checkpoint),
+    });
+
+    if (result.status === 'compacted' && result.checkpoint) {
+      console.log(
+        `[local-llm] Compacted session ${appSessionId}: ` +
+          `${result.checkpoint.messageCountBefore} -> ${result.checkpoint.messageCountAfter} messages, ` +
+          `~${result.checkpoint.estimatedTokensBefore} -> ~${result.checkpoint.estimatedTokensAfter} tokens`
+      );
+      this.trajectoryLogger.logRunnerEvent(this.trajectoryCommon(appSessionId, channelId), {
+        event: 'context_compaction',
+        details: {
+          outcome: 'compacted',
+          trigger: result.checkpoint.trigger,
+          duration_ms: Date.now() - startedAt,
+          first_kept_message_id: result.checkpoint.firstKeptMessageId,
+          messages_before: result.checkpoint.messageCountBefore,
+          messages_after: result.checkpoint.messageCountAfter,
+          estimated_tokens_before: result.checkpoint.estimatedTokensBefore,
+          estimated_tokens_after: result.checkpoint.estimatedTokensAfter,
+        },
+      });
+    } else if (result.status === 'failed') {
+      console.warn(
+        `[local-llm] Context compaction failed; keeping original history: ${result.error}`
+      );
+      this.trajectoryLogger.logRunnerEvent(this.trajectoryCommon(appSessionId, channelId), {
+        event: 'context_compaction',
+        details: {
+          outcome: 'failed',
+          duration_ms: Date.now() - startedAt,
+          error: result.error,
+          cooldown_ms: this.contextBudget.compactionCooldownMs,
+        },
+      });
+    }
+  }
+
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
     const { sessionId, channelId, appSid, session, callFlags, systemPrompt, llmTools, userMsg } =
       this.prepareTurn(rawPrompt, options);
@@ -1013,6 +1317,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const abortController = this.startTurnTimeout(channelId);
 
     try {
+      await this.maybeCompactSession(session, appSid, channelId, abortController);
       let result = await this.executeAgentLoop(
         session,
         systemPrompt,
@@ -1048,7 +1353,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         );
       }
 
-      this.trimSession(session, appSid, channelId);
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
@@ -1100,7 +1404,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             appSid
           );
 
-          this.trimSession(session, appSid, channelId);
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, {
             result,
@@ -1147,6 +1450,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const abortController = this.startTurnTimeout(channelId);
 
     try {
+      await this.maybeCompactSession(session, appSid, channelId, abortController);
       let fullText = await this.executeStreamLoop(
         session,
         systemPrompt,
@@ -1188,7 +1492,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         );
       }
 
-      this.trimSession(session, appSid, channelId);
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
@@ -1246,7 +1549,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           );
 
           session.messages.push({ role: 'assistant', content: fullText });
-          this.trimSession(session, appSid, channelId);
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, {
             result: fullText,
@@ -1417,7 +1719,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       const rawOutput = result.success
         ? result.output
         : `Error: ${result.error ?? 'Unknown error'}${result.output ? `\nOutput: ${result.output}` : ''}`;
-      const content = trimToolResult(rawOutput);
+      const content = trimToolResult(rawOutput, this.contextBudget.toolResultMaxChars);
       this.trajectoryLogger.logToolCall(trajectory, {
         tool_call_id: toolCall.id,
         tool_name: toolCall.name,
@@ -2215,7 +2517,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         const restored = loadMessagesFromTranscript(this.workdir, appSessionId);
         if (restored.length > 0) {
           session.messages = restored;
-          this.trimSession(session, appSessionId);
           console.log(
             `[local-llm] Restored ${session.messages.length} message(s) from transcript ${appSessionId}`
           );
@@ -2223,64 +2524,6 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       }
     }
     return session;
-  }
-
-  /**
-   * コンテキスト刈り込み（karaagebot準拠）
-   * 0. 古い tool 結果を 1 行サマリに圧縮 (Prune、直近 contextKeepLast 件は保護)
-   * 1. ツール結果を contextBudget.toolResultMaxChars に切り詰め (head/tail 方式)
-   * 2. 直近 contextBudget.contextKeepLast 件を保護
-   * 3. 合計文字数が contextBudget.contextMaxChars を超えたら古いメッセージから削除
-   * 4. メッセージ数が contextBudget.maxSessionMessages を超えたら古いものを削除
-   */
-  private trimSession(session: Session, appSessionId?: string, channelId?: string): void {
-    const { contextMaxChars, contextKeepLast, toolResultMaxChars, maxSessionMessages } =
-      this.contextBudget;
-
-    // (0) 古い tool 結果を 1 行サマリに圧縮 (Prune)
-    // 直近 contextKeepLast 件は保護、それより古い tool 結果は本文を削除して
-    // 「[<tool>] (M chars, pruned from old turn)」形式に置換。同一 file の read
-    // 重複は最新のみ残す。
-    const pruned = compactOldToolResults(session, contextKeepLast);
-    if (pruned.compactedCount > 0) {
-      console.log(
-        `[local-llm] Pruned ${pruned.compactedCount} old tool result(s), reclaimed ${pruned.bytesReclaimed} bytes`
-      );
-      if (appSessionId) {
-        this.trajectoryLogger.logRunnerEvent(this.trajectoryCommon(appSessionId, channelId), {
-          event: 'context_prune',
-          details: {
-            compacted_count: pruned.compactedCount,
-            bytes_reclaimed: pruned.bytesReclaimed,
-            keep_last: contextKeepLast,
-          },
-        });
-      }
-    }
-
-    // (1) ツール結果を head/tail 切り詰め（直近 contextKeepLast 件はここで切り詰められる、古いものは (0) で既に短い）
-    for (const msg of session.messages) {
-      if (msg.role === 'tool' && msg.content.length > toolResultMaxChars) {
-        const head = Math.floor(toolResultMaxChars * 0.4);
-        const tail = Math.floor(toolResultMaxChars * 0.4);
-        msg.content =
-          msg.content.slice(0, head) +
-          `\n\n... [${msg.content.length - head - tail} chars trimmed for context] ...\n\n` +
-          msg.content.slice(-tail);
-      }
-    }
-
-    // メッセージ数制限
-    if (session.messages.length > maxSessionMessages) {
-      session.messages = session.messages.slice(-maxSessionMessages);
-    }
-
-    // 合計文字数制限（直近 contextKeepLast 件を保護）
-    let totalChars = session.messages.reduce((sum, m) => sum + m.content.length, 0);
-    while (totalChars > contextMaxChars && session.messages.length > contextKeepLast) {
-      const removed = session.messages.shift();
-      if (removed) totalChars -= removed.content.length;
-    }
   }
 
   private cleanupSessions(): void {

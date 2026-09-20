@@ -1331,7 +1331,7 @@ OSS 公開前提のため log の中身が後で公開されても問題ない�
 
 ### 設計意図
 
-- 観察対象: Local LLM の多段防御 (loop / 冪等キャッシュ / streaming hold buffer / pseudo tool_call rescue / context prune の 5+1 機構) がどう発火しているか、tool_search の採用結果、drift_rescue の安全判定内訳
+- 観察対象: Local LLM の多段防御 (loop / 冪等キャッシュ / streaming hold buffer / pseudo tool_call rescue / cache-aware compaction の 5+1 機構) がどう発火しているか、tool_search の採用結果、drift_rescue の安全判定内訳
 - runner 本体には dataset 都合を一切混ぜず、観測ログの生成だけを行う。蓄積データを別形式に変換したい場合は、この jsonl を入力に後段で別途処理する
 
 ## セキュリティ
@@ -1696,9 +1696,13 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | system prompt が占める想定トークン数（逆算用）                               | `8000`                                                           |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | 1 リクエストの最大出力トークン（逆算用）                                     | `4096`                                                           |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | 安全マージン（逆算用）                                                       | `1000`                                                           |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | 直近 N 件のメッセージは削除しない                                            | `10`                                                             |
-| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | tool 結果の最大文字数（コンテキスト内）                                      | `4000`                                                           |
-| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | セッションの最大メッセージ数                                                 | `50`                                                             |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | compaction後も保持する最低メッセージ数                                       | `10`                                                             |
+| `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | 追加時に切り詰めるtool結果の最大文字数                                       | `4000`                                                           |
+| `LOCAL_LLM_MAX_SESSION_MESSAGES`        | token推定以外のcompaction発火メッセージ数                                    | `50`                                                             |
+| `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | `LOCAL_LLM_NUM_CTX`に対するbatch compaction発火比率                           | `0.30`                                                           |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | compaction後に保持する直近履歴のtoken概算                                    | `NUM_CTX`の10%（2000〜12000）                                   |
+| `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | 要約・checkpoint保存失敗後の再試行待ち時間                                   | `60000`                                                          |
+| `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | compaction判定で使う画像1枚あたりのtoken概算                                  | `2048`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_ENABLED`         | tool 遅延ロード機能（`tool_search`）を有効化                                 | `true`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_LIMIT`           | `tool_search` が 1 回で返す最大ツール数                                      | `8`                                                              |
 | `LOCAL_LLM_ALWAYS_LOADED_TOOLS`         | 常駐 tool 名（カンマ区切り）。ここに無い tool は deferred 扱い               | `read,write,edit,exec,glob,grep,send_file,web_fetch,tool_search` |

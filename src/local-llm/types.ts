@@ -12,6 +12,8 @@ export interface LLMMessage {
   toolCallId?: string;
   /** Attached images for multimodal messages */
   images?: LLMImageContent[];
+  /** xangi内部のcheckpoint境界。providerへは送信しない。 */
+  transcriptEntryId?: string;
 }
 
 export interface LLMToolCall {

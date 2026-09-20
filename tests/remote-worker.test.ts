@@ -19,6 +19,7 @@ import {
   type RemoteWorkerNodeConfig,
 } from '../src/remote-worker/node.js';
 import {
+  completeMacWorkerRestart,
   decodePairingUri,
   cliInvocation,
   workerProcessIsRunning,
@@ -52,6 +53,22 @@ function tempConfig(): { config: RemoteWorkerNodeConfig; root: string } {
 }
 
 describe('remote worker node safety', () => {
+  it('reports the active execution policy without connection secrets', async () => {
+    const { config } = tempConfig();
+
+    const result = (await executeWorkerMethod('system.info', undefined, config)) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result.executionPolicy).toEqual({
+      workspaceRoots: config.workspaceRoots,
+      allowedCommands: config.allowedCommands,
+    });
+    expect(result).not.toHaveProperty('gatewayUrl');
+    expect(result).not.toHaveProperty('tokenFile');
+  });
+
   it('runs an argv command without a shell inside an allowed workspace', async () => {
     const { config, root } = tempConfig();
     const result = (await executeWorkerMethod(
@@ -161,9 +178,17 @@ describe('remote worker gateway', () => {
     const result = (await gateway.request('test-worker', 'system.info')) as {
       workerId: string;
       capabilities: string[];
+      executionPolicy: {
+        workspaceRoots: string[];
+        allowedCommands: string[];
+      };
     };
     expect(result.workerId).toBe('test-worker');
     expect(result.capabilities).toContain('exec');
+    expect(result.executionPolicy).toEqual({
+      workspaceRoots: config.workspaceRoots,
+      allowedCommands: config.allowedCommands,
+    });
 
     const execution = (await gateway.request('test-worker', 'exec', {
       argv: [process.execPath, '-e', 'process.stdout.write("remote-ok")'],
@@ -314,14 +339,20 @@ exit 0
     const configBefore = readFileSync(layout.configPath, 'utf8');
     writeFileSync(layout.plistPath, 'obsolete launch command');
     process.env.XANGI_TEST_ASYNC_BOOTOUT = '2';
-    expect(manageMacWorker('restart')).toContain('restarted');
+    expect(manageMacWorker('restart')).toContain('scheduled');
+    let restartCalls = readFileSync(launchctlLog, 'utf8').trim().split('\n');
+    const handoffLabel = `dev.xangi.worker.restart-handoff.${process.pid}`;
+    expect(restartCalls.at(-1)).toContain(`submit -l ${handoffLabel}`);
+    expect(restartCalls.at(-1)).toContain('worker restart-handoff');
+    expect(completeMacWorkerRestart(handoffLabel)).toContain('restarted');
     delete process.env.XANGI_TEST_ASYNC_BOOTOUT;
     expect(readFileSync(layout.plistPath, 'utf8')).toContain('<string>/bin/true</string>');
     expect(readFileSync(layout.tokenPath, 'utf8')).toBe(tokenBefore);
     expect(readFileSync(layout.configPath, 'utf8')).toBe(configBefore);
-    const restartCalls = readFileSync(launchctlLog, 'utf8').trim().split('\n');
+    restartCalls = readFileSync(launchctlLog, 'utf8').trim().split('\n');
     expect(restartCalls.filter((call) => call.startsWith('print ')).length).toBeGreaterThanOrEqual(3);
-    expect(restartCalls.at(-1)).toBe(`bootstrap gui/${process.getuid()} ${layout.plistPath}`);
+    expect(restartCalls).toContain(`bootstrap gui/${process.getuid()} ${layout.plistPath}`);
+    expect(restartCalls.at(-1)).toBe(`remove ${handoffLabel}`);
 
     writeFileSync(launchctlState, 'inactive');
     expect(manageMacWorker('start')).toContain('started');

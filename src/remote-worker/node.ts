@@ -163,6 +163,10 @@ export async function executeWorkerMethod(
       totalMemoryBytes: totalmem(),
       freeMemoryBytes: freemem(),
       capabilities: workerCapabilities(),
+      executionPolicy: {
+        workspaceRoots: [...config.workspaceRoots],
+        allowedCommands: [...config.allowedCommands],
+      },
     };
   }
   const maxOutputBytes = config.maxOutputBytes ?? 1_000_000;
