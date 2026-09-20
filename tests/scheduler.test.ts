@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Scheduler, parseScheduleInput, formatScheduleList } from '../src/scheduler.js';
+import {
+  Scheduler,
+  parseScheduleInput,
+  formatScheduleList,
+  formatScheduleDateTime,
+  resolveScheduleTimeZone,
+} from '../src/scheduler.js';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -7,12 +13,14 @@ import { tmpdir } from 'os';
 describe('parseScheduleInput', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.stubEnv('TZ', 'Asia/Tokyo');
     // 2025-02-05 09:00:00 JST
     vi.setSystemTime(new Date('2025-02-05T00:00:00.000Z'));
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it('should parse "N分後 メッセージ"', () => {
@@ -95,6 +103,38 @@ describe('parseScheduleInput', () => {
     const runAt = new Date(result!.runAt!);
     expect(runAt.getFullYear()).toBe(2025);
     expect(runAt.getMonth()).toBe(2); // March = 2
+  });
+
+  it('interprets wall-clock input in an IANA timezone with daylight saving time', () => {
+    vi.stubEnv('TZ', 'America/New_York');
+    const result = parseScheduleInput('2025-07-01 09:00 Standup');
+    expect(result?.runAt).toBe('2025-07-01T13:00:00.000Z');
+  });
+
+  it('rejects a wall-clock time that does not exist during a DST transition', () => {
+    vi.stubEnv('TZ', 'America/New_York');
+    expect(parseScheduleInput('2025-03-09 02:30 Spring forward')).toBeNull();
+  });
+
+  it('rolls an HH:MM input to the next local day outside Japan', () => {
+    vi.stubEnv('TZ', 'America/New_York');
+    vi.setSystemTime(new Date('2025-02-05T23:30:00.000Z')); // 18:30 EST
+    const result = parseScheduleInput('17:00 Follow up');
+    expect(result?.runAt).toBe('2025-02-06T22:00:00.000Z');
+  });
+
+  it('formats a saved UTC instant with an explicit IANA timezone', () => {
+    const instant = '2025-07-01T13:00:00.000Z';
+    expect(formatScheduleDateTime(instant, 'America/New_York')).toBe(
+      '2025-07-01 09:00:00 [America/New_York]'
+    );
+    expect(formatScheduleDateTime(instant, 'Asia/Tokyo')).toBe(
+      '2025-07-01 22:00:00 [Asia/Tokyo]'
+    );
+  });
+
+  it('falls back from an invalid configured timezone', () => {
+    expect(resolveScheduleTimeZone({ TZ: 'Not/AZone' })).not.toBe('Not/AZone');
   });
 
   it('should return null for unparseable input', () => {

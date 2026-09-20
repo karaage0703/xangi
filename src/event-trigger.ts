@@ -25,7 +25,7 @@ export const TRIGGER_MAX_MESSAGE_LENGTH = 4000;
 /** source 名の制約（表示・ログ・レート制限キーに使うため英数等に限定） */
 const SOURCE_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 
-const VALID_PLATFORMS: Platform[] = ['discord', 'slack', 'telegram', 'web'];
+const VALID_PLATFORMS: Platform[] = ['discord', 'slack', 'telegram', 'web', 'line'];
 
 export interface TriggerConfig {
   /** 機能全体の有効化（TRIGGER_ENABLED、デフォルト false） */

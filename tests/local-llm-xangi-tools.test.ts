@@ -1,5 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getXangiTools } from '../src/local-llm/xangi-tools.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createScheduleAddHandler,
+  getXangiTools,
+} from '../src/local-llm/xangi-tools.js';
 
 function names(platform?: Parameters<typeof getXangiTools>[0]): string[] {
   return getXangiTools(platform).map((tool) => tool.name);
@@ -80,7 +83,29 @@ describe('Local LLM xangi tools by platform', () => {
       input: { type: 'string' },
       message: { type: 'string' },
       channel: { type: 'string' },
-      platform: { enum: ['discord', 'slack', 'telegram', 'web'] },
+      platform: { enum: ['discord', 'slack', 'telegram', 'web', 'line'] },
+    });
+  });
+
+  it('allows schedule_add to use the current conversation without inventing a channel id', () => {
+    const tool = getXangiTools('line').find((candidate) => candidate.name === 'schedule_add');
+    expect(tool).toBeDefined();
+    expect(tool!.parameters.required).toEqual(['input']);
+    expect(tool!.parameters.properties.channel.description).toContain('現在の会話では省略');
+  });
+
+  it('forwards the current conversation to the child schedule command', async () => {
+    const executeCommand = vi.fn().mockResolvedValue({ success: true, output: 'ok' });
+    const tool = createScheduleAddHandler('line', executeCommand);
+
+    await tool.execute(
+      { input: '2分後 karaage' },
+      { workspace: '/workspace', channelId: `line:U${'a'.repeat(32)}` }
+    );
+
+    expect(executeCommand).toHaveBeenCalledWith(['schedule_add', '--input', '2分後 karaage'], {
+      XANGI_CHANNEL_ID: `line:U${'a'.repeat(32)}`,
+      XANGI_PLATFORM: 'line',
     });
   });
 

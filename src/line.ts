@@ -19,6 +19,8 @@ import {
   getSessionEntry,
   getProviderSessionId,
   archiveSession,
+  createSchedulerSession,
+  closeSession,
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
@@ -28,6 +30,12 @@ import { splitMessage } from './message-split.js';
 import { listenHttpServer } from './http-server-startup.js';
 import { readRawBody } from './web-http.js';
 import type { Config } from './config.js';
+import type { Scheduler } from './scheduler.js';
+import { appendScheduleRunCompletion, createSchedulerRunId } from './scheduler-run.js';
+import { NonRetryableError } from './errors.js';
+import { parseLineScheduleTarget, type LineScheduleTarget } from './line-schedule-target.js';
+
+export { parseLineScheduleTarget, type LineScheduleTarget } from './line-schedule-target.js';
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_PATH = '/webhook';
@@ -198,6 +206,8 @@ export interface LineBotOptions extends Omit<
   resetTextPatterns?: readonly string[];
   completionDisplay?: CompletionDisplayOptions;
   completionNotifyAfterMs?: number;
+  /** 指定すると LINE 宛のスケジュール配信・エージェント実行を登録する */
+  scheduler?: Scheduler;
 }
 
 /**
@@ -232,6 +242,18 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
 
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
   const queue = new LineChatQueue();
+
+  if (options.scheduler) {
+    registerLineSchedulerBridge({
+      scheduler: options.scheduler,
+      client,
+      queue,
+      agentRunner,
+      allowedUsers,
+      allowAll,
+      completionDisplay,
+    });
+  }
 
   const server = createServer(async (req, res) => {
     try {
@@ -278,6 +300,119 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
     );
   }
   return server;
+}
+
+async function pushLineText(client: LineBotClient, userId: string, text: string): Promise<void> {
+  const chunks = splitMessage(text, LINE_TEXT_MESSAGE_MAX);
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      await client.pushMessage({ to: userId, messages: [{ type: 'text', text: chunks[i] }] });
+    } catch (error) {
+      throw new Error(`[xangi-line] Scheduled push chunk ${i + 1} failed: ${String(error)}`);
+    }
+  }
+}
+
+/**
+ * scheduler に LINE 宛の送信とエージェント実行を登録する。
+ *
+ * LINE には送信済みメッセージの編集 API が無いため、Discord / Slack のように
+ * 「考え中」を差し替える方式は採らず、完了時に結果だけを push する。
+ */
+export function registerLineSchedulerBridge(deps: {
+  scheduler: Scheduler;
+  client: LineBotClient;
+  queue: LineChatQueue;
+  agentRunner: AgentRunner;
+  allowedUsers: readonly string[];
+  allowAll: boolean;
+  completionDisplay?: CompletionDisplayOptions;
+}): void {
+  const { scheduler, client, queue, agentRunner, allowedUsers, allowAll, completionDisplay } = deps;
+
+  const requireAllowedTarget = (channelId: string): LineScheduleTarget => {
+    const target = parseLineScheduleTarget(channelId);
+    if (!allowAll && !allowedUsers.includes(target.userId)) {
+      throw new NonRetryableError(
+        `[xangi-line] Scheduled target is not in LINE_ALLOWED_USER: ${target.userId}`
+      );
+    }
+    return target;
+  };
+
+  // pushMessage は非冪等。応答待ちのタイムアウト時は LINE 側で成功済みの
+  // 可能性があるため、自動再試行せず at-most-once を優先する。
+  scheduler.registerSender('line', async (channelId, message) => {
+    const { userId } = requireAllowedTarget(channelId);
+    await pushLineText(client, userId, message);
+  });
+
+  scheduler.registerAgentRunner('line', async (prompt, channelId, schedule, runContext) => {
+    const { userId, contextKey } = requireAllowedTarget(channelId);
+
+    const deliver = async (text: string): Promise<void> => {
+      try {
+        await pushLineText(client, userId, text);
+        runContext?.onDelivery?.({ platform: 'line', destinationId: userId });
+      } catch (pushError) {
+        // pushMessage は非冪等で、途中チャンクまで届いている可能性がある。
+        // 失敗を成功扱いにはせず、かつ agent 全体の再実行も止める。
+        throw new NonRetryableError('[xangi-line] Scheduled result delivery failed', {
+          cause: pushError,
+        });
+      }
+    };
+
+    let agentResult = '';
+    // メッセージハンドラと同じキューを通し、同一ユーザーのターンと並行実行しない。
+    await queue.enqueue(contextKey, async () => {
+      runContext?.onStart?.();
+      const appSessionId = createSchedulerRunId('line');
+      createSchedulerSession(appSessionId, contextKey, {
+        platform: 'line',
+        title: schedule?.label || prompt,
+      });
+      const startedAt = Date.now();
+      try {
+        let runResult: RunResult;
+        try {
+          runResult = await runWithBubbleEvents(
+            agentRunner,
+            prompt,
+            {
+              threadId: threadIdFor('line', userId),
+              turnId: turnIdFor('line', appSessionId),
+              threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+              platform: 'line',
+              userText: prompt,
+            },
+            {},
+            { channelId: contextKey, appSessionId }
+          );
+        } catch (error) {
+          console.error('[xangi-line] scheduled run failed:', error);
+          await deliver(
+            appendScheduleRunCompletion(
+              ERROR_FALLBACK_TEXT,
+              Date.now() - startedAt,
+              completionDisplay,
+              'error'
+            )
+          );
+          // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
+          throw error;
+        }
+
+        agentResult = runResult.result || '…';
+        await deliver(
+          appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
+        );
+      } finally {
+        closeSession(appSessionId, 'other');
+      }
+    });
+    return agentResult;
+  });
 }
 
 export interface HandlerContext {

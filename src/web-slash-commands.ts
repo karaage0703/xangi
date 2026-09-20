@@ -10,7 +10,11 @@ import {
   supportsEffort,
 } from './backend-effort.js';
 import type { Scheduler } from './scheduler.js';
-import { parseScheduleInput } from './scheduler.js';
+import {
+  formatScheduleDateTime,
+  parseScheduleInput,
+  resolveScheduleTimeZone,
+} from './scheduler.js';
 import { loadSettings, formatSettings } from './settings.js';
 import { loadSkills, type Skill } from './skills.js';
 import { executeModelsCommand, MODELS_COMMAND_USAGE } from './models-command.js';
@@ -530,7 +534,14 @@ function handleSchedule(args: string[], ctx: WebCommandContext): WebCommandResul
     });
     return {
       kind: 'message',
-      message: `スケジュールを追加しました。\n- ID: \`${schedule.id}\`\n- 内容: ${schedule.message}`,
+      message: [
+        'スケジュールを追加しました。',
+        `- ID: \`${schedule.id}\``,
+        `- 内容: ${schedule.message}`,
+        schedule.runAt
+          ? `- 実行時刻: ${formatScheduleDateTime(schedule.runAt)}`
+          : `- タイムゾーン: ${resolveScheduleTimeZone()}`,
+      ].join('\n'),
     };
   }
   if (subcommand === 'remove') {

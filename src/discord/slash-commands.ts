@@ -44,6 +44,7 @@ import {
   Scheduler,
   parseScheduleInput,
   formatScheduleList,
+  formatScheduleDateTime,
   SCHEDULE_SEPARATOR,
   type Platform,
   type ScheduleType,
@@ -143,7 +144,7 @@ function getTypeLabel(
       return `🚀 起動時に実行${channelInfo}`;
     case 'once':
     default:
-      return `⏰ 実行時刻: ${new Date(options.runAt!).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}${channelInfo}`;
+      return `⏰ 実行時刻: ${formatScheduleDateTime(options.runAt!)}${channelInfo}`;
   }
 }
 

@@ -133,7 +133,7 @@ describe('schedule-cmd WORKSPACE_PATH (PR #189)', () => {
         channel: 'ch1',
         platform: 'mastodon',
       })
-    ).rejects.toThrow('--platform must be discord, slack, telegram, or web');
+    ).rejects.toThrow('--platform must be discord, slack, telegram, web, or line');
   });
 
   it('updates only the message while preserving schedule identity and settings', async () => {

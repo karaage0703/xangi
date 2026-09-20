@@ -17,24 +17,52 @@ import { join } from 'path';
 import {
   parseScheduleInput,
   formatScheduleList,
+  formatScheduleDateTime,
+  resolveScheduleTimeZone,
   validateScheduleInput,
   type Scheduler,
   type Schedule,
   type ScheduleInput,
 } from '../scheduler.js';
-import { webAppSessionId } from '../sessions.js';
+import { WEB_CHAT_CONTEXT_PREFIX, webAppSessionId } from '../sessions.js';
 import { ValidationError } from '../errors.js';
+import { parseLineScheduleTarget } from '../line-schedule-target.js';
 
 type SchedulePlatform = Schedule['platform'];
 
 function isSchedulePlatform(value: string): value is SchedulePlatform {
-  return value === 'discord' || value === 'slack' || value === 'telegram' || value === 'web';
+  return (
+    value === 'discord' ||
+    value === 'slack' ||
+    value === 'telegram' ||
+    value === 'web' ||
+    value === 'line'
+  );
 }
 
-function resolveSchedulePlatform(flags: Record<string, string>): SchedulePlatform {
-  const value = flags['platform'] || process.env.XANGI_PLATFORM || 'discord';
+function inferPlatformFromChannel(channelId: string): SchedulePlatform | undefined {
+  // LINE schedule targets accept both context keys and bare user IDs.
+  if (/^(?:line:)?U[0-9a-f]{32}$/i.test(channelId)) return 'line';
+  // Slack conversation keys append the thread timestamp to the channel ID.
+  if (/^[CDG][A-Z0-9]+(?::\d+\.\d+)?$/.test(channelId)) return 'slack';
+  if (/^telegram:(?:chat|dm):-?\d+(?::topic:\d+)?$/.test(channelId)) return 'telegram';
+  if (/^-?\d+:topic:\d+$/.test(channelId)) return 'telegram';
+  if (channelId.startsWith(WEB_CHAT_CONTEXT_PREFIX)) return 'web';
+  // Bare numeric IDs are ambiguous between Discord and Telegram.
+  return undefined;
+}
+
+function resolveSchedulePlatform(
+  flags: Record<string, string>,
+  channelId: string
+): SchedulePlatform {
+  const value =
+    flags['platform'] ||
+    process.env.XANGI_PLATFORM ||
+    inferPlatformFromChannel(channelId) ||
+    'discord';
   if (!isSchedulePlatform(value)) {
-    throw new Error(`--platform must be discord, slack, telegram, or web: ${value}`);
+    throw new Error(`--platform must be discord, slack, telegram, web, or line: ${value}`);
   }
   return value;
 }
@@ -110,6 +138,22 @@ function toScheduleInput(schedule: Schedule): ScheduleInput {
   };
 }
 
+function formatScheduleAdded(schedule: Schedule): string {
+  const details = [
+    `✅ スケジュールを追加しました (ID: ${schedule.id})`,
+    `Platform: ${schedule.platform}`,
+    `Timezone: ${resolveScheduleTimeZone()}`,
+  ];
+  if (schedule.type === 'once' && schedule.runAt) {
+    details.push(`Run at: ${formatScheduleDateTime(schedule.runAt)}`);
+  } else if (schedule.type === 'cron' && schedule.expression) {
+    details.push(`Cron: ${schedule.expression} [${resolveScheduleTimeZone()}]`);
+  } else {
+    details.push('Run at: startup');
+  }
+  return details.join('\n');
+}
+
 async function scheduleList(scheduler?: Scheduler): Promise<string> {
   const schedules = scheduler?.list() ?? loadSchedules();
   if (schedules.length === 0) {
@@ -121,7 +165,6 @@ async function scheduleList(scheduler?: Scheduler): Promise<string> {
 async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler): Promise<string> {
   const input = flags['input'];
   const channelId = flags['channel'];
-  const platform = resolveSchedulePlatform(flags);
 
   if (!input) throw new Error('--input is required');
   if (!channelId) throw new Error('--channel is required');
@@ -133,6 +176,7 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
 
   // targetChannelId が指定されていればそちらを優先
   const requestedChannel = parsed.targetChannelId || channelId;
+  const platform = resolveSchedulePlatform(flags, requestedChannel);
   const targetChannel = platform === 'web' ? webAppSessionId(requestedChannel) : requestedChannel;
 
   const scheduleInput: ScheduleInput = {
@@ -143,11 +187,20 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
     channelId: targetChannel,
     platform,
   };
+  if (platform === 'line') {
+    try {
+      parseLineScheduleTarget(targetChannel);
+    } catch {
+      throw new ValidationError(
+        'LINEの送信先が不正です。現在の会話へ送る場合はchannelとplatformを省略して再実行してください。'
+      );
+    }
+  }
   validateForCommand(scheduleInput);
 
   if (scheduler) {
     const newSchedule = scheduler.add(scheduleInput);
-    return `✅ スケジュールを追加しました (ID: ${newSchedule.id})`;
+    return formatScheduleAdded(newSchedule);
   }
 
   const schedules = loadSchedules();
@@ -165,7 +218,7 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
   schedules.push(newSchedule);
   saveSchedules(schedules);
 
-  return `✅ スケジュールを追加しました (ID: ${newSchedule.id})`;
+  return formatScheduleAdded(newSchedule);
 }
 
 const SCHEDULE_UPDATE_FLAGS = new Set(['id', 'input', 'message', 'channel', 'platform']);
@@ -208,7 +261,7 @@ async function scheduleUpdate(
   }
   if (hasPlatform && !isSchedulePlatform(flags['platform'])) {
     throw new ValidationError(
-      `--platform must be discord, slack, telegram, or web: ${flags['platform']}`
+      `--platform must be discord, slack, telegram, web, or line: ${flags['platform']}`
     );
   }
 
