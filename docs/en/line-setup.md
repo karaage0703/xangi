@@ -118,6 +118,19 @@ When another message arrives from the same user while a turn is running, it is q
 - Waiting adds to the elapsed time, so responses exceed `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45s) more often and go out via the Push API, which consumes the free message quota
 - A turn that waited shows the loading indicator again when its own processing starts. The one shown on arrival is dismissed as soon as the previous turn replies
 
+## Images sent together
+
+LINE delivers simultaneously sent images as one webhook event each. Events sharing an `imageSet.id` are collected and handled as a single turn once `total` of them have arrived. One reply is sent.
+
+- Each image is fetched on arrival. Fetching everything after the set completes would start every download only once the last image lands, using up the reply window
+- Attachments are ordered by `index`. Arrival order is not guaranteed
+- There is no deadline. A webhook only appears once the send completes, so an incomplete set means the upload is still running or it failed
+- The one image that was in flight when the connection dropped resumes and arrives late under the same `imageSet.id`. If that is the only one missing, waiting is enough
+- **Images whose upload had not started yet carry no `imageSet` when sent again.** LINE treats them as separate sends, so they never rejoin the original set and waiting will not complete it
+- If `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45s) passes after the latest arrival with the set still incomplete, a single notice says it is waiting. No answer is produced
+- If the user says something else before the set completes, the buffered images join that turn. This is how images sent again are picked up
+- Both idle reset and `/new` (the reset command) discard the buffered set and its fetched files
+
 ## Session boundaries (when to clear context)
 
 LINE has no explicit conversation boundaries like Slack's threads or Discord's "new chat" button. If every message reuses the same session forever, the context window bloats and topics get tangled. xangi uses a two-layer approach to start fresh sessions:

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { webhook } from '@line/bot-sdk';
 import { initSessions } from '../src/sessions.js';
-import { handleLineEvent, LineChatQueue } from '../src/line.js';
+import { handleLineEvent, LineChatQueue, LineImageSetBuffer } from '../src/line.js';
 
 const USER = 'U0123456789abcdef0123456789abcdef';
 
@@ -52,6 +52,7 @@ function createHarness(run: () => Promise<void>, loadingAnimationEnabled = true)
     resolver: {} as never,
     client: client as never,
     queue: new LineChatQueue(),
+    imageSets: new LineImageSetBuffer(),
     allowedUsers: ['*'],
     allowAll: true,
     loadingAnimationEnabled,
