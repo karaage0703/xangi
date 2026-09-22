@@ -9,6 +9,7 @@
  * - allowedUsers (LINE userId allowlist) で送受信を絞れる ("*" で全許可)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
+import { unlinkSync } from 'fs';
 import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
 import type { AgentRunner, RunResult } from './agent-runner.js';
 import { buildCompletionSummary, type CompletionDisplayOptions } from './completion-summary.js';
@@ -74,6 +75,227 @@ const LINE_RESET_TEXT_PATTERNS_DEFAULT: readonly string[] = ['/reset', '/new', '
 const RESET_REPLY_TEXT = '最初からお話するね！何かあった？';
 
 const ERROR_FALLBACK_TEXT = 'ごめんなさい、ちょっと調子わるいみたい…';
+
+// 同時送信の一部しか届いていないときの通知。本回答ではなく「待っている」ことだけを伝える。
+// **他の固定文とテイストを揃えない。** 上の3つはアシスタント本人の発話だが、これは
+// 配送の状態であって、アシスタントに見えている事柄ではない。システム表記として出す。
+const IMAGE_SET_WAIT_NOTICE_TEXT = '[画像セットを待機中]';
+
+/** 控えに積んだ 1 枚分 */
+interface PendingImage {
+  /** webhook の message ID。再配信されたイベントの重複排除に使う */
+  messageId: string;
+  /** 1 始まり。省略されうるので到着順の保険を持つ */
+  index?: number;
+  /** 到着順。index が無いときの並べ替えに使う */
+  arrivedSeq: number;
+  replyToken: string;
+  /** 取得できた添付のパス。失敗したら null */
+  path: string | null;
+  /** 取得処理が終わったか */
+  completed: boolean;
+  /** 取得完了を待つ。次の発言が取得中に来た場合の合流に使う */
+  ready: Promise<void>;
+  resolveReady: () => void;
+}
+
+interface PendingImageSet {
+  contextKey: string;
+  userId: string;
+  /** 宣言された枚数。欠けていたら undefined（この場合セットは揃わない） */
+  total?: number;
+  images: PendingImage[];
+  /** 最後にイベントを受け取った時刻。idle reset で古い控えだけを捨てる */
+  lastArrivalAt: number;
+  state: 'buffered' | 'claimed' | 'discarded' | 'completed';
+  /** 最後の到着から張り直すタイマー。待機通知と「考え中」を兼ねる */
+  notice: NoticeTimer;
+}
+
+/**
+ * 同時送信された画像を 1 ターンにまとめるための控え。
+ *
+ * LINE は同時送信でも 1 枚ずつ別イベントで届ける。`imageSet.id` が共通なので、
+ * それを鍵に集めて `total` 枚そろった時点で 1 ターンとして処理する。
+ *
+ * 締め切りは持たない。送信が完了するまで webhook が出ないため、揃わないのは
+ * 「まだ送信中」か「送信に失敗した」のどちらかで、締め切ると送信中のユーザーへ
+ * 「N 枚しか届いていない」と返すことになる。
+ *
+ * **再送で揃うとは限らない。** PC 版は同じ `imageSet.id` のまま届いたが (実測で
+ * 3 分 24 秒後)、Android 版は再送分に `imageSet` が付かず単発として届いた。
+ * `imageSet.id` を振るのは送信側クライアントなので、揃わないまま残った控えは
+ * 次の発言へ合流させて渡す。
+ */
+export class LineImageSetBuffer {
+  private readonly sets = new Map<string, PendingImageSet>();
+  private seq = 0;
+
+  nextSeq(): number {
+    return ++this.seq;
+  }
+
+  /**
+   * 控えを取り出す。無ければ作って登録する。
+   *
+   * **await をまたがずに呼ぶこと。** 同時送信の複数イベントは 1 回の webhook に
+   * まとまって届き、`handleRequest` がそれらを待ち合わせずに回す。取得と作成が
+   * 別々だと、各イベントがそれぞれ自分の控えとタイマーを作ってしまい、揃った
+   * 判定に使われなかったタイマーが待機通知を出す。
+   */
+  ensure(setId: string, create: () => PendingImageSet): PendingImageSet {
+    const existing = this.sets.get(setId);
+    if (existing) return existing;
+    const created = create();
+    this.sets.set(setId, created);
+    return created;
+  }
+
+  /** download 前に 1 枚分の場所を予約する。重複イベントなら null */
+  reserve(set: PendingImageSet, messageId: string, index: number | undefined): PendingImage | null {
+    if (set.images.some((image) => image.messageId === messageId)) return null;
+    if (index !== undefined && set.images.some((image) => image.index === index)) return null;
+    let resolveReady = () => {};
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const image: PendingImage = {
+      messageId,
+      index,
+      arrivedSeq: this.nextSeq(),
+      replyToken: '',
+      path: null,
+      completed: false,
+      ready,
+      resolveReady,
+    };
+    set.images.push(image);
+    set.lastArrivalAt = Date.now();
+    return image;
+  }
+
+  /** 予約済み画像の取得を完了し、セットが揃っていれば控えから外す */
+  complete(
+    setId: string,
+    set: PendingImageSet,
+    image: PendingImage,
+    path: string | null
+  ): PendingImage[] | null {
+    image.path = path;
+    image.completed = true;
+    image.resolveReady();
+
+    if (set.state === 'discarded') {
+      removeBufferedFile(path);
+      return null;
+    }
+    if (set.state !== 'buffered' || this.sets.get(setId) !== set) return null;
+    if (
+      set.total !== undefined &&
+      set.images.length >= set.total &&
+      set.images.every((entry) => entry.completed)
+    ) {
+      this.sets.delete(setId);
+      set.state = 'completed';
+      return sortPendingImages(set.images);
+    }
+    return null;
+  }
+
+  /** contextKey に紐づく控えを取り出して空にする（次の発言へ合流させる用） */
+  async takeFor(contextKey: string): Promise<PendingImage[]> {
+    const taken: PendingImage[] = [];
+    for (const [id, set] of this.sets.entries()) {
+      if (set.contextKey !== contextKey) continue;
+      clearNoticeTimer(set.notice);
+      set.state = 'claimed';
+      taken.push(...set.images);
+      this.sets.delete(id);
+    }
+    await Promise.all(taken.map((image) => image.ready));
+    return sortPendingImages(taken);
+  }
+
+  /** contextKey に紐づく控えを捨てる。取得済みのファイルも消す */
+  dropFor(contextKey: string): void {
+    for (const [id, set] of this.sets.entries()) {
+      if (set.contextKey !== contextKey) continue;
+      clearNoticeTimer(set.notice);
+      set.state = 'discarded';
+      for (const image of set.images) removeBufferedFile(image.path);
+      this.sets.delete(id);
+    }
+  }
+
+  /** idle 境界より前から止まっている控えだけを捨てる。境界後に届いた新着は残す */
+  dropIdleFor(contextKey: string, cutoffMs: number): void {
+    for (const [id, set] of this.sets.entries()) {
+      if (set.contextKey !== contextKey || set.lastArrivalAt > cutoffMs) continue;
+      clearNoticeTimer(set.notice);
+      set.state = 'discarded';
+      for (const image of set.images) removeBufferedFile(image.path);
+      this.sets.delete(id);
+    }
+  }
+}
+
+function removeBufferedFile(path: string | null): void {
+  if (!path) return;
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    console.warn('[xangi-line] failed to remove buffered attachment:', err);
+  }
+}
+
+/** index があればその順、無ければ到着順 */
+function sortPendingImages(images: PendingImage[]): PendingImage[] {
+  return [...images].sort((a, b) => {
+    if (a.index !== undefined && b.index !== undefined) return a.index - b.index;
+    return a.arrivedSeq - b.arrivedSeq;
+  });
+}
+
+/**
+ * 待機通知と「考え中」を兼ねる 1 本のタイマー。
+ *
+ * 期限も使う replyToken も同じなので分けない。発火時の文面だけが状態で変わる。
+ * イベントが届くたびに張り替えるため、届き続けているあいだは発火しない。
+ */
+interface NoticeTimer {
+  handle: NodeJS.Timeout | null;
+  /** 発火して replyToken を消費したか */
+  fired: boolean;
+  /** 発火時に使う replyToken。最後に届いたイベントのもの */
+  replyToken: string;
+  /** 'waiting' なら揃うのを待っている、'running' ならターン実行中 */
+  phase: 'waiting' | 'running';
+}
+
+function clearNoticeTimer(timer: NoticeTimer): void {
+  if (timer.handle !== null) {
+    clearTimeout(timer.handle);
+    timer.handle = null;
+  }
+}
+
+/** 前のタイマーを解除して張り直す。replyToken も最新のものへ入れ替える */
+function armNoticeTimer(ctx: HandlerContext, timer: NoticeTimer, replyToken: string): void {
+  clearNoticeTimer(timer);
+  timer.replyToken = replyToken;
+  if (!ctx.slowResponseEnabled) return;
+  timer.handle = setTimeout(() => {
+    timer.handle = null;
+    timer.fired = true;
+    const text = timer.phase === 'waiting' ? IMAGE_SET_WAIT_NOTICE_TEXT : SLOW_RESPONSE_NOTICE_TEXT;
+    ctx.client
+      .replyMessage({ replyToken: timer.replyToken, messages: [{ type: 'text', text }] })
+      .catch((err) => {
+        // token 失効や rate limit。本回答側で push へ落とすのでここでは warn のみ
+        console.warn('[xangi-line] notice reply failed (non-fatal):', err);
+      });
+  }, ctx.slowResponseThresholdMs);
+}
 
 /**
  * 同一 contextKey のターンを直列化するキュー。
@@ -242,6 +464,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
 
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
   const queue = new LineChatQueue();
+  const imageSets = new LineImageSetBuffer();
 
   if (options.scheduler) {
     registerLineSchedulerBridge({
@@ -265,6 +488,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
         resolver,
         client,
         queue,
+        imageSets,
         allowedUsers,
         allowAll,
         loadingAnimationEnabled,
@@ -423,6 +647,8 @@ export interface HandlerContext {
   agentRunner: AgentRunner;
   /** 同一 contextKey のターンを直列化するキュー */
   queue: LineChatQueue;
+  /** 同時送信された画像を 1 ターンにまとめるための控え */
+  imageSets: LineImageSetBuffer;
   resolver: BackendResolver;
   client: LineBotClient;
   allowedUsers: string[];
@@ -796,6 +1022,9 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
     // 世代を進めて、リセット前に積まれたターンが archive 済みセッションに対して
     // 実行されるのを防ぐ。
     ctx.queue.nextGeneration(contextKey);
+    // 明示的な区切りなので控えも捨てる。残すと、リセット後の最初の発言へ
+    // 前の会話の画像が合流して、読み込みの分だけ遅くなる。
+    ctx.imageSets.dropFor(contextKey);
     const activeId = getActiveSessionId(contextKey);
     if (activeId) {
       archiveSession(activeId);
@@ -821,26 +1050,55 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   showLoading(ctx, userId);
 
   // Slow response 制御: replyToken は LINE 仕様で 60s で失効するため、threshold ms
-  // (default 45s) を超えそうな時は (a) 先に replyToken で「考え中」テンプレを送って
-  // token を消費し、(b) 本回答を Push API で後追い送信する。
-  // - slowFiredRef.value=false → 完了が threshold 未満で、replyToken がまだ生きている → reply で本回答
-  // - slowFiredRef.value=true  → 「考え中」を reply で送信済 (token 消費済) → push で本回答
-  const slowFiredRef = { value: false };
-  let slowTimer: NodeJS.Timeout | null = null;
+  // (default 45s) を超えそうな時は先に replyToken で通知を送って token を消費し、
+  // 本回答を Push API で後追い送信する。通知の文面は phase で変わる。
+  // **控えの鍵は会話ごとに分ける。** imageSet.id は LINE が振る値で、別の
+  // 会話のセットと同じ鍵にぶつかると、他人へ渡る画像が出る。
+  const rawSetId = message.type === 'image' ? message.imageSet?.id : undefined;
+  const setId = rawSetId ? `${contextKey}\u0000${rawSetId}` : undefined;
+  // 控えの取得と作成は await をまたがずに済ませる。1 回の webhook に複数の
+  // イベントが入っていると、この関数は並行に走る。
+  const pendingSet = setId
+    ? ctx.imageSets.ensure(setId, () => ({
+        contextKey,
+        userId,
+        total: message.type === 'image' ? message.imageSet?.total : undefined,
+        images: [],
+        lastArrivalAt: Date.now(),
+        state: 'buffered',
+        notice: { handle: null, fired: false, replyToken, phase: 'waiting' },
+      }))
+    : undefined;
+  const notice: NoticeTimer = pendingSet?.notice ?? {
+    handle: null,
+    fired: false,
+    replyToken,
+    phase: 'running',
+  };
+  // イベントが届くたびに張り替える。届き続けているあいだは発火しない。
+  armNoticeTimer(ctx, notice, replyToken);
 
-  if (ctx.slowResponseEnabled) {
-    slowTimer = setTimeout(() => {
-      slowFiredRef.value = true;
-      ctx.client
-        .replyMessage({
-          replyToken,
-          messages: [{ type: 'text', text: SLOW_RESPONSE_NOTICE_TEXT }],
-        })
-        .catch((err) => {
-          // notice の reply 失敗 = token 失効や rate limit。push へのフォールバックは本回答側で行うのでここでは warn のみ
-          console.warn('[xangi-line] slow-response notice reply failed (non-fatal):', err);
-        });
-    }, ctx.slowResponseThresholdMs);
+  // 同時送信された画像は控えへ積み、揃うまでターンを起動しない。
+  // **取得は届いた時点で始める。** 揃ってからまとめて取ると、最後の 1 枚が
+  // 届いてから N 枚分のダウンロードが走り、replyToken の 60 秒を使い切る。
+  let bundled: PendingImage[] | null = null;
+  if (setId) {
+    const imageSetIndex = message.type === 'image' ? message.imageSet?.index : undefined;
+    const reserved = ctx.imageSets.reserve(
+      pendingSet!,
+      messageId ?? `${rawSetId}:${imageSetIndex ?? 'unknown'}`,
+      imageSetIndex
+    );
+    if (!reserved) return;
+    reserved.replyToken = replyToken;
+    const saved = messageId ? await fetchLineMedia(message, messageId, ctx) : null;
+    bundled = ctx.imageSets.complete(setId, pendingSet!, reserved, saved);
+    if (!bundled) {
+      // まだ揃っていない。本回答はせず、待機の通知だけがタイマーから出る。
+      return;
+    }
+    notice.phase = 'running';
+    pendingMedia = null;
   }
 
   // キューに積む。ここから先が Runner を起動する経路。
@@ -851,7 +1109,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
 
   await ctx.queue.enqueue(contextKey, async () => {
     if (ctx.queue.getGeneration(contextKey) !== queuedGeneration) {
-      if (slowTimer !== null) clearTimeout(slowTimer);
+      clearNoticeTimer(notice);
       console.log(
         `[xangi-line] skip queued turn for user ${userId.slice(0, 8)}… (session was reset)`
       );
@@ -869,6 +1127,9 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
         const entry = getSessionEntry(activeId);
         if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
           archiveSession(activeId);
+          // 会話の区切りに合わせて控えも捨てる。3 日前の画像が今日の発言へ
+          // 合流すると意味が通らなくなる。
+          ctx.imageSets.dropIdleFor(contextKey, Date.now() - ctx.idleResetMs);
           console.log(
             `[xangi-line] idle reset for user ${userId.slice(0, 8)}…, last=${entry.updatedAt}, archived ${activeId}`
           );
@@ -878,17 +1139,45 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
 
     const appSessionId = ensureSession(contextKey, { platform: 'line' });
 
-    // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
-    // 45 秒の「考え中」は replyToken が生きているうちに届く。
     const attachmentPaths: string[] = [];
-    if (pendingMedia && messageId) {
-      const saved = await fetchLineMedia(message, messageId, ctx);
-      if (saved) {
-        attachmentPaths.push(saved);
-        text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
+
+    if (bundled) {
+      // 同時送信がそろった。index 順に並んだ添付をまとめて 1 ターンで渡す。
+      for (const image of bundled) {
+        if (image.path) attachmentPaths.push(image.path);
       }
-      // 取得できなければ text は mediaNoticeText のまま。
-      // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
+      text = attachmentOnlyPrompt(`${bundled.length}枚の画像`);
+      if (attachmentPaths.length < bundled.length) {
+        text = `${text}\n- ${bundled.length}枚のうち${attachmentPaths.length}枚しか取得できていない`;
+      }
+    } else {
+      // 揃わないまま残っている控えがあれば、このターンへ合流させる。
+      // ターンを走らせずにセッションへ文脈を足す口が無いため、次の発言に便乗させる。
+      // 取得に失敗した控えは渡すものが無いので数えない。
+      const carried = await ctx.imageSets.takeFor(contextKey);
+      for (const image of carried) {
+        if (image.path) attachmentPaths.push(image.path);
+      }
+      const carriedCount = attachmentPaths.length;
+      if (carriedCount > 0) {
+        text = `${text}\n\n（先に画像が${carriedCount}枚届いている）`;
+      }
+
+      // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
+      // 45 秒の通知は replyToken が生きているうちに届く。
+      if (pendingMedia && messageId) {
+        const saved = await fetchLineMedia(message, messageId, ctx);
+        if (saved) {
+          attachmentPaths.push(saved);
+          // **合流の注記より後に組み立てる。** 上書きになるので、控えの分はここで足し直す。
+          text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
+          if (carriedCount > 0) {
+            text = `${text}\n- 先に画像が${carriedCount}枚届いている`;
+          }
+        }
+        // 取得できなければ text は mediaNoticeText のまま。
+        // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
+      }
     }
 
     const startTime = Date.now();
@@ -913,9 +1202,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       runError = err;
       console.error('[xangi-line] run failed:', err);
     } finally {
-      if (slowTimer !== null) {
-        clearTimeout(slowTimer);
-      }
+      clearNoticeTimer(notice);
     }
 
     const elapsedMs = Date.now() - startTime;
@@ -932,7 +1219,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
     //   - 発火していない + 経過時間が threshold 以上 → タイマー実行前に completed したか、
     //     slow response 無効化中。reply token はまだ生きてる可能性あるが安全側で push にフォールバック
     const usePush =
-      slowFiredRef.value || (ctx.slowResponseEnabled && elapsedMs >= ctx.slowResponseThresholdMs);
+      notice.fired || (ctx.slowResponseEnabled && elapsedMs >= ctx.slowResponseThresholdMs);
 
     try {
       if (usePush) {
@@ -942,7 +1229,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
         });
       } else {
         await ctx.client.replyMessage({
-          replyToken,
+          replyToken: notice.replyToken,
           messages: [{ type: 'text', text: replyText }],
         });
       }
