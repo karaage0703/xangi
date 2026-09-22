@@ -1680,6 +1680,8 @@ headless実行はMCP初期化完了後に`init`イベントを返します。`St
 
 Agy が成功終了しても stdout が空の場合、stderr に出力された timeout・quota・認証などの詳細をエラーとして表示します。
 
+Agy 1.2.6以降は、stderrに構造化された `AGY_ERROR: { ... }` を出力して終了コード3で終了する場合があります。stdoutに利用可能なエラーがないときは、検証済みの `short_error` を表示し、`status`、`code_kind`、`error_code`、`retryable`、`error_id` をAntigravity専用の入れ子diagnostic metadataとして保持します。stdoutに有用なエラーがあればそちらを優先します。不正なmarkerと旧版のplain stderrは従来のfallbackを維持します。providerの `retryable` は診断情報としてのみ扱い、その値や終了コード3を理由にタスクを自動再送しません。
+
 `SKIP_PERMISSIONS=true` 既定時は、非対話運用で permission 待ちにならないよう `--dangerously-skip-permissions` を渡します。個人用・信頼済み workspace 前提の設定です。
 
 ### GitHub Copilot CLI（`AGENT_BACKEND=github-copilot` 時）

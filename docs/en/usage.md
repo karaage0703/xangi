@@ -1655,6 +1655,8 @@ Headless Agy waits for MCP initialization before emitting the `init` event. If e
 
 If agy exits successfully with empty stdout, xangi surfaces timeout, quota, authentication, or other details written to stderr as the error message.
 
+Agy 1.2.6 and later may write a structured `AGY_ERROR: { ... }` line to stderr and exit with code 3. When stdout has no usable error, xangi uses the validated `short_error` and retains `status`, `code_kind`, `error_code`, `retryable`, and `error_id` as nested Antigravity diagnostic metadata. A useful stdout error still takes precedence. Malformed markers and older plain stderr keep the previous fallback behavior. The provider's `retryable` value is diagnostic only: xangi does not automatically resend the task for it or for exit code 3.
+
 When `SKIP_PERMISSIONS=true` (the default), xangi passes `--dangerously-skip-permissions` to avoid blocking on permission prompts in non-interactive chat operation. Use this only for trusted personal workspaces.
 
 ### GitHub Copilot CLI (`AGENT_BACKEND=github-copilot`)

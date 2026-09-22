@@ -152,7 +152,20 @@ export function formatErrorDiagnostic(error: unknown): string {
 
     const record = current.value as Record<string, unknown>;
     const fields: string[] = [];
-    for (const field of ['name', 'message', 'code', 'errno', 'syscall', 'address', 'port']) {
+    for (const field of [
+      'name',
+      'message',
+      'code',
+      'errno',
+      'syscall',
+      'address',
+      'port',
+      'status',
+      'code_kind',
+      'error_code',
+      'retryable',
+      'error_id',
+    ]) {
       const value = record[field];
       if (value === undefined || value === null || value === '') continue;
       fields.push(
@@ -167,6 +180,12 @@ export function formatErrorDiagnostic(error: unknown): string {
     if (record.error !== undefined) pending.push({ value: record.error, label: 'nested_error' });
     if (record.original !== undefined) {
       pending.push({ value: record.original, label: 'original' });
+    }
+    const providerDiagnostic = record.providerDiagnostic;
+    if (providerDiagnostic && typeof providerDiagnostic === 'object') {
+      for (const [provider, value] of Object.entries(providerDiagnostic)) {
+        pending.push({ value, label: `providerDiagnostic.${provider}` });
+      }
     }
     if (Array.isArray(record.errors)) {
       record.errors.forEach((value, index) => pending.push({ value, label: `errors[${index}]` }));

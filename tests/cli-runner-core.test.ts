@@ -112,6 +112,7 @@ class TestRunner extends CliRunnerBase {
       },
       finalize: () => ({ result: fullText, sessionId }),
       exitErrorDetail: () => detail,
+      wrapExitError: (error, stderr) => Object.assign(error, { wrappedStderr: stderr }),
     };
   }
 }
@@ -294,6 +295,20 @@ describe('CliRunnerBase executeStreamCore', () => {
     proc.stdout.emit('data', '{"detail": "quota exceeded"}\n');
     proc.emit('close', 1);
     await expect(promise).rejects.toThrow('Test CLI exited with code 1: quota exceeded');
+  });
+
+  it('wrapExitErrorへ最終stderrを明示的に渡す', async () => {
+    const runner = new TestRunner({ timeoutMs: 5000 });
+    const promise = runner.runStream('p', {}, { channelId: 'ch1' });
+    await tick();
+    const proc = await getMockProcess();
+    proc.stderr.emit('data', 'structured diagnostic');
+    proc.emit('close', 1);
+
+    const error = (await promise.catch((caught) => caught)) as Error & {
+      wrappedStderr?: string;
+    };
+    expect(error.wrappedStderr).toBe('structured diagnostic');
   });
 });
 

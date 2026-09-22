@@ -123,6 +123,18 @@ describe('AntigravityRunner', () => {
     });
   }
 
+  const agyError = {
+    short_error:
+      'agent executor error: generating and executing: Error 401, Message: fixture unauthorized, Status: UNAUTHENTICATED, Details: []',
+    status: 'UNAUTHENTICATED',
+    error_code: 401,
+    code_kind: 'http',
+    retryable: false,
+    error_id: '138ee442-3372-48a7-b37c-157dbec7923d-1',
+  };
+  const agyErrorLine = (overrides: Record<string, unknown> = {}) =>
+    `AGY_ERROR: ${JSON.stringify({ ...agyError, ...overrides })}\n`;
+
   it('probes Agy 1.1.9 once and disables slash expansion for run and stream', async () => {
     const { spawn } = await import('child_process');
     delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
@@ -572,6 +584,260 @@ describe('AntigravityRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['run', 'stream'])(
+    'uses Agy 1.2.6 stderr on an exit 3 with no stdout in %s',
+    async (mode) => {
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({});
+      const onError = vi.fn();
+      const onComplete = vi.fn();
+      const promise =
+        mode === 'run' ? runner.run('hello') : runner.runStream('hello', { onError, onComplete });
+      const mockProcess = await waitForProcess();
+
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 3);
+
+      const error = (await promise.catch((caught) => caught)) as Error & {
+        providerDiagnostic?: { antigravity: typeof agyError };
+      };
+      expect(error.message).toBe(`Antigravity CLI exited with code 3: ${agyError.short_error}`);
+      expect(error.providerDiagnostic?.antigravity).toEqual(agyError);
+      expect(error).not.toHaveProperty('retryable');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      if (mode === 'stream') {
+        expect(onError).toHaveBeenCalledOnce();
+        expect(onError).toHaveBeenCalledWith(error);
+        expect(onComplete).not.toHaveBeenCalled();
+      }
+    }
+  );
+
+  it.each(['run', 'stream'])(
+    'uses structured stderr for an empty stdout ERROR envelope in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const onError = vi.fn();
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', { onError });
+      const mockProcess = await waitForProcess();
+      const result = { status: 'ERROR', error: '', conversation_id: 'conv-error' };
+
+      mockProcess.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+      );
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 0);
+
+      const error = (await promise.catch((caught) => caught)) as Error;
+      expect(error.message).toContain(agyError.short_error);
+      expect(error.message).not.toContain('returned ERROR');
+      if (mode === 'stream') expect(onError).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('logs structured stderr diagnostics once with provider metadata', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const runner = new AntigravityRunner({});
+      const promise = runner.run('hello');
+      const mockProcess = await waitForProcess();
+
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 3);
+      await promise.catch(() => undefined);
+
+      const diagnostics = consoleError.mock.calls
+        .map(([message]) => String(message))
+        .filter((message) => message.startsWith('[antigravity] AGY_ERROR:'));
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).toContain('code_kind=http');
+      expect(diagnostics[0]).toContain(`error_id=${agyError.error_id}`);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it.each(['run', 'stream'])(
+    'uses structured stderr when requested JSON stdout is malformed in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+      const mockProcess = await waitForProcess();
+
+      mockProcess.stdout.emit('data', Buffer.from('{"status":"ERROR"'));
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 0);
+
+      await expect(promise).rejects.toThrow(agyError.short_error);
+    }
+  );
+
+  it('decodes a mixed, byte-split Unicode structured stderr marker in stream mode', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const runner = new AntigravityRunner({});
+    const promise = runner.runStream('hello', {});
+    const mockProcess = await waitForProcess();
+    const line = agyErrorLine({ short_error: '認証に失敗しました 😀' });
+    const bytes = Buffer.from(`ordinary warning\n${line}`);
+
+    for (const byte of bytes) mockProcess.stderr.write(Buffer.from([byte]));
+    mockProcess.emit('close', 3);
+
+    await expect(promise).rejects.toThrow(
+      'Antigravity CLI exited with code 3: 認証に失敗しました 😀'
+    );
+  });
+
+  it.each(['run', 'stream'])(
+    'does not resend when structured stderr says retryable in %s',
+    async (mode) => {
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+      const mockProcess = await waitForProcess();
+
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine({ retryable: true })));
+      mockProcess.emit('close', 3);
+
+      const error = (await promise.catch((caught) => caught)) as Error & {
+        providerDiagnostic?: { antigravity?: { retryable?: boolean } };
+      };
+      expect(error.providerDiagnostic?.antigravity?.retryable).toBe(true);
+      expect(error).not.toHaveProperty('retryable');
+      expect(spawn).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each(['run', 'stream'])(
+    'preserves malformed AGY_ERROR stderr fallback in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+      const mockProcess = await waitForProcess();
+
+      mockProcess.stderr.emit('data', Buffer.from('AGY_ERROR: {"short_error":\n'));
+      mockProcess.emit('close', 3);
+
+      await expect(promise).rejects.toThrow(
+        'Antigravity CLI exited with code 3: AGY_ERROR: {"short_error":'
+      );
+    }
+  );
+
+  it('keeps a useful stdout error ahead of structured stderr in run mode', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.run('hello');
+    const mockProcess = await waitForProcess();
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ status: 'ERROR', error: 'stdout auth detail' }))
+    );
+    mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+    mockProcess.emit('close', 3);
+
+    await expect(promise).rejects.toThrow('Antigravity CLI exited with code 3: stdout auth detail');
+  });
+
+  it('keeps a streamed stdout tool error ahead of structured stderr on a non-zero exit', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.runStream('hello', {});
+    const mockProcess = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: {
+          conversation_id: 'conv-tool',
+          step_index: 2,
+          state: 'ERROR',
+          step_type: 'tool',
+          tool_name: 'write_to_file',
+          tool_info: { error: { message: 'useful stdout tool error' } },
+        },
+      },
+      {
+        event: 'result',
+        result: { conversation_id: 'conv-tool', status: 'SUCCESS', response: '' },
+      },
+    ];
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`)
+    );
+    mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+    mockProcess.emit('close', 3);
+
+    const error = (await promise.catch((caught) => caught)) as Error & {
+      providerDiagnostic?: { antigravity?: typeof agyError };
+    };
+    expect(error.message).toBe('Antigravity CLI exited with code 3: useful stdout tool error');
+    expect(error.providerDiagnostic?.antigravity).toEqual(agyError);
+  });
+
+  it.each(['run', 'stream'])(
+    'uses structured stderr when SUCCESS has no response in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+      const mockProcess = await waitForProcess();
+      const result = { status: 'SUCCESS', response: '', conversation_id: 'conv-empty' };
+
+      mockProcess.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+      );
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 0);
+
+      const error = (await promise.catch((caught) => caught)) as Error & {
+        providerDiagnostic?: { antigravity?: typeof agyError };
+      };
+      expect(error.message).toContain(agyError.short_error);
+      expect(error.message).not.toContain('SUCCESS JSON without a response');
+      expect(error.providerDiagnostic?.antigravity).toEqual(agyError);
+    }
+  );
+
+  it('rejects a useful streamed stdout error immediately and calls onError once', async () => {
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({});
+    const onError = vi.fn();
+    const onComplete = vi.fn();
+    const promise = runner.runStream('hello', { onError, onComplete });
+    const mockProcess = await waitForProcess();
+    const result = { status: 'ERROR', error: 'stdout stream detail' };
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(`${JSON.stringify({ event: 'result', result })}\n`)
+    );
+    await expect(promise).rejects.toThrow('stdout stream detail');
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onComplete).not.toHaveBeenCalled();
+
+    mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+    mockProcess.emit('close', 3);
+    await tick();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an unknown status received in the final buffered stream line', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.runStream('hello', {});
+    const mockProcess = await waitForProcess();
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'result', result: { status: 'PENDING' } }))
+    );
+    mockProcess.emit('close', 0);
+
+    await expect(promise).rejects.toThrow('unknown stream status: PENDING');
+  });
+
   it('continues a failed workspace write once in the same JSON conversation', async () => {
     const { spawn } = await import('child_process');
     const { logPrompt, logResponse } = await import('../src/transcript-logger.js');
@@ -710,7 +976,7 @@ describe('AntigravityRunner', () => {
     mockProcess.stderr.emit('data', Buffer.from(stderr));
     mockProcess.emit('close', 1);
 
-    await expect(promise).rejects.toThrow('Antigravity CLI exited with code 1');
+    await expect(promise).rejects.toThrow(`Antigravity CLI exited with code 1: ${stderr}`);
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 

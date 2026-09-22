@@ -3,13 +3,16 @@ import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
   extractAntigravityErrorMessage,
   isAntigravityWorkspaceArtifactPathError,
+  parseAntigravityStderrError,
   reportsUnsupportedOutputFormat,
+  type AntigravityStderrError,
 } from './antigravity-output.js';
 import { buildSystemPrompt } from './base-runner.js';
 import type { BaseRunnerOptions } from './base-runner.js';
 import { inferEffortFromModelName } from './backend-effort.js';
 import { CliRunnerBase, extractNestedText, type CliStreamParser } from './cli-runner-core.js';
 import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
+import { formatErrorDiagnostic } from './errors.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { spawn } from 'node:child_process';
@@ -113,6 +116,9 @@ const WORKSPACE_WRITE_RECOVERY_PROMPT = `The preceding write_to_file call failed
 interface AntigravityOutputError extends Error {
   antigravityStdout?: string;
   antigravityStderr?: string;
+  providerDiagnostic?: {
+    antigravity: AntigravityStderrError;
+  };
 }
 
 interface AntigravityAttemptOptions {
@@ -138,6 +144,7 @@ export class AntigravityRunner extends CliRunnerBase {
   private systemPrompt: string;
   private readonly printTimeout: string;
   private readonly disableSlashCommands: boolean;
+  private readonly reportedDiagnostics = new WeakSet<AntigravityStderrError>();
   private slashCommandCapability?: boolean;
   private readonly slashCommandCapabilityProbes = new Map<
     string | undefined,
@@ -340,12 +347,14 @@ export class AntigravityRunner extends CliRunnerBase {
   ): Promise<{ stdout: string; stderr: string }> {
     let stderr = '';
     let stdoutOnError = '';
+    let stderrDiagnostic: AntigravityStderrError | undefined;
     try {
       const stdout = await this.collectOutput(args, channelId, {
         encoding: 'utf8',
         exitErrorDetail: (output) => {
           stdoutOnError = output;
-          return this.extractExitErrorDetail(output);
+          stderrDiagnostic = parseAntigravityStderrError(stderr);
+          return this.extractExitErrorDetail(output, stderrDiagnostic);
         },
         onStderr: (output) => {
           stderr = output;
@@ -356,6 +365,8 @@ export class AntigravityRunner extends CliRunnerBase {
       const outputError = error as AntigravityOutputError;
       outputError.antigravityStdout = stdoutOnError;
       outputError.antigravityStderr = stderr;
+      stderrDiagnostic ??= parseAntigravityStderrError(stderr);
+      if (stderrDiagnostic) this.attachDiagnostic(outputError, stderrDiagnostic);
       throw outputError;
     }
   }
@@ -422,11 +433,15 @@ export class AntigravityRunner extends CliRunnerBase {
           this.extractErrorMessage(errorJson) ??
           (error instanceof Error ? error.message : String(error));
         if (isAntigravityWorkspaceArtifactPathError(detail)) {
-          throw new AntigravityConversationError(
+          const conversationError = new AntigravityConversationError(
             detail,
             errorJson?.conversation_id ?? options?.sessionId,
             { cause: error }
           );
+          const diagnostic = outputError.providerDiagnostic?.antigravity;
+          throw diagnostic
+            ? this.attachDiagnostic(conversationError, diagnostic)
+            : conversationError;
         }
         throw error;
       }
@@ -567,6 +582,7 @@ export class AntigravityRunner extends CliRunnerBase {
     let sessionId = '';
     let rawOutput = '';
     let errorDetail: string | undefined;
+    let sawErrorResult = false;
     let lastToolError: string | undefined;
     let sawResult = false;
     let emptySuccess = false;
@@ -574,6 +590,15 @@ export class AntigravityRunner extends CliRunnerBase {
     let sawNativeEvent = false;
     let backendReady = false;
     const emittedToolSteps = new Set<string>();
+    let cachedStderr = '';
+    let cachedStderrError: AntigravityStderrError | undefined;
+    const getStderrError = (stderr: string): AntigravityStderrError | undefined => {
+      if (stderr !== cachedStderr) {
+        cachedStderr = stderr;
+        cachedStderrError = parseAntigravityStderrError(stderr);
+      }
+      return cachedStderrError;
+    };
 
     return {
       handleRawLine: (line, phase) => {
@@ -642,7 +667,9 @@ export class AntigravityRunner extends CliRunnerBase {
           sessionId = result.conversation_id ?? sessionId;
 
           if (result.status === 'ERROR') {
-            errorDetail = this.extractErrorMessage(result) ?? 'Antigravity CLI returned ERROR';
+            sawErrorResult = true;
+            errorDetail = this.extractErrorMessage(result);
+            if (!errorDetail) return undefined;
             // Wait for Agy to close before starting the recovery process for this known error.
             // Starting it directly from the data event would overlap two managed processes for
             // the same channel and could corrupt cancellation/timeout ownership.
@@ -679,9 +706,13 @@ export class AntigravityRunner extends CliRunnerBase {
         return undefined;
       },
       finalize: (stderr = '') => {
+        const stderrError = getStderrError(stderr);
         if (!sawNativeEvent) {
-          this.streamOutputCapability = 'legacy';
           const result = rawOutput.trim();
+          if (stderrError) {
+            throw this.attachDiagnostic(new Error(stderrError.short_error), stderrError);
+          }
+          this.streamOutputCapability = 'legacy';
           if (!result) {
             throw new Error('Antigravity CLI returned no output');
           }
@@ -689,17 +720,31 @@ export class AntigravityRunner extends CliRunnerBase {
           return { result, sessionId };
         }
         if (!sawResult) {
+          if (stderrError) {
+            throw this.attachDiagnostic(new Error(stderrError.short_error), stderrError);
+          }
           throw new Error('Antigravity CLI stream ended without a result event');
         }
-        if (errorDetail) {
-          throw new AntigravityConversationError(errorDetail, sessionId);
+        if (errorDetail || sawErrorResult) {
+          const conversationError = new AntigravityConversationError(
+            errorDetail ?? stderrError?.short_error ?? 'Antigravity CLI returned ERROR',
+            sessionId
+          );
+          throw stderrError
+            ? this.attachDiagnostic(conversationError, stderrError)
+            : conversationError;
         }
         const denialNotice = this.withDeniedActions({ denied_actions: deniedActions });
         if (!hasPartialOutputTimeout(stderr) && !denialNotice && (emptySuccess || !fullText)) {
-          throw new AntigravityConversationError(
-            lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response',
+          const conversationError = new AntigravityConversationError(
+            lastToolError ??
+              stderrError?.short_error ??
+              'Antigravity CLI returned SUCCESS JSON without a response',
             sessionId
           );
+          throw stderrError
+            ? this.attachDiagnostic(conversationError, stderrError)
+            : conversationError;
         }
         const result = withPrintTimeoutNotice(
           this.withDeniedActions({ response: fullText, denied_actions: deniedActions }),
@@ -715,11 +760,23 @@ export class AntigravityRunner extends CliRunnerBase {
           ...(effort ? { effort } : {}),
         };
       },
-      exitErrorDetail: () => errorDetail ?? (emptySuccess ? lastToolError : undefined),
-      wrapExitError: (error) =>
-        sessionId && isAntigravityWorkspaceArtifactPathError(error)
-          ? new AntigravityConversationError(error.message, sessionId, { cause: error })
-          : error,
+      exitErrorDetail: (stderr = '') => {
+        const stderrError = getStderrError(stderr);
+        return (
+          errorDetail ??
+          (emptySuccess ? lastToolError : undefined) ??
+          stderrError?.short_error ??
+          (sawErrorResult ? 'Antigravity CLI returned ERROR' : undefined)
+        );
+      },
+      wrapExitError: (error, stderr = '') => {
+        const wrapped =
+          sessionId && isAntigravityWorkspaceArtifactPathError(error)
+            ? new AntigravityConversationError(error.message, sessionId, { cause: error })
+            : error;
+        const stderrError = getStderrError(stderr);
+        return stderrError ? this.attachDiagnostic(wrapped, stderrError) : wrapped;
+      },
     };
   }
 
@@ -746,10 +803,14 @@ export class AntigravityRunner extends CliRunnerBase {
     priorSessionId?: string
   ): RunResult {
     const response = this.parseResponse(stdout);
+    const stderrError = parseAntigravityStderrError(stderr);
     const wasConfirmedJson = this.outputCapability === 'json';
 
     if (requestedJson) {
       if (!response) {
+        if (stderrError) {
+          throw this.attachDiagnostic(new Error(stderrError.short_error), stderrError);
+        }
         if (wasConfirmedJson || this.looksLikeNativeJsonEnvelope(stdout)) {
           throw new Error('Antigravity CLI returned malformed JSON output');
         }
@@ -768,7 +829,12 @@ export class AntigravityRunner extends CliRunnerBase {
       if (response.status === 'SUCCESS') {
         const result = withPrintTimeoutNotice(this.withDeniedActions(response), stderr);
         if (!result) {
-          throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
+          const emptySuccessError = new Error(
+            stderrError?.short_error ?? 'Antigravity CLI returned SUCCESS JSON without a response'
+          );
+          throw stderrError
+            ? this.attachDiagnostic(emptySuccessError, stderrError)
+            : emptySuccessError;
         }
         const models = new ProviderModels();
         models.add(response.model);
@@ -782,10 +848,15 @@ export class AntigravityRunner extends CliRunnerBase {
         };
       }
       if (response.status === 'ERROR') {
-        throw new AntigravityConversationError(
-          this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR',
+        const conversationError = new AntigravityConversationError(
+          this.extractErrorMessage(response) ??
+            stderrError?.short_error ??
+            'Antigravity CLI returned ERROR',
           response.conversation_id ?? priorSessionId
         );
+        throw stderrError
+          ? this.attachDiagnostic(conversationError, stderrError)
+          : conversationError;
       }
       throw new Error(
         `Antigravity CLI returned unknown JSON status${response.status ? `: ${response.status}` : ''}`
@@ -822,12 +893,21 @@ export class AntigravityRunner extends CliRunnerBase {
     conversationsBefore: ConversationSnapshot,
     priorSessionId?: string
   ): RunResult {
+    const stderrError = parseAntigravityStderrError(stderr);
     if (response && (response.is_error || response.error)) {
-      throw new Error(this.extractErrorMessage(response) ?? 'Antigravity CLI returned error');
+      const legacyError = new Error(
+        this.extractErrorMessage(response) ??
+          stderrError?.short_error ??
+          'Antigravity CLI returned error'
+      );
+      throw stderrError ? this.attachDiagnostic(legacyError, stderrError) : legacyError;
     }
 
     const result = this.extractText(response) || stdout.trim();
     if (!result) {
+      if (stderrError) {
+        throw this.attachDiagnostic(new Error(stderrError.short_error), stderrError);
+      }
       const detail = stderr.trim();
       throw new Error(
         detail
@@ -859,10 +939,29 @@ export class AntigravityRunner extends CliRunnerBase {
     }
   }
 
-  private extractExitErrorDetail(output: string): string | undefined {
+  private extractExitErrorDetail(
+    output: string,
+    stderrError?: AntigravityStderrError
+  ): string | undefined {
     const response = this.parseResponse(output);
-    if (response?.status !== 'ERROR') return undefined;
-    return this.extractErrorMessage(response) ?? 'Antigravity CLI returned ERROR';
+    if (response?.status === 'ERROR') {
+      return (
+        this.extractErrorMessage(response) ??
+        stderrError?.short_error ??
+        'Antigravity CLI returned ERROR'
+      );
+    }
+    return stderrError?.short_error;
+  }
+
+  private attachDiagnostic<T extends Error>(error: T, diagnostic: AntigravityStderrError): T {
+    const outputError = error as AntigravityOutputError;
+    outputError.providerDiagnostic = { antigravity: diagnostic };
+    if (!this.reportedDiagnostics.has(diagnostic)) {
+      this.reportedDiagnostics.add(diagnostic);
+      console.error(`[antigravity] AGY_ERROR: ${formatErrorDiagnostic(outputError)}`);
+    }
+    return error;
   }
 
   private isUnsupportedOutputFormat(error: unknown): boolean {
