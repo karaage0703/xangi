@@ -736,10 +736,15 @@ export class AntigravityRunner extends CliRunnerBase {
         }
         const denialNotice = this.withDeniedActions({ denied_actions: deniedActions });
         if (!hasPartialOutputTimeout(stderr) && !denialNotice && (emptySuccess || !fullText)) {
-          throw new AntigravityConversationError(
-            lastToolError ?? 'Antigravity CLI returned SUCCESS JSON without a response',
+          const conversationError = new AntigravityConversationError(
+            lastToolError ??
+              stderrError?.short_error ??
+              'Antigravity CLI returned SUCCESS JSON without a response',
             sessionId
           );
+          throw stderrError
+            ? this.attachDiagnostic(conversationError, stderrError)
+            : conversationError;
         }
         const result = withPrintTimeoutNotice(
           this.withDeniedActions({ response: fullText, denied_actions: deniedActions }),
@@ -759,9 +764,9 @@ export class AntigravityRunner extends CliRunnerBase {
         const stderrError = getStderrError(stderr);
         return (
           errorDetail ??
+          (emptySuccess ? lastToolError : undefined) ??
           stderrError?.short_error ??
-          (sawErrorResult ? 'Antigravity CLI returned ERROR' : undefined) ??
-          (emptySuccess ? lastToolError : undefined)
+          (sawErrorResult ? 'Antigravity CLI returned ERROR' : undefined)
         );
       },
       wrapExitError: (error, stderr = '') => {
@@ -824,7 +829,12 @@ export class AntigravityRunner extends CliRunnerBase {
       if (response.status === 'SUCCESS') {
         const result = withPrintTimeoutNotice(this.withDeniedActions(response), stderr);
         if (!result) {
-          throw new Error('Antigravity CLI returned SUCCESS JSON without a response');
+          const emptySuccessError = new Error(
+            stderrError?.short_error ?? 'Antigravity CLI returned SUCCESS JSON without a response'
+          );
+          throw stderrError
+            ? this.attachDiagnostic(emptySuccessError, stderrError)
+            : emptySuccessError;
         }
         const models = new ProviderModels();
         models.add(response.model);

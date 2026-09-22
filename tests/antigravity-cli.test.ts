@@ -740,6 +740,66 @@ describe('AntigravityRunner', () => {
     await expect(promise).rejects.toThrow('Antigravity CLI exited with code 3: stdout auth detail');
   });
 
+  it('keeps a streamed stdout tool error ahead of structured stderr on a non-zero exit', async () => {
+    const runner = new AntigravityRunner({});
+    const promise = runner.runStream('hello', {});
+    const mockProcess = await waitForProcess();
+    const events = [
+      {
+        event: 'step_update',
+        step_update: {
+          conversation_id: 'conv-tool',
+          step_index: 2,
+          state: 'ERROR',
+          step_type: 'tool',
+          tool_name: 'write_to_file',
+          tool_info: { error: { message: 'useful stdout tool error' } },
+        },
+      },
+      {
+        event: 'result',
+        result: { conversation_id: 'conv-tool', status: 'SUCCESS', response: '' },
+      },
+    ];
+
+    mockProcess.stdout.emit(
+      'data',
+      Buffer.from(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`)
+    );
+    mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+    mockProcess.emit('close', 3);
+
+    const error = (await promise.catch((caught) => caught)) as Error & {
+      providerDiagnostic?: { antigravity?: typeof agyError };
+    };
+    expect(error.message).toBe('Antigravity CLI exited with code 3: useful stdout tool error');
+    expect(error.providerDiagnostic?.antigravity).toEqual(agyError);
+  });
+
+  it.each(['run', 'stream'])(
+    'uses structured stderr when SUCCESS has no response in %s',
+    async (mode) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', {});
+      const mockProcess = await waitForProcess();
+      const result = { status: 'SUCCESS', response: '', conversation_id: 'conv-empty' };
+
+      mockProcess.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+      );
+      mockProcess.stderr.emit('data', Buffer.from(agyErrorLine()));
+      mockProcess.emit('close', 0);
+
+      const error = (await promise.catch((caught) => caught)) as Error & {
+        providerDiagnostic?: { antigravity?: typeof agyError };
+      };
+      expect(error.message).toContain(agyError.short_error);
+      expect(error.message).not.toContain('SUCCESS JSON without a response');
+      expect(error.providerDiagnostic?.antigravity).toEqual(agyError);
+    }
+  );
+
   it('rejects a useful streamed stdout error immediately and calls onError once', async () => {
     const { spawn } = await import('child_process');
     const runner = new AntigravityRunner({});
