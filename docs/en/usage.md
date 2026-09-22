@@ -7,6 +7,7 @@ Detailed usage guide for xangi.
 ## Table of Contents
 
 - [Basic Usage](#basic-usage)
+- [Platform-specific message handling](#platform-specific-message-handling)
 - [Channel Topic Injection](#channel-topic-injection)
 - [Timestamp Injection](#timestamp-injection)
 - [Session Management](#session-management)
@@ -40,6 +41,18 @@ Detailed usage guide for xangi.
 ### Dedicated Channels
 
 Channels enabled with `/autoreply` will respond without requiring a mention. The setting is persisted in `settings.json`.
+
+## Platform-specific message handling
+
+### Images sent together on LINE
+
+When multiple images are sent together on LINE, each image arrives as a separate webhook event. xangi collects events with the same `imageSet.id`, processes them as one turn after all `total` images arrive, and sends one reply.
+
+- Images are fetched on arrival and passed to the LLM in `index` order
+- If the set remains incomplete for `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45 seconds) after the latest arrival, xangi sends one waiting notice
+- If another message arrives before completion, the fetched images join that turn
+- If an interrupted upload is resent, LINE may treat the remaining images as a separate send that cannot rejoin the original set
+- Idle reset and reset commands such as `/new` discard incomplete sets and fetched files
 
 ## Channel Topic Injection
 
