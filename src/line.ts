@@ -83,6 +83,8 @@ const IMAGE_SET_WAIT_NOTICE_TEXT = '[画像セットを待機中]';
 
 /** 控えに積んだ 1 枚分 */
 interface PendingImage {
+  /** webhook の message ID。再配信されたイベントの重複排除に使う */
+  messageId: string;
   /** 1 始まり。省略されうるので到着順の保険を持つ */
   index?: number;
   /** 到着順。index が無いときの並べ替えに使う */
@@ -90,6 +92,11 @@ interface PendingImage {
   replyToken: string;
   /** 取得できた添付のパス。失敗したら null */
   path: string | null;
+  /** 取得処理が終わったか */
+  completed: boolean;
+  /** 取得完了を待つ。次の発言が取得中に来た場合の合流に使う */
+  ready: Promise<void>;
+  resolveReady: () => void;
 }
 
 interface PendingImageSet {
@@ -98,6 +105,9 @@ interface PendingImageSet {
   /** 宣言された枚数。欠けていたら undefined（この場合セットは揃わない） */
   total?: number;
   images: PendingImage[];
+  /** 最後にイベントを受け取った時刻。idle reset で古い控えだけを捨てる */
+  lastArrivalAt: number;
+  state: 'buffered' | 'claimed' | 'discarded' | 'completed';
   /** 最後の到着から張り直すタイマー。待機通知と「考え中」を兼ねる */
   notice: NoticeTimer;
 }
@@ -141,39 +151,90 @@ export class LineImageSetBuffer {
     return created;
   }
 
-  /** 控えへ 1 枚積む。揃っていれば images を返し、控えから外す */
-  add(setId: string, image: PendingImage): PendingImage[] | null {
-    const set = this.sets.get(setId);
-    if (!set) {
-      // リセットや idle reset で控えが捨てられたあとに取得が終わった分。
-      // **ここで消す。** どのターンにも渡らないまま残るファイルになる。
-      removeBufferedFile(image.path);
+  /** download 前に 1 枚分の場所を予約する。重複イベントなら null */
+  reserve(set: PendingImageSet, messageId: string, index: number | undefined): PendingImage | null {
+    if (set.images.some((image) => image.messageId === messageId)) return null;
+    if (index !== undefined && set.images.some((image) => image.index === index)) return null;
+    let resolveReady = () => {};
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const image: PendingImage = {
+      messageId,
+      index,
+      arrivedSeq: this.nextSeq(),
+      replyToken: '',
+      path: null,
+      completed: false,
+      ready,
+      resolveReady,
+    };
+    set.images.push(image);
+    set.lastArrivalAt = Date.now();
+    return image;
+  }
+
+  /** 予約済み画像の取得を完了し、セットが揃っていれば控えから外す */
+  complete(
+    setId: string,
+    set: PendingImageSet,
+    image: PendingImage,
+    path: string | null
+  ): PendingImage[] | null {
+    image.path = path;
+    image.completed = true;
+    image.resolveReady();
+
+    if (set.state === 'discarded') {
+      removeBufferedFile(path);
       return null;
     }
-    set.images.push(image);
-    if (set.total !== undefined && set.images.length >= set.total) {
+    if (set.state !== 'buffered' || this.sets.get(setId) !== set) return null;
+    if (
+      set.total !== undefined &&
+      set.images.length >= set.total &&
+      set.images.every((entry) => entry.completed)
+    ) {
       this.sets.delete(setId);
+      set.state = 'completed';
       return sortPendingImages(set.images);
     }
     return null;
   }
 
   /** contextKey に紐づく控えを取り出して空にする（次の発言へ合流させる用） */
-  takeFor(contextKey: string): PendingImage[] {
+  async takeFor(contextKey: string): Promise<PendingImage[]> {
     const taken: PendingImage[] = [];
     for (const [id, set] of this.sets.entries()) {
       if (set.contextKey !== contextKey) continue;
       clearNoticeTimer(set.notice);
+      set.state = 'claimed';
       taken.push(...set.images);
       this.sets.delete(id);
     }
+    await Promise.all(taken.map((image) => image.ready));
     return sortPendingImages(taken);
   }
 
   /** contextKey に紐づく控えを捨てる。取得済みのファイルも消す */
   dropFor(contextKey: string): void {
-    for (const image of this.takeFor(contextKey)) {
-      removeBufferedFile(image.path);
+    for (const [id, set] of this.sets.entries()) {
+      if (set.contextKey !== contextKey) continue;
+      clearNoticeTimer(set.notice);
+      set.state = 'discarded';
+      for (const image of set.images) removeBufferedFile(image.path);
+      this.sets.delete(id);
+    }
+  }
+
+  /** idle 境界より前から止まっている控えだけを捨てる。境界後に届いた新着は残す */
+  dropIdleFor(contextKey: string, cutoffMs: number): void {
+    for (const [id, set] of this.sets.entries()) {
+      if (set.contextKey !== contextKey || set.lastArrivalAt > cutoffMs) continue;
+      clearNoticeTimer(set.notice);
+      set.state = 'discarded';
+      for (const image of set.images) removeBufferedFile(image.path);
+      this.sets.delete(id);
     }
   }
 }
@@ -1003,6 +1064,8 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
         userId,
         total: message.type === 'image' ? message.imageSet?.total : undefined,
         images: [],
+        lastArrivalAt: Date.now(),
+        state: 'buffered',
         notice: { handle: null, fired: false, replyToken, phase: 'waiting' },
       }))
     : undefined;
@@ -1020,14 +1083,16 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // 届いてから N 枚分のダウンロードが走り、replyToken の 60 秒を使い切る。
   let bundled: PendingImage[] | null = null;
   if (setId) {
-    const arrivedSeq = ctx.imageSets.nextSeq();
+    const imageSetIndex = message.type === 'image' ? message.imageSet?.index : undefined;
+    const reserved = ctx.imageSets.reserve(
+      pendingSet!,
+      messageId ?? `${rawSetId}:${imageSetIndex ?? 'unknown'}`,
+      imageSetIndex
+    );
+    if (!reserved) return;
+    reserved.replyToken = replyToken;
     const saved = messageId ? await fetchLineMedia(message, messageId, ctx) : null;
-    bundled = ctx.imageSets.add(setId, {
-      index: message.type === 'image' ? message.imageSet?.index : undefined,
-      arrivedSeq,
-      replyToken,
-      path: saved,
-    });
+    bundled = ctx.imageSets.complete(setId, pendingSet!, reserved, saved);
     if (!bundled) {
       // まだ揃っていない。本回答はせず、待機の通知だけがタイマーから出る。
       return;
@@ -1064,7 +1129,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
           archiveSession(activeId);
           // 会話の区切りに合わせて控えも捨てる。3 日前の画像が今日の発言へ
           // 合流すると意味が通らなくなる。
-          ctx.imageSets.dropFor(contextKey);
+          ctx.imageSets.dropIdleFor(contextKey, Date.now() - ctx.idleResetMs);
           console.log(
             `[xangi-line] idle reset for user ${userId.slice(0, 8)}…, last=${entry.updatedAt}, archived ${activeId}`
           );
@@ -1089,7 +1154,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       // 揃わないまま残っている控えがあれば、このターンへ合流させる。
       // ターンを走らせずにセッションへ文脈を足す口が無いため、次の発言に便乗させる。
       // 取得に失敗した控えは渡すものが無いので数えない。
-      const carried = ctx.imageSets.takeFor(contextKey);
+      const carried = await ctx.imageSets.takeFor(contextKey);
       for (const image of carried) {
         if (image.path) attachmentPaths.push(image.path);
       }
@@ -1164,7 +1229,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
         });
       } else {
         await ctx.client.replyMessage({
-          replyToken,
+          replyToken: notice.replyToken,
           messages: [{ type: 'text', text: replyText }],
         });
       }

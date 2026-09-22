@@ -269,6 +269,68 @@ describe('LINE の同時送信画像の束ね', () => {
     expect(prompt.match(/line_m[12]\./g)).toHaveLength(2);
   });
 
+  it('取得中のセットも次の発言へ合流する', async () => {
+    const h = createHarness();
+    downloadDelayMs = 60;
+    const inFlight = handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 3 }), h.ctx);
+    downloadDelayMs = 0;
+    await handleLineEvent(textEvent('これ何？', 'm9'), h.ctx);
+    await inFlight;
+    await tick();
+
+    expect(h.runStream).toHaveBeenCalledTimes(1);
+    const prompt = h.runStream.mock.calls[0][0] as string;
+    expect(prompt).toContain('これ何？');
+    expect(prompt).toContain('line_m1.');
+  });
+
+  it('同じ画像イベントの再配信を重複計上しない', async () => {
+    const h = createHarness();
+    await handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 2 }), h.ctx);
+    await handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 2 }), h.ctx);
+    await tick();
+    expect(h.runStream).toHaveBeenCalledTimes(0);
+
+    await handleLineEvent(imageEvent('m2', { id: SET, index: 2, total: 2 }), h.ctx);
+    await tick();
+    expect(h.runStream).toHaveBeenCalledTimes(1);
+    const prompt = h.runStream.mock.calls[0][0] as string;
+    expect(prompt.match(/line_m[12]\./g)).toEqual(['line_m1.', 'line_m2.']);
+    expect(downloads).toHaveLength(2);
+  });
+
+  it('取得完了順に関係なく最後に到着したreplyTokenを使う', async () => {
+    const h = createHarness();
+    downloadDelayMs = 60;
+    const first = handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 2 }), h.ctx);
+    downloadDelayMs = 0;
+    const second = handleLineEvent(imageEvent('m2', { id: SET, index: 2, total: 2 }), h.ctx);
+    await Promise.all([first, second]);
+    await tick();
+
+    expect(h.replies).toHaveLength(1);
+    expect(h.replies[0].token).toBe('rt_m2');
+  });
+
+  it('reset後に同じset IDが再利用されても古い取得を混ぜない', async () => {
+    const h = createHarness();
+    downloadDelayMs = 60;
+    const oldDownload = handleLineEvent(imageEvent('old', { id: SET, index: 1, total: 2 }), h.ctx);
+    downloadDelayMs = 0;
+    await handleLineEvent(textEvent('/new', 'reset'), h.ctx);
+    await handleLineEvent(imageEvent('new', { id: SET, index: 1, total: 1 }), h.ctx);
+    await oldDownload;
+    await tick();
+
+    expect(h.runStream).toHaveBeenCalledTimes(1);
+    const prompt = h.runStream.mock.calls[0][0] as string;
+    expect(prompt).toContain('line_new.');
+    expect(prompt).not.toContain('line_old.');
+    expect(downloads.filter((path) => path.includes('line_old') && existsSync(path))).toHaveLength(
+      0
+    );
+  });
+
   it('揃わないセットは次の画像へ合流する', async () => {
     const h = createHarness();
     await handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 3 }), h.ctx);
@@ -292,6 +354,20 @@ describe('LINE の同時送信画像の束ね', () => {
     const prompt = h.runStream.mock.calls[0][0] as string;
     expect(prompt).not.toContain('line_m1');
     expect(downloads.filter((path) => existsSync(path))).toHaveLength(0);
+  });
+
+  it('idle境界後に届いた新しい控えは次の発言へ合流する', async () => {
+    const h = createHarness({ idleResetHours: 0.00001 });
+    await handleLineEvent(textEvent('前の会話', 'old'), h.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await handleLineEvent(imageEvent('m1', { id: SET, index: 1, total: 3 }), h.ctx);
+    await handleLineEvent(textEvent('これ何？', 'm9'), h.ctx);
+    await tick();
+
+    expect(h.runStream).toHaveBeenCalledTimes(2);
+    const prompt = h.runStream.mock.calls[1][0] as string;
+    expect(prompt).toContain('これ何？');
+    expect(prompt).toContain('line_m1.');
   });
 
   it('resetコマンドで控えを捨てる', async () => {
