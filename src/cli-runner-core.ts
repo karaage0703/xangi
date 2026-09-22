@@ -43,9 +43,9 @@ export interface CliStreamParser {
   /** 正常終了時の結果を返す。stderrはプロセス終了までの全文（利用は任意）。 */
   finalize(stderr?: string): Pick<RunResult, 'result' | 'sessionId' | 'usage'>;
   /** exit code != 0 のとき、エラーメッセージに添える詳細（CLI の error イベント本文など） */
-  exitErrorDetail?(): string | undefined;
+  exitErrorDetail?(stderr?: string): string | undefined;
   /** exit code != 0 のエラーへ、ランナー固有の状態を引き継ぐ */
-  wrapExitError?(error: Error): Error;
+  wrapExitError?(error: Error, stderr?: string): Error;
 }
 
 export interface ExecuteStreamOptions {
@@ -520,8 +520,8 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         if (fatalError) return; // 既に reject 済み
 
         if (code !== 0) {
-          const exitError = this.buildExitError(code, parser.exitErrorDetail?.(), stderr);
-          const error = parser.wrapExitError?.(exitError) ?? exitError;
+          const exitError = this.buildExitError(code, parser.exitErrorDetail?.(stderr), stderr);
+          const error = parser.wrapExitError?.(exitError, stderr) ?? exitError;
           notifyError(error);
           reject(error);
           return;

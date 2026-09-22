@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   classifyAgentError,
+  formatErrorDiagnostic,
   formatAgentErrorForUser,
   shouldSendErrorFollowUp,
 } from '../src/errors.js';
@@ -62,6 +63,27 @@ describe('formatAgentErrorForUser', () => {
     );
     expect(msg).toContain('Agy');
     expect(msg).toContain('自動回復');
+  });
+});
+
+describe('formatErrorDiagnostic', () => {
+  it('Antigravity provider diagnosticsをログ向けに整形する', () => {
+    const error = Object.assign(new Error('quota exceeded'), {
+      providerDiagnostic: {
+        antigravity: {
+          short_error: 'quota exceeded',
+          status: 'RESOURCE_EXHAUSTED',
+          code_kind: 'http',
+          error_code: 429,
+          retryable: true,
+          error_id: 'agy-error-1',
+        },
+      },
+    });
+
+    expect(formatErrorDiagnostic(error)).toContain(
+      'providerDiagnostic.antigravity(status=RESOURCE_EXHAUSTED, code_kind=http, error_code=429, retryable=true, error_id=agy-error-1)'
+    );
   });
 });
 
