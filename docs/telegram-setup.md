@@ -121,6 +121,9 @@ TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
 # Optional: 応答表示
 TELEGRAM_STREAMING=true
 TELEGRAM_SHOW_THINKING=true
+TELEGRAM_ACK_REACTION=👀                    # 空文字で無効。グループの受付通知
+# TELEGRAM_DONE_REACTION=🎉                 # 許可された絵文字のみ。未設定なら完了後も受付表示
+TELEGRAM_EPHEMERAL_CONTROL_REPLIES=true     # グループの制御コマンドを本人限定で表示
 
 # Optional: Session 境界
 TELEGRAM_IDLE_RESET_ENABLED=true

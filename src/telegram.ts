@@ -8,6 +8,11 @@ import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { listenHttpServer } from './http-server-startup.js';
 import { StreamSession, type StreamView } from './stream-session.js';
 import {
+  createTelegramReactionTracker,
+  parseTelegramReaction,
+  sendTelegramControlReply,
+} from './telegram-feedback.js';
+import {
   ensureSession,
   archiveSession,
   getActiveSessionId,
@@ -919,6 +924,20 @@ export async function startTelegramBot(opts: {
 }): Promise<void> {
   const { config, agentRunner, resolver, scheduler } = opts;
   const tcfg = config.telegram;
+  const ackReaction = parseTelegramReaction(tcfg.ackReaction, '👀', (message) =>
+    console.warn(`[xangi-telegram] ${message}`)
+  );
+  const doneReaction = parseTelegramReaction(tcfg.doneReaction, '', (message) =>
+    console.warn(`[xangi-telegram] ${message}`)
+  );
+  const reactionWarningChats = new Set<number>();
+  const warnReactionFailure = (chatId: number, error: unknown) => {
+    if (reactionWarningChats.has(chatId)) return;
+    reactionWarningChats.add(chatId);
+    console.warn(
+      `[xangi-telegram] Reaction unavailable in ${chatId}: ${formatTelegramError(error)}`
+    );
+  };
 
   if (!tcfg.enabled || !tcfg.botToken) {
     return;
@@ -1176,14 +1195,30 @@ export async function startTelegramBot(opts: {
       const activeId = getActiveSessionId(contextKey);
       resetTelegramSession(contextKey, activeId, agentRunner);
       ensureSession(contextKey, { platform: 'telegram' });
-      await ctx.reply('新しく会話を始めます。').catch((error) => {
+      await sendTelegramControlReply(
+        ctx.api,
+        ctx.chat!.id,
+        ctx.from!.id,
+        ctx.chat!.type,
+        ctx.message?.message_thread_id,
+        '新しく会話を始めます。',
+        tcfg.ephemeralControlReplies !== false
+      ).catch((error) => {
         console.warn(`[xangi-telegram] Failed to send reset reply: ${formatTelegramError(error)}`);
       });
       return;
     }
 
     stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
-    await ctx.reply('実行を停止しました。').catch((error) => {
+    await sendTelegramControlReply(
+      ctx.api,
+      ctx.chat!.id,
+      ctx.from!.id,
+      ctx.chat!.type,
+      ctx.message?.message_thread_id,
+      '実行を停止しました。',
+      tcfg.ephemeralControlReplies !== false
+    ).catch((error) => {
       console.warn(`[xangi-telegram] Failed to send stop reply: ${formatTelegramError(error)}`);
     });
   };
@@ -1199,6 +1234,7 @@ export async function startTelegramBot(opts: {
       receivedGeneration?: number;
       queuedGeneration?: number;
       skipAuthorization?: boolean;
+      reportOutcome?: (success: boolean) => void;
     } = {}
   ): Promise<void> => {
     const message = ctx.message;
@@ -1338,25 +1374,37 @@ export async function startTelegramBot(opts: {
 
     // ヘルプコマンド
     if (rawCmd === '/help') {
-      await ctx
-        .reply(
-          '【使い方】\n' +
-            '・話しかけるとAIエージェントが応答します。\n' +
-            (mediaEnabled ? '・画像や動画には、キャプションで指示を添えられます。\n' : '') +
-            '・/new, /reset, /clear : 新しい会話セッションを開始します。\n' +
-            '・/stop : 現在実行中のタスクを停止します。\n' +
-            '・/models [backend] : 利用可能なモデル一覧を表示します。\n' +
-            '・/help : この案内を表示します。'
-        )
-        .catch((err) => {
-          console.warn(`[xangi-telegram] Failed to send help reply: ${formatTelegramError(err)}`);
-        });
+      await sendTelegramControlReply(
+        ctx.api,
+        message.chat.id,
+        from.id,
+        chatType,
+        message.message_thread_id,
+        '【使い方】\n' +
+          '・話しかけるとAIエージェントが応答します。\n' +
+          (mediaEnabled ? '・画像や動画には、キャプションで指示を添えられます。\n' : '') +
+          '・/new, /reset, /clear : 新しい会話セッションを開始します。\n' +
+          '・/stop : 現在実行中のタスクを停止します。\n' +
+          '・/models [backend] : 利用可能なモデル一覧を表示します。\n' +
+          '・/help : この案内を表示します。',
+        tcfg.ephemeralControlReplies !== false
+      ).catch((err) => {
+        console.warn(`[xangi-telegram] Failed to send help reply: ${formatTelegramError(err)}`);
+      });
       return;
     }
 
     // 本文も対応媒体も空の場合は Runner を起動しない
     if (!cleanText && mediaCandidates.length === 0) {
-      await ctx.reply('何をお手伝いしましょうか？').catch((err) => {
+      await sendTelegramControlReply(
+        ctx.api,
+        message.chat.id,
+        from.id,
+        chatType,
+        message.message_thread_id,
+        '何をお手伝いしましょうか？',
+        tcfg.ephemeralControlReplies !== false
+      ).catch((err) => {
         console.warn(
           `[xangi-telegram] Failed to send empty-text reply: ${formatTelegramError(err)}`
         );
@@ -1366,13 +1414,32 @@ export async function startTelegramBot(opts: {
 
     if (!isQueued) {
       const receivedGeneration = options.receivedGeneration ?? getGeneration(contextKey);
-      enqueueForChat(contextKey, () =>
-        handleTelegramMessage(ctx, mediaCandidates, {
-          ...options,
-          queuedGeneration: receivedGeneration,
-          skipAuthorization: true,
-        })
-      ).catch((err) => {
+      const reaction =
+        isGroupChat && !isBot
+          ? createTelegramReactionTracker(
+              ctx.api,
+              message.chat.id,
+              message.message_id,
+              ackReaction,
+              doneReaction,
+              (error) => warnReactionFailure(message.chat.id, error)
+            )
+          : undefined;
+      enqueueForChat(contextKey, async () => {
+        let success = false;
+        try {
+          await handleTelegramMessage(ctx, mediaCandidates, {
+            ...options,
+            queuedGeneration: receivedGeneration,
+            skipAuthorization: true,
+            reportOutcome: (result) => {
+              success = result;
+            },
+          });
+        } finally {
+          await reaction?.finish(success);
+        }
+      }).catch((err) => {
         console.error(`[xangi-telegram] Unhandled queue error: ${formatTelegramError(err)}`);
       });
       return;
@@ -1709,6 +1776,9 @@ export async function startTelegramBot(opts: {
           );
         }
       }
+      options.reportOutcome?.(
+        !runError && !textDeliveryFailed && attachmentSendResult.failures.length === 0
+      );
     } finally {
       finishStreamSession();
       unregisterFinalizer();

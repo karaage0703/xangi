@@ -115,6 +115,9 @@ TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
 # Optional: response display
 TELEGRAM_STREAMING=true
 TELEGRAM_SHOW_THINKING=true
+TELEGRAM_ACK_REACTION=👀                    # Empty disables the group acknowledgement
+# TELEGRAM_DONE_REACTION=🎉                 # Optional completion reaction (allowed emoji only)
+TELEGRAM_EPHEMERAL_CONTROL_REPLIES=true     # Private control replies in groups
 
 # Optional: session boundaries
 TELEGRAM_IDLE_RESET_ENABLED=true

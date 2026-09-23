@@ -228,6 +228,9 @@ export interface Config {
     streaming?: boolean;
     showThinking?: boolean;
     allowedBotsMaxConsecutive?: number;
+    ackReaction?: string;
+    doneReaction?: string;
+    ephemeralControlReplies?: boolean;
     replyToMentionInGroup?: boolean;
     idleResetEnabled?: boolean;
     idleResetHours?: number;
@@ -511,6 +514,9 @@ export function loadConfig(): Config {
       streaming: process.env.TELEGRAM_STREAMING !== 'false',
       showThinking: process.env.TELEGRAM_SHOW_THINKING !== 'false',
       allowedBotsMaxConsecutive: v.int('TELEGRAM_ALLOWED_BOTS_MAX_CONSECUTIVE', 3),
+      ackReaction: process.env.TELEGRAM_ACK_REACTION ?? '👀',
+      doneReaction: process.env.TELEGRAM_DONE_REACTION ?? '',
+      ephemeralControlReplies: process.env.TELEGRAM_EPHEMERAL_CONTROL_REPLIES !== 'false',
       replyToMentionInGroup: process.env.TELEGRAM_REPLY_TO_MENTION_IN_GROUP !== 'false',
       idleResetEnabled: process.env.TELEGRAM_IDLE_RESET_ENABLED !== 'false',
       idleResetHours: v.float('TELEGRAM_IDLE_RESET_HOURS', 4, { min: 0 }),
