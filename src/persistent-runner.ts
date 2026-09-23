@@ -329,6 +329,8 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     result?: string;
     error?: string;
     is_error?: boolean;
+    /** そのターンでモデルを回した回数。0 はモデルを 1 度も呼んでいない */
+    num_turns?: number;
   }): void {
     if (this.currentItem) observeClaudeModel(this.observedModels, json);
     if (json.type === 'system' && json.session_id) {
@@ -359,6 +361,17 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
       // providerSessionIdをemit（sessions.tsへの後付け保存用）
       if (json.session_id) {
         this.emit('provider-session-id', json.session_id);
+      }
+
+      // モデルを 1 度も回していない result は、こちらが送ったリクエストの応答ではない。
+      // `--resume` で中断されたターンを閉じるとき、CLI がこの形の result を先に出す。
+      // 採用すると本文が空のまま確定し、あとから届く本文の渡し先が無くなる。
+      // **エラーも同じ形 (num_turns=0) で届くため、ここで除外しない。** 下の
+      // is_error 分岐へ通し、resume 失敗のリトライ経路を塞がないようにする。
+      // currentItem と fullText は保持したまま次の result を待つ。タイムアウトは
+      // 張ったままなので、本物の result が来なければ既存の経路で失敗する。
+      if (json.num_turns === 0 && !json.is_error) {
+        return;
       }
 
       // トランスクリプトログ: 最終結果を記録

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { PersistentRunner } from '../src/persistent-runner.js';
 
 // Child process をモック
@@ -357,7 +359,11 @@ describe('PersistentRunner', () => {
     const proc = getMockProcess();
     const emit = (event: unknown) => proc.stdout.emit('data', JSON.stringify(event) + '\n');
     emit({ type: 'assistant', message: { model: 'main-a', content: [] } });
-    emit({ type: 'assistant', parent_tool_use_id: 'child', message: { model: 'child', content: [] } });
+    emit({
+      type: 'assistant',
+      parent_tool_use_id: 'child',
+      message: { model: 'child', content: [] },
+    });
     emit({ type: 'result', result: 'ok', session_id: 'test-session-123' });
     expect((await first).models).toEqual(['main-a']);
     expect(onModel.mock.calls.flat()).toEqual(['main-a']);
@@ -708,6 +714,78 @@ describe('PersistentRunner', () => {
     expect(payload.timeoutAt).toBeGreaterThan(Date.now());
     expect(payload.timeoutMs).toBe(35 * 60_000);
     expect(payload.remainingMs).toBeGreaterThan(0);
+  });
+
+  it('test_中断タスクをresumeした時にClaude Codeが出力する無関係な返答は無視してリクエストに対する答えを拾う', async () => {
+    const { getMockProcess } = await import('child_process');
+    const onComplete = vi.fn();
+
+    const runPromise = runner.runStream('質問', { onComplete });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 中断タスクを残したセッションを --resume したときに Claude Code が実際に出した出力。
+    // 中断レジューム時に挟まる出力 → 質問に対する回答、の順で並んでいる。
+    const recorded = readFileSync(
+      join(__dirname, 'fixtures/claude-resume-with-stopped-task.jsonl'),
+      'utf-8'
+    )
+      .trim()
+      .split('\n');
+
+    const mockProcess = getMockProcess();
+    for (const line of recorded) {
+      mockProcess.stdout.emit('data', line + '\n');
+    }
+
+    const result = await runPromise;
+    expect(result.result).toBe('[Answer-from-LLM]');
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('test_モデルが本文を書かずにターンを終えてもリクエストは完了する', async () => {
+    const { getMockProcess } = await import('child_process');
+    const onComplete = vi.fn();
+
+    const runPromise = runner.runStream('質問', { onComplete });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const mockProcess = getMockProcess();
+    mockProcess.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'result',
+        num_turns: 1,
+        result: '',
+        session_id: 'test-session-123',
+        is_error: false,
+      }) + '\n'
+    );
+
+    await runPromise;
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('test_resumeに失敗したらエラーとして返る', async () => {
+    const { getMockProcess } = await import('child_process');
+
+    const runPromise = runner.run('質問');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 存在しないセッション ID で --resume したときに Claude Code が実際に出した形。
+    const mockProcess = getMockProcess();
+    mockProcess.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        num_turns: 0,
+        result: null,
+        session_id: 'test-session-123',
+      }) + '\n'
+    );
+
+    await expect(runPromise).rejects.toThrow('Claude Code returned error: error_during_execution');
   });
 });
 
