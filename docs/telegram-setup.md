@@ -166,9 +166,7 @@ BotFather から発行した Bot に DM を送って応答が返れば成功。
 
 起動ログの `Allowed group chats` に対象Chat IDが表示されることを確認する。メンションが無視された場合は、ログの `chat ... (allowed=...)` と `sender ... (allowed=...)` で `TELEGRAM_ALLOWED_CHATS` / `TELEGRAM_ALLOWED_USER` のどちらが不一致か確認できる。メンションなしで反応させる場合は、BotFatherのGroup PrivacyをOFFにし、対象Chat IDを `TELEGRAM_AUTO_REPLY_CHATS` に設定する。
 
-グループでは他Botの誤反応を避けるため、最初の「考え中...」と最終回答への編集だけを行い、途中経過は更新しない。また、自分以外のBot username（`bot` で終わるusername）へのメンションを含む投稿には反応しない。許可Botからの投稿も、グループ内ではxangi自身への明示メンションがある場合だけ処理し、返信やメンションなしの投稿には反応しない。ループ防止カウンターはグループChat IDと送信元Bot IDごとに5分間だけ保持し、人間が同じグループで発言すると処理対象外の発言でもリセットする。xangi自身の投函、スケジュール投稿、DMはこのカウンターに加算しない。
-
-Telegramのメンションentityを使って宛先usernameを完全一致で判定するため、似たusernameやコード例に含まれる文字列には反応しない。トピックが有効なスーパーグループとDMでは、会話履歴、処理キュー、`/new`、`/stop`を`message_thread_id`ごとに分離する。
+グループでの応答、トピック、コマンド、画像・動画など利用時の挙動は[使い方ガイド](usage.md#プラットフォーム別のメッセージ処理)を参照。
 
 ## 6. セキュリティ
 
@@ -188,31 +186,7 @@ TELEGRAM_ALLOWED_USER=123456789
 
 Bot Settings の Group Privacy・Allow Groups・Bot to Bot Communication の変更も不要。
 
-## 8. コマンド一覧
-
-| コマンド                 | 動作                                     |
-| ------------------------ | ---------------------------------------- |
-| `/new` `/reset` `/clear` | セッションをリセットして新しい会話を開始 |
-| `/stop`                  | 実行中のタスクを停止                     |
-| `/help`                  | 使い方の案内を表示                       |
-
-## 9. 画像・動画を使う
-
-`TELEGRAM_MEDIA_ENABLED=true` にすると、写真、動画、許可MIMEに一致するファイルをDMとグループで受信できる。キャプションは指示文として扱い、キャプションがない場合は添付の確認をAgentへ依頼する。同じTelegramアルバムの媒体は、既定750ms待って1回のAgent実行へまとめる。
-
-アルバムは最初の媒体を受信した時点でチャット内キューの順番を予約する。そのため、集約待ちの間に後続テキストが届いても受付順を追い越さない。
-
-受信ファイルは送信者・Chat allowlistとメンション条件を通過した後だけダウンロードし、`.xangi/media/attachments/telegram`へ保存する。既定の上限は20MBで、Telegram Bot APIの`getFile`上限に合わせて20MBを超える設定は受け付けない。保存ファイルは既定24時間で削除し、`TELEGRAM_MEDIA_RETENTION_HOURS=0`で自動削除を無効化できる。
-
-`TELEGRAM_MEDIA_ALLOWED_MIME`は、Telegramから通知された送信者申告のMIMEメタデータを検査する。JPEG、PNG、WebP、MP4、PDF、ZIPはダウンロード後にファイル先頭のシグネチャも照合し、一致しなければAgentへ渡さない。それ以外の独自MIMEは内容自体を保証しないため、信頼できるallowlist登録済み送信者からの利用を前提とする。
-
-Agentが画像、MP4動画、またはその他のファイルを生成して添付として返した場合、xangiはそれぞれTelegramの写真、動画、文書として送信する。送信タイムアウトはTelegram側で成功済みか判別できないため、失敗した添付は自動再送しない。複数添付では後続の未試行ファイルの送信を続け、確認できなかった件数を利用者へ通知する。最終テキストの編集・送信に失敗しても、まだ試していない生成添付は独立して1回だけ送信を試みる。
-
-媒体の取得中またはチャット内キューで待機中に`/stop`を送ると、その処理は無効化され、取得済みファイルを破棄してAgent実行を開始しない。会話セッション自体は維持される。
-
-動画は現時点ではファイルをそのままAgentへ渡す。キーフレーム抽出や音声文字起こしは行わないため、利用するAgentバックエンドが動画入力を扱える必要がある。
-
-## 10. Telegram API への接続がタイムアウトする場合
+## 8. Telegram API への接続がタイムアウトする場合
 
 `ETIMEDOUT` や `Network request for 'getMe' failed` が出る場合、まず Raspberry Pi で接続経路を確認する。
 
@@ -233,7 +207,7 @@ xangi は一時的な DNS・接続・Telegram API 障害をバックグラウン
 
 Telegram のエラーには Bot API の URL が含まれることがあるため、xangi はトークン部分をマスクしてログ出力する。過去のログへトークンが出た場合は BotFather の `/revoke` で失効・再発行する。
 
-## 11. `409 Conflict` が出る場合
+## 9. `409 Conflict` が出る場合
 
 同じ Bot トークンで複数の long polling プロセスが動いている。Telegram Bot API では、1つのトークンにつきlong pollingを実行できるのは1プロセスだけ。
 

@@ -81,65 +81,10 @@ Look for `[xangi-line] webhook listening on port 8765, path /webhook` in the sta
 
 Add the LINE official account as a friend via the QR code (under **Messaging API** tab), send a message, and xangi will reply.
 
+See the [Usage Guide](usage.md#platform-specific-message-handling) for runtime behavior such as images, response indicators, queued messages, and session boundaries.
+
 ## Security
 
 - LINE webhooks are signed with HMAC-SHA256 in the `X-Line-Signature` header; `@line/bot-sdk`'s `validateSignature` verifies it automatically — without the Channel secret, no valid signature can be forged.
 - Avoid `*` in `LINE_ALLOWED_USER` for 1:1 use cases; restrict to specific userIds.
 - Store the channel access token and secret through `xangi settings`; never paste them into Git or an AI conversation.
-
-## Responsiveness & context UX
-
-LINE has no Slack-style threads or Discord-style "new chat" buttons, and reply tokens expire in 60s. To avoid silent failures, xangi uses two layers of fallback:
-
-### 1. Instant ACK — Loading animation (default ON)
-
-Right after the webhook is received and before the runner starts, xangi calls LINE's official Loading animation API (`POST /v2/bot/chat/loading/start`) to display "typing…" in the chat. The animation disappears automatically when the bot sends its next message. DM-only (groups/rooms are ignored by LINE, but the API call still succeeds).
-
-- `LINE_LOADING_ANIMATION_ENABLED=false` disables it.
-- `LINE_LOADING_ANIMATION_SECONDS` (default `60`) — valid values are `5/10/15/20/25/30/40/50/60`; out-of-range values are snapped to the nearest valid value.
-
-### 2. Reply→Push fallback — Slow response (default ON)
-
-LINE reply tokens expire 60s after the inbound event. If a response is going to take longer, xangi:
-
-1. Sends `🤔 ちょっと待ってね、考えてる…` via the reply token at `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default `45000` = 45s), consuming the token.
-2. Sends the actual response via the Push API (`POST /v2/bot/message/push`) once the runner finishes.
-
-This keeps long-running conversations alive past 60s. `LINE_SLOW_RESPONSE_ENABLED=false` disables it (not recommended — responses over 60s would be lost).
-
-The Push API is free for the first 200 messages per month on personal Official Accounts; usage above the quota is billed. If you regularly trigger slow responses with a local LLM (Gemma, etc.), consider increasing the threshold or using a faster backend.
-
-## Concurrent messages (turn serialization)
-
-When another message arrives from the same user while a turn is running, it is queued and processed after the current turn finishes. Nothing is dropped. This matches Telegram (Discord and Slack reply "still processing" and drop the message instead).
-
-- Serialization is per `line:<userId>`. Other users are never blocked
-- `/reset`, `/new` and `/clear` bypass the queue and reply immediately. Queued turns are invalidated by the reset, so they never run against an archived session
-- Waiting adds to the elapsed time, so responses exceed `LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45s) more often and go out via the Push API, which consumes the free message quota
-- A turn that waited shows the loading indicator again when its own processing starts. The one shown on arrival is dismissed as soon as the previous turn replies
-
-## Session boundaries (when to clear context)
-
-LINE has no explicit conversation boundaries like Slack's threads or Discord's "new chat" button. If every message reuses the same session forever, the context window bloats and topics get tangled. xangi uses a two-layer approach to start fresh sessions:
-
-### 1. Idle session reset (default ON, 4h)
-
-When the next message arrives after `LINE_IDLE_RESET_HOURS` (default `4`) of inactivity, the active session is archived via `archiveSession()` and a new one is created. The conversation history in `logs/sessions/<sessionId>.jsonl` is preserved, so nothing is truly lost.
-
-- Kids' conversations naturally cluster around school / sleep / meal patterns at multi-hour intervals — 4 h is a good cut.
-- Decimal values supported (`LINE_IDLE_RESET_HOURS=0.5` for 30 minutes, handy for testing).
-- `LINE_IDLE_RESET_ENABLED=false` disables it entirely (single endless session).
-
-### 2. Reset-command detection (default ON, 3 slash commands)
-
-If a user sends text matching the reset patterns exactly, the runner is skipped, the active session is archived + replaced, and the bot immediately replies "最初からお話するね！何かあった？".
-
-- Default patterns: `/reset` `/new` `/clear` only (unambiguous slash format)
-- Idle reset (time-based) is the primary boundary; commands are a manual escape hatch, so the default set is intentionally minimal.
-- Case-insensitive, whitespace stripped, exact match only (substrings like "/reset please" do not fire).
-- Japanese natural-language phrases (`リセット`, `最初から`, `やり直し`, etc.) are excluded from defaults because the boundary against neighboring phrases ("リセットってどういう意味？", "最初からお話したい") is fuzzy. Add them explicitly via CSV if needed: `LINE_RESET_TEXT_PATTERNS=/reset,/new,/clear,リセット,最初から`
-- Empty string disables detection: `LINE_RESET_TEXT_PATTERNS=`
-
-### Rich Menu integration (recommended)
-
-LINE bots can pin a Rich Menu (image + bound buttons) to the chat. Bind buttons like "Reset" / "Help" / "Tell mom" to send text payloads (e.g. `リセット`, `ヘルプ`) and the reset-command detector picks them up naturally. Rich Menu setup is documented separately (TBD).

@@ -154,6 +154,14 @@ export class WorkspaceRegistry {
     return this.state.workspaces.map((workspace) => this.toEntry(workspace));
   }
 
+  browseRoots(): string[] {
+    return [...this.allowedRoots];
+  }
+
+  assertBrowsableDirectory(canonicalPath: string): void {
+    assertAllowedWorkspace(canonicalPath, this.allowedRoots, this.canonicalDataDir);
+  }
+
   /** Metadata lookup only. Use resolveById before using an entry path for I/O. */
   getById(id: string): WorkspaceEntry | undefined {
     const workspace = this.state.workspaces.find((candidate) => candidate.id === id);

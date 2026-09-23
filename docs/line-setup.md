@@ -90,62 +90,10 @@ npm start
 
 LINE 公式アカウントの QR コード (「Messaging API」タブの下のほう) で友だち追加して、メッセージを送る。xangi が応答すれば成功。
 
+画像、応答表示、連投、Session 境界など利用時の挙動は[使い方ガイド](usage.md#プラットフォーム別のメッセージ処理)を参照。
+
 ## セキュリティ
 
 - LINE Webhook は `X-Line-Signature` ヘッダの HMAC-SHA256 で署名検証される。`@line/bot-sdk` の `validateSignature` で自動検証 (Channel secret を知らないと正しい署名が作れない)
 - `LINE_ALLOWED_USER` で `*` 全許可は推奨しない。1:1 用途なら特定の userId のみ
 - Channel access token / secretは`xangi settings`で保存し、GitやAIとの会話へ貼り付けない
-
-## 応答性とコンテキスト UX
-
-LINE は Slack/Discord のような「スレッド」「新規会話ボタン」が無く、reply token も 60s で失効するため、Bot が無音になりやすい。xangi では 2 段の対策で「ちゃんと受け取って考えてる」体験を作る:
-
-### 1. 即時 ACK — Loading animation (default ON)
-
-webhook 受信直後に LINE 公式の Loading animation API (`POST /v2/bot/chat/loading/start`) を叩いてトーク画面に「入力中…」を表示する。Runner 起動より前にユーザに反応を返せる。`LINE_LOADING_ANIMATION_ENABLED=false` で無効化、`LINE_LOADING_ANIMATION_SECONDS` で表示秒数 (default 60、5 の倍数で 60 以下のみ valid、範囲外は最寄り値にスナップ)。Bot から新メッセージを送った時点で自動消滅。1:1 DM のみ機能 (グループ・ルームでは LINE 側で無視されるが API call 自体は成功する)。
-
-### 2. Reply→Push 自動切替 — Slow response fallback (default ON)
-
-LINE reply token は 60s で失効するため、応答に時間がかかると返信不能になる。`LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45000 = 45 秒) を超えた時点で:
-
-1. reply token を「🤔 ちょっと待ってね、考えてる…」テンプレに使って先に消費
-2. Runner の本回答が出たら Push API (`POST /v2/bot/message/push`) で後追い送信
-
-これで応答が 60s を超えても会話が切れない。`LINE_SLOW_RESPONSE_ENABLED=false` で無効化 (この場合 60s 超応答は完全に失われる、推奨しない)。
-
-Push API は LINE 公式アカウントの個人プランで月 200 通まで無料、超過後は従量課金。Local LLM (Gemma 等) の運用で頻繁に slow response 発火するなら、`LINE_SLOW_RESPONSE_THRESHOLD_MS` を緩めるか、より速い推論バックエンドを検討する。
-
-## 連投時の扱い (ターンの直列化)
-
-処理中に同じユーザーから次のメッセージが届いたら、キューに積んで前のターンの完了後に処理する。捨てない。Telegram と同じ方式 (Discord / Slack は「処理中です」と返して捨てる)。
-
-- 直列化の単位は `line:<userId>`。別のユーザーは待たされない
-- `/reset` `/new` `/clear` はキューを経由せず即座に応答する。待機中のターンはリセットで無効化され、archive 済み session に対して実行されることはない
-- 待った分だけ経過時間が延びるため、`LINE_SLOW_RESPONSE_THRESHOLD_MS` (default 45 秒) を超えて Push API での応答になる頻度が上がる。Push は無料通数を消費する
-- 待たされたターンは、自分の処理が始まる時点でローディング表示を出し直す。受信時に出した表示は、前のターンの返信が届いた時点で消えるため
-
-## Session 境界 (会話履歴のクリアタイミング)
-
-LINE には Slack の「スレッド」「New チャンネル」や Discord の「New ボタン」のような明示的な会話境界が無く、reply フローが永続的に 1 本の session に積み続けると context window が肥大化したり、トピックが混ざる。xangi は時間ベース + コマンドベースの 2 段で session を切る:
-
-### 1. Idle session reset (default ON、4h)
-
-直前の発話から `LINE_IDLE_RESET_HOURS` (default `4` 時間) 以上経過していたら、次のメッセージ到着時に既存 session を `archiveSession()` で archive し、新規 session を発番する。`logs/sessions/<sessionId>.jsonl` は残るため過去履歴は失われない。
-
-- 子どもの会話パターン (学校・就寝・食事クラスタ) は数時間単位で自然に分かれるので 4h で切るとちょうど良い境界になる
-- 小数指定可 (例: `LINE_IDLE_RESET_HOURS=0.5` で 30 分、テスト時に便利)
-- `LINE_IDLE_RESET_ENABLED=false` で完全に無効化 (永続 1 session のまま)
-
-### 2. Reset コマンド検出 (default ON、slash 3 つ)
-
-ユーザが reset patterns に完全一致するテキストを送ったら、Runner は起動せず session を archive + 新規発番し「最初からお話するね！何かあった？」と即返信する。
-
-- default パターン: `/reset` `/new` `/clear` の 3 つだけ (曖昧さの無い slash 形式のみ)
-- メイン境界は idle reset (時間ベース)。コマンドは「明示的にリセットしたい」用の保険なので default は最小限に絞る
-- 大文字小文字無視、前後空白を strip、完全一致のみ (「/reset please」のような部分一致は誤発火しない)
-- 日本語自然言語パターン (`リセット` `最初から` `やり直し` 等) は誤発火境界 (「リセットってどういう意味？」「最初からお話したい」等) との切り分けが難しいので default からは外している。必要なら CSV で明示追加可能: `LINE_RESET_TEXT_PATTERNS=/reset,/new,/clear,リセット,最初から`
-- 空 CSV で検出無効化: `LINE_RESET_TEXT_PATTERNS=`
-
-### Rich Menu との組み合わせ (推奨運用)
-
-LINE Bot は画面下部に常時表示できる Rich Menu (画像 + ボタン bind) を持てる。「最初から話す」「ヘルプ」「ママに伝える」等のボタンを bind して、押下時に対応するテキスト (例: 「リセット」「ヘルプ」) を Bot に送信するように設定すると、reset コマンド検出経路でそのまま処理される。Rich Menu 設定方法は別ドキュメント (TBD) 参照。
