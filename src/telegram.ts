@@ -17,6 +17,11 @@ import {
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { splitMessage } from './message-split.js';
+import {
+  formatTelegramChunk,
+  telegramTextChunks,
+  type TelegramTextChunk,
+} from './telegram-format.js';
 import { formatAgentErrorForUser, NonRetryableError } from './errors.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
@@ -169,6 +174,32 @@ export function isRetryableTelegramError(error: unknown): boolean {
   return /network request|fetch failed|socket hang up|timed?\s*out|temporar(?:y|ily)/i.test(
     formatTelegramError(error)
   );
+}
+
+export function isTelegramHtmlParseError(error: unknown): boolean {
+  const description = telegramErrorChain(error)
+    .map((record) => [record.message, record.description])
+    .flat()
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return (
+    telegramErrorStatus(error) === 400 &&
+    /can't parse entities|can't find end of (?:the )?entity|unsupported start tag/i.test(
+      description
+    )
+  );
+}
+
+export async function deliverTelegramFormattedChunk<T>(
+  chunk: TelegramTextChunk,
+  operation: (text: string, parseMode?: 'HTML') => Promise<T>
+): Promise<T> {
+  try {
+    return await operation(chunk.text, chunk.parseMode);
+  } catch (error) {
+    if (chunk.parseMode !== 'HTML' || !isTelegramHtmlParseError(error)) throw error;
+    return operation(chunk.plainText);
+  }
 }
 
 export function getTelegramRetryDelayMs(attempt: number, random = Math.random): number {
@@ -1080,23 +1111,33 @@ export async function startTelegramBot(opts: {
           Date.now() - startedAt,
           config.completion ?? DEFAULT_COMPLETION_DISPLAY
         );
-        const chunks = splitMessage(result, 4096);
+        const formattedChunks = telegramTextChunks(result, tcfg.format);
+        const chunks = formattedChunks.map((chunk) => chunk.text);
         const delivery = await deliverTelegramResult({
           chunks,
           attachmentPaths: filePaths,
-          sendTextChunk: async (chunk, index) => {
+          sendTextChunk: async (_chunk, index) => {
+            const formatted = formattedChunks[index];
             if (index === 0) {
-              const editResult = await retryTelegramEdit(() =>
-                bot.api.editMessageText(
-                  thinkingMessage.chat.id,
-                  thinkingMessage.message_id,
-                  chunk || '✅'
-                )
-              );
-              if (!editResult.ok) throw editResult.error;
+              await deliverTelegramFormattedChunk(formatted, async (text, parseMode) => {
+                const editResult = await retryTelegramEdit(() =>
+                  bot.api.editMessageText(
+                    thinkingMessage.chat.id,
+                    thinkingMessage.message_id,
+                    text || '✅',
+                    parseMode ? { parse_mode: parseMode } : undefined
+                  )
+                );
+                if (!editResult.ok) throw editResult.error;
+              });
               return;
             }
-            await bot.api.sendMessage(chatId, chunk, sendOptions);
+            await deliverTelegramFormattedChunk(formatted, (text, parseMode) =>
+              bot.api.sendMessage(chatId, text, {
+                ...sendOptions,
+                ...(parseMode ? { parse_mode: parseMode } : {}),
+              })
+            );
           },
           sendAttachments: () =>
             sendTelegramAttachments(bot.api, chatId, filePaths, messageThreadId),
@@ -1117,17 +1158,26 @@ export async function startTelegramBot(opts: {
             filePaths.length
           );
           if (!textDeliveryFailed) {
-            const noticeEdit = await retryTelegramEdit(() =>
-              bot.api.editMessageText(
-                thinkingMessage.chat.id,
-                thinkingMessage.message_id,
-                appendTelegramNotice(chunks[0] || '✅', notice)
-              )
+            const noticeChunk = formatTelegramChunk(
+              appendTelegramNotice(formattedChunks[0]?.plainText || '✅', notice),
+              tcfg.format
             );
-            if (!noticeEdit.ok) {
+            try {
+              await deliverTelegramFormattedChunk(noticeChunk, async (text, parseMode) => {
+                const noticeEdit = await retryTelegramEdit(() =>
+                  bot.api.editMessageText(
+                    thinkingMessage.chat.id,
+                    thinkingMessage.message_id,
+                    text,
+                    parseMode ? { parse_mode: parseMode } : undefined
+                  )
+                );
+                if (!noticeEdit.ok) throw noticeEdit.error;
+              });
+            } catch (error) {
               console.error(
                 '[xangi-telegram] Failed to add scheduled attachment warning: ' +
-                  formatTelegramError(noticeEdit.error)
+                  formatTelegramError(error)
               );
             }
           } else {
@@ -1317,8 +1367,15 @@ export async function startTelegramBot(opts: {
     if (modelsBackend !== null) {
       try {
         const result = await executeModelsCommand(modelsBackend, resolver);
-        for (const chunk of splitMessage(result, 4096)) {
-          await ctx.reply(chunk);
+        for (const chunk of telegramTextChunks(result, tcfg.format)) {
+          await deliverTelegramFormattedChunk(chunk, (text, parseMode) =>
+            ctx.reply(text, {
+              ...(message.message_thread_id === undefined
+                ? {}
+                : { message_thread_id: message.message_thread_id }),
+              ...(parseMode ? { parse_mode: parseMode } : {}),
+            })
+          );
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
@@ -1639,26 +1696,38 @@ export async function startTelegramBot(opts: {
             )
           : plainFinalAnswer;
 
-      const chunks = splitMessage(finalAnswer, 4096);
+      const formattedChunks = telegramTextChunks(finalAnswer, tcfg.format);
+      const chunks = formattedChunks.map((chunk) => chunk.text);
       const delivery = await deliverTelegramResult({
         chunks,
         attachmentPaths: attachmentResult.filePaths,
-        sendTextChunk: async (chunk, index) => {
+        sendTextChunk: async (_chunk, index) => {
+          const formatted = formattedChunks[index];
           if (capturedReplyMsg && index === 0) {
             // Editing the same message ID is idempotent. Never fall back to a new message
             // after an ambiguous timeout because Telegram may already have applied it.
-            const editResult = await retryTelegramEdit(() =>
-              ctx.api.editMessageText(
-                capturedReplyMsg.chat.id,
-                capturedReplyMsg.message_id,
-                chunk || '✅'
-              )
-            );
-            if (!editResult.ok) throw editResult.error;
+            await deliverTelegramFormattedChunk(formatted, async (text, parseMode) => {
+              const editResult = await retryTelegramEdit(() =>
+                ctx.api.editMessageText(
+                  capturedReplyMsg.chat.id,
+                  capturedReplyMsg.message_id,
+                  text || '✅',
+                  parseMode ? { parse_mode: parseMode } : undefined
+                )
+              );
+              if (!editResult.ok) throw editResult.error;
+            });
             return;
           }
           // sendMessage is not idempotent, so each additional chunk is attempted once.
-          await ctx.reply(chunk);
+          await deliverTelegramFormattedChunk(formatted, (text, parseMode) =>
+            ctx.reply(text, {
+              ...(message.message_thread_id === undefined
+                ? {}
+                : { message_thread_id: message.message_thread_id }),
+              ...(parseMode ? { parse_mode: parseMode } : {}),
+            })
+          );
         },
         sendAttachments: () =>
           sendTelegramAttachments(
@@ -1684,17 +1753,26 @@ export async function startTelegramBot(opts: {
           attachmentResult.filePaths.length
         );
         if (capturedReplyMsg && !textDeliveryFailed) {
-          const noticeEdit = await retryTelegramEdit(() =>
-            ctx.api.editMessageText(
-              capturedReplyMsg.chat.id,
-              capturedReplyMsg.message_id,
-              appendTelegramNotice(chunks[0] || '✅', notice)
-            )
+          const noticeChunk = formatTelegramChunk(
+            appendTelegramNotice(formattedChunks[0]?.plainText || '✅', notice),
+            tcfg.format
           );
-          if (!noticeEdit.ok) {
+          try {
+            await deliverTelegramFormattedChunk(noticeChunk, async (text, parseMode) => {
+              const noticeEdit = await retryTelegramEdit(() =>
+                ctx.api.editMessageText(
+                  capturedReplyMsg.chat.id,
+                  capturedReplyMsg.message_id,
+                  text,
+                  parseMode ? { parse_mode: parseMode } : undefined
+                )
+              );
+              if (!noticeEdit.ok) throw noticeEdit.error;
+            });
+          } catch (error) {
             console.error(
               '[xangi-telegram] Failed to add attachment warning to final answer: ' +
-                formatTelegramError(noticeEdit.error)
+                formatTelegramError(error)
             );
           }
         } else if (!textDeliveryFailed) {

@@ -115,6 +115,7 @@ TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
 # Optional: response display
 TELEGRAM_STREAMING=true
 TELEGRAM_SHOW_THINKING=true
+TELEGRAM_FORMAT=html                         # html | plain; format final answers only
 
 # Optional: session boundaries
 TELEGRAM_IDLE_RESET_ENABLED=true

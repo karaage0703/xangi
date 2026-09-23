@@ -6,6 +6,7 @@ import {
   buildPromptWithContext,
   buildTelegramWebhookUrl,
   cleanMention,
+  deliverTelegramFormattedChunk,
   deliverTelegramResult,
   downloadTelegramMediaBatch,
   formatTelegramError,
@@ -31,6 +32,33 @@ import {
   throwTelegramTextDeliveryFailure,
 } from '../src/telegram.js';
 import { TelegramMediaGroupBuffer } from '../src/telegram-media.js';
+import { formatTelegramChunk } from '../src/telegram-format.js';
+
+describe('Telegram formatted final delivery', () => {
+  it('passes HTML for the final answer and retries plain once after an entity parse error', async () => {
+    const operation = vi
+      .fn()
+      .mockRejectedValueOnce({ error_code: 400, description: "Bad Request: can't parse entities" })
+      .mockResolvedValueOnce(undefined);
+    const chunk = formatTelegramChunk('**done**');
+
+    await deliverTelegramFormattedChunk(chunk, operation);
+
+    expect(operation.mock.calls).toEqual([['<b>done</b>', 'HTML'], ['**done**']]);
+  });
+
+  it('does not retry an ambiguous timeout and honors plain mode', async () => {
+    const operation = vi.fn().mockRejectedValue(new Error('ETIMEDOUT'));
+    await expect(
+      deliverTelegramFormattedChunk(formatTelegramChunk('**done**'), operation)
+    ).rejects.toThrow('ETIMEDOUT');
+    expect(operation).toHaveBeenCalledTimes(1);
+
+    const plain = vi.fn().mockResolvedValue(undefined);
+    await deliverTelegramFormattedChunk(formatTelegramChunk('**done**', 'plain'), plain);
+    expect(plain).toHaveBeenCalledWith('**done**', undefined);
+  });
+});
 
 describe('Telegram chat queue generation boundaries', () => {
   it('drops slow preprocessing after reset and preserves the next message order', async () => {

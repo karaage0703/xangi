@@ -227,6 +227,7 @@ export interface Config {
     webhookUrl?: string;
     streaming?: boolean;
     showThinking?: boolean;
+    format?: 'html' | 'plain';
     allowedBotsMaxConsecutive?: number;
     replyToMentionInGroup?: boolean;
     idleResetEnabled?: boolean;
@@ -510,6 +511,7 @@ export function loadConfig(): Config {
       webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
       streaming: process.env.TELEGRAM_STREAMING !== 'false',
       showThinking: process.env.TELEGRAM_SHOW_THINKING !== 'false',
+      format: v.enumOf('TELEGRAM_FORMAT', ['html', 'plain'] as const, 'html'),
       allowedBotsMaxConsecutive: v.int('TELEGRAM_ALLOWED_BOTS_MAX_CONSECUTIVE', 3),
       replyToMentionInGroup: process.env.TELEGRAM_REPLY_TO_MENTION_IN_GROUP !== 'false',
       idleResetEnabled: process.env.TELEGRAM_IDLE_RESET_ENABLED !== 'false',
