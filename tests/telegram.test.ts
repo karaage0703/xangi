@@ -23,6 +23,7 @@ import {
   retryTelegramOperation,
   shouldProcessMessage,
   shouldStreamTelegramResponse,
+  startTelegramTypingIndicator,
   stopTelegramWork,
   TelegramBotLoopGuard,
   TelegramChatQueue,
@@ -31,6 +32,67 @@ import {
   throwTelegramTextDeliveryFailure,
 } from '../src/telegram.js';
 import { TelegramMediaGroupBuffer } from '../src/telegram-media.js';
+
+describe('Telegram typing indicator', () => {
+  it('sends immediately and every four seconds in the same topic until stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, -100123, 42);
+      expect(sendChatAction).toHaveBeenCalledWith(
+        -100123,
+        'typing',
+        { message_thread_id: 42 },
+        expect.any(AbortSignal)
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+      stop();
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('omits the topic and logs only the first API failure', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sendChatAction = vi.fn().mockRejectedValue(new Error('network failure'));
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, 123);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledWith(
+        123,
+        'typing',
+        undefined,
+        expect.any(AbortSignal)
+      );
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      stop();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts an in-flight typing action when stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendChatAction = vi.fn().mockImplementation(() => new Promise(() => {}));
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, 123);
+      const signal = sendChatAction.mock.calls[0][3] as AbortSignal;
+      expect(signal.aborted).toBe(false);
+      stop();
+      expect(signal.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('Telegram chat queue generation boundaries', () => {
   it('drops slow preprocessing after reset and preserves the next message order', async () => {

@@ -1,4 +1,4 @@
-import { Bot, webhookCallback, type Context } from 'grammy';
+import { Bot, webhookCallback, type Api, type Context } from 'grammy';
 import { Agent as HttpsAgent } from 'node:https';
 import type { Config } from './config.js';
 import type { AgentRunner } from './agent-runner.js';
@@ -153,6 +153,49 @@ export function formatTelegramError(error: unknown): string {
     .join(', ');
   const summary = `${messages.slice(0, 3).join(': ')}${metadata ? ` (${metadata})` : ''}`;
   return redactTelegramSecrets(summary);
+}
+
+export function startTelegramTypingIndicator(
+  api: Pick<Api, 'sendChatAction'>,
+  chatId: number,
+  messageThreadId?: number,
+  intervalMs = 4_000
+): () => void {
+  let stopped = false;
+  let warned = false;
+  const requests = new Set<AbortController>();
+  const send = () => {
+    if (stopped) return;
+    const controller = new AbortController();
+    requests.add(controller);
+    void api
+      .sendChatAction(
+        chatId,
+        'typing',
+        messageThreadId === undefined ? undefined : { message_thread_id: messageThreadId },
+        controller.signal as Parameters<Api['sendChatAction']>[3]
+      )
+      .catch((error: unknown) => {
+        if (!stopped && !warned) {
+          warned = true;
+          console.warn(
+            `[xangi-telegram] Failed to send typing action: ${formatTelegramError(error)}`
+          );
+        }
+      })
+      .finally(() => requests.delete(controller));
+  };
+
+  send();
+  const timer = setInterval(send, intervalMs);
+  timer.unref();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    for (const request of requests) request.abort();
+    requests.clear();
+  };
 }
 
 export function isRetryableTelegramError(error: unknown): boolean {
@@ -1460,6 +1503,7 @@ export async function startTelegramBot(opts: {
     // showThinking=true: 「考え中...」を先に送ってから編集するモード
     // showThinking=false: typing アクションのみ。最終回答は新規メッセージとして送信
     let replyMsg: Awaited<ReturnType<typeof ctx.reply>> | null = null;
+    let stopTyping = () => {};
     if (showThinking) {
       try {
         replyMsg = await ctx.reply('考え中...');
@@ -1470,7 +1514,11 @@ export async function startTelegramBot(opts: {
         return;
       }
     } else {
-      ctx.api.sendChatAction(message.chat.id, 'typing').catch(() => {});
+      stopTyping = startTelegramTypingIndicator(
+        ctx.api,
+        message.chat.id,
+        message.message_thread_id
+      );
     }
 
     const capturedReplyMsg = replyMsg;
@@ -1639,6 +1687,7 @@ export async function startTelegramBot(opts: {
             )
           : plainFinalAnswer;
 
+      stopTyping();
       const chunks = splitMessage(finalAnswer, 4096);
       const delivery = await deliverTelegramResult({
         chunks,
@@ -1710,6 +1759,7 @@ export async function startTelegramBot(opts: {
         }
       }
     } finally {
+      stopTyping();
       finishStreamSession();
       unregisterFinalizer();
     }
