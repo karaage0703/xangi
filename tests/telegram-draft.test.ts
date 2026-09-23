@@ -124,15 +124,22 @@ describe('TelegramDraftRegistry', () => {
       stop,
     });
     const current = () => 4;
+    const onMismatch = vi.fn();
     expect(registry.consumeStop(12, 123, 9, current)).toBeUndefined();
     expect(registry.consumeStop(11, 456, 9, current)).toBeUndefined();
-    expect(registry.consumeStop(11, 123, 8, current)).toBeUndefined();
-    expect(registry.consumeStop(11, 123, 9, current)).toBe(key);
+    expect(registry.consumeStop(11, 123, 8, current, onMismatch)).toBeUndefined();
+    expect(onMismatch).toHaveBeenCalledWith('topic');
+    expect(registry.consumeStop(11, 123, undefined, current)).toBe(key);
     expect(stop).toHaveBeenCalledTimes(1);
     expect(registry.consumeStop(11, 123, 9, current)).toBeUndefined();
 
+    registry.register(12, { chatId: 123, contextKey: key, generation: 4 });
+    expect(registry.consumeStop('12', 123, 9, current)).toBe(key);
+    expect(registry.consumeStop('not-an-id', 123, 9, current)).toBeUndefined();
+
     registry.register(13, { chatId: 123, contextKey: key, generation: 4 });
-    expect(registry.consumeStop(13, 123, undefined, () => 5)).toBeUndefined();
+    expect(registry.consumeStop(13, 123, undefined, () => 5, onMismatch)).toBeUndefined();
+    expect(onMismatch).toHaveBeenCalledWith('generation');
     registry.register(14, { chatId: 123, contextKey: key, generation: 5 });
     registry.unregister(14);
     expect(registry.consumeStop(14, 123, undefined, () => 5)).toBeUndefined();

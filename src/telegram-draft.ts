@@ -107,25 +107,54 @@ export class TelegramDraftRegistry {
     this.active.delete(draftId);
   }
 
-  stopContext(contextKey: string): void {
+  stopContext(contextKey: string, reason = 'unknown'): void {
     for (const [draftId, draft] of this.active) {
       if (draft.contextKey !== contextKey) continue;
+      console.info(`[xangi-telegram] Draft invalidated: ${draftId} (${reason})`);
       this.active.delete(draftId);
       draft.stop?.();
     }
   }
 
   consumeStop(
-    draftId: number,
+    draftId: number | string,
     chatId: number,
     messageThreadId: number | undefined,
-    currentGeneration: (contextKey: string) => number
+    currentGeneration: (contextKey: string) => number,
+    onMismatch?: (reason: 'missing' | 'chat' | 'topic' | 'generation') => void
   ): string | undefined {
-    const draft = this.active.get(draftId);
-    if (!draft) return undefined;
-    if (draft.chatId !== chatId || draft.messageThreadId !== messageThreadId) return undefined;
-    this.active.delete(draftId);
-    if (currentGeneration(draft.contextKey) !== draft.generation) return undefined;
+    const normalizedDraftId = Number(draftId);
+    if (!Number.isSafeInteger(normalizedDraftId) || normalizedDraftId <= 0) {
+      onMismatch?.('missing');
+      return undefined;
+    }
+    const draft = this.active.get(normalizedDraftId);
+    if (!draft) {
+      console.info(
+        `[xangi-telegram] Draft lookup miss: received=${JSON.stringify(draftId)} type=${typeof draftId} active=${JSON.stringify([...this.active.keys()])}`
+      );
+      onMismatch?.('missing');
+      return undefined;
+    }
+    if (draft.chatId !== chatId) {
+      onMismatch?.('chat');
+      return undefined;
+    }
+    // Telegram may omit the topic from either side of a private-chat stop update.
+    // The draft ID is unique within this registry, so an absent topic is safe to accept.
+    if (
+      draft.messageThreadId !== undefined &&
+      messageThreadId !== undefined &&
+      draft.messageThreadId !== messageThreadId
+    ) {
+      onMismatch?.('topic');
+      return undefined;
+    }
+    this.active.delete(normalizedDraftId);
+    if (currentGeneration(draft.contextKey) !== draft.generation) {
+      onMismatch?.('generation');
+      return undefined;
+    }
     draft.stop?.();
     return draft.contextKey;
   }

@@ -1307,7 +1307,7 @@ export async function startTelegramBot(opts: {
   ): Promise<void> => {
     if (command === 'reset') {
       const activeId = getActiveSessionId(contextKey);
-      draftRegistry.stopContext(contextKey);
+      draftRegistry.stopContext(contextKey, 'reset command');
       resetTelegramSession(contextKey, activeId, agentRunner);
       ensureSession(contextKey, { platform: 'telegram' });
       await sendTelegramControlReply(
@@ -1324,7 +1324,7 @@ export async function startTelegramBot(opts: {
       return;
     }
 
-    draftRegistry.stopContext(contextKey);
+    draftRegistry.stopContext(contextKey, 'stop command');
     stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
     await sendTelegramControlReply(
       ctx.api,
@@ -1635,7 +1635,7 @@ export async function startTelegramBot(opts: {
         const entry = getSessionEntry(activeId);
         const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
         if (entry && hasSessionGoneIdle(entry.updatedAt, idleResetMs)) {
-          draftRegistry.stopContext(contextKey);
+          draftRegistry.stopContext(contextKey, 'idle reset');
           resetTelegramSession(contextKey, activeId, agentRunner);
           currentGen = getGeneration(contextKey);
           console.log(`[xangi-telegram] Idle reset for ${contextKey}, archived ${activeId}`);
@@ -1825,6 +1825,7 @@ export async function startTelegramBot(opts: {
             generation: currentGen,
             stop: () => draftPreview?.stop(),
           });
+          console.info(`[xangi-telegram] Draft registered: ${draftPreview.draftId}`);
           draftPreview.start();
         }
         streamSession = new StreamSession({
@@ -1993,7 +1994,10 @@ export async function startTelegramBot(opts: {
     } finally {
       stopTyping();
       finishStreamSession();
-      if (draftPreview) draftRegistry.unregister(draftPreview.draftId);
+      if (draftPreview) {
+        console.info(`[xangi-telegram] Draft finalized: ${draftPreview.draftId}`);
+        draftRegistry.unregister(draftPreview.draftId);
+      }
       unregisterFinalizer();
     }
   };
@@ -2174,13 +2178,23 @@ export async function startTelegramBot(opts: {
 
   bot.on('stopped_message_generation', async (ctx) => {
     const stopped = ctx.stoppedMessageGeneration;
+    let mismatch: string | undefined;
     const contextKey = draftRegistry.consumeStop(
       stopped.draft_id,
       stopped.chat.id,
       stopped.message_thread_id,
-      getGeneration
+      getGeneration,
+      (reason) => {
+        mismatch = reason;
+      }
     );
-    if (!contextKey) return;
+    if (!contextKey) {
+      console.info(
+        `[xangi-telegram] Stop request ignored: ${mismatch ?? 'unknown'} (${stopped.draft_id})`
+      );
+      return;
+    }
+    console.info(`[xangi-telegram] Stop request accepted for active draft (${stopped.draft_id})`);
     stopTelegramWork(telegramChatQueue, contextKey, agentRunner);
     await ctx.api
       .sendMessage(stopped.chat.id, '実行を停止しました。', {
