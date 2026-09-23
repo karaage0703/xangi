@@ -6,6 +6,7 @@ import {
   buildPromptWithContext,
   buildTelegramWebhookUrl,
   cleanMention,
+  deliverTelegramFormattedChunk,
   deliverTelegramResult,
   downloadTelegramMediaBatch,
   formatTelegramError,
@@ -23,14 +24,112 @@ import {
   retryTelegramOperation,
   shouldProcessMessage,
   shouldStreamTelegramResponse,
+  startTelegramTypingIndicator,
   stopTelegramWork,
   TelegramBotLoopGuard,
   TelegramChatQueue,
   telegramMediaDownloadContext,
   telegramMediaDownloadFailureNotice,
+  telegramInterruptionMessage,
   throwTelegramTextDeliveryFailure,
 } from '../src/telegram.js';
 import { TelegramMediaGroupBuffer } from '../src/telegram-media.js';
+import { formatTelegramChunk } from '../src/telegram-format.js';
+
+describe('Telegram formatted final delivery', () => {
+  it('passes HTML for the final answer and retries plain once after an entity parse error', async () => {
+    const operation = vi
+      .fn()
+      .mockRejectedValueOnce({ error_code: 400, description: "Bad Request: can't parse entities" })
+      .mockResolvedValueOnce(undefined);
+    const chunk = formatTelegramChunk('**done**');
+
+    await deliverTelegramFormattedChunk(chunk, operation);
+
+    expect(operation.mock.calls).toEqual([['<b>done</b>', 'HTML'], ['**done**']]);
+  });
+
+  it('does not retry an ambiguous timeout and honors plain mode', async () => {
+    const operation = vi.fn().mockRejectedValue(new Error('ETIMEDOUT'));
+    await expect(
+      deliverTelegramFormattedChunk(formatTelegramChunk('**done**'), operation)
+    ).rejects.toThrow('ETIMEDOUT');
+    expect(operation).toHaveBeenCalledTimes(1);
+
+    const plain = vi.fn().mockResolvedValue(undefined);
+    await deliverTelegramFormattedChunk(formatTelegramChunk('**done**', 'plain'), plain);
+    expect(plain).toHaveBeenCalledWith('**done**', undefined);
+  });
+});
+
+describe('Telegram draft interruption notices', () => {
+  it('does not add a second stop reply for drafts', () => {
+    expect(telegramInterruptionMessage(true, 'stop')).toBeUndefined();
+    expect(telegramInterruptionMessage(false, 'stop')).toBe('処理を停止しました。');
+    expect(telegramInterruptionMessage(true, 'reset')).toBe('セッションがリセットされました。');
+  });
+});
+
+describe('Telegram typing indicator', () => {
+  it('sends immediately and every four seconds in the same topic until stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, -100123, 42);
+      expect(sendChatAction).toHaveBeenCalledWith(
+        -100123,
+        'typing',
+        { message_thread_id: 42 },
+        expect.any(AbortSignal)
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+      stop();
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('omits the topic and logs only the first API failure', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sendChatAction = vi.fn().mockRejectedValue(new Error('network failure'));
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, 123);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledWith(
+        123,
+        'typing',
+        undefined,
+        expect.any(AbortSignal)
+      );
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      stop();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts an in-flight typing action when stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const sendChatAction = vi.fn().mockImplementation(() => new Promise(() => {}));
+      const stop = startTelegramTypingIndicator({ sendChatAction } as never, 123);
+      const signal = sendChatAction.mock.calls[0][3] as AbortSignal;
+      expect(signal.aborted).toBe(false);
+      stop();
+      expect(signal.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('Telegram chat queue generation boundaries', () => {
   it('drops slow preprocessing after reset and preserves the next message order', async () => {

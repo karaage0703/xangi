@@ -121,6 +121,11 @@ TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
 # Optional: 応答表示
 TELEGRAM_STREAMING=true
 TELEGRAM_SHOW_THINKING=true
+TELEGRAM_FORMAT=html                         # html | plain。最終回答のみ整形
+TELEGRAM_STREAM_MODE=draft                   # draft | edit。DMの途中表示
+TELEGRAM_ACK_REACTION=👀                    # 空文字で無効。グループの受付通知
+# TELEGRAM_DONE_REACTION=🎉                 # 許可された絵文字のみ。未設定なら完了後も受付表示
+TELEGRAM_EPHEMERAL_CONTROL_REPLIES=true     # グループの制御コマンドを本人限定で表示
 
 # Optional: Session 境界
 TELEGRAM_IDLE_RESET_ENABLED=true
@@ -134,6 +139,8 @@ TELEGRAM_MEDIA_ENABLED=true
 # TELEGRAM_MEDIA_ALLOWED_MIME=image/jpeg,image/png,image/webp,video/mp4
 # TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS=750
 ```
+
+DM の draft モードでは、途中表示の停止ボタンから現在の処理を中断できます。ドラフトは一時表示であり、完了時の回答は通常のメッセージとして送信されます。Webhook を手動登録する場合は、`allowed_updates` に `message` と `stopped_message_generation` を含めてください（自動登録時は xangi が指定します）。
 
 ## 5. 起動と動作確認
 
