@@ -115,6 +115,11 @@ TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-a-random-secret
 # Optional: response display
 TELEGRAM_STREAMING=true
 TELEGRAM_SHOW_THINKING=true
+TELEGRAM_FORMAT=html                         # html | plain; format final answers only
+TELEGRAM_STREAM_MODE=draft                   # draft | edit; private-chat previews
+TELEGRAM_ACK_REACTION=👀                    # Empty disables the group acknowledgement
+# TELEGRAM_DONE_REACTION=🎉                 # Optional completion reaction (allowed emoji only)
+TELEGRAM_EPHEMERAL_CONTROL_REPLIES=true     # Private control replies in groups
 
 # Optional: session boundaries
 TELEGRAM_IDLE_RESET_ENABLED=true
@@ -128,6 +133,8 @@ TELEGRAM_MEDIA_ENABLED=true
 # TELEGRAM_MEDIA_ALLOWED_MIME=image/jpeg,image/png,image/webp,video/mp4
 # TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS=750
 ```
+
+In DM draft mode, the preview's stop button cancels the current run. Drafts are temporary; the completed answer is sent as a normal message. When registering a webhook manually, include `message` and `stopped_message_generation` in `allowed_updates` (xangi sets them during automatic registration).
 
 ## 5. Start and verify
 

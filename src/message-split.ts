@@ -134,3 +134,8 @@ export function splitDiscordMessage(
 ): string[] {
   return splitMessageInternal(text, maxLength, separator, true);
 }
+
+/** Markdown code fences stay balanced across Telegram message boundaries. */
+export function splitTelegramMarkdown(text: string, maxLength = 4096): string[] {
+  return splitMessageInternal(text, maxLength, '\n', true);
+}

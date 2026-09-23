@@ -11,6 +11,9 @@ describe('Telegram polling startup', () => {
     };
 
     await expect(startSupervisedTelegramPolling(bot as never)).resolves.toBeUndefined();
+    expect(bot.start).toHaveBeenCalledWith(
+      expect.objectContaining({ allowed_updates: ['message', 'stopped_message_generation'] })
+    );
   });
 
   it('rejects a permanent conflict before reporting readiness', async () => {

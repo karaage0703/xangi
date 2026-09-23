@@ -227,7 +227,12 @@ export interface Config {
     webhookUrl?: string;
     streaming?: boolean;
     showThinking?: boolean;
+    format?: 'html' | 'plain';
+    streamMode?: 'draft' | 'edit';
     allowedBotsMaxConsecutive?: number;
+    ackReaction?: string;
+    doneReaction?: string;
+    ephemeralControlReplies?: boolean;
     replyToMentionInGroup?: boolean;
     idleResetEnabled?: boolean;
     idleResetHours?: number;
@@ -510,7 +515,12 @@ export function loadConfig(): Config {
       webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
       streaming: process.env.TELEGRAM_STREAMING !== 'false',
       showThinking: process.env.TELEGRAM_SHOW_THINKING !== 'false',
+      format: v.enumOf('TELEGRAM_FORMAT', ['html', 'plain'] as const, 'html'),
+      streamMode: v.enumOf('TELEGRAM_STREAM_MODE', ['draft', 'edit'] as const, 'draft'),
       allowedBotsMaxConsecutive: v.int('TELEGRAM_ALLOWED_BOTS_MAX_CONSECUTIVE', 3),
+      ackReaction: process.env.TELEGRAM_ACK_REACTION ?? '👀',
+      doneReaction: process.env.TELEGRAM_DONE_REACTION ?? '',
+      ephemeralControlReplies: process.env.TELEGRAM_EPHEMERAL_CONTROL_REPLIES !== 'false',
       replyToMentionInGroup: process.env.TELEGRAM_REPLY_TO_MENTION_IN_GROUP !== 'false',
       idleResetEnabled: process.env.TELEGRAM_IDLE_RESET_ENABLED !== 'false',
       idleResetHours: v.float('TELEGRAM_IDLE_RESET_HOURS', 4, { min: 0 }),
