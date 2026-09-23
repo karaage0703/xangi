@@ -44,7 +44,79 @@ xangiの詳細な使い方ガイドです。
 
 ## プラットフォーム別のメッセージ処理
 
-### LINEで同時送信された画像
+プラットフォームごとに、処理中の追加メッセージ、会話の区切り、媒体の扱いが異なります。
+
+### Discord / Slack
+
+処理中に同じ会話へ追加メッセージが届いた場合は、処理中であることを返信して、そのメッセージはキューへ積みません。DiscordのスレッドとSlackのスレッドは、それぞれ独立したSessionとして扱います。
+
+終了後の`New`、スレッド内の`Close`、`History`などの操作は[セッション管理](#セッション管理)を参照してください。
+
+### Telegram
+
+#### グループ、トピック、処理中のメッセージ
+
+グループでは他Botの誤反応を避けるため、最初の「考え中...」と最終回答への編集だけを行い、途中経過は更新しません。また、自分以外のBot username（`bot`で終わるusername）へのメンションを含む投稿には反応しません。許可Botからの投稿も、グループ内ではxangi自身への明示メンションがある場合だけ処理し、返信やメンションなしの投稿は無視します。
+
+ループ防止カウンターはグループChat IDと送信元Bot IDごとに5分間保持し、人間が同じグループで発言するとリセットします。xangi自身の投稿、スケジュール投稿、DMはこのカウンターに加算しません。
+
+Telegramのメンションentityを使って宛先usernameを完全一致で判定するため、似たusernameやコード例に含まれる文字列には反応しません。トピックが有効なスーパーグループとDMでは、会話履歴、処理キュー、`/new`、`/stop`を`message_thread_id`ごとに分離します。処理中の追加メッセージは同じチャットまたはトピックのキューへ積み、受付順に処理します。
+
+#### コマンド
+
+| コマンド                 | 動作                                     |
+| ------------------------ | ---------------------------------------- |
+| `/new` `/reset` `/clear` | セッションをリセットして新しい会話を開始 |
+| `/stop`                  | 実行中のタスクを停止                     |
+| `/help`                  | 使い方の案内を表示                       |
+
+#### 画像・動画
+
+`TELEGRAM_MEDIA_ENABLED=true`にすると、写真、動画、許可MIMEに一致するファイルをDMとグループで受信できます。キャプションは指示文として扱い、キャプションがない場合は添付の確認をAgentへ依頼します。同じTelegramアルバムの媒体は、既定750ms待って1回のAgent実行へまとめます。
+
+アルバムは最初の媒体を受信した時点でチャット内キューの順番を予約するため、集約待ちの間に後続テキストが届いても受付順を追い越しません。
+
+受信ファイルは送信者・Chat allowlistとメンション条件を通過した後だけダウンロードし、`.xangi/media/attachments/telegram`へ保存します。既定の上限は20MBで、Telegram Bot APIの`getFile`上限に合わせて20MBを超える設定は受け付けません。保存ファイルは既定24時間で削除し、`TELEGRAM_MEDIA_RETENTION_HOURS=0`で自動削除を無効化できます。
+
+`TELEGRAM_MEDIA_ALLOWED_MIME`は、Telegramから通知された送信者申告のMIMEメタデータを検査します。JPEG、PNG、WebP、MP4、PDF、ZIPはダウンロード後にファイル先頭のシグネチャも照合し、一致しなければAgentへ渡しません。それ以外の独自MIMEは内容自体を保証しないため、信頼できるallowlist登録済み送信者からの利用を前提とします。
+
+Agentが画像、MP4動画、またはその他のファイルを生成して返した場合、xangiはそれぞれTelegramの写真、動画、文書として送信します。送信タイムアウトはTelegram側で成功済みか判別できないため、失敗した添付は自動再送しません。複数添付では後続の未試行ファイルの送信を続け、確認できなかった件数を利用者へ通知します。最終テキストの編集・送信に失敗しても、まだ試していない生成添付は独立して1回だけ送信を試みます。
+
+媒体の取得中またはチャット内キューで待機中に`/stop`を送ると、その処理を無効化し、取得済みファイルを破棄してAgent実行を開始しません。会話Session自体は維持します。
+
+動画はファイルをそのままAgentへ渡します。キーフレーム抽出や音声文字起こしは行わないため、利用するAgentバックエンドが動画入力を扱える必要があります。
+
+### LINE
+
+#### 応答表示とreply→push切り替え
+
+LINEはSlackやDiscordのようなスレッドがなく、reply tokenも60秒で失効します。xangiは次の2段階で長い処理にも応答します。
+
+1. webhook受信直後にLoading animation APIを呼び、1:1トークへ「入力中…」を表示します。Botが次のメッセージを送ると表示は消えます。グループとルームではLINE側に無視されます。`LINE_LOADING_ANIMATION_ENABLED=false`で無効化でき、`LINE_LOADING_ANIMATION_SECONDS`には5〜60秒の対応値を指定できます。
+2. `LINE_SLOW_RESPONSE_THRESHOLD_MS`（既定45秒）を超えると、reply tokenで待機中の通知を送り、本回答はPush APIで後から送信します。`LINE_SLOW_RESPONSE_ENABLED=false`で無効化できますが、60秒を超えた応答は失われる可能性があります。
+
+Push APIの送信はLINE公式アカウントのメッセージ通数へ加算されます。頻繁に切り替わる場合は、閾値または推論バックエンドを見直してください。
+
+#### 連投時の扱い
+
+処理中に同じユーザーから次のメッセージが届いたら、キューに積んで前のターンの完了後に処理します。
+
+- 直列化の単位は`line:<userId>`。別のユーザーは待たされません
+- `/reset` `/new` `/clear`はキューを経由せず即座に応答し、待機中のターンを無効化します
+- 待った分だけ経過時間が延びるため、Push APIでの応答になる頻度が上がります
+- 待たされたターンは、自分の処理が始まる時点でLoading animationを出し直します
+
+#### Session境界
+
+LINEには明示的なスレッド境界がないため、時間ベースとコマンドベースの2段階で新しいSessionを開始します。
+
+- 最後の発話から`LINE_IDLE_RESET_HOURS`（既定4時間）以上経過すると、次のメッセージ到着時に既存Sessionをarchiveして新しいSessionを作ります。会話ログは保持されます。小数も指定でき、`LINE_IDLE_RESET_ENABLED=false`で無効化できます
+- `/reset` `/new` `/clear`の完全一致で、Agentを起動せずSessionを切り替えます。大文字小文字は区別せず、前後の空白を除いて判定するため、`/reset please`のような部分一致では発火しません
+- 日本語などの追加パターンは`LINE_RESET_TEXT_PATTERNS`へCSVで指定できます。空文字列を指定するとコマンド検出を無効化します
+
+Rich Menuのボタンからreset patternに一致するテキストを送る構成にもできます。
+
+#### 同時送信された画像
 
 LINEで複数枚をまとめて送ると、各画像は別のwebhookイベントとして届きます。xangiは同じ`imageSet.id`のイベントを集め、`total`枚そろった時点で1ターンとして処理し、1回だけ返信します。
 
@@ -685,7 +757,7 @@ DiscordとSlackではチャンネルごとに作業ディレクトリを選べ�
 
 Discordでは各引数をスラッシュコマンドの入力欄へ指定します。Slack App側にも `/workspace` Slash Commandを追加してください。未設定時はxangi processがアクセスできる既存の任意の絶対パスを登録できます。登録先を限定したい場合だけ`XANGI_WORKSPACE_ALLOWED_ROOTS`へ許可rootを列挙します。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
 
-Web UIではProject画面の「Workspaceを追加」から、xangi processがアクセスできる既存の絶対パスを登録できます。登録解除はregistryから項目だけを外し、ディレクトリとファイルを削除しません。default Workspace、Projectまたは既存会話が参照しているWorkspace、Discord / Slack等のチャンネルへ設定済みのWorkspaceは登録解除できません。
+Web UIでは設定画面またはProject画面の「Workspaceを追加」から、xangi processがアクセスできる既存の絶対パスを登録できます。設定画面ではパスの直接入力に加え、「参照…」でxangiが動くマシンのフォルダを選べます。許可rootを設定している場合、選択画面もその範囲内だけ表示します。ブラウザを開いている端末のローカルフォルダは選択できません。登録解除はregistryから項目だけを外し、ディレクトリとファイルを削除しません。default Workspace、Projectまたは既存会話が参照しているWorkspace、Discord / Slack等のチャンネルへ設定済みのWorkspaceは登録解除できません。
 
 #### effort オプション
 
@@ -1711,11 +1783,11 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | system prompt が占める想定トークン数（逆算用）                               | `8000`                                                           |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | 1 リクエストの最大出力トークン（逆算用）                                     | `4096`                                                           |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | 安全マージン（逆算用）                                                       | `1000`                                                           |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | compaction後も保持する最低メッセージ数                                       | `10`                                                             |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | message/文字数上限で要約する際の保持件数の目安（token予算優先）                                       | `10`                                                             |
 | `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | 追加時に切り詰めるtool結果の最大文字数                                       | `4000`                                                           |
 | `LOCAL_LLM_MAX_SESSION_MESSAGES`        | token推定以外のcompaction発火メッセージ数                                    | `50`                                                             |
 | `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | `LOCAL_LLM_NUM_CTX`に対するbatch compaction発火比率                           | `0.30`                                                           |
-| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | compaction後に保持する直近履歴のtoken概算                                    | `NUM_CTX`の10%（2000〜12000）                                   |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | 直近履歴のtoken予算（発火token数の半分以下、最新turnは分断しない）                                    | `NUM_CTX`の10%（2000〜12000）                                   |
 | `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | 要約・checkpoint保存失敗後の再試行待ち時間                                   | `60000`                                                          |
 | `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | compaction判定で使う画像1枚あたりのtoken概算                                  | `2048`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_ENABLED`         | tool 遅延ロード機能（`tool_search`）を有効化                                 | `true`                                                           |

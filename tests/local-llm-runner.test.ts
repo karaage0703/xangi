@@ -771,6 +771,69 @@ describe('local-llm runner: cache-aware session compaction', () => {
     expect(session.messages).toEqual(original);
   });
 
+  it('leaves several image turns of headroom after each compaction', async () => {
+    const budget = loadContextBudget({ LOCAL_LLM_NUM_CTX: '40960' });
+    const session = makeSession([]);
+    const compactedAt: number[] = [];
+    for (let turn = 1; turn <= 60; turn++) {
+      session.messages.push({
+        role: 'user', content: 'screen context '.repeat(75),
+        images: [{ base64: 'image', mimeType: 'image/jpeg' }],
+        transcriptEntryId: `u${turn}`,
+      });
+      const previousPrefix = session.messages[0];
+      const result = await compactSessionWithCheckpoint(session, budget, {
+        summarize: async () => 'Game progress and relevant facts. '.repeat(10),
+        persist: () => true,
+        now: turn * 1000,
+      });
+      if (result.status === 'compacted') {
+        compactedAt.push(turn);
+        expect(result.checkpoint!.estimatedTokensAfter).toBeLessThan(4096);
+        expect(session.messages.filter((message) => message.images)).toHaveLength(1);
+      } else {
+        expect(result.status).toBe('skipped');
+        expect(session.messages[0]).toBe(previousPrefix);
+      }
+      expect(session.messages.at(-1)?.transcriptEntryId).toBe(`u${turn}`);
+      session.messages.push({ role: 'assistant', content: 'reply '.repeat(15) });
+    }
+    expect(compactedAt.length).toBeGreaterThan(1);
+    expect(compactedAt.length).toBeLessThanOrEqual(15);
+    for (let i = 1; i < compactedAt.length; i++) {
+      expect(compactedAt[i] - compactedAt[i - 1]).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it('keeps an oversized latest turn intact without re-summarizing a checkpoint alone', async () => {
+    const budget = loadContextBudget({ LOCAL_LLM_NUM_CTX: '40960' });
+    const latest = { role: 'user' as const, content: 'x'.repeat(50000), transcriptEntryId: 'latest' };
+    const session = makeSession([
+      { role: 'user', content: 'old conversation', transcriptEntryId: 'old' },
+      { role: 'assistant', content: 'old answer' }, latest,
+    ]);
+    let summaries = 0;
+    const options = { summarize: async () => { summaries++; return 'Prior facts'; }, persist: () => true };
+    expect((await compactSessionWithCheckpoint(session, budget, options)).status).toBe('compacted');
+    expect(session.messages.at(-1)).toBe(latest);
+    expect((await compactSessionWithCheckpoint(session, budget, options)).status).toBe('skipped');
+    expect(summaries).toBe(1);
+  });
+
+  it('applies the token budget even for message-count compaction with tools', () => {
+    const budget = { ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '40960' }), maxSessionMessages: 4 };
+    const messages: import('../src/local-llm/types.js').LLMMessage[] = [
+      { role: 'user', content: 'old', transcriptEntryId: 'old' },
+      { role: 'assistant', content: 'x'.repeat(15000) },
+      { role: 'user', content: 'current', transcriptEntryId: 'current' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 't', name: 'read', arguments: {} }] },
+      { role: 'tool', content: 'result', toolCallId: 't' },
+    ];
+    const plan = planSessionCompaction(messages, budget);
+    expect(plan?.trigger).toBe('messages');
+    expect(plan?.tail).toEqual(messages.slice(2));
+  });
+
   it('does not rewrite a growing 60-turn prefix below the compaction threshold', () => {
     const messages: import('../src/local-llm/types.js').LLMMessage[] = [];
     const budget = {

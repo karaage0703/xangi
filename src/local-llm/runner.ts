@@ -141,7 +141,10 @@ export function loadContextBudget(env: NodeJS.ProcessEnv = process.env): Context
     : defaultKeepTokens;
   const requestedKeepTokens =
     Number.isSafeInteger(keepTokensRaw) && keepTokensRaw > 0 ? keepTokensRaw : defaultKeepTokens;
-  const compactionKeepTokens = Math.min(requestedKeepTokens, compactionThresholdTokens - 1);
+  const compactionKeepTokens = Math.min(
+    requestedKeepTokens,
+    Math.max(1, Math.floor(compactionThresholdTokens / 2))
+  );
   const cooldownRaw = env.LOCAL_LLM_COMPACTION_COOLDOWN_MS
     ? parseInt(env.LOCAL_LLM_COMPACTION_COOLDOWN_MS, 10)
     : 60_000;
@@ -396,34 +399,39 @@ export function planSessionCompaction(
           : null;
   if (!trigger || messages.length < 2) return null;
 
-  let suffixTokens = 0;
-  let tokenStart = messages.length - 1;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    suffixTokens += estimateMessageTokens(messages[index], budget.imageEstimateTokens);
-    tokenStart = index;
-    if (suffixTokens >= budget.compactionKeepTokens) break;
-  }
-
-  const minimumMessageStart = Math.max(0, messages.length - Math.max(1, budget.contextKeepLast));
-  const boundaryTarget =
-    trigger === 'tokens' ? Math.min(tokenStart, minimumMessageStart) : minimumMessageStart;
-  let boundary = -1;
-  // token目標以降かつ最低保持件数を満たす範囲で、最初の完全なuser turnを選ぶ。
-  for (let index = Math.max(1, boundaryTarget); index <= minimumMessageStart; index++) {
-    const message = messages[index];
-    if (message.role === 'user' && message.transcriptEntryId) {
-      boundary = index;
-      break;
-    }
-  }
-  // 範囲内に境界が無ければ、より古いuser turnまでtailを広げる。
-  for (let index = boundaryTarget - 1; boundary === -1 && index > 0; index--) {
-    const message = messages[index];
-    if (message.role === 'user' && message.transcriptEntryId) {
-      boundary = index;
-    }
+  // Keep complete user turns within the token target. The latest turn is
+  // indivisible, even when that turn alone exceeds the target.
+  const boundaries = messages.flatMap((message, index) =>
+    message.role === 'user' && message.transcriptEntryId ? [index] : []
+  );
+  if (boundaries.length === 0) return null;
+  let boundary = boundaries[boundaries.length - 1];
+  let suffixTokens = estimateMessagesTokens(messages.slice(boundary), budget.imageEstimateTokens);
+  const fallbackStart = Math.max(0, messages.length - Math.max(1, budget.contextKeepLast));
+  for (let turn = boundaries.length - 2; turn >= 0; turn--) {
+    const start = boundaries[turn];
+    const turnTokens = estimateMessagesTokens(
+      messages.slice(start, boundary),
+      budget.imageEstimateTokens
+    );
+    if (suffixTokens + turnTokens > budget.compactionKeepTokens) break;
+    // Message/character limits remain fallback triggers for very small turns.
+    if (trigger !== 'tokens' && boundary <= fallbackStart) break;
+    suffixTokens += turnTokens;
+    boundary = start;
   }
   if (boundary <= 0) return null;
+  // A checkpoint alone contains no new history to summarize. In particular,
+  // do not repeatedly summarize it while retaining an oversized latest turn.
+  if (
+    messages
+      .slice(0, boundary)
+      .every(
+        (message) =>
+          !message.transcriptEntryId && message.content.startsWith(CONVERSATION_CHECKPOINT_PREFIX)
+      )
+  )
+    return null;
 
   return {
     prefix: messages.slice(0, boundary),

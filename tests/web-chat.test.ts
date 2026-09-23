@@ -1220,6 +1220,31 @@ describe('web-chat HTTP API', () => {
     await readSSEUntilDone((await send).body);
   });
 
+  it('lists server directories for the Workspace picker', async () => {
+    const child = join(testDir, 'picker-child');
+    mkdirSync(child);
+    writeFileSync(join(testDir, 'not-a-directory.txt'), 'file');
+
+    const response = await fetch(
+      `${baseUrl}/api/workspaces/directories?path=${encodeURIComponent(testDir)}`
+    );
+    expect(response.status).toBe(200);
+    const listing = (await response.json()) as {
+      path: string;
+      parent: string | null;
+      directories: Array<{ name: string; path: string }>;
+    };
+    expect(listing.path).toBe(realpathSync(testDir));
+    expect(listing.parent).toBe(realpathSync(join(testDir, '..')));
+    expect(listing.directories).toContainEqual({ name: 'picker-child', path: child });
+    expect(listing.directories.some((entry) => entry.name === 'not-a-directory.txt')).toBe(false);
+
+    const invalid = await fetch(
+      `${baseUrl}/api/workspaces/directories?path=${encodeURIComponent(join(testDir, 'not-a-directory.txt'))}`
+    );
+    expect(invalid.status).toBe(400);
+  });
+
   it('unregisters only unused workspaces and keeps their files', async () => {
     const unusedPath = join(testDir, 'unused-workspace');
     const projectPath = join(testDir, 'project-workspace');

@@ -37,7 +37,10 @@ describe('WorkspaceRegistry', () => {
     const { root, dataDir, defaultWorkspace } = await fixture();
     const sibling = join(root, 'sibling-repository');
     await mkdir(sibling);
-    const registry = await WorkspaceRegistry.open({ dataDir, defaultWorkspacePath: defaultWorkspace });
+    const registry = await WorkspaceRegistry.open({
+      dataDir,
+      defaultWorkspacePath: defaultWorkspace,
+    });
 
     const registered = await registry.register('sibling', sibling);
 
@@ -105,6 +108,11 @@ describe('WorkspaceRegistry', () => {
     });
 
     expect(registry.getById('default')?.path).toBe(await realpath(defaultWorkspace));
+    const canonicalExtraRoot = await realpath(extraRoot);
+    expect(registry.browseRoots()).toEqual([await realpath(defaultWorkspace), canonicalExtraRoot]);
+    expect(() => registry.assertBrowsableDirectory(canonicalExtraRoot)).not.toThrow();
+    expect(() => registry.assertBrowsableDirectory(root)).toThrow(/outside the allowed roots/);
+    expect(() => registry.assertBrowsableDirectory(dataDir)).toThrow();
   });
 
   it('ignores unavailable optional roots without preventing startup', async () => {

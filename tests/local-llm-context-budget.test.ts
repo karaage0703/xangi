@@ -123,6 +123,12 @@ describe('loadContextBudget', () => {
       expect(cb.imageEstimateTokens).toBe(1536);
     });
 
+    it('caps the retained token target at half the trigger to leave growth headroom', () => {
+      const cb = loadContextBudget({ LOCAL_LLM_NUM_CTX: '40960', LOCAL_LLM_COMPACTION_KEEP_TOKENS: '12000' });
+      expect(cb.compactionKeepTokens).toBe(6144);
+      expect(cb.compactionThresholdTokens).toBe(12288);
+    });
+
     it('invalid NUM_CTX and keep tokens fall back to a valid compaction budget', () => {
       const cb = loadContextBudget({
         LOCAL_LLM_NUM_CTX: 'not-a-number',

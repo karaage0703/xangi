@@ -739,6 +739,10 @@ button:disabled {
   margin-top: 28px;
 }
 
+.settings-workspace-manager {
+  margin-top: 20px;
+}
+
 .workspace-manager button,
 .workspace-register-form button {
   min-height: 34px;
@@ -748,6 +752,10 @@ button:disabled {
   color: inherit;
   background: var(--surface);
   cursor: pointer;
+}
+
+.settings-workspace-manager button {
+  min-height: 44px;
 }
 
 .workspace-manager button:disabled {
@@ -811,6 +819,114 @@ button:disabled {
   border-color: var(--accent);
   outline: 2px solid var(--accent-tint);
   outline-offset: 1px;
+}
+
+.workspace-path-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-path-controls input {
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-path-controls button {
+  flex: 0 0 auto;
+}
+
+.directory-picker {
+  position: fixed;
+  inset: 0;
+  width: min(560px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(640px, calc(100dvh - 24px));
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(55 53 47 / 24%);
+}
+
+.directory-picker::backdrop {
+  background: rgb(15 15 15 / 38%);
+}
+
+.directory-picker header,
+.directory-picker footer,
+.directory-picker-path > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.directory-picker header,
+.directory-picker footer {
+  justify-content: space-between;
+}
+
+.directory-picker h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.directory-picker p,
+.directory-picker-path label {
+  color: var(--ink-secondary);
+  font-size: 13px;
+}
+
+.directory-picker-path {
+  display: grid;
+  gap: 5px;
+}
+
+.directory-picker-path input {
+  min-width: 0;
+  flex: 1;
+}
+
+.directory-picker button,
+.directory-picker input {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.directory-picker button {
+  cursor: pointer;
+}
+
+.directory-picker button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.directory-picker button.primary {
+  border-color: var(--accent);
+  color: var(--surface);
+  background: var(--accent);
+}
+
+.directory-picker-error {
+  color: var(--danger) !important;
+}
+
+.directory-picker-list {
+  display: grid;
+  max-height: min(350px, 40dvh);
+  gap: 4px;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+
+.directory-picker-list button {
+  text-align: left;
 }
 
 .workspace-register-form button.primary {
@@ -1348,7 +1464,7 @@ button:disabled {
   width: 100%;
   height: 100vh;
   height: 100dvh;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: minmax(min-content, 1fr);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
@@ -1926,8 +2042,9 @@ details.settings-card[open] > summary::before {
   width: 100%;
   height: 100vh;
   height: 100dvh;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
+  grid-template-rows: minmax(min-content, 1fr);
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--surface-muted);
 }
 
@@ -1935,7 +2052,7 @@ details.settings-card[open] > summary::before {
   width: min(880px, 100%);
   min-width: 0;
   margin: 0 auto;
-  overflow-y: auto;
+  overflow: visible;
   padding: 40px 24px 64px;
 }
 

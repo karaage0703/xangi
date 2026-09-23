@@ -113,10 +113,10 @@ flowchart LR
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
 - session詳細の一時的な読込失敗は安全なGET retry後に表示するが、後続の正常読込でその読込エラーだけを消す。より新しい送信・upload等の操作エラーは消さない
 - Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない。不正なProject項目はその項目だけを読み飛ばし、利用できないbackend/model/effortはそのProjectで無効化して、他の機能を起動し続ける
-- Web Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
+- 設定画面とWeb Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
 - Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
-- `/settings`は`runtime-settings-command.ts`の7項目を共通dispatcher経由で変更する。チャンネル選択肢は接続済みDiscord clientのcacheまたはSlack `conversations.list`から名前を取得し、UIには名前を表示してIDを内部値として保存する。Slackのscope不足は`channels:read` / `groups:read`と再インストール手順へ変換する。選択中チャンネルの保存済みoverrideと実効値は専用GET APIから取得して各入力へ反映する。非秘密の起動設定は`web-startup-settings.ts`の型付きallowlistだけを既存`.env`へ保存する。接続tokenとAPIキーは既存`SecretStore`へ書き込み専用入力から保存でき、Webへは値でなく設定有無だけを返す。`backend-auth-status.ts`は対応する全AIエージェントCLIを列挙し、専用status、認証一覧、モデル一覧、または既存Copilot SDKのアカウント問い合わせで非対話にログイン状態を判定する。AI CLI更新は同モジュールの固定allowlistにある自己更新サブコマンドだけを`shell`なしで実行し、生出力を返さず更新後のversionだけを再取得する。秘密値やCLI出力は返さず、認証以外の失敗は未認証と断定せず判定不能にする。任意の環境変数は受け付けず、明示的な環境変数は引き続き保存値より優先する。変更APIはsame-origin mutationを強制し、画面は即時・次のturn・再起動後を別ラベルで表示する
+- `/settings`は`runtime-settings-command.ts`の7項目を共通dispatcher経由で変更する。既定モデルはbackendから候補を取得できた場合は選択欄、取得できない場合は自由入力として表示する。チャンネル選択肢は接続済みDiscord clientのcacheまたはSlack `conversations.list`から名前を取得し、UIには名前を表示してIDを内部値として保存する。Slackのscope不足は`channels:read` / `groups:read`と再インストール手順へ変換する。選択中チャンネルの保存済みoverrideと実効値は専用GET APIから取得して各入力へ反映する。非秘密の起動設定は`web-startup-settings.ts`の型付きallowlistだけを既存`.env`へ保存する。接続tokenとAPIキーは既存`SecretStore`へ書き込み専用入力から保存でき、Webへは値でなく設定有無だけを返す。`backend-auth-status.ts`は対応する全AIエージェントCLIを列挙し、専用status、認証一覧、モデル一覧、または既存Copilot SDKのアカウント問い合わせで非対話にログイン状態を判定する。AI CLI更新は同モジュールの固定allowlistにある自己更新サブコマンドだけを`shell`なしで実行し、生出力を返さず更新後のversionだけを再取得する。秘密値やCLI出力は返さず、認証以外の失敗は未認証と断定せず判定不能にする。任意の環境変数は受け付けず、明示的な環境変数は引き続き保存値より優先する。変更APIはsame-origin mutationを強制し、画面は即時・次のturn・再起動後を別ラベルで表示する
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
@@ -462,13 +462,15 @@ contextMaxChars = max(historyTokens * CHARS_PER_TOKEN, 8000)   # 1 token ≒ 3 c
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | system prompt 想定枠       | `8000`     |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | 1 リクエストの最大出力枠   | `4096`     |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | 安全マージン               | `1000`     |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | compaction後の最低保持件数 | `10`       |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | message/文字数発火時の保持目安（token優先） | `10`       |
 | `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | 追加時のtool結果切り詰め   | `4000`     |
 | `LOCAL_LLM_MAX_SESSION_MESSAGES`        | token推定以外の発火fallback | `50`       |
 | `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | `NUM_CTX`に対する発火比率  | `0.30`     |
-| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | compaction後の直近tail     | `NUM_CTX`の10%（2000〜12000） |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | 直近tailのtoken予算（発火点の半分以下）     | `NUM_CTX`の10%（2000〜12000） |
 | `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | 要約失敗後の再試行間隔     | `60000`    |
 | `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | 画像1枚のtoken概算         | `2048`     |
+
+保持量は件数よりtoken予算を優先し、完全な直近turnを予算内で残す。最新turn単体が予算を超える場合は分断せず全体を保持する。checkpointしか古い履歴がない場合は再要約しない。保持token予算は発火点の半分以下に制限し、要約後の履歴増加に余裕を作る。
 
 境界はtranscript IDを持つuser messageだけから選び、assistant tool callと対応するtool resultを分断しない。画像はbase64文字数ではなく1枚あたりの固定token予算で見積もる。古い画像のbase64は要約入力から除外し、直近tail内の画像はそのまま保持する。成功時は要約・最初に保持するmessage ID・前後のtoken/message概算を`DATA_DIR/logs/session-compactions/<appSessionId>.jsonl`へappend-onlyで保存し、再起動時は最新checkpoint＋境界以降の通常transcriptを復元する。この別ログはWeb Chatの会話履歴には表示しない。要約または保存に失敗した場合は元履歴を変更せず、cooldown後まで再試行しない。
 

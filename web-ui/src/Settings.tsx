@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { getJson, getJsonWithTimeout, requestJson } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
+import { DirectoryPicker } from './DirectoryPicker';
 
 type ApplyMode = 'immediate' | 'next-turn';
 
@@ -84,6 +85,13 @@ interface ModelsResponse {
   status: string;
   models: Array<{ id: string; displayName?: string; isDefault?: boolean }>;
   supportedEfforts: string[];
+}
+
+interface RegisteredWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  isDefault: boolean;
 }
 
 interface SettingsChannel {
@@ -185,6 +193,12 @@ export function Settings() {
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [models, setModels] = useState<ModelsResponse>();
+  const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
+  const [workspacesStatus, setWorkspacesStatus] = useState('');
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [workspacePath, setWorkspacePath] = useState('');
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const [workspaceToRemove, setWorkspaceToRemove] = useState<RegisteredWorkspace>();
   const [platform, setPlatform] = useState<'discord' | 'slack'>('discord');
   const [channelId, setChannelId] = useState('');
   const [channels, setChannels] = useState<SettingsChannel[]>([]);
@@ -217,6 +231,18 @@ export function Settings() {
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setLoading(false));
   }, []);
+
+  const loadWorkspaces = () => {
+    setWorkspacesStatus('');
+    void getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces')
+      .then((result) => setWorkspaces(result.workspaces))
+      .catch((cause) => {
+        setWorkspaces([]);
+        setWorkspacesStatus(cause instanceof Error ? cause.message : String(cause));
+      });
+  };
+
+  useEffect(loadWorkspaces, []);
 
   useEffect(() => {
     if (!backend) return;
@@ -407,6 +433,50 @@ export function Settings() {
     }
   };
 
+  const registerWorkspace = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!workspaceName.trim() || !workspacePath.trim()) return;
+    setSaving('workspace-add');
+    setError('');
+    setMessage('');
+    try {
+      await requestJson('/api/workspaces', {
+        method: 'POST',
+        body: JSON.stringify({ name: workspaceName.trim(), path: workspacePath.trim() }),
+      });
+      const refreshed = await getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
+      setWorkspaces(refreshed.workspaces);
+      setWorkspaceName('');
+      setWorkspacePath('');
+      setWorkspacesStatus('');
+      setMessage('Workspaceを追加しました');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving('');
+    }
+  };
+
+  const unregisterWorkspace = async () => {
+    if (!workspaceToRemove) return;
+    setSaving('workspace-remove');
+    setError('');
+    setMessage('');
+    try {
+      await requestJson(`/api/workspaces/${encodeURIComponent(workspaceToRemove.id)}`, {
+        method: 'DELETE',
+      });
+      const refreshed = await getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
+      setWorkspaces(refreshed.workspaces);
+      setMessage('Workspaceの登録を解除しました。ディレクトリとファイルは残っています');
+      setWorkspaceToRemove(undefined);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving('');
+    }
+  };
+
   return (
     <div className="settings-page">
       <AppTopbar current="settings" />
@@ -460,20 +530,34 @@ export function Settings() {
                 </label>
                 <label>
                   <span>モデル</span>
-                  <input
-                    list="settings-model-options"
-                    value={model}
-                    onChange={(event) => setModel(event.target.value)}
-                    placeholder="バックエンド既定"
-                    disabled={!settings.backend.enabled || saving === 'backend'}
-                  />
-                  <datalist id="settings-model-options">
-                    {(models?.models || []).map((option) => (
-                      <option value={option.id} key={option.id}>
-                        {option.displayName || option.id}
-                      </option>
-                    ))}
-                  </datalist>
+                  {models?.models.length ? (
+                    <select
+                      value={model}
+                      onChange={(event) => setModel(event.target.value)}
+                      disabled={!settings.backend.enabled || saving === 'backend'}
+                    >
+                      <option value="">バックエンド既定</option>
+                      {model && !models.models.some((option) => option.id === model) ? (
+                        <option value={model}>{model}（現在の設定）</option>
+                      ) : null}
+                      {models.models.map((option) => (
+                        <option value={option.id} key={option.id}>
+                          {option.displayName && option.displayName !== option.id
+                            ? `${option.displayName} (${option.id})`
+                            : option.id}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={model}
+                      onChange={(event) => setModel(event.target.value)}
+                      placeholder={models ? 'モデル名を入力' : 'モデルを取得中…'}
+                      disabled={
+                        !settings.backend.enabled || saving === 'backend' || models === undefined
+                      }
+                    />
+                  )}
                 </label>
                 <label>
                   <span>effort</span>
@@ -497,6 +581,97 @@ export function Settings() {
                   {saving === 'backend' ? '保存中…' : '既定を保存'}
                 </button>
               </form>
+            </section>
+
+            <section className="settings-card" aria-labelledby="settings-workspace-title">
+              <div className="settings-card-heading">
+                <div>
+                  <h2 id="settings-workspace-title">Workspace</h2>
+                  <p>Projectや会話で使う作業ディレクトリを追加・管理します。</p>
+                </div>
+                <ApplyBadge mode="immediate" />
+              </div>
+              {workspacesStatus ? (
+                <p className="settings-safe-note" role="status">
+                  {workspacesStatus}
+                </p>
+              ) : (
+                <div className="workspace-manager settings-workspace-manager">
+                  <form className="workspace-register-form" onSubmit={registerWorkspace}>
+                    <label>
+                      <span>名前</span>
+                      <input
+                        value={workspaceName}
+                        onChange={(event) => setWorkspaceName(event.target.value)}
+                        placeholder="仕事用"
+                        disabled={saving === 'workspace-add'}
+                      />
+                    </label>
+                    <label>
+                      <span>ディレクトリの絶対パス</span>
+                      <div className="workspace-path-controls">
+                        <input
+                          value={workspacePath}
+                          onChange={(event) => setWorkspacePath(event.target.value)}
+                          placeholder="/path/to/workspace"
+                          disabled={saving === 'workspace-add'}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setDirectoryPickerOpen(true)}
+                          disabled={saving === 'workspace-add'}
+                        >
+                          参照…
+                        </button>
+                      </div>
+                    </label>
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={
+                        saving === 'workspace-add' || !workspaceName.trim() || !workspacePath.trim()
+                      }
+                    >
+                      {saving === 'workspace-add' ? '追加中…' : 'Workspaceを追加'}
+                    </button>
+                  </form>
+                  <DirectoryPicker
+                    open={directoryPickerOpen}
+                    initialPath={workspacePath}
+                    onCancel={() => setDirectoryPickerOpen(false)}
+                    onSelect={(path) => {
+                      setWorkspacePath(path);
+                      setDirectoryPickerOpen(false);
+                    }}
+                  />
+                  <div className="workspace-manager-list" aria-label="登録済みWorkspace">
+                    {workspaces.map((workspace) => (
+                      <div className="workspace-manager-row" key={workspace.id}>
+                        <span className="workspace-manager-copy">
+                          <strong>
+                            {workspace.name}
+                            {workspace.isDefault ? ' (default)' : ''}
+                          </strong>
+                          <small>{workspace.path}</small>
+                        </span>
+                        <button
+                          type="button"
+                          className="workspace-unregister"
+                          disabled={workspace.isDefault || saving === 'workspace-remove'}
+                          title={
+                            workspace.isDefault
+                              ? 'default Workspaceは登録解除できません'
+                              : undefined
+                          }
+                          onClick={() => setWorkspaceToRemove(workspace)}
+                        >
+                          登録解除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="settings-card" aria-labelledby="settings-channel-title">
@@ -828,6 +1003,18 @@ export function Settings() {
         busy={Boolean(updateTarget && saving === `backend-update:${updateTarget.id}`)}
         onCancel={() => setUpdateTarget(undefined)}
         onConfirm={() => void updateBackend()}
+      />
+      <ConfirmDialog
+        open={Boolean(workspaceToRemove)}
+        title="Workspaceの登録を解除"
+        description={`「${workspaceToRemove?.name || ''}」の登録だけを解除します。ディレクトリとファイルは削除しません。`}
+        confirmLabel="登録解除"
+        busyLabel="解除中…"
+        busy={saving === 'workspace-remove'}
+        onCancel={() => {
+          if (saving !== 'workspace-remove') setWorkspaceToRemove(undefined);
+        }}
+        onConfirm={() => void unregisterWorkspace()}
       />
     </div>
   );

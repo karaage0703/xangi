@@ -17,6 +17,7 @@ import {
   realpathSync,
 } from 'fs';
 import { join, dirname, extname, basename, isAbsolute, resolve } from 'path';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
 import type { DiscordRemoteInputBridge } from './discord/message-handler.js';
@@ -1846,6 +1847,48 @@ export function startWebChat(options: WebChatOptions): void {
           )
         : [await resolveWorkspace()];
       sendJson(res, 200, { workspaces }, { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url === '/api/workspaces/directories' && req.method === 'GET') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        sendJson(res, 403, { error: 'workspace switching is disabled' });
+        return;
+      }
+      try {
+        const roots = workspaceRegistry?.browseRoots() ?? [];
+        const requestedPath = new URL(req.url || '/', 'http://localhost').searchParams.get('path');
+        if (requestedPath && !isAbsolute(requestedPath)) {
+          throw new Error('絶対パスを指定してください');
+        }
+        const directory = realpathSync(requestedPath || roots[0] || homedir());
+        if (!statSync(directory).isDirectory()) throw new Error('ディレクトリではありません');
+        workspaceRegistry?.assertBrowsableDirectory(directory);
+        const directories = readdirSync(directory, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+          .filter((entry) => {
+            try {
+              const childPath = realpathSync(join(directory, entry.name));
+              workspaceRegistry?.assertBrowsableDirectory(childPath);
+              return statSync(childPath).isDirectory();
+            } catch {
+              return false;
+            }
+          })
+          .map((entry) => ({ name: entry.name, path: join(directory, entry.name) }))
+          .sort((left, right) => left.name.localeCompare(right.name));
+        sendJson(res, 200, {
+          path: directory,
+          parent:
+            dirname(directory) === directory || roots.includes(directory)
+              ? null
+              : dirname(directory),
+          roots,
+          directories,
+        });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 

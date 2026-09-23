@@ -44,7 +44,79 @@ Channels enabled with `/autoreply` will respond without requiring a mention. The
 
 ## Platform-specific message handling
 
-### Images sent together on LINE
+Message queuing, conversation boundaries, and media handling vary by platform.
+
+### Discord / Slack
+
+If another message arrives in the same conversation while a turn is running, xangi replies that it is still processing and does not queue that message. Discord threads and Slack threads are handled as separate sessions.
+
+See [Session Management](#session-management) for the `New`, in-thread `Close`, and `History` controls shown after a response.
+
+### Telegram
+
+#### Groups, topics, and messages during processing
+
+In groups, xangi posts the initial processing message and edits it once with the final answer; it does not publish intermediate streaming updates. It also ignores messages containing a mention of another bot username (a username ending in `bot`). Messages from an allowed bot are processed in groups only when they explicitly mention xangi; replies and unmentioned bot messages are ignored.
+
+Loop counters are scoped by group chat ID and sender bot ID, expire after five minutes, and reset on any human message in that group. xangi's own posts, scheduled posts, and DMs do not increment these counters.
+
+xangi uses Telegram mention entities to match the destination username exactly, so similar usernames and plain code examples do not trigger it. In topic-enabled supergroups and DMs, conversation history, processing queues, `/new`, and `/stop` are isolated by `message_thread_id`. Additional messages received during processing are queued within the same chat or topic and handled in arrival order.
+
+#### Commands
+
+| Command                  | Action                                         |
+| ------------------------ | ---------------------------------------------- |
+| `/new` `/reset` `/clear` | Reset the session and start a new conversation |
+| `/stop`                  | Stop the currently running task                |
+| `/help`                  | Show usage instructions                        |
+
+#### Images and videos
+
+Set `TELEGRAM_MEDIA_ENABLED=true` to receive photos, videos, and documents whose MIME type is allowed in DMs and groups. A caption becomes the instruction; without one, xangi asks the agent to inspect the attachment. Items in the same Telegram album are collected for 750ms by default and processed in one agent turn.
+
+An album reserves its position in the per-chat queue as soon as its first item arrives. Text received while the album is being collected therefore cannot overtake it.
+
+Files are downloaded only after the sender, chat allowlists, and group trigger rules pass. They are stored under `.xangi/media/attachments/telegram`. The default and maximum download size is 20MB, matching the Telegram Bot API `getFile` limit. Files are removed after 24 hours by default; set `TELEGRAM_MEDIA_RETENTION_HOURS=0` to disable automatic cleanup.
+
+`TELEGRAM_MEDIA_ALLOWED_MIME` checks sender-declared MIME metadata reported by Telegram. After download, xangi also verifies the leading file signature for JPEG, PNG, WebP, MP4, PDF, and ZIP files and does not pass mismatches to the agent. Custom MIME types do not receive content verification, so enable them only for trusted allowlisted senders.
+
+When the agent returns an image, MP4 video, or another file as an attachment, xangi sends it as a Telegram photo, video, or document. A failed attachment is not retried because Telegram may already have accepted the upload and retrying could create duplicates. For multiple attachments, xangi still attempts later unsent files and reports how many results could not be confirmed. If final text delivery fails, generated attachments that have not yet been attempted are still attempted once independently.
+
+If you send `/stop` while media is downloading or waiting in the per-chat queue, xangi invalidates that work, discards files it already downloaded, and does not start the agent. The conversation session itself remains active.
+
+Videos are passed directly to the agent. No keyframe extraction or audio transcription is performed, so the selected agent backend must support video input.
+
+### LINE
+
+#### Response indicators and reply-to-push fallback
+
+LINE has no Slack- or Discord-style threads, and reply tokens expire after 60 seconds. xangi handles longer turns in two stages:
+
+1. Immediately after receiving the webhook, xangi calls the Loading animation API and displays "typing…" in a 1:1 chat. The indicator disappears when the bot sends its next message. LINE ignores it in groups and rooms. Set `LINE_LOADING_ANIMATION_ENABLED=false` to disable it or use `LINE_LOADING_ANIMATION_SECONDS` to select a supported duration from 5 to 60 seconds.
+2. After `LINE_SLOW_RESPONSE_THRESHOLD_MS` (45 seconds by default), xangi uses the reply token for a waiting notice and sends the final answer later through the Push API. Set `LINE_SLOW_RESPONSE_ENABLED=false` to disable this fallback, but responses that take longer than 60 seconds may be lost.
+
+Push API sends count toward the LINE Official Account message quota. If fallback happens frequently, adjust the threshold or use a faster inference backend.
+
+#### Consecutive messages
+
+When another message arrives from the same user while a turn is running, it is queued and processed after the current turn finishes.
+
+- Serialization is per `line:<userId>`; other users are not blocked
+- `/reset`, `/new`, and `/clear` bypass the queue and reply immediately; a reset invalidates queued turns
+- Queueing increases elapsed time, so the Push API fallback may be used more often
+- A queued turn displays the loading animation again when its own processing begins
+
+#### Session boundaries
+
+Because LINE has no explicit thread boundary, xangi starts fresh sessions through time-based and command-based rules.
+
+- When the next message arrives after `LINE_IDLE_RESET_HOURS` (four hours by default) of inactivity, xangi archives the active session and creates a new one while preserving its conversation log. Decimal values are supported; set `LINE_IDLE_RESET_ENABLED=false` to disable this behavior
+- Exact matches for `/reset`, `/new`, or `/clear` switch sessions without starting the agent. Matching is case-insensitive after trimming surrounding whitespace, so partial matches such as `/reset please` do not trigger a reset
+- Add localized or custom patterns as CSV in `LINE_RESET_TEXT_PATTERNS`. Set it to an empty string to disable command detection
+
+A Rich Menu button can also send text that matches a reset pattern.
+
+#### Images sent together
 
 When multiple images are sent together on LINE, each image arrives as a separate webhook event. xangi collects events with the same `imageSet.id`, processes them as one turn after all `total` images arrive, and sends one reply.
 
@@ -668,7 +740,7 @@ Discord and Slack can select a working directory per channel. Threads inherit th
 
 Discord exposes the arguments as slash-command fields. Add a `/workspace` Slash Command to the Slack App configuration as well. By default, any existing absolute path accessible to the xangi process can be registered. Set `XANGI_WORKSPACE_ALLOWED_ROOTS` only when registration must be restricted to explicit roots. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
 
-In the Web UI, use `Add Workspace` on the Projects screen to register an existing absolute path accessible to the xangi process. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
+In the Web UI, use `Add Workspace` on the Settings or Projects screen to register an existing absolute path accessible to the xangi process. On the Settings screen, you can enter a path or use `Browse…` to choose a directory on the machine running xangi. When allowed roots are configured, the picker only shows directories within them. It cannot select a local directory on the device running the browser. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
 
 Web Projects also select a registered workspace. A new Web session snapshots the Project workspace when the session is created, so changing a Project or channel binding never moves an existing conversation to another directory. The Workspace editor provides the same registered-workspace selector.
 
@@ -1685,11 +1757,11 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_SYSTEM_PROMPT_BUDGET_TOKENS` | Tokens reserved for the system prompt (used in derivation)                             | `8000`                                                           |
 | `LOCAL_LLM_OUTPUT_BUDGET_TOKENS`        | Tokens reserved for one response (used in derivation)                                  | `4096`                                                           |
 | `LOCAL_LLM_SAFETY_MARGIN_TOKENS`        | Safety margin tokens (used in derivation)                                              | `1000`                                                           |
-| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | Minimum recent messages retained after compaction                                      | `10`                                                             |
+| `LOCAL_LLM_CONTEXT_KEEP_LAST`           | Recent-message target for message/character triggers; token budget takes priority                                      | `10`                                                             |
 | `LOCAL_LLM_TOOL_RESULT_MAX_CHARS`       | Max chars for tool results when inserted                                               | `4000`                                                           |
 | `LOCAL_LLM_MAX_SESSION_MESSAGES`        | Non-token fallback trigger for compaction                                               | `50`                                                             |
 | `LOCAL_LLM_COMPACTION_THRESHOLD_RATIO`  | Batch-compaction trigger ratio relative to `LOCAL_LLM_NUM_CTX`                         | `0.30`                                                           |
-| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | Estimated recent-history tokens retained after compaction                              | 10% of `NUM_CTX` (2000–12000)                                   |
+| `LOCAL_LLM_COMPACTION_KEEP_TOKENS`      | Recent-history token budget, capped at half the trigger; latest turn stays intact                              | 10% of `NUM_CTX` (2000–12000)                                   |
 | `LOCAL_LLM_COMPACTION_COOLDOWN_MS`      | Retry delay after summary or checkpoint persistence failure                            | `60000`                                                          |
 | `LOCAL_LLM_IMAGE_ESTIMATE_TOKENS`       | Estimated tokens per image for compaction planning                                     | `2048`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_ENABLED`         | Enable tool deferred loading (`tool_search`)                                           | `true`                                                           |
