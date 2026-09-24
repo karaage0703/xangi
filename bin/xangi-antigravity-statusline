@@ -5,10 +5,22 @@
 set -euo pipefail
 
 state_dir="${DATA_DIR:-${WORKSPACE_PATH:-$(pwd)}/.xangi}"
+if [[ $# -gt 0 ]]; then
+  if [[ $# -ne 2 || "$1" != "--data-dir" || "$2" != /* ]]; then
+    echo 'Usage: xangi-antigravity-statusline [--data-dir /absolute/state/directory]' >&2
+    exit 2
+  fi
+  state_dir="$2"
+fi
+helper_root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+node_command=node
+if [[ -x "$helper_root/runtime/bin/node" ]]; then
+  node_command="$helper_root/runtime/bin/node"
+fi
 target="$state_dir/antigravity-status.json"
 mkdir -p "$state_dir"
 
-node -e '
+"$node_command" -e '
 const fs = require("node:fs");
 const path = require("node:path");
 let input = "";

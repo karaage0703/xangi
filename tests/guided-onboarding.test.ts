@@ -194,6 +194,7 @@ describe('guided setup backend preflight', () => {
       homeDir: '/Users/tester',
       workspaceCandidates: [],
     });
+    expect(prompt).not.toContain('statusline');
     expect(prompt).toContain('質問、説明、確認、要約はすべて日本語');
     expect(prompt).toContain('既知のworkspaceは見つかりませんでした');
     expect(prompt).toContain('/Users/tester/ai-assistant-workspace');
@@ -233,6 +234,7 @@ describe('guided setup backend preflight', () => {
       launch,
     });
     expect(result).toContain('Claude Code');
+    expect(result).toContain("'/Applications/Xangi/xangi' rescue");
     expect(onSelected).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'claude-code',

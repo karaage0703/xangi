@@ -1608,7 +1608,7 @@ Workspace API:
 
 補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。AntigravityはGeminiモデルとサードパーティモデルごとに5時間枠・週次枠をまとめて表示する。公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安は推定表示しない。Agyがセッションの推定`cost`を返す場合だけSession詳細に推定利用料を表示し、xangi側では金額や通貨を推定しない。
 
-AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline /path/to/xangi/bin/xangi-antigravity-statusline` を一度実行する。このhelperは公式statusline JSONを`DATA_DIR/antigravity-status.json`へ原子的に保存し、quotaを含まない更新では最後に取得できた公式quotaを保持する。非公開APIや画面解析は行わない。
+AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline "/path/to/xangi/bin/xangi-antigravity-statusline" --data-dir "/absolute/path/to/state"` を一度実行する。このhelperは公式statusline JSONを`DATA_DIR/antigravity-status.json`へ原子的に保存し、quotaを含まない更新では最後に取得できた公式quotaを保持する。非公開APIや画面解析は行わない。
 
 ### スケジューラ
 
@@ -1906,3 +1906,7 @@ Codexの過去モデルに限り、元のrolloutが残っていれば `npx tsx s
 通常の実行表示はモデル名と短いローカル日時（例: `2026/09/09 00:24`）に絞り、確認済み・完了の文言とchannel IDは省きます。設定値しか分からない場合の未確認注記は残ります。
 
 Grokは実行したセッション・作業ディレクトリ・時間範囲に一致するネイティブのprimary turn記録からモデルを取得します。GitHub Copilotは応答メッセージのモデル情報も取得します。CursorのAuto実行で内部モデルが公開されない場合は、`Auto（自動選択・内部モデル不明）`と表示・保存します。過去の設定やキャッシュされたモデル候補を実モデルとして補完しません。
+
+### 任意設定: インストール版のAntigravity利用量連携
+
+同梱の `current/bin/xangi-antigravity-statusline` を使い、`--data-dir` には稼働中のxangiの実際の `DATA_DIR` を絶対pathで指定する。空白を含むpathは引用符で囲む。`current` 経由なら更新後も同じpathを使える。helperは同梱Nodeを優先する。既存のAntigravity statusline設定は確認してから変更する。設定後はAntigravityで利用枠データを受信するまでセッションを動かし、Monitorへの表示を確認する。この連携はxangiのMonitorにも利用量を表示したい人だけが行う任意設定。Antigravity自体の利用には不要で、未設定ならMonitorのカードは表示しない。Antigravity自身のstatuslineをONにするだけでは、この保存処理は実行されない。同梱helperは必要な人が個別にダウンロードせず設定できるように用意している。

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -45,6 +45,7 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await chmod(join(project, 'bin', 'xangi'), 0o755);
   await writeFile(join(project, 'bin', 'xangi-cmd'), '#!/bin/sh\nexit 0\n');
   await chmod(join(project, 'bin', 'xangi-cmd'), 0o755);
+  await writeFile(join(project, 'bin', 'xangi-antigravity-statusline'), '#!/bin/bash\nexit 0\n');
   await writeFile(join(project, 'dist', '.env'), 'TOKEN=do-not-package\n');
   await writeFile(join(project, 'dist', 'server.pem'), 'private material\n');
   await writeFile(join(project, 'README.md'), '# xangi\n');
@@ -195,6 +196,7 @@ describe('packaging/build-bundle.sh', () => {
     expect(entries).toContain(`${root}/dist/index.js`);
     expect(entries).toContain(`${root}/bin/xangi`);
     expect(entries).toContain(`${root}/bin/xangi-cmd`);
+    expect(entries).toContain(`${root}/bin/xangi-antigravity-statusline`);
     expect(entries).toContain(`${root}/web/index.html`);
     expect(entries).toContain(`${root}/web/monitor.html`);
     expect(entries).not.toContain(`${root}/web/inter-chat.html`);
@@ -229,6 +231,7 @@ describe('packaging/build-bundle.sh', () => {
     await expect(
       readFile(join(unpacked, root, 'runtime', 'bin', 'node'), 'utf8')
     ).resolves.toContain('fixture-node');
+    expect((await stat(join(unpacked, root, 'bin', 'xangi-antigravity-statusline'))).mode & 0o111).toBe(0o111);
     const canonical = join(unpacked, root, 'bin', 'xangi');
     await expect(readFile(canonical, 'utf8')).resolves.toContain('#!/bin/sh');
     const shim = join(unpacked, root, 'bin', 'xangi-cmd');
