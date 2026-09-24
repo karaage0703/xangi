@@ -139,6 +139,8 @@ mkdir -p -- "$bundle_root/bin" "$bundle_root/runtime/bin" "$bundle_root/node_mod
 cp -- "$project_root/bin/xangi" "$bundle_root/bin/xangi"
 cp -- "$project_root/bin/xangi-cmd" "$bundle_root/bin/xangi-cmd"
 chmod 0755 "$bundle_root/bin/xangi" "$bundle_root/bin/xangi-cmd"
+cp -- "$project_root/bin/xangi-antigravity-statusline" "$bundle_root/bin/xangi-antigravity-statusline"
+chmod 0755 "$bundle_root/bin/xangi-antigravity-statusline"
 cp -R -- "$project_root/dist" "$bundle_root/dist"
 cp -R -- "$project_root/docs" "$bundle_root/docs"
 cp -- "$project_root/web/index.html" "$bundle_root/web/index.html"

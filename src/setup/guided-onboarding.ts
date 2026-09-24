@@ -455,7 +455,7 @@ export async function guidedSetupCmd(options: GuidedSetupOptions): Promise<strin
   const code = await launch(backend, prompt, homeDir);
   if (code !== 0)
     throw new Error(`${backend.label}のオンボーディングが終了コード${code}で終了しました`);
-  return `${backend.label}によるAIガイド付きセットアップが終了しました。\`xangi doctor\`で結果を確認してください。`;
+  return `${backend.label}によるAIガイド付きセットアップが終了しました。\`xangi doctor\`で結果を確認してください。困ったときは \`${options.launcherCommand} rescue\` でAIに診断・修復を依頼できます。`;
 }
 
 export type WorkspaceMode = 'existing' | 'template' | 'blank';
