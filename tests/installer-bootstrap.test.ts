@@ -147,7 +147,11 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
   */manifest.json) cp "$FIXTURE_MANIFEST" "$output" ;;
-  */xangi-1.2.3-*-arm64.tar.gz) cp "$FIXTURE_ARTIFACT" "$output" ;;
+  */xangi-1.2.3-*-arm64.tar.gz)
+    sleep "\${FIXTURE_DOWNLOAD_DELAY:-0}"
+    if [ "\${FIXTURE_INTERRUPT:-0}" = 1 ]; then kill -TERM "$PPID"; exit 0; fi
+    [ "\${FIXTURE_DOWNLOAD_EXIT:-0}" = 0 ] || exit "$FIXTURE_DOWNLOAD_EXIT"
+    cp "$FIXTURE_ARTIFACT" "$output" ;;
   *) exit 22 ;;
 esac
 `
@@ -184,6 +188,59 @@ async function runInstaller(
 }
 
 describe('authenticated macOS bootstrap installer', () => {
+  it('reports ordered stages on stderr while keeping completion output readable', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const result = await runInstaller(installer, data);
+
+    expect(result.stderr.match(/\[\d\/6\].* done \(\d+s\)/g)).toHaveLength(6);
+    let previous = -1;
+    for (let stage = 1; stage <= 6; stage++) {
+      const position = result.stderr.indexOf(`[${stage}/6]`);
+      expect(position).toBeGreaterThan(previous);
+      previous = position;
+    }
+    expect(result.stderr).toContain('Application installation complete.');
+    expect(result.stderr).not.toContain('\r');
+    expect(result.stdout).not.toContain('[1/6]');
+    expect(result.stdout).toContain('Installed xangi 1.2.3.');
+  });
+
+  it('reports elapsed time during a slow download and stops the display before returning', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const result = await runInstaller(installer, data, { FIXTURE_DOWNLOAD_DELAY: '6' });
+
+    expect(result.stderr).toMatch(/\[2\/6\] Downloading.*\(\d+s elapsed\)/);
+    expect(result.stderr.trim().endsWith('Application installation complete.')).toBe(true);
+  }, 15000);
+
+  it('keeps download failures nonzero without reporting later stages or success', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    const error = await runInstaller(installer, data, { FIXTURE_DOWNLOAD_EXIT: '22' }).then(
+      () => null,
+      (failure) => failure
+    );
+    expect(error).toMatchObject({
+      code: 22,
+      stderr: expect.stringMatching(/\[2\/6\].* stopped \(exit 22\)/),
+      stdout: expect.not.stringContaining('Installed xangi'),
+    });
+    expect(error.stderr).not.toContain('[3/6]');
+    expect(error.stderr).not.toContain('Application installation complete.');
+  });
+
+  it('stops the progress child and preserves cancellation status on SIGTERM', async () => {
+    const data = await fixture();
+    const installer = await buildInstaller(data);
+    await expect(runInstaller(installer, data, { FIXTURE_INTERRUPT: '1' })).rejects.toMatchObject({
+      code: 143,
+      stderr: expect.stringMatching(/\[2\/6\].* stopped \(exit 143\)/),
+      stdout: expect.not.stringContaining('Installed xangi'),
+    });
+  });
+
   it('signed manifestとartifactをbuild時に検証し、hash-pinned one-commandを生成する', async () => {
     const data = await fixture();
     const installer = await buildInstaller(data);
@@ -259,7 +316,10 @@ describe('authenticated macOS bootstrap installer', () => {
     await mkdir(commandDir, { recursive: true });
     await writeFile(join(commandDir, 'xangi'), 'unrelated command');
 
-    await expect(runInstaller(installer, data)).rejects.toMatchObject({ code: 1 });
+    await expect(runInstaller(installer, data)).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('[6/6] Installing CLI and configuring command path stopped'),
+    });
     await expect(readFile(join(commandDir, 'xangi'), 'utf8')).resolves.toBe('unrelated command');
   });
 
@@ -403,7 +463,10 @@ describe('authenticated macOS bootstrap installer', () => {
     const installer = await buildInstaller(data);
     await writeFile(data.manifest, '{}');
 
-    await expect(runInstaller(installer, data)).rejects.toMatchObject({ code: 1 });
+    await expect(runInstaller(installer, data)).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('[1/6] Fetching and verifying release manifest stopped'),
+    });
     const installed = join(data.root, 'home', 'Library', 'Application Support', 'xangi', 'app');
     await expect(readFile(join(installed, 'current'))).rejects.toThrow();
   });

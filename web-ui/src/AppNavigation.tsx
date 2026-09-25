@@ -1,7 +1,9 @@
+import { FavoriteLinks, type ExtensionFavorite } from './extensionFavorites';
 export type AppSurface = 'chat' | 'workspace' | 'schedules' | 'monitor' | 'extensions' | 'settings';
 
 interface AppNavigationProps {
   current: AppSurface;
+  favorites?: ExtensionFavorite[];
   moreOpen: boolean;
   onMore: () => void;
 }
@@ -102,7 +104,7 @@ function DestinationLink({
   );
 }
 
-export function AppNavigation({ current, moreOpen, onMore }: AppNavigationProps) {
+export function AppNavigation({ current, moreOpen, onMore, favorites = [] }: AppNavigationProps) {
   const secondaryActive = DESTINATIONS.some(
     (destination) => destination.placement === 'secondary' && destination.id === current
   );
@@ -116,6 +118,11 @@ export function AppNavigation({ current, moreOpen, onMore }: AppNavigationProps)
           )
         )}
       </div>
+      {favorites.length > 0 ? (
+        <div className="app-navigation-favorites" aria-label="お気に入りの拡張">
+          <FavoriteLinks favorites={favorites} />
+        </div>
+      ) : null}
       <div className="app-navigation-secondary">
         {DESTINATIONS.filter((destination) => destination.placement === 'secondary').map(
           (destination) => (

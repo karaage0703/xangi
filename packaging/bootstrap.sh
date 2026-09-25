@@ -46,10 +46,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-curl --fail --silent --show-error --location \
+printf 'xangi: Fetching installer for %s/%s...\n' "$platform" "$arch" >&2
+download_display=(--silent --show-error)
+if [[ -t 2 ]]; then
+  download_display=(--show-error)
+fi
+curl --fail "${download_display[@]}" --location \
   --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --max-filesize 2097152 \
   --output "$installer" "${RELEASE_BASE_URL%/}/$asset"
+printf 'xangi: Starting application installation...\n' >&2
 
 if [[ -t 0 ]]; then
   bash "$installer"

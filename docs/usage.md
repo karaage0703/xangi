@@ -350,6 +350,8 @@ curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install
 
 共通`install.sh`がOSとCPUを判定し、同じGitHub Releaseにあるtarget installerを選択します。WSL2はLinuxとして扱います。`curl ... | bash`のpipeから起動した場合はxangi本体の配置だけを完了し、AI setupとservice起動を延期します。installer終了後、通常のTerminalから表示された`xangi setup`を実行してください。pipe内のshell/readlineからCodexなどのTUIへ端末を引き継がないことで、platform固有の端末初期化エラーを避けます。managed版は`~/.local/bin/xangi`を作成し、そのdirectoryがPATHに無い場合はbashまたはzshの起動設定へ重複なく追加して、現在のshell用の`export PATH=...`も表示します。
 
+インストール中は、配布情報の取得・検証、本体のダウンロード、サイズとSHA-256の検証、アーカイブの安全性検査、展開、コマンドの配置を`[1/6]`〜`[6/6]`で表示します。端末ではダウンロードの転送量・進捗率・速度・残り時間を表示し、それ以外の長い工程では5秒ごとに経過時間を表示します。進捗の出力先をファイルへ変更した場合は、工程名と経過時間を通常の行として記録します。各工程の完了時には所要秒数を表示し、本体のインストール完了とAI初期設定・サービス起動の案内を分けます。工程番号は全体の進捗率ではありません。
+
 ## Terminal CLI（xangi）
 
 `xangi` は人間が端末から xangi Web セッションに接続するための薄いクライアントです。既存の Even Terminal 互換 API (`/api/sessions` / `/api/prompt` / `/api/messages` / `/api/status`) を使い、Claude Code / Codex CLI などのバックエンドを直接起動しません。実際の backend / model は xangi 本体の設定または `XANGI_EVEN_TERMINAL_BACKEND` 系の設定で決まります。
@@ -1910,3 +1912,7 @@ Grokは実行したセッション・作業ディレクトリ・時間範囲に�
 ### 任意設定: インストール版のAntigravity利用量連携
 
 同梱の `current/bin/xangi-antigravity-statusline` を使い、`--data-dir` には稼働中のxangiの実際の `DATA_DIR` を絶対pathで指定する。空白を含むpathは引用符で囲む。`current` 経由なら更新後も同じpathを使える。helperは同梱Nodeを優先する。既存のAntigravity statusline設定は確認してから変更する。設定後はAntigravityで利用枠データを受信するまでセッションを動かし、Monitorへの表示を確認する。この連携はxangiのMonitorにも利用量を表示したい人だけが行う任意設定。Antigravity自体の利用には不要で、未設定ならMonitorのカードは表示しない。Antigravity自身のstatuslineをONにするだけでは、この保存処理は実行されない。同梱helperは必要な人が個別にダウンロードせず設定できるように用意している。
+
+### 拡張のお気に入り
+
+Extensionsのインストール済みで画面を持つ拡張は、「☆ お気に入り」で左メニューへ登録できます。スマホでは「その他」から開きます。Extensions上部の「お気に入り」で上下ボタンによる表示順変更と解除ができます。設定はxangi本体に保存され、同じ本体へ接続するPC・スマホで共通です。画面の再表示や端末へ戻ったときに最新の設定を読み込みます。停止中・削除済みなどで利用できない項目は、拡張一覧へ移動して状態を確認できます。

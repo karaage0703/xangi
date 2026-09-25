@@ -76,7 +76,9 @@ describe('cross-platform release bootstrap', () => {
   ])('dispatches %s/%s to %s', async (system, machine, asset) => {
     const result = await runBootstrap(system, machine);
 
-    expect(result.stderr).toBe('');
+    expect(result.stderr).toContain('xangi: Fetching installer for ');
+    expect(result.stderr).toContain('xangi: Starting application installation...');
+    expect(result.stderr).not.toContain('\r');
     expect(result.requestedUrl).toBe(`https://releases.example/latest/download/${asset}\n`);
     expect(result.installerRan).toBe('defer=1 tty=no\n');
   });

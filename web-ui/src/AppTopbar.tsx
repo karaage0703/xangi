@@ -1,8 +1,10 @@
+import { FavoriteLinks, useExtensionFavorites } from './extensionFavorites';
 import { useEffect, useState } from 'react';
 import { AppNavigation, DESTINATIONS, NavigationIcon, type AppSurface } from './AppNavigation';
 import { ThemeControl, useThemePreference } from './ThemeSelect';
 
 export function AppTopbar({ current }: { current: AppSurface }) {
+  const { favorites, error: favoritesError } = useExtensionFavorites();
   const [moreOpen, setMoreOpen] = useState(false);
   const [themePreference, setThemePreference] = useThemePreference();
 
@@ -23,6 +25,7 @@ export function AppTopbar({ current }: { current: AppSurface }) {
             <span aria-hidden="true">x</span>
           </a>
           <AppNavigation
+            favorites={favorites}
             current={current}
             moreOpen={moreOpen}
             onMore={() => setMoreOpen((open) => !open)}
@@ -77,6 +80,8 @@ export function AppTopbar({ current }: { current: AppSurface }) {
                   </a>
                 )
               )}
+              <FavoriteLinks favorites={favorites} />
+              {favoritesError ? <a href="/extensions">お気に入りを再確認</a> : null}
             </nav>
             <ThemeControl
               variant="sheet"

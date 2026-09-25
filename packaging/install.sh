@@ -13,6 +13,46 @@ readonly RELEASE_PLATFORM='@RELEASE_PLATFORM@'
 readonly RELEASE_ARCH='@RELEASE_ARCH@'
 readonly ARCHIVE_ROOT='@ARCHIVE_ROOT@'
 
+# Keep the installer in the foreground so verification failures and rollback
+# retain their original exit status. Only the elapsed-time display is a child.
+progress_pid=''
+progress_label=''
+progress_started=0
+stop_progress() {
+  if [[ -n "$progress_pid" ]]; then
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+    progress_pid=''
+  fi
+}
+start_progress() {
+  progress_label="$1"
+  progress_started=$SECONDS
+  printf 'xangi: %s...\n' "$progress_label" >&2
+  # curl owns the terminal display during the bundle download.
+  if [[ "${2:-}" == 'download' && -t 2 ]]; then
+    return
+  fi
+  (
+    trap - EXIT
+    sleep_pid=''
+    trap 'if [[ -n "$sleep_pid" ]]; then kill "$sleep_pid" 2>/dev/null || true; wait "$sleep_pid" 2>/dev/null || true; fi; exit 0' INT TERM
+    while true; do
+      sleep 5 &
+      sleep_pid=$!
+      wait "$sleep_pid"
+      sleep_pid=''
+      printf 'xangi: %s... (%ss elapsed)\n' "$progress_label" "$((SECONDS - progress_started))" >&2
+    done
+  ) &
+  progress_pid=$!
+}
+finish_progress() {
+  stop_progress
+  printf 'xangi: %s done (%ss).\n' "$progress_label" "$((SECONDS - progress_started))" >&2
+  progress_label=''
+}
+
 fail() {
   echo "xangi installer: $*" >&2
   exit 1
@@ -63,6 +103,10 @@ previous_current=''
 had_previous_current=0
 cleanup() {
   status=$?
+  stop_progress
+  if [[ $status -ne 0 && -n "$progress_label" ]]; then
+    printf 'xangi: %s stopped (exit %s).\n' "$progress_label" "$status" >&2
+  fi
   if [[ $status -ne 0 ]]; then
     if [[ $current_switched -eq 1 ]]; then
       rm -f -- "$app_root/current"
@@ -87,6 +131,7 @@ trap 'exit 143' TERM
 
 manifest="$temp_dir/manifest.json"
 archive="$temp_dir/xangi.tar.gz"
+start_progress '[1/6] Fetching and verifying release manifest'
 curl --fail --silent --show-error --location \
   --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --max-filesize 1048576 \
@@ -94,18 +139,28 @@ curl --fail --silent --show-error --location \
 actual_manifest_sha="$(sha256_file "$manifest")"
 [[ "$actual_manifest_sha" == "$MANIFEST_SHA256" ]] || \
   fail 'release manifest SHA-256 verification failed'
+finish_progress
 
-curl --fail --silent --show-error --location \
+start_progress "[2/6] Downloading xangi $RELEASE_VERSION ($ASSET_SIZE bytes)" download
+download_display=(--silent --show-error)
+if [[ -t 2 ]]; then
+  download_display=(--show-error)
+fi
+curl --fail "${download_display[@]}" --location \
   --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --max-filesize "$ASSET_SIZE" \
   --output "$archive" "$ASSET_URL"
+finish_progress
+start_progress '[3/6] Verifying bundle size and SHA-256'
 actual_size="$(wc -c <"$archive" | tr -d '[:space:]')"
 [[ "$actual_size" == "$ASSET_SIZE" ]] || fail 'release bundle size verification failed'
 actual_asset_sha="$(sha256_file "$archive")"
 [[ "$actual_asset_sha" == "$ASSET_SHA256" ]] || \
   fail 'release bundle SHA-256 verification failed'
+finish_progress
 
 # Never extract bytes before both the pinned manifest and bundle are verified.
+start_progress '[4/6] Checking archive safety'
 entries="$temp_dir/archive-entries.txt"
 tar -tzf "$archive" >"$entries"
 LC_ALL=C awk -v root="$ARCHIVE_ROOT" '
@@ -126,7 +181,9 @@ tar -tvzf "$archive" >"$details"
 LC_ALL=C awk '
   substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { exit 1 }
 ' "$details" || fail 'release bundle may contain only regular files and directories'
+finish_progress
 
+start_progress '[5/6] Extracting bundle'
 if [[ "$RELEASE_PLATFORM" == 'darwin' ]]; then
   default_app_root="$HOME/Library/Application Support/xangi/app"
   default_config_dir="$HOME/Library/Application Support/xangi/config"
@@ -170,7 +227,9 @@ while IFS= read -r web_app_ref; do
   [[ -f "$unpacked/web/app/$web_app_relative" ]] ||
     fail 'bundle has incomplete React Web UI assets'
 done <<<"$web_app_refs"
+finish_progress
 
+start_progress '[6/6] Installing CLI and configuring command path'
 if [[ -e "$target" ]]; then
   backup="$versions_dir/.${RELEASE_VERSION}.backup.$$"
   rm -rf -- "$backup"
@@ -258,12 +317,15 @@ backup=''
 staging=''
 installed_target=0
 current_switched=0
+finish_progress
+printf 'xangi: Application installation complete.\n' >&2
 
 setup_pending=0
 if [[ "${XANGI_INSTALL_DEFER_SETUP:-0}" == '1' ]]; then
   setup_pending=1
   echo 'AI setup was deferred. Run xangi setup from an interactive terminal after installation.' >&2
 elif [[ "${XANGI_INSTALL_SKIP_SETUP:-0}" != '1' ]]; then
+  printf 'xangi: Starting interactive AI setup...\n' >&2
   set +e
   "$launcher" setup
   setup_status=$?
@@ -274,6 +336,7 @@ elif [[ "${XANGI_INSTALL_SKIP_SETUP:-0}" != '1' ]]; then
   fi
 fi
 if [[ $setup_pending -eq 0 && "${XANGI_INSTALL_SKIP_ACTIVATE:-0}" != '1' ]]; then
+  printf 'xangi: Activating service...\n' >&2
   "$launcher" install
 fi
 

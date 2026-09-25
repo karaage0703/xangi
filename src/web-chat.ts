@@ -1,3 +1,4 @@
+import { ExtensionFavorites, parseFavoriteAction } from './extension-favorites.js';
 import { latestModelExecution } from './model-execution-display.js';
 /**
  * Web チャット UI — 複数スレッド並存・並列ストリーミング対応版
@@ -339,6 +340,7 @@ export function startWebChat(options: WebChatOptions): void {
         : resolve(workspace.path, requestedPath),
     };
   };
+  const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
   const webProjects = WebProjectStore.fromDataDir(dataDir);
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
@@ -1510,6 +1512,45 @@ export function startWebChat(options: WebChatOptions): void {
         return;
       }
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url === '/api/extension-favorites' && req.method === 'GET') {
+      try {
+        const ids = extensionFavorites.list();
+        const catalog = ids.length ? await listDevelopmentExtensionCatalog() : undefined;
+        const favorites = ids.map((id) => {
+          const entry = catalog?.extensions.find((candidate) => candidate.id === id);
+          return {
+            id,
+            displayName: entry?.displayName || id,
+            available: Boolean(
+              entry?.installed && entry.uiAvailable && entry.healthy && entry.actionsAvailable
+            ),
+          };
+        });
+        sendJson(res, 200, { favorites }, { 'Cache-Control': 'no-store' });
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (url === '/api/extension-favorites' && req.method === 'POST') {
+      await handleExtensionMutation(req, res, async () => {
+        const { id, action } = parseFavoriteAction(JSON.parse(await readRawBody(req, 4096)));
+        if (action === 'add') {
+          const catalog = await listDevelopmentExtensionCatalog();
+          if (
+            !catalog.extensions.some(
+              (entry) => entry.id === id && entry.installed && entry.uiAvailable
+            )
+          ) {
+            throw new Error('画面のあるインストール済み拡張を選んでください');
+          }
+        }
+        sendJson(res, 200, { ids: extensionFavorites.update(id, action) });
+      });
       return;
     }
 
