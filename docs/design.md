@@ -1205,3 +1205,7 @@ src/
 実効effortのprovider証拠はbackend固有の構造化記録から取得する。Codexは対象turnのrollout、Grokは実行前のbyte offset以降へ追記されたmain sessionの`chat_history.jsonl`、Antigravityはstreamで確認したモデルIDのeffort接尾辞を使用する。Copilotの`auto`などproviderが実効値を返さない実行は補完せず不明のまま保持する。
 
 `agent.model` はresume判定用の指定値であり、実測モデルで上書きしない。CLIやプロバイダーによるalias解決・fallbackは実行スナップショットで表現する。UIは最後の実測モデルを先頭にし、同turnの他の確認モデルも表示する。過去の設定やモデルを現在のresolverから補完しない。古い `agent.model` は設定値・実行未確認、証拠のないモデルは不明とする。復元済みの `modelHistory` だけが存在する場合はその最新記録を表示する。Webの次回設定は別の `nextBackend` として扱い、Discordでは設定対象の親チャンネルと実行記録を参照するthreadのcontext keyを分離する。
+
+### 拡張お気に入りの保存
+
+`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ拡張IDの順序付き配列をatomic renameで保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動を行う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。

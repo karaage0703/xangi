@@ -1566,6 +1566,24 @@ process.stdin.on('end', () => server.close());
     );
   });
 
+  it('validates extension favorites and blocks cross-origin mutations', async () => {
+    const url = `${baseUrl}/api/extension-favorites`;
+    expect(await (await fetch(url)).json()).toEqual({ favorites: [] });
+    const mutate = (body: unknown, origin = baseUrl) => fetch(url, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect((await mutate({ id: 'unknown', action: 'add' }, 'https://attacker.example')).status).toBe(403);
+    expect((await mutate({ id: 'unknown', action: 'add' })).status).toBe(400);
+    expect((await mutate({ id: '../invalid', action: 'remove' })).status).toBe(400);
+    writeFileSync(join(process.env.DATA_DIR!, 'extension-favorites.json'), JSON.stringify(['removed', 'other']));
+    expect(await (await fetch(url)).json()).toEqual({ favorites: [
+      { id: 'removed', displayName: 'removed', available: false },
+      { id: 'other', displayName: 'other', available: false },
+    ] });
+    expect(await (await mutate({ id: 'other', action: 'up' })).json()).toEqual({ ids: ['other', 'removed'] });
+    expect(await (await mutate({ id: 'removed', action: 'remove' })).json()).toEqual({ ids: ['other'] });
+  });
+
   it('proxies a declared extension UI and its same-origin service requests', async () => {
     const upstream = createServer(async (request, response) => {
       if (request.url === '/health') {
@@ -1633,6 +1651,14 @@ process.stdin.on('end', () => process.exit(0));
       });
       expect(installed.status).toBe(200);
 
+      const favorite = await fetch(`${baseUrl}/api/extension-favorites`, {
+        method: 'POST', headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'ui-extension', action: 'add' }),
+      });
+      expect(favorite.status).toBe(200);
+      expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({ favorites: [
+        { id: 'ui-extension', displayName: 'UI Extension', available: true },
+      ] });
       const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
       expect(page.status).toBe(200);
       expect(page.headers.get('content-security-policy')).toContain("connect-src 'self'");

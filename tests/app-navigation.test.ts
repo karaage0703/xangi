@@ -19,6 +19,16 @@ describe('AppNavigation', () => {
     ]);
   });
 
+  it('renders saved shortcuts in order and sends unavailable entries to the catalog', () => {
+    const html = renderToStaticMarkup(createElement(AppNavigation, {
+      current: 'extensions', moreOpen: false, onMore: () => undefined,
+      favorites: [{ id: 'studio', displayName: 'Studio', available: true }, { id: 'gone', displayName: 'Gone', available: false }],
+    }));
+    expect(html).toContain('href="/api/extensions/studio/ui"');
+    expect(html.indexOf('Studio')).toBeLessThan(html.indexOf('Gone'));
+    expect(html).toContain('拡張一覧で状態を確認');
+  });
+
   it('marks the current destination and exposes the mobile more control', () => {
     const html = renderToStaticMarkup(
       createElement(AppNavigation, {

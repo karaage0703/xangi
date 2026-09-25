@@ -1,3 +1,4 @@
+import { useExtensionFavorites } from './extensionFavorites';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { getJson, requestJson } from './api';
@@ -69,6 +70,7 @@ function permissionLabels(extension: ExtensionEntry): string[] {
 }
 
 export function Extensions() {
+  const favorites = useExtensionFavorites();
   const [extensions, setExtensions] = useState<ExtensionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionId, setActionId] = useState<string>();
@@ -153,12 +155,65 @@ export function Extensions() {
           <button
             className="extensions-refresh"
             type="button"
-            onClick={() => void load()}
+            onClick={() => {
+              void load();
+              void favorites.refresh();
+            }}
             disabled={loading}
           >
             {loading ? '確認中…' : '再確認'}
           </button>
         </header>
+
+        <section className="extension-favorites" aria-labelledby="extension-favorites-title">
+          <h2 id="extension-favorites-title">お気に入り</h2>
+          <p>
+            左メニューから拡張を開けます。スマホでは「その他」に表示します。登録と表示順は端末間で共通です。
+          </p>
+          {favorites.error ? <p role="alert">{favorites.error}</p> : null}
+          {favorites.loading ? (
+            <p>読み込み中…</p>
+          ) : favorites.favorites.length === 0 ? (
+            <p>下の一覧で「☆ お気に入り」を押すと登録できます。</p>
+          ) : (
+            <ol className="extension-favorites-list">
+              {favorites.favorites.map((favorite, index) => (
+                <li key={favorite.id}>
+                  <span>
+                    {favorite.displayName}
+                    {!favorite.available ? '（利用できません）' : ''}
+                  </span>
+                  <div className="extension-favorite-controls">
+                    <button
+                      type="button"
+                      aria-label={`${favorite.displayName}を上へ`}
+                      disabled={favorites.saving || index === 0}
+                      onClick={() => void favorites.update(favorite.id, 'up')}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${favorite.displayName}を下へ`}
+                      disabled={favorites.saving || index === favorites.favorites.length - 1}
+                      onClick={() => void favorites.update(favorite.id, 'down')}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${favorite.displayName}のお気に入りを解除`}
+                      disabled={favorites.saving}
+                      onClick={() => void favorites.update(favorite.id, 'remove')}
+                    >
+                      解除
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
 
         <section className="extension-repository" aria-labelledby="extension-repository-title">
           <div>
@@ -275,6 +330,25 @@ export function Extensions() {
                     ) : null}
                   </div>
                   <div className="extension-actions">
+                    {extension.installed && extension.uiAvailable ? (
+                      <button
+                        type="button"
+                        aria-pressed={favorites.favorites.some((item) => item.id === extension.id)}
+                        disabled={favorites.loading || favorites.saving || Boolean(favorites.error)}
+                        onClick={() =>
+                          void favorites.update(
+                            extension.id,
+                            favorites.favorites.some((item) => item.id === extension.id)
+                              ? 'remove'
+                              : 'add'
+                          )
+                        }
+                      >
+                        {favorites.favorites.some((item) => item.id === extension.id)
+                          ? '★ お気に入り'
+                          : '☆ お気に入り'}
+                      </button>
+                    ) : null}
                     {extension.installed && extension.uiAvailable ? (
                       <button
                         className="extension-open"

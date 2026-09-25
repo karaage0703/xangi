@@ -348,6 +348,8 @@ curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install
 
 The common `install.sh` detects the operating system and CPU, then selects a target installer from the same GitHub Release. WSL2 follows the Linux path. A `curl ... | bash` invocation installs the verified xangi CLI but always defers AI setup and service activation. After the installer exits, run the printed `xangi setup` command from a normal terminal. Keeping interactive AI TUIs out of the pipe avoids platform-specific terminal initialization failures. A managed install creates `~/.local/bin/xangi`; when that directory is not on PATH, the installer adds it idempotently to the bash or zsh startup files and also prints an `export PATH=...` command for the current shell.
 
+During installation, `[1/6]` through `[6/6]` identify manifest download and verification, bundle download, size and SHA-256 verification, archive safety checks, extraction, and CLI installation. In a terminal, downloads show transferred bytes, percentage, speed, and estimated time remaining; other long stages report elapsed time every five seconds. When progress output is redirected to a file, stage names and elapsed time are recorded as ordinary lines. Each completed stage reports its duration, and application installation completion is shown separately from AI setup and service activation. Stage numbers are not an overall percentage.
+
 ## Terminal CLI (xangi)
 
 `xangi` is a thin terminal client for humans to connect to xangi Web sessions. It consumes the existing Even Terminal compatible API (`/api/sessions`, `/api/prompt`, `/api/messages`, `/api/status`) and does not spawn Claude Code, Codex CLI, or other backends directly. The actual backend / model is resolved by the xangi server or the `XANGI_EVEN_TERMINAL_BACKEND` settings.
@@ -1884,3 +1886,7 @@ Grok reads native primary-turn model evidence matched to the exact session, work
 ### Optional: Antigravity usage setup in installed builds
 
 Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-dir` set to the running xangi instance's actual `DATA_DIR` (an absolute path, quoted when it contains spaces). This path remains valid across updates. The helper prefers the bundled Node runtime. Do not overwrite an existing Antigravity statusline without checking it first. After configuring `/statusline`, run an Antigravity session until quota is received and confirm Monitor shows it. This integration is optional and only needed to show usage in xangi Monitor. Antigravity works without it; unconfigured usage cards stay hidden. Enabling Antigravity’s built-in status line alone does not save this snapshot. Bundling the helper saves interested users a separate download.
+
+### Extension favorites
+
+Use “☆ お気に入り” on installed extensions with a UI to add shortcuts to the left navigation rail. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.

@@ -6298,3 +6298,105 @@ video.media-preview {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Extension shortcuts follow the existing rail and mobile overflow menu. */
+.app-navigation-primary,
+.app-navigation-secondary {
+  flex-shrink: 0;
+}
+.app-navigation-favorites {
+  display: grid;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  gap: 4px;
+}
+.app-navigation-favorites a {
+  flex-shrink: 0;
+}
+.app-navigation-favorites a span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.extension-favorites {
+  margin-bottom: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.extension-favorites h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.extension-favorites p {
+  color: var(--ink-secondary);
+  line-height: 1.6;
+}
+.extension-favorites-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.extension-favorites-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.extension-favorites-list li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.extension-favorite-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.extension-favorite-controls button {
+  min-width: 44px;
+  min-height: 44px;
+}
+.extension-favorite-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.app-more-links a span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+@media (max-width: 768px) {
+  .app-navigation-favorites {
+    display: none;
+  }
+  .extension-favorites {
+    padding: 14px;
+  }
+  .extension-favorites-list li {
+    flex-wrap: wrap;
+  }
+}
+
+.app-page-navigation {
+  min-height: 0;
+}
+
+.extension-favorite-controls button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  cursor: pointer;
+}
+.extension-favorite-controls button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.extension-favorite-controls button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
