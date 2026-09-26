@@ -162,6 +162,7 @@ export interface Config {
     replySuggestionCount: number;
   };
   line: {
+    codexTransport?: 'exec' | 'app-server';
     enabled: boolean;
     channelSecret?: string;
     channelAccessToken?: string;
@@ -335,6 +336,16 @@ export function loadConfig(): Config {
     idleTimeoutMs: v.int('IDLE_TIMEOUT_MS', 30 * 60 * 1000, { min: 1000 }), // 30分
   };
 
+  if (
+    process.env.CODEX_LINE_TRANSPORT &&
+    !['exec', 'app-server'].includes(process.env.CODEX_LINE_TRANSPORT)
+  ) {
+    v.issue(
+      'CODEX_LINE_TRANSPORT',
+      process.env.CODEX_LINE_TRANSPORT,
+      'exec / app-server のみ対応。execを使用します'
+    );
+  }
   let agentEffort: EffortLevel | undefined;
   const rawAgentEffort = process.env.AGENT_EFFORT?.trim().toLowerCase();
   if (rawAgentEffort) {
@@ -479,6 +490,7 @@ export function loadConfig(): Config {
       replySuggestionCount: v.int('WEB_REPLY_SUGGESTIONS_COUNT', 3, { min: 1, max: 5 }),
     },
     line: {
+      codexTransport: process.env.CODEX_LINE_TRANSPORT === 'app-server' ? 'app-server' : 'exec',
       enabled: lineEnabled,
       channelSecret: lineChannelSecret,
       channelAccessToken: lineChannelAccessToken,

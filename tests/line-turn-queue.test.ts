@@ -224,3 +224,15 @@ describe('LINE の同一ユーザーのターン直列化', () => {
     expect(h.replies).toEqual(['ごめんなさい、ちょっと調子わるいみたい…', '答え: 2通目']);
   });
 });
+
+it('passes app-server selection only from the interactive LINE context', async () => {
+  const h = createHarness(async () => {});
+  h.ctx.codexTransport = 'app-server';
+  await handleLineEvent(textEvent(USER_A, 'hello', 'transport-test'), h.ctx);
+  await tick();
+  expect(h.runStream).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.any(Object),
+    expect.objectContaining({ codexLineTransport: 'app-server' })
+  );
+});

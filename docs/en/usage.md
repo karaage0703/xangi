@@ -88,6 +88,10 @@ Videos are passed directly to the agent. No keyframe extraction or audio transcr
 
 ### LINE
 
+#### Codex app-server
+
+When using Codex for LINE conversations, set `CODEX_LINE_TRANSPORT=app-server` in `.env` to reuse the Codex process across turns. Skipping CLI startup can speed up follow-up replies, but keeping a process for each conversation uses memory even while idle. The default `exec` starts the CLI for each message. This setting applies only to regular LINE conversations, not scheduled deliveries or other platforms. Restart xangi after changing it.
+
 #### Response indicators and reply-to-push fallback
 
 LINE has no Slack- or Discord-style threads, and reply tokens expire after 60 seconds. xangi handles longer turns in two stages:

@@ -210,6 +210,12 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     });
   }
 
+  async warmLineCodex(channelId: string): Promise<void> {
+    const resolved = this.resolver.resolve(channelId);
+    if (resolved.backend !== 'codex') return;
+    await this.getRunner(channelId, resolved, 'line').warmLineCodex?.(channelId);
+  }
+
   private makeKey(resolved: ResolvedBackend): string {
     return `${resolved.backend}:${resolved.model ?? 'default'}:${resolved.effort ?? 'default'}`;
   }

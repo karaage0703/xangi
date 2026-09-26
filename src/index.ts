@@ -195,6 +195,7 @@ async function main() {
   if (config.line.enabled) {
     platformStartupTasks.push(
       startLineBot({
+        codexTransport: config.line.codexTransport,
         agentRunner,
         resolver,
         scheduler,

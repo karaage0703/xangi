@@ -15,6 +15,8 @@ import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
 
 export interface RunOptions {
+  /** Select the persistent Codex transport for an incoming LINE conversation. */
+  codexLineTransport?: 'exec' | 'app-server';
   skipPermissions?: boolean;
   sessionId?: string;
   channelId?: string; // プロセス管理用
@@ -77,6 +79,7 @@ export interface RunResult {
  * events, so the contract only carries timing-safe metadata.
  */
 export type AgentTraceEvent =
+  | { type: 'transport_timing'; stage: string }
   | { type: 'turn_started' }
   | {
       type: 'tool_started';
@@ -149,6 +152,7 @@ export interface StreamCallbacks {
  * AIエージェントランナーの統一インターフェース
  */
 export interface AgentRunner {
+  warmLineCodex?(channelId: string): Promise<void>;
   run(prompt: string, options?: RunOptions): Promise<RunResult>;
   runStream(prompt: string, callbacks: StreamCallbacks, options?: RunOptions): Promise<RunResult>;
   /** 現在処理中のリクエストをキャンセル */

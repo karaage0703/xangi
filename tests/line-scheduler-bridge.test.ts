@@ -125,6 +125,7 @@ describe('registerLineSchedulerBridge', () => {
 
     // scheduler はログ用途で生の結果を受け取る（Discord / Slack と同じ規約）
     expect(result).toBe('おはよう');
+    expect(vi.mocked(agentRunner.runStream).mock.calls[0][2]?.codexLineTransport).toBeUndefined();
     expect(onStart).toHaveBeenCalledOnce();
     expect(onDelivery).toHaveBeenCalledWith({ platform: 'line', destinationId: USER_ID });
 

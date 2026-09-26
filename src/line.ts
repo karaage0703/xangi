@@ -478,9 +478,24 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
     });
   }
 
+  if (options.codexTransport === 'app-server') {
+    await Promise.all(
+      allowedUsers
+        .filter((id) => id !== '*')
+        .map((id) =>
+          agentRunner.warmLineCodex?.(`${LINE_CONTEXT_PREFIX}${id}`).catch(() => {
+            console.warn(
+              '[xangi-line] Codex warmup failed; next request will retry initialization'
+            );
+          })
+        )
+    );
+  }
+
   const server = createServer(async (req, res) => {
     try {
       await handleRequest(req, res, {
+        codexTransport: options.codexTransport,
         path,
         channelSecret,
         channelAccessToken,
@@ -640,6 +655,7 @@ export function registerLineSchedulerBridge(deps: {
 }
 
 export interface HandlerContext {
+  codexTransport?: 'exec' | 'app-server';
   path: string;
   channelSecret: string;
   /** コンテンツ取得 (api-data.line.me) の Bearer に使う。client は内部に隠している */
@@ -1196,7 +1212,12 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
           userText: text,
         },
         {},
-        { channelId: contextKey, appSessionId, sessionId: resolveResumeSessionId(contextKey) }
+        {
+          channelId: contextKey,
+          appSessionId,
+          sessionId: resolveResumeSessionId(contextKey),
+          codexLineTransport: ctx.codexTransport,
+        }
       );
     } catch (err) {
       runError = err;
