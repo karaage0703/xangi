@@ -1,3 +1,4 @@
+import { CodexAppServerRunner } from './codex-app-server.js';
 import { readCodexTurnModels } from './codex-model-evidence.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
@@ -92,9 +93,54 @@ export class CodexRunner extends CliRunnerBase {
   protected readonly logPrefix = 'codex';
 
   private systemPrompt: string;
+  private appServers = new Map<string, CodexAppServerRunner>();
+  private appOptions?: CodexOptions;
+  private appServer(channelId: string): CodexAppServerRunner {
+    let runner = this.appServers.get(channelId);
+    if (!runner) {
+      runner = new CodexAppServerRunner({ ...this.appOptions, channelId });
+      this.appServers.set(channelId, runner);
+    }
+    return runner;
+  }
+  async warmLineCodex(channelId: string) {
+    await this.appServer(channelId).warm();
+  }
+  cancel(channelId?: string): boolean {
+    const app = channelId ? this.appServers.get(channelId) : undefined;
+    return app?.cancel() || super.cancel(channelId);
+  }
+  hasRunner(channelId: string): boolean {
+    return this.appServers.get(channelId)?.hasRunner() || super.hasRunner(channelId);
+  }
+  getTimeoutState(channelId?: string) {
+    const state = channelId
+      ? this.appServers.get(channelId)?.getTimeoutState(channelId)
+      : undefined;
+    return state?.active ? state : super.getTimeoutState(channelId);
+  }
+  extendTimeout(channelId: string | undefined, ms?: number) {
+    const app = channelId ? this.appServers.get(channelId) : undefined;
+    return app?.getTimeoutState(channelId).active
+      ? app.extendTimeout(channelId, ms)
+      : super.extendTimeout(channelId, ms);
+  }
+  destroy(channelId: string) {
+    const app = this.appServers.get(channelId);
+    app?.shutdown();
+    this.appServers.delete(channelId);
+    super.cancel(channelId);
+    return !!app;
+  }
+  shutdown() {
+    for (const app of this.appServers.values()) app.shutdown();
+    this.appServers.clear();
+    for (const channelId of this.activeProcesses.keys()) super.cancel(channelId);
+  }
 
   constructor(options?: CodexOptions) {
     super(options);
+    this.appOptions = options;
     this.systemPrompt = buildSystemPrompt(options?.platform);
   }
 
@@ -277,6 +323,10 @@ export class CodexRunner extends CliRunnerBase {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
+    if (options?.codexLineTransport === 'app-server') {
+      if (!options.channelId) throw new Error('LINE app-server requires channelId');
+      return this.appServer(options.channelId).run(rawPrompt, options);
+    }
     const prompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(prompt, options);
 
@@ -375,6 +425,10 @@ export class CodexRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    if (options?.codexLineTransport === 'app-server') {
+      if (!options.channelId) throw new Error('LINE app-server requires channelId');
+      return this.appServer(options.channelId).runStream(rawPrompt, callbacks, options);
+    }
     const prompt = this.buildTaggedPrompt(rawPrompt, this.systemPrompt, !options?.sessionId);
     const args = this.buildArgs(prompt, options);
 
