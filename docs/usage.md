@@ -88,6 +88,10 @@ Agentが画像、MP4動画、またはその他のファイルを生成して返
 
 ### LINE
 
+#### Codex app-server
+
+LINEの会話でCodexを使う場合、`.env`に`CODEX_LINE_TRANSPORT=app-server`を設定すると、Codexのプロセスを会話中に再利用できます。継続する会話ではCLIの起動時間を省けるため応答が速くなる一方、会話ごとにプロセスを保持する分、待機中もメモリを消費します。既定の`exec`ではメッセージごとにCLIを起動します。この設定はLINEの通常会話だけに適用され、予定配信や他のプラットフォームには適用されません。設定変更後はxangiを再起動してください。
+
 #### 応答表示とreply→push切り替え
 
 LINEはSlackやDiscordのようなスレッドがなく、reply tokenも60秒で失効します。xangiは次の2段階で長い処理にも応答します。
