@@ -321,10 +321,12 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       });
     } catch (firstError) {
       let error = firstError;
+      let retryAttempts = 0;
       if (options?.sessionId && retry.isBusyError?.(error)) {
         const busyResult = await this.retryWhileBusy(args, callbacks, options, retry);
         if (busyResult.kind === 'resolved') return busyResult.result;
         error = busyResult.error;
+        retryAttempts = busyResult.attempts;
       }
       // busy が続いた場合、または途中で stale になった場合だけ新規セッションへ落とす。
       // ENOENT など別種のエラーへ変わった場合は、そのエラーを隠さず返す。
@@ -333,6 +335,12 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
         throw error;
       }
+      callbacks.onTraceEvent?.({
+        type: 'resume_retry',
+        reason: retry.isBusyError?.(error) ? 'busy' : 'stale',
+        attempt: retryAttempts + 1,
+        waitMs: 0,
+      });
       console.warn(retry.warning(options.sessionId));
       return this.executeStreamCore(retry.args(), callbacks, {
         channelId: options.channelId,
@@ -356,9 +364,20 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       busyWarning?: (sessionId: string, waitMs: number) => string;
       onComplete?: (result: RunResult) => void;
     }
-  ): Promise<{ kind: 'resolved'; result: RunResult } | { kind: 'exhausted'; error: unknown }> {
+  ): Promise<
+    | { kind: 'resolved'; result: RunResult }
+    | { kind: 'exhausted'; error: unknown; attempts: number }
+  > {
     let lastError: unknown = new Error('resume busy');
-    for (const waitMs of BUSY_RESUME_RETRY_WAITS_MS) {
+    let attempts = 0;
+    for (const [index, waitMs] of BUSY_RESUME_RETRY_WAITS_MS.entries()) {
+      attempts = index + 1;
+      callbacks.onTraceEvent?.({
+        type: 'resume_retry',
+        reason: 'busy',
+        attempt: index + 1,
+        waitMs,
+      });
       const warning = retry.busyWarning?.(options.sessionId ?? '', waitMs);
       if (warning) console.warn(warning);
       await this.waitBeforeBusyRetry(waitMs, options.channelId);
@@ -374,7 +393,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         if (!retry.isBusyError?.(retryError)) break;
       }
     }
-    return { kind: 'exhausted', error: lastError };
+    return { kind: 'exhausted', error: lastError, attempts };
   }
 
   /**

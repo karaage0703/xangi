@@ -119,9 +119,9 @@ describe('busy のときの再試行', () => {
   it('No.8 busy後にotherへ変わったら新セッションへ落とさず返す', async () => {
     const runner = new StubbedCodexRunner([busyError(), new Error('spawn codex ENOENT')]);
 
-    const assertion = expect(
-      runner.run('大阪です', { sessionId: SESSION_ID })
-    ).rejects.toThrow('spawn codex ENOENT');
+    const assertion = expect(runner.run('大阪です', { sessionId: SESSION_ID })).rejects.toThrow(
+      'spawn codex ENOENT'
+    );
     await vi.advanceTimersByTimeAsync(10_000);
     await assertion;
     expect(runner.calls).toHaveLength(2);
@@ -141,4 +141,26 @@ describe('busy のときの再試行', () => {
     expect(runner.calls).toHaveLength(1);
     expect(runner.hasRunner('line:user')).toBe(false);
   });
+});
+
+/** Exercise the streaming retry path used by LINE without spawning a real model. */
+class StreamingRetryRunner extends CodexRunner {
+  attempts = 0;
+  protected async executeStreamCore(): Promise<import('../src/agent-runner.js').RunResult> {
+    this.attempts++;
+    if (this.attempts <= 2) throw busyError();
+    return { result: 'recovered', sessionId: SESSION_ID };
+  }
+}
+
+it('emits timing-safe streaming resume retry events for the LINE trace', async () => {
+  const runner = new StreamingRetryRunner({ workdir: '/tmp' } as never);
+  const onTraceEvent = vi.fn();
+  const result = runner.runStream('private prompt', { onTraceEvent }, { sessionId: SESSION_ID });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect((await result).result).toBe('recovered');
+  expect(onTraceEvent.mock.calls.map(([e]) => e)).toEqual([
+    { type: 'resume_retry', reason: 'busy', attempt: 1, waitMs: 500 },
+    { type: 'resume_retry', reason: 'busy', attempt: 2, waitMs: 1000 },
+  ]);
 });

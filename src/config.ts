@@ -168,6 +168,9 @@ export interface Config {
     allowedUsers?: string[];
     webhookPort?: number;
     webhookPath?: string;
+    apiTimeoutMs?: number;
+    mediaTimeoutMs?: number;
+    agentTimeoutMs?: number;
     /**
      * Loading animation API (POST /v2/bot/chat/loading/start) を使って
      * webhook 受信直後に「入力中…」を表示するか (default: true)。
@@ -182,7 +185,7 @@ export interface Config {
     loadingAnimationSeconds?: number;
     /**
      * 応答に時間がかかった時の reply→push 自動切替を有効にするか (default: true)。
-     * 無効にすると reply token のみ使用、60s 超で返信不可になる。
+     * 無効時も受信後45秒を超えた最終回答はpushへ切り替える。
      */
     slowResponseEnabled?: boolean;
     /**
@@ -485,6 +488,12 @@ export function loadConfig(): Config {
       allowedUsers: lineAllowedUsers,
       webhookPort: v.int('LINE_WEBHOOK_PORT', 8765, { min: 1, max: 65535 }),
       webhookPath: process.env.LINE_WEBHOOK_PATH || '/webhook',
+      apiTimeoutMs: v.int('LINE_API_TIMEOUT_MS', 15_000, { min: 1000, max: 120_000 }),
+      mediaTimeoutMs: v.int('LINE_MEDIA_TIMEOUT_MS', 60_000, { min: 1000, max: 600_000 }),
+      agentTimeoutMs: v.int('LINE_AGENT_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, {
+        min: 1000,
+        max: 36_000_000,
+      }),
       loadingAnimationEnabled: process.env.LINE_LOADING_ANIMATION_ENABLED !== 'false',
       loadingAnimationSeconds: v.int('LINE_LOADING_ANIMATION_SECONDS', 60, { min: 5, max: 60 }),
       slowResponseEnabled: process.env.LINE_SLOW_RESPONSE_ENABLED !== 'false',

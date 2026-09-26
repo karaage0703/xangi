@@ -10,9 +10,18 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { unlinkSync } from 'fs';
-import { LineBotClient, validateSignature, type webhook } from '@line/bot-sdk';
+import { validateSignature, type webhook } from '@line/bot-sdk';
+import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
+import {
+  createLineClient,
+  canFallbackFromLineReply,
+  LINE_MEDIA_TIMEOUT_MS,
+  type LineClient,
+} from './line-api.js';
+import { LineLatencyTrace, lineFailure } from './line-latency.js';
+import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { AgentRunner, RunResult } from './agent-runner.js';
-import { buildCompletionSummary, type CompletionDisplayOptions } from './completion-summary.js';
+import type { CompletionDisplayOptions } from './completion-summary.js';
 import type { BackendResolver } from './backend-resolver.js';
 import {
   ensureSession,
@@ -270,6 +279,7 @@ interface NoticeTimer {
   replyToken: string;
   /** 'waiting' なら揃うのを待っている、'running' ならターン実行中 */
   phase: 'waiting' | 'running';
+  trace?: LineLatencyTrace;
 }
 
 function clearNoticeTimer(timer: NoticeTimer): void {
@@ -288,12 +298,15 @@ function armNoticeTimer(ctx: HandlerContext, timer: NoticeTimer, replyToken: str
     timer.handle = null;
     timer.fired = true;
     const text = timer.phase === 'waiting' ? IMAGE_SET_WAIT_NOTICE_TEXT : SLOW_RESPONSE_NOTICE_TEXT;
-    ctx.client
-      .replyMessage({ replyToken: timer.replyToken, messages: [{ type: 'text', text }] })
-      .catch((err) => {
-        // token 失効や rate limit。本回答側で push へ落とすのでここでは warn のみ
-        console.warn('[xangi-line] notice reply failed (non-fatal):', err);
-      });
+    const send = () =>
+      ctx.client.replyMessage({ replyToken: timer.replyToken, messages: [{ type: 'text', text }] });
+    (timer.trace
+      ? timer.trace.measure('send', send, { mode: 'reply', purpose: 'notice' })
+      : send()
+    ).catch((err) => {
+      // token 失効や rate limit。本回答側で push へ落とすのでここでは warn のみ
+      console.warn('[xangi-line] notice reply failed (non-fatal):', lineFailure(err));
+    });
   }, ctx.slowResponseThresholdMs);
 }
 
@@ -317,6 +330,48 @@ function armNoticeTimer(ctx: HandlerContext, timer: NoticeTimer, replyToken: str
 export class LineChatQueue {
   private readonly tails = new Map<string, Promise<void>>();
   private readonly generations = new Map<string, number>();
+  private readonly pending = new Map<string, string[]>();
+  private readonly agents = new Map<string, Promise<unknown>>();
+
+  /** Bound the adapter wait, but never overlap a still-running agent after timeout. */
+  async runAgent<T>(
+    contextKey: string,
+    runner: AgentRunner,
+    task: () => Promise<T>,
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
+    if (this.agents.has(contextKey)) {
+      const error = new Error('Previous LINE agent has not stopped');
+      error.name = 'LineAgentBusyError';
+      throw error;
+    }
+    const running = Promise.resolve().then(task);
+    this.agents.set(contextKey, running);
+    const release = () => {
+      if (this.agents.get(contextKey) === running) this.agents.delete(contextKey);
+    };
+    void running.then(release, release);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        running,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            const error = new Error('LINE agent deadline exceeded');
+            error.name = 'TimeoutError';
+            reject(error);
+            try {
+              runner.cancel?.(contextKey);
+            } catch {
+              /* Retain pending guard. */
+            }
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   /** その contextKey で実行中・待機中のターンがあるか */
   isBusy(contextKey: string): boolean {
@@ -336,9 +391,24 @@ export class LineChatQueue {
    * contextKey ごとに task を直列化する。
    * 直前の task が失敗しても後続を止めない (`then(task, task)`)。
    */
-  enqueue(contextKey: string, task: () => Promise<void>): Promise<void> {
+  enqueue(contextKey: string, task: () => Promise<void>, trace?: LineLatencyTrace): Promise<void> {
     const previous = this.tails.get(contextKey) ?? Promise.resolve();
-    const result = previous.then(task, task);
+    const entries = this.pending.get(contextKey) ?? [];
+    const queuedAt = performance.now();
+    trace?.mark('queue_enqueued', { queueDepth: entries.length, blockingTraceId: entries[0] });
+    entries.push(trace?.id ?? 'untraced');
+    this.pending.set(contextKey, entries);
+    const execute = async () => {
+      trace?.mark('processing_start', { queueWaitMs: Math.round(performance.now() - queuedAt) });
+      try {
+        await task();
+      } finally {
+        entries.shift();
+        trace?.mark('processing_end');
+        if (entries.length === 0) this.pending.delete(contextKey);
+      }
+    };
+    const result = previous.then(execute, execute);
     const tail = result.then(
       () => undefined,
       () => undefined
@@ -428,6 +498,9 @@ export interface LineBotOptions extends Omit<
   resetTextPatterns?: readonly string[];
   completionDisplay?: CompletionDisplayOptions;
   completionNotifyAfterMs?: number;
+  mediaTimeoutMs?: number;
+  agentTimeoutMs?: number;
+  apiTimeoutMs?: number;
   /** 指定すると LINE 宛のスケジュール配信・エージェント実行を登録する */
   scheduler?: Scheduler;
 }
@@ -462,7 +535,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   };
   const completionNotifyAfterMs = options.completionNotifyAfterMs ?? 10_000;
 
-  const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
+  const client = createLineClient(channelAccessToken, options.apiTimeoutMs);
   const queue = new LineChatQueue();
   const imageSets = new LineImageSetBuffer();
 
@@ -475,6 +548,7 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
       allowedUsers,
       allowAll,
       completionDisplay,
+      agentTimeoutMs: options.agentTimeoutMs,
     });
   }
 
@@ -500,9 +574,11 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
         resetTextPatterns,
         completionDisplay,
         completionNotifyAfterMs,
+        mediaTimeoutMs: options.mediaTimeoutMs,
+        agentTimeoutMs: options.agentTimeoutMs,
       });
     } catch (err) {
-      console.error('[xangi-line] request handler error:', err);
+      console.error('[xangi-line] request handler error:', lineFailure(err));
       if (!res.headersSent) {
         res.writeHead(500);
         res.end('Internal Server Error');
@@ -511,13 +587,34 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   });
 
   await listenHttpServer(server, port);
+  const eventLoop = monitorEventLoopDelay({ resolution: 100 });
+  eventLoop.enable();
+  const healthTimer = setInterval(() => {
+    const maxMs = Math.round(eventLoop.max / 1e6);
+    if (maxMs >= 1000)
+      console.log(
+        '[line-latency]',
+        JSON.stringify({
+          version: 1,
+          at: new Date().toISOString(),
+          stage: 'event_loop_delay',
+          durationMs: maxMs,
+        })
+      );
+    eventLoop.reset();
+  }, 15_000);
+  healthTimer.unref();
+  server.once('close', () => {
+    clearInterval(healthTimer);
+    eventLoop.disable();
+  });
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : port;
   console.log(`[xangi-line] webhook listening on port ${actualPort}, path ${path}`);
   if (allowAll) {
     console.log('[xangi-line] All LINE users are allowed');
   } else if (allowedUsers.length > 0) {
-    console.log(`[xangi-line] Allowed users: ${allowedUsers.join(', ')}`);
+    console.log(`[xangi-line] Allowlist configured (${allowedUsers.length} users)`);
   } else {
     console.warn(
       '[xangi-line] ⚠️  LINE_ALLOWED_USER is empty — incoming messages will be ignored. Set "*" or a specific userId to enable.'
@@ -526,13 +623,23 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   return server;
 }
 
-async function pushLineText(client: LineBotClient, userId: string, text: string): Promise<void> {
+async function pushLineText(
+  client: LineClient,
+  userId: string,
+  text: string,
+  trace?: LineLatencyTrace
+): Promise<void> {
   const chunks = splitMessage(text, LINE_TEXT_MESSAGE_MAX);
   for (let i = 0; i < chunks.length; i++) {
     try {
-      await client.pushMessage({ to: userId, messages: [{ type: 'text', text: chunks[i] }] });
+      const send = () =>
+        client.pushMessage({ to: userId, messages: [{ type: 'text', text: chunks[i] }] });
+      if (trace) await trace.measure('send', send, { mode: 'push', purpose: 'schedule' });
+      else await send();
     } catch (error) {
-      throw new Error(`[xangi-line] Scheduled push chunk ${i + 1} failed: ${String(error)}`);
+      throw new Error(
+        `[xangi-line] Scheduled push chunk ${i + 1} failed: ${lineFailure(error).errorKind}`
+      );
     }
   }
 }
@@ -545,21 +652,20 @@ async function pushLineText(client: LineBotClient, userId: string, text: string)
  */
 export function registerLineSchedulerBridge(deps: {
   scheduler: Scheduler;
-  client: LineBotClient;
+  client: LineClient;
   queue: LineChatQueue;
   agentRunner: AgentRunner;
   allowedUsers: readonly string[];
   allowAll: boolean;
   completionDisplay?: CompletionDisplayOptions;
+  agentTimeoutMs?: number;
 }): void {
   const { scheduler, client, queue, agentRunner, allowedUsers, allowAll, completionDisplay } = deps;
 
   const requireAllowedTarget = (channelId: string): LineScheduleTarget => {
     const target = parseLineScheduleTarget(channelId);
     if (!allowAll && !allowedUsers.includes(target.userId)) {
-      throw new NonRetryableError(
-        `[xangi-line] Scheduled target is not in LINE_ALLOWED_USER: ${target.userId}`
-      );
+      throw new NonRetryableError('[xangi-line] Scheduled target is not in LINE_ALLOWED_USER');
     }
     return target;
   };
@@ -568,15 +674,31 @@ export function registerLineSchedulerBridge(deps: {
   // 可能性があるため、自動再試行せず at-most-once を優先する。
   scheduler.registerSender('line', async (channelId, message) => {
     const { userId } = requireAllowedTarget(channelId);
-    await pushLineText(client, userId, message);
+    const trace = new LineLatencyTrace(
+      channelId,
+      undefined,
+      undefined,
+      undefined,
+      Date.now(),
+      'schedule'
+    );
+    await pushLineText(client, userId, message, trace);
   });
 
   scheduler.registerAgentRunner('line', async (prompt, channelId, schedule, runContext) => {
     const { userId, contextKey } = requireAllowedTarget(channelId);
+    const trace = new LineLatencyTrace(
+      contextKey,
+      undefined,
+      undefined,
+      undefined,
+      Date.now(),
+      'schedule'
+    );
 
     const deliver = async (text: string): Promise<void> => {
       try {
-        await pushLineText(client, userId, text);
+        await pushLineText(client, userId, text, trace);
         runContext?.onDelivery?.({ platform: 'line', destinationId: userId });
       } catch (pushError) {
         // pushMessage は非冪等で、途中チャンクまで届いている可能性がある。
@@ -589,52 +711,64 @@ export function registerLineSchedulerBridge(deps: {
 
     let agentResult = '';
     // メッセージハンドラと同じキューを通し、同一ユーザーのターンと並行実行しない。
-    await queue.enqueue(contextKey, async () => {
-      runContext?.onStart?.();
-      const appSessionId = createSchedulerRunId('line');
-      createSchedulerSession(appSessionId, contextKey, {
-        platform: 'line',
-        title: schedule?.label || prompt,
-      });
-      const startedAt = Date.now();
-      try {
-        let runResult: RunResult;
+    await queue.enqueue(
+      contextKey,
+      async () => {
+        runContext?.onStart?.();
+        const appSessionId = createSchedulerRunId('line');
+        createSchedulerSession(appSessionId, contextKey, {
+          platform: 'line',
+          title: schedule?.label || prompt,
+        });
+        const startedAt = Date.now();
         try {
-          runResult = await runWithBubbleEvents(
-            agentRunner,
-            prompt,
-            {
-              threadId: threadIdFor('line', userId),
-              turnId: turnIdFor('line', appSessionId),
-              threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
-              platform: 'line',
-              userText: prompt,
-            },
-            {},
-            { channelId: contextKey, appSessionId }
-          );
-        } catch (error) {
-          console.error('[xangi-line] scheduled run failed:', error);
-          await deliver(
-            appendScheduleRunCompletion(
-              ERROR_FALLBACK_TEXT,
-              Date.now() - startedAt,
-              completionDisplay,
-              'error'
-            )
-          );
-          // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
-          throw error;
-        }
+          let runResult: RunResult;
+          try {
+            runResult = await trace.measure('agent', () =>
+              queue.runAgent(
+                contextKey,
+                agentRunner,
+                () =>
+                  runWithBubbleEvents(
+                    agentRunner,
+                    prompt,
+                    {
+                      threadId: threadIdFor('line', userId),
+                      turnId: turnIdFor('line', appSessionId),
+                      threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+                      platform: 'line',
+                      userText: prompt,
+                    },
+                    latencyCallbacks(trace),
+                    { channelId: contextKey, appSessionId }
+                  ),
+                deps.agentTimeoutMs
+              )
+            );
+          } catch (error) {
+            console.error('[xangi-line] scheduled run failed:', lineFailure(error));
+            await deliver(
+              appendScheduleRunCompletion(
+                ERROR_FALLBACK_TEXT,
+                Date.now() - startedAt,
+                completionDisplay,
+                'error'
+              )
+            );
+            // 一時的なネットワークエラーの再試行判定は scheduler 側が行うため送出する。
+            throw error;
+          }
 
-        agentResult = runResult.result || '…';
-        await deliver(
-          appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
-        );
-      } finally {
-        closeSession(appSessionId, 'other');
-      }
-    });
+          agentResult = runResult.result || '…';
+          await deliver(
+            appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
+          );
+        } finally {
+          closeSession(appSessionId, 'other');
+        }
+      },
+      trace
+    );
     return agentResult;
   });
 }
@@ -650,7 +784,7 @@ export interface HandlerContext {
   /** 同時送信された画像を 1 ターンにまとめるための控え */
   imageSets: LineImageSetBuffer;
   resolver: BackendResolver;
-  client: LineBotClient;
+  client: LineClient;
   allowedUsers: string[];
   allowAll: boolean;
   loadingAnimationEnabled: boolean;
@@ -662,6 +796,8 @@ export interface HandlerContext {
   resetTextPatterns: readonly string[];
   completionDisplay: CompletionDisplayOptions;
   completionNotifyAfterMs: number;
+  mediaTimeoutMs?: number;
+  agentTimeoutMs?: number;
 }
 
 async function handleRequest(
@@ -669,6 +805,7 @@ async function handleRequest(
   res: ServerResponse,
   ctx: HandlerContext
 ): Promise<void> {
+  const receivedAt = Date.now();
   const url = (req.url || '/').split('?')[0];
 
   // health check (GET / or GET /webhook)
@@ -703,14 +840,14 @@ async function handleRequest(
   try {
     payload = JSON.parse(rawBody) as webhook.CallbackRequest;
   } catch (err) {
-    console.warn('[xangi-line] Invalid JSON body:', err);
+    console.warn('[xangi-line] Invalid JSON body:', lineFailure(err));
     return;
   }
 
   const events = payload.events ?? [];
   for (const event of events) {
-    handleLineEvent(event, ctx).catch((err) => {
-      console.error('[xangi-line] handleEvent error:', err);
+    handleLineEvent(event, ctx, receivedAt).catch((err) => {
+      console.error('[xangi-line] handleEvent error:', lineFailure(err));
     });
   }
 }
@@ -890,7 +1027,8 @@ async function fetchLineMedia(
     contentProvider?: { type?: string; originalContentUrl?: string };
   },
   messageId: string,
-  ctx: HandlerContext
+  ctx: HandlerContext,
+  trace: LineLatencyTrace
 ): Promise<string | null> {
   const { url, authHeader } = resolveContentRequest(
     message.contentProvider,
@@ -903,9 +1041,13 @@ async function fetchLineMedia(
   // エージェントが付ける羽目になる。
   const ext = extensionForMedia(message);
   try {
-    return await downloadFile(url, `line_${messageId}.${ext}`, authHeader);
-  } catch (err) {
-    console.error(`[xangi-line] failed to download ${message.type} (${messageId}):`, err);
+    return await trace.measure('media', () =>
+      downloadFile(url, `line_${messageId}.${ext}`, authHeader, {
+        timeoutMs: ctx.mediaTimeoutMs ?? LINE_MEDIA_TIMEOUT_MS,
+        quiet: true,
+      })
+    );
+  } catch {
     return null;
   }
 }
@@ -917,16 +1059,42 @@ async function fetchLineMedia(
  * 受信時の1回で足りていたが、待機が入ると、待っている間に前のターンの返信が届いて
  * 表示が消える。待ち時間はむしろ直列化後の方が長いので、表示が要る場面で出なくなる。
  */
-function showLoading(ctx: HandlerContext, userId: string): void {
+function showLoading(ctx: HandlerContext, userId: string, trace: LineLatencyTrace): void {
   if (!ctx.loadingAnimationEnabled) return;
-  ctx.client
-    .showLoadingAnimation({ chatId: userId, loadingSeconds: ctx.loadingAnimationSeconds })
-    .catch((err) => {
-      console.warn('[xangi-line] showLoadingAnimation failed (non-fatal):', err);
-    });
+  void trace
+    .measure(
+      'loading',
+      () =>
+        ctx.client.showLoadingAnimation({
+          chatId: userId,
+          loadingSeconds: ctx.loadingAnimationSeconds,
+        }),
+      { mode: 'loading' }
+    )
+    .catch(() => undefined);
 }
 
-export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext): Promise<void> {
+function latencyCallbacks(trace: LineLatencyTrace) {
+  return {
+    onBackendReady: () => trace.mark('agent_backend_ready'),
+    onTraceEvent: (event: import('./agent-runner.js').AgentTraceEvent) => {
+      if (event.type === 'resume_retry')
+        trace.mark('agent_resume_retry', {
+          reason: event.reason,
+          attempt: event.attempt,
+          waitMs: event.waitMs,
+        });
+      else if (event.type === 'turn_started' || event.type === 'turn_completed')
+        trace.mark(`agent_${event.type}`);
+    },
+  };
+}
+
+export async function handleLineEvent(
+  event: webhook.Event,
+  ctx: HandlerContext,
+  receivedAt = Date.now()
+): Promise<void> {
   if (event.type !== 'message') return;
   const message = event.message;
   if (!message) return;
@@ -935,6 +1103,16 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   const userId = source && 'userId' in source ? source.userId : undefined;
   const replyToken = 'replyToken' in event ? event.replyToken : undefined;
   const messageId = message.id;
+  const trace = new LineLatencyTrace(
+    userId ?? 'unknown',
+    messageId,
+    event.webhookEventId,
+    event.timestamp,
+    receivedAt,
+    'message',
+    event.deliveryContext?.isRedelivery ?? false
+  );
+  trace.mark('webhook_received');
 
   if (!userId || !replyToken) {
     console.warn(
@@ -947,7 +1125,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // **allowlist は本体取得より先に見る。** 後ろに置くと、許可していない相手の
   // ファイルまでダウンロードしてしまう。
   if (!ctx.allowAll && !ctx.allowedUsers.includes(userId)) {
-    console.log(`[xangi-line] user ${userId} not in allowlist, ignoring`);
+    console.log('[xangi-line] user not in allowlist, ignoring');
     return;
   }
 
@@ -998,18 +1176,28 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   if (modelsBackend !== null) {
     try {
       const result = await executeModelsCommand(modelsBackend, ctx.resolver);
-      await ctx.client.replyMessage({
-        replyToken,
-        messages: splitMessage(result, LINE_TEXT_MESSAGE_MAX)
-          .slice(0, 5)
-          .map((chunk) => ({ type: 'text' as const, text: chunk })),
-      });
+      await trace.measure(
+        'send',
+        () =>
+          ctx.client.replyMessage({
+            replyToken,
+            messages: splitMessage(result, LINE_TEXT_MESSAGE_MAX)
+              .slice(0, 5)
+              .map((chunk) => ({ type: 'text' as const, text: chunk })),
+          }),
+        { mode: 'reply', purpose: 'command' }
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
-      await ctx.client.replyMessage({
-        replyToken,
-        messages: [{ type: 'text', text: message.slice(0, LINE_TEXT_MESSAGE_MAX) }],
-      });
+      await trace.measure(
+        'send',
+        () =>
+          ctx.client.replyMessage({
+            replyToken,
+            messages: [{ type: 'text', text: message.slice(0, LINE_TEXT_MESSAGE_MAX) }],
+          }),
+        { mode: 'reply', purpose: 'command' }
+      );
     }
     return;
   }
@@ -1028,18 +1216,21 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
     const activeId = getActiveSessionId(contextKey);
     if (activeId) {
       archiveSession(activeId);
-      console.log(
-        `[xangi-line] reset command (${text.trim()}) for user ${userId.slice(0, 8)}…, archived ${activeId}`
-      );
+      console.log('[xangi-line] reset command archived active session');
     }
     ensureSession(contextKey, { platform: 'line' });
     try {
-      await ctx.client.replyMessage({
-        replyToken,
-        messages: [{ type: 'text', text: RESET_REPLY_TEXT }],
-      });
+      await trace.measure(
+        'send',
+        () =>
+          ctx.client.replyMessage({
+            replyToken,
+            messages: [{ type: 'text', text: RESET_REPLY_TEXT }],
+          }),
+        { mode: 'reply', purpose: 'command' }
+      );
     } catch (replyErr) {
-      console.error('[xangi-line] reset reply failed:', replyErr);
+      console.error('[xangi-line] reset reply failed:', lineFailure(replyErr));
     }
     return;
   }
@@ -1047,7 +1238,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // 即時 ACK: Loading animation を webhook 受信直後・Runner 起動前に叩く。
   // 失敗してもユーザ体験は (loading 出ない) 程度なので致命的でない。warn のみ。
   // 1:1 DM のみ機能、グループ・ルームでは LINE 側で無視されるが API call 自体は成功する。
-  showLoading(ctx, userId);
+  showLoading(ctx, userId, trace);
 
   // Slow response 制御: replyToken は LINE 仕様で 60s で失効するため、threshold ms
   // (default 45s) を超えそうな時は先に replyToken で通知を送って token を消費し、
@@ -1066,7 +1257,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
         images: [],
         lastArrivalAt: Date.now(),
         state: 'buffered',
-        notice: { handle: null, fired: false, replyToken, phase: 'waiting' },
+        notice: { handle: null, fired: false, replyToken, phase: 'waiting', trace },
       }))
     : undefined;
   const notice: NoticeTimer = pendingSet?.notice ?? {
@@ -1074,7 +1265,9 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
     fired: false,
     replyToken,
     phase: 'running',
+    trace,
   };
+  notice.trace = trace;
   // イベントが届くたびに張り替える。届き続けているあいだは発火しない。
   armNoticeTimer(ctx, notice, replyToken);
 
@@ -1089,12 +1282,16 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       messageId ?? `${rawSetId}:${imageSetIndex ?? 'unknown'}`,
       imageSetIndex
     );
-    if (!reserved) return;
+    if (!reserved) {
+      trace.mark('processing_skipped');
+      return;
+    }
     reserved.replyToken = replyToken;
-    const saved = messageId ? await fetchLineMedia(message, messageId, ctx) : null;
+    const saved = messageId ? await fetchLineMedia(message, messageId, ctx, trace) : null;
     bundled = ctx.imageSets.complete(setId, pendingSet!, reserved, saved);
     if (!bundled) {
       // まだ揃っていない。本回答はせず、待機の通知だけがタイマーから出る。
+      trace.mark('image_set_waiting');
       return;
     }
     notice.phase = 'running';
@@ -1107,145 +1304,171 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   // 待たされるターンだけ、開始時に表示を出し直す。待たないターンで二重に出さない。
   const willWait = ctx.queue.isBusy(contextKey);
 
-  await ctx.queue.enqueue(contextKey, async () => {
-    if (ctx.queue.getGeneration(contextKey) !== queuedGeneration) {
-      clearNoticeTimer(notice);
-      console.log(
-        `[xangi-line] skip queued turn for user ${userId.slice(0, 8)}… (session was reset)`
-      );
-      return;
-    }
-
-    if (willWait) showLoading(ctx, userId);
-
-    // Idle reset: 既存 session の最終発話から idleResetMs 以上経過していたら
-    // session を archive (logs/sessions/*.jsonl は残る) し、ensureSession で
-    // 新規発番する。LINE は UI 境界が無いため時間ベースで会話クラスタを区切る。
-    if (ctx.idleResetEnabled && ctx.idleResetMs > 0) {
-      const activeId = getActiveSessionId(contextKey);
-      if (activeId) {
-        const entry = getSessionEntry(activeId);
-        if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
-          archiveSession(activeId);
-          // 会話の区切りに合わせて控えも捨てる。3 日前の画像が今日の発言へ
-          // 合流すると意味が通らなくなる。
-          ctx.imageSets.dropIdleFor(contextKey, Date.now() - ctx.idleResetMs);
-          console.log(
-            `[xangi-line] idle reset for user ${userId.slice(0, 8)}…, last=${entry.updatedAt}, archived ${activeId}`
-          );
-        }
-      }
-    }
-
-    const appSessionId = ensureSession(contextKey, { platform: 'line' });
-
-    const attachmentPaths: string[] = [];
-
-    if (bundled) {
-      // 同時送信がそろった。index 順に並んだ添付をまとめて 1 ターンで渡す。
-      for (const image of bundled) {
-        if (image.path) attachmentPaths.push(image.path);
-      }
-      text = attachmentOnlyPrompt(`${bundled.length}枚の画像`);
-      if (attachmentPaths.length < bundled.length) {
-        text = `${text}\n- ${bundled.length}枚のうち${attachmentPaths.length}枚しか取得できていない`;
-      }
-    } else {
-      // 揃わないまま残っている控えがあれば、このターンへ合流させる。
-      // ターンを走らせずにセッションへ文脈を足す口が無いため、次の発言に便乗させる。
-      // 取得に失敗した控えは渡すものが無いので数えない。
-      const carried = await ctx.imageSets.takeFor(contextKey);
-      for (const image of carried) {
-        if (image.path) attachmentPaths.push(image.path);
-      }
-      const carriedCount = attachmentPaths.length;
-      if (carriedCount > 0) {
-        text = `${text}\n\n（先に画像が${carriedCount}枚届いている）`;
+  await ctx.queue.enqueue(
+    contextKey,
+    async () => {
+      if (ctx.queue.getGeneration(contextKey) !== queuedGeneration) {
+        clearNoticeTimer(notice);
+        trace.mark('processing_skipped', { reason: 'reset' });
+        return;
       }
 
-      // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
-      // 45 秒の通知は replyToken が生きているうちに届く。
-      if (pendingMedia && messageId) {
-        const saved = await fetchLineMedia(message, messageId, ctx);
-        if (saved) {
-          attachmentPaths.push(saved);
-          // **合流の注記より後に組み立てる。** 上書きになるので、控えの分はここで足し直す。
-          text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
-          if (carriedCount > 0) {
-            text = `${text}\n- 先に画像が${carriedCount}枚届いている`;
+      if (willWait) showLoading(ctx, userId, trace);
+
+      // Idle reset: 既存 session の最終発話から idleResetMs 以上経過していたら
+      // session を archive (logs/sessions/*.jsonl は残る) し、ensureSession で
+      // 新規発番する。LINE は UI 境界が無いため時間ベースで会話クラスタを区切る。
+      if (ctx.idleResetEnabled && ctx.idleResetMs > 0) {
+        const activeId = getActiveSessionId(contextKey);
+        if (activeId) {
+          const entry = getSessionEntry(activeId);
+          if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
+            archiveSession(activeId);
+            // 会話の区切りに合わせて控えも捨てる。3 日前の画像が今日の発言へ
+            // 合流すると意味が通らなくなる。
+            ctx.imageSets.dropIdleFor(contextKey, Date.now() - ctx.idleResetMs);
+            console.log('[xangi-line] idle session archived');
           }
         }
-        // 取得できなければ text は mediaNoticeText のまま。
-        // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
       }
-    }
 
-    const startTime = Date.now();
-    let runResult: RunResult | null = null;
-    let runError: unknown = null;
+      const appSessionId = ensureSession(contextKey, { platform: 'line' });
 
-    try {
-      runResult = await runWithBubbleEvents(
-        ctx.agentRunner,
-        buildPromptWithAttachments(text, attachmentPaths),
-        {
-          threadId: threadIdFor('line', userId),
-          turnId: turnIdFor('line', messageId ?? String(Date.now())),
-          threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
-          platform: 'line',
-          userText: text,
-        },
-        {},
-        { channelId: contextKey, appSessionId, sessionId: resolveResumeSessionId(contextKey) }
-      );
-    } catch (err) {
-      runError = err;
-      console.error('[xangi-line] run failed:', err);
-    } finally {
-      clearNoticeTimer(notice);
-    }
+      const attachmentPaths: string[] = [];
 
-    const elapsedMs = Date.now() - startTime;
-    const rawReplyText = runError ? ERROR_FALLBACK_TEXT : runResult?.result || '…';
-    const completionSummary =
-      !runError && elapsedMs >= ctx.completionNotifyAfterMs
-        ? buildCompletionSummary({ elapsedMs }, ctx.completionDisplay)
-        : undefined;
-    const replyText = appendLineCompletionSummary(rawReplyText, completionSummary);
-
-    // 送信経路の決定:
-    //   - slow notice が発火済 → reply token 消費済なので push 必須
-    //   - 発火していない + 経過時間が threshold 未満 → reply 可
-    //   - 発火していない + 経過時間が threshold 以上 → タイマー実行前に completed したか、
-    //     slow response 無効化中。reply token はまだ生きてる可能性あるが安全側で push にフォールバック
-    const usePush =
-      notice.fired || (ctx.slowResponseEnabled && elapsedMs >= ctx.slowResponseThresholdMs);
-
-    try {
-      if (usePush) {
-        await ctx.client.pushMessage({
-          to: userId,
-          messages: [{ type: 'text', text: replyText }],
-        });
+      if (bundled) {
+        // 同時送信がそろった。index 順に並んだ添付をまとめて 1 ターンで渡す。
+        for (const image of bundled) {
+          if (image.path) attachmentPaths.push(image.path);
+        }
+        text = attachmentOnlyPrompt(`${bundled.length}枚の画像`);
+        if (attachmentPaths.length < bundled.length) {
+          text = `${text}\n- ${bundled.length}枚のうち${attachmentPaths.length}枚しか取得できていない`;
+        }
       } else {
-        await ctx.client.replyMessage({
-          replyToken: notice.replyToken,
-          messages: [{ type: 'text', text: replyText }],
-        });
-      }
-    } catch (sendErr) {
-      console.error('[xangi-line] final send failed:', sendErr);
-      // reply が失敗 (token 失効など) なら push にフォールバック (まだ試してない場合のみ)
-      if (!usePush) {
-        try {
-          await ctx.client.pushMessage({
-            to: userId,
-            messages: [{ type: 'text', text: replyText }],
-          });
-        } catch (pushErr) {
-          console.error('[xangi-line] push fallback also failed:', pushErr);
+        // 揃わないまま残っている控えがあれば、このターンへ合流させる。
+        // ターンを走らせずにセッションへ文脈を足す口が無いため、次の発言に便乗させる。
+        // 取得に失敗した控えは渡すものが無いので数えない。
+        const carried = await ctx.imageSets.takeFor(contextKey);
+        for (const image of carried) {
+          if (image.path) attachmentPaths.push(image.path);
+        }
+        const carriedCount = attachmentPaths.length;
+        if (carriedCount > 0) {
+          text = `${text}\n\n（先に画像が${carriedCount}枚届いている）`;
+        }
+
+        // **取得はタイマーを張った後に行う。** 大きいファイルで数十秒かかっても、
+        // 45 秒の通知は replyToken が生きているうちに届く。
+        if (pendingMedia && messageId) {
+          const saved = await fetchLineMedia(message, messageId, ctx, trace);
+          if (saved) {
+            attachmentPaths.push(saved);
+            // **合流の注記より後に組み立てる。** 上書きになるので、控えの分はここで足し直す。
+            text = attachmentOnlyPrompt(mediaLabel(pendingMedia.kind));
+            if (carriedCount > 0) {
+              text = `${text}\n- 先に画像が${carriedCount}枚届いている`;
+            }
+          }
+          // 取得できなければ text は mediaNoticeText のまま。
+          // **固定文面で直接返さない。** 何が届いたかを渡して、返事はエージェントに任せる。
         }
       }
-    }
-  });
+
+      const startTime = performance.now();
+      let runResult: RunResult | null = null;
+      let runError: unknown = null;
+
+      try {
+        runResult = await trace.measure('agent', () =>
+          ctx.queue.runAgent(
+            contextKey,
+            ctx.agentRunner,
+            () =>
+              runWithBubbleEvents(
+                ctx.agentRunner,
+                buildPromptWithAttachments(text, attachmentPaths),
+                {
+                  threadId: threadIdFor('line', userId),
+                  turnId: turnIdFor('line', messageId ?? String(Date.now())),
+                  threadLabel: `LINE 1:1 (${userId.slice(0, 8)}…)`,
+                  platform: 'line',
+                  userText: text,
+                },
+                latencyCallbacks(trace),
+                {
+                  channelId: contextKey,
+                  appSessionId,
+                  sessionId: resolveResumeSessionId(contextKey),
+                }
+              ),
+            ctx.agentTimeoutMs
+          )
+        );
+      } catch (err) {
+        runError = err;
+        console.error('[xangi-line] run failed:', lineFailure(err));
+      } finally {
+        clearNoticeTimer(notice);
+      }
+
+      const elapsedMs = performance.now() - startTime;
+      const rawReplyText = runError ? ERROR_FALLBACK_TEXT : runResult?.result || '…';
+      const completionSummary =
+        trace.totalBeforeSendMs() >= ctx.completionNotifyAfterMs
+          ? trace.completionSummary(elapsedMs, ctx.completionDisplay.showElapsed, !!runError)
+          : undefined;
+      const replyText = appendLineCompletionSummary(rawReplyText, completionSummary);
+
+      // 送信経路の決定:
+      //   - slow notice が発火済 → reply token 消費済なので push 必須
+      //   - 発火していない + 経過時間が threshold 未満 → reply 可
+      //   - 発火していない + 経過時間が threshold 以上 → タイマー実行前に completed したか、
+      //     slow response 無効化中。reply token はまだ生きてる可能性あるが安全側で push にフォールバック
+      const usePush = notice.fired || Date.now() - receivedAt >= 45_000;
+
+      try {
+        if (usePush) {
+          await trace.measure(
+            'send',
+            () =>
+              ctx.client.pushMessage({
+                to: userId,
+                messages: [{ type: 'text', text: replyText }],
+              }),
+            { mode: 'push', purpose: 'final' }
+          );
+        } else {
+          await trace.measure(
+            'send',
+            () =>
+              ctx.client.replyMessage({
+                replyToken: notice.replyToken,
+                messages: [{ type: 'text', text: replyText }],
+              }),
+            { mode: 'reply', purpose: 'final' }
+          );
+        }
+      } catch (sendErr) {
+        console.error('[xangi-line] final send failed:', lineFailure(sendErr));
+        // Only a definite 400 rejection permits fallback. A timeout/5xx may already be delivered.
+        if (!usePush && canFallbackFromLineReply(sendErr)) {
+          try {
+            await trace.measure(
+              'send',
+              () =>
+                ctx.client.pushMessage({
+                  to: userId,
+                  messages: [{ type: 'text', text: replyText }],
+                }),
+              { mode: 'push', purpose: 'final' }
+            );
+          } catch (pushErr) {
+            console.error('[xangi-line] push fallback also failed:', lineFailure(pushErr));
+          }
+        }
+      }
+    },
+    trace
+  );
 }

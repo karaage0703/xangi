@@ -26,21 +26,32 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 export async function downloadFile(
   url: string,
   filename: string,
-  authHeader?: Record<string, string>
+  authHeader?: Record<string, string>,
+  options: { timeoutMs?: number; quiet?: boolean } = {}
 ): Promise<string> {
   const sanitized = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   const filePath = path.join(DOWNLOAD_DIR, `${Date.now()}_${sanitized}`);
 
   const headers: Record<string, string> = { ...authHeader };
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, {
+    headers,
+    ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
+  });
 
   if (!response.ok) {
-    throw new Error(`Failed to download file: ${response.status} ${response.statusText}`);
+    await response.body?.cancel();
+    throw Object.assign(new Error(`Failed to download file: HTTP ${response.status}`), {
+      status: response.status,
+    });
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
   fs.writeFileSync(filePath, buffer);
-  console.log(`[xangi] Downloaded attachment: ${filename} → ${filePath} (${buffer.length} bytes)`);
+  if (!options.quiet) {
+    console.log(
+      `[xangi] Downloaded attachment: ${filename} → ${filePath} (${buffer.length} bytes)`
+    );
+  }
   return filePath;
 }
 

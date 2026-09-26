@@ -77,6 +77,7 @@ export interface RunResult {
  * events, so the contract only carries timing-safe metadata.
  */
 export type AgentTraceEvent =
+  | { type: 'resume_retry'; reason: 'busy' | 'stale'; attempt: number; waitMs: number }
   | { type: 'turn_started' }
   | {
       type: 'tool_started';
