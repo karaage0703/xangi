@@ -827,6 +827,21 @@ button:disabled {
   gap: 8px;
 }
 
+.settings-section-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.settings-card[id] {
+  scroll-margin-top: 80px;
+}
+
+.project-view-header-actions a {
+  text-decoration: none;
+}
+
 .workspace-path-controls input {
   min-width: 0;
   flex: 1;

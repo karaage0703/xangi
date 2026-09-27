@@ -142,6 +142,7 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-search](https://github.com/karaage0703/xangi-search) - An extension for searching your workspace
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - An extension that brings xangi responses, expressions, and head movement to M5Stack devices
 - [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - An extension with an Even Hub app and bridge for using xangi from Even Realities G2
+- [xangi-avatar](https://github.com/karaage0703/xangi-avatar) - A browser-based 2D avatar for voice conversations, screen sharing, and OBS
 
 ## Related projects
 

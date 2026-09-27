@@ -3,6 +3,7 @@ import { AppTopbar } from './AppTopbar';
 import { getJson, getJsonWithTimeout, requestJson } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DirectoryPicker } from './DirectoryPicker';
+import { AgentSettings } from './AgentSettings';
 
 type ApplyMode = 'immediate' | 'next-turn';
 
@@ -212,6 +213,19 @@ export function Settings() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [updateTarget, setUpdateTarget] = useState<BackendAuthenticationStatus>();
+
+  useEffect(() => {
+    const focusSection = () => {
+      const id = window.location.hash.slice(1);
+      if (id !== 'agents' && id !== 'workspaces') return;
+      const section = document.getElementById(id);
+      section?.scrollIntoView({ block: 'start' });
+      section?.focus({ preventScroll: true });
+    };
+    if (!loading) focusSection();
+    window.addEventListener('hashchange', focusSection);
+    return () => window.removeEventListener('hashchange', focusSection);
+  }, [loading]);
 
   useEffect(() => {
     void Promise.all([
@@ -485,6 +499,10 @@ export function Settings() {
           <p className="settings-kicker">Runtime configuration</p>
           <h1>設定</h1>
           <p>ランタイム設定と起動設定をまとめ、反映されるタイミングを明記します。</p>
+          <nav className="settings-section-links" aria-label="設定項目">
+            <a href="#workspaces">ワークスペース</a>
+            <a href="#agents">エージェント</a>
+          </nav>
         </header>
 
         {loading ? <p className="settings-status">設定を読み込んでいます…</p> : null}
@@ -583,10 +601,15 @@ export function Settings() {
               </form>
             </section>
 
-            <section className="settings-card" aria-labelledby="settings-workspace-title">
+            <section
+              id="workspaces"
+              className="settings-card"
+              aria-labelledby="settings-workspace-title"
+              tabIndex={-1}
+            >
               <div className="settings-card-heading">
                 <div>
-                  <h2 id="settings-workspace-title">Workspace</h2>
+                  <h2 id="settings-workspace-title">ワークスペース</h2>
                   <p>Projectや会話で使う作業ディレクトリを追加・管理します。</p>
                 </div>
                 <ApplyBadge mode="immediate" />
@@ -673,6 +696,8 @@ export function Settings() {
                 </div>
               )}
             </section>
+
+            <AgentSettings workspaces={workspaces} />
 
             <section className="settings-card" aria-labelledby="settings-channel-title">
               <div className="settings-card-heading">

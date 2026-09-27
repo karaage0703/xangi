@@ -1888,6 +1888,14 @@ describe('web-chat HTTP API', () => {
           installed: false,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-even-g2',
         }),
+        expect.objectContaining({
+          id: 'xangi-avatar',
+          displayName: 'xangi-avatar',
+          capabilities: ['avatar.ui'],
+          installed: false,
+          uiAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
+        }),
       ],
       issues: [],
     });
@@ -1934,6 +1942,7 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-search' }),
         expect.objectContaining({ id: 'xangi-stackchan' }),
         expect.objectContaining({ id: 'xangi-even-g2' }),
+        expect.objectContaining({ id: 'xangi-avatar' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });
@@ -2966,12 +2975,14 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
     expect(chatSource).toContain('新規プロジェクト');
-    expect(chatSource).toContain('ワークスペースを管理');
-    expect(chatSource).toContain('ワークスペースの追加・管理');
-    expect(chatSource).toContain('ディレクトリとファイルは削除しません');
+    expect(chatSource).toContain('href="/settings#workspaces"');
+    expect(chatSource).toContain('href="/settings#agents"');
+    const settingsSource = readFileSync(join(process.cwd(), 'web-ui/src/Settings.tsx'), 'utf8');
+    expect(settingsSource).toContain('ディレクトリとファイルは削除しません');
     expect(chatSource.match(/className="notice" role="status"/g)).toHaveLength(2);
     expect(chatSource).toContain('Projectへ移動');
-    expect(chatSource).toContain('使用するAI');
+    const agentSource = readFileSync(join(process.cwd(), 'web-ui/src/AgentSettings.tsx'), 'utf8');
+    expect(agentSource).toContain('使用するAI');
     expect(chatSource).toContain('project-context-chip');
     expect(sourceStylesheet).toMatch(/\.project-model-settings\s*\{/);
     expect(sourceStylesheet).toMatch(/\.pane-backend-badge\s*\{/);

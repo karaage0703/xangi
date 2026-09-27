@@ -125,6 +125,24 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-even-g2',
   },
+  {
+    id: 'xangi-avatar',
+    displayName: 'xangi-avatar',
+    description: '音声会話・画面共有・OBS用のAvatarを起動します。',
+    permissions: [
+      'Avatar HTTPサーバーを起動',
+      '接続先xangiのAgentとの会話',
+      '専用データディレクトリへ設定と一時画像を保存',
+    ],
+    capabilities: ['avatar.ui'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
+  },
 ];
 
 export interface ExtensionSetupRequest {
