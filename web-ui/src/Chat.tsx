@@ -132,25 +132,6 @@ interface Project {
   localLlmReasoningEffort?: string;
 }
 
-interface RegisteredWorkspace {
-  id: string;
-  name: string;
-  path: string;
-  isDefault: boolean;
-}
-
-interface ModelDiscoveryResponse {
-  status: 'available' | 'unsupported' | 'unavailable';
-  models: Array<{
-    id: string;
-    displayName?: string;
-    isDefault?: boolean;
-    supportedEfforts?: string[];
-  }>;
-  message?: string;
-  supportedEfforts: string[];
-}
-
 interface ProjectsResponse {
   projects: Project[];
 }
@@ -1822,17 +1803,12 @@ export function Chat() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [agents, setAgents] = useState<Project[]>([]);
-  const [agentMode, setAgentMode] = useState(false);
-  const [agentToDelete, setAgentToDelete] = useState<string>();
-  const [deletingAgent, setDeletingAgent] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
   const catalogVisible = (item: Project) =>
     `${item.name} ${item.role || ''}`
       .toLocaleLowerCase()
       .includes(catalogQuery.trim().toLocaleLowerCase());
-  const [agentRole, setAgentRole] = useState('');
-  const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
   const [activeProjectId, setActiveProjectId] = useState(
     () => window.localStorage.getItem(PROJECT_STATE_KEY) || ''
   );
@@ -1841,27 +1817,9 @@ export function Chat() {
   const [editingProjectId, setEditingProjectId] = useState<string>();
   const [projectName, setProjectName] = useState('');
   const [projectPrompt, setProjectPrompt] = useState('');
-  const [projectBackend, setProjectBackend] = useState('');
-  const [projectModel, setProjectModel] = useState('');
-  const [projectEffort, setProjectEffort] = useState('');
-  const [projectWorkspaceId, setProjectWorkspaceId] = useState('default');
-  const [agentLlmMode, setAgentLlmMode] = useState('');
-  const [agentReasoning, setAgentReasoning] = useState('');
-  const [projectModelOptions, setProjectModelOptions] = useState<ModelDiscoveryResponse['models']>(
-    []
-  );
-  const [projectEffortOptions, setProjectEffortOptions] = useState<string[]>([]);
-  const [projectModelStatus, setProjectModelStatus] = useState('');
-  const [loadingProjectModels, setLoadingProjectModels] = useState(false);
   const [savingProject, setSavingProject] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
-  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
-  const [workspaceName, setWorkspaceName] = useState('');
-  const [workspacePath, setWorkspacePath] = useState('');
-  const [savingWorkspace, setSavingWorkspace] = useState(false);
-  const [workspaceToRemove, setWorkspaceToRemove] = useState<RegisteredWorkspace | null>(null);
-  const [removingWorkspace, setRemovingWorkspace] = useState(false);
   const [query, setQuery] = useState('');
   const [sessionFilter, setSessionFilter] = useState<SessionLifecycleFilter>(() => {
     const saved = window.localStorage.getItem(SESSION_FILTER_KEY);
@@ -1942,9 +1900,6 @@ export function Chat() {
           current && !result.projects.some((project) => project.id === current) ? '' : current
         );
       }),
-      requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces').then((result) =>
-        setWorkspaces(result.workspaces)
-      ),
     ]).catch((cause: unknown) => setNotice(cause instanceof Error ? cause.message : String(cause)));
   }, []);
 
@@ -1955,42 +1910,6 @@ export function Chat() {
   useEffect(() => {
     window.localStorage.setItem(SESSION_FILTER_KEY, sessionFilter);
   }, [sessionFilter]);
-
-  useEffect(() => {
-    if (!projectFormOpen || !projectBackend) {
-      setProjectModelOptions([]);
-      setProjectEffortOptions([]);
-      setProjectModelStatus('');
-      setLoadingProjectModels(false);
-      return;
-    }
-    let cancelled = false;
-    setLoadingProjectModels(true);
-    setProjectModelStatus('');
-    requestJson<ModelDiscoveryResponse>(`/api/models?backend=${encodeURIComponent(projectBackend)}`)
-      .then((result) => {
-        if (cancelled) return;
-        setProjectModelOptions(result.models);
-        setProjectEffortOptions(result.supportedEfforts);
-        setProjectModelStatus(
-          result.status === 'available'
-            ? `${result.models.length}件のモデルを取得しました`
-            : result.message || 'モデル一覧を取得できません'
-        );
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setProjectModelOptions([]);
-        setProjectEffortOptions([]);
-        setProjectModelStatus(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingProjectModels(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectBackend, projectFormOpen]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
@@ -2207,17 +2126,9 @@ export function Chat() {
   }
 
   function openNewProjectForm() {
-    setAgentRole('');
-    setWorkspaceManagerOpen(false);
     setEditingProjectId(undefined);
     setProjectName('');
     setProjectPrompt('');
-    setProjectBackend('');
-    setProjectModel('');
-    setProjectEffort('');
-    setProjectWorkspaceId('default');
-    setAgentLlmMode('');
-    setAgentReasoning('');
     setProjectFormOpen(true);
   }
 
@@ -2225,17 +2136,9 @@ export function Chat() {
     project = projects.find((candidate) => candidate.id === activeProjectId)
   ) {
     if (!project) return;
-    setWorkspaceManagerOpen(false);
     setEditingProjectId(project.id);
-    setAgentRole(project.role || '');
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
-    setProjectBackend(project.backend || '');
-    setProjectModel(project.model || '');
-    setProjectEffort(project.effort || '');
-    setProjectWorkspaceId(project.workspaceId || 'default');
-    setAgentLlmMode(project.localLlmMode || '');
-    setAgentReasoning(project.localLlmReasoningEffort || '');
     setProjectFormOpen(true);
   }
 
@@ -2247,20 +2150,8 @@ export function Chat() {
       const body = {
         name: projectName.trim(),
         prompt: projectPrompt.trim(),
-        ...(agentMode
-          ? {
-              backend: projectBackend || null,
-              model: projectBackend && projectModel ? projectModel : null,
-              effort: projectBackend && projectEffort ? projectEffort : null,
-              workspaceId: projectWorkspaceId,
-              localLlmMode: projectBackend === 'local-llm' ? agentLlmMode || null : null,
-              localLlmReasoningEffort:
-                projectBackend === 'local-llm' ? agentReasoning || null : null,
-              role: agentRole,
-            }
-          : {}),
       };
-      const base = agentMode ? '/api/agents' : '/api/projects';
+      const base = '/api/projects';
       const endpoint = editingProjectId ? `${base}/${encodeURIComponent(editingProjectId)}` : base;
       const result = await requestJson<{ project?: Project; agent?: Project }>(
         endpoint,
@@ -2275,12 +2166,6 @@ export function Chat() {
       setEditingProjectId(undefined);
       setProjectName('');
       setProjectPrompt('');
-      setProjectBackend('');
-      setProjectModel('');
-      setProjectEffort('');
-      setProjectWorkspaceId('default');
-      setAgentLlmMode('');
-      setAgentReasoning('');
       setNotice('');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
@@ -2309,54 +2194,6 @@ export function Chat() {
       setProjectToDelete(null);
     } finally {
       setDeletingProject(false);
-    }
-  }
-
-  function openWorkspaceManager() {
-    setProjectFormOpen(false);
-    setWorkspaceManagerOpen(true);
-    setWorkspaceName('');
-    setWorkspacePath('');
-    setNotice('');
-  }
-
-  async function registerWorkspace(event: FormEvent) {
-    event.preventDefault();
-    if (!workspaceName.trim() || !workspacePath.trim() || savingWorkspace) return;
-    setSavingWorkspace(true);
-    try {
-      await requestJson(
-        '/api/workspaces',
-        jsonInit('POST', { name: workspaceName.trim(), path: workspacePath.trim() })
-      );
-      const refreshed = await requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
-      setWorkspaces(refreshed.workspaces);
-      setWorkspaceName('');
-      setWorkspacePath('');
-      setNotice('ワークスペースを管理しました');
-    } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSavingWorkspace(false);
-    }
-  }
-
-  async function unregisterWorkspace() {
-    if (!workspaceToRemove || removingWorkspace) return;
-    setRemovingWorkspace(true);
-    try {
-      await requestJson(`/api/workspaces/${encodeURIComponent(workspaceToRemove.id)}`, {
-        method: 'DELETE',
-      });
-      const refreshed = await requestJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
-      setWorkspaces(refreshed.workspaces);
-      setWorkspaceToRemove(null);
-      setNotice('Workspaceの登録を解除しました。ディレクトリとファイルは残っています');
-    } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : String(cause));
-      setWorkspaceToRemove(null);
-    } finally {
-      setRemovingWorkspace(false);
     }
   }
 
@@ -2681,49 +2518,22 @@ export function Chat() {
                   onClick={() => {
                     setProjectViewOpen(false);
                     setProjectFormOpen(false);
-                    setWorkspaceManagerOpen(false);
                   }}
                 >
                   ← 会話
                 </button>
-                <h1>{agentMode ? 'エージェント' : 'プロジェクト'}</h1>
-                <div className="project-catalog-tabs">
-                  <button
-                    type="button"
-                    aria-pressed={!agentMode}
-                    onClick={() => {
-                      setAgentMode(false);
-                      setProjectFormOpen(false);
-                    }}
-                  >
-                    プロジェクト
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={agentMode}
-                    onClick={() => {
-                      setAgentMode(true);
-                      setProjectFormOpen(false);
-                      setWorkspaceManagerOpen(false);
-                    }}
-                  >
-                    エージェント
-                  </button>
-                </div>
+                <h1>プロジェクト</h1>
               </div>
-              {!projectFormOpen && !workspaceManagerOpen && (
+              {!projectFormOpen && (
                 <div className="project-view-header-actions">
-                  {!agentMode && (
-                    <button
-                      type="button"
-                      className="project-view-new"
-                      onClick={openWorkspaceManager}
-                    >
-                      ワークスペースを管理
-                    </button>
-                  )}
+                  <a className="project-view-new" href="/settings#workspaces">
+                    ワークスペース設定
+                  </a>
+                  <a className="project-view-new" href="/settings#agents">
+                    エージェント設定
+                  </a>
                   <button type="button" className="project-view-new" onClick={openNewProjectForm}>
-                    ＋ {agentMode ? '新規エージェント' : '新規プロジェクト'}
+                    ＋ 新規プロジェクト
                   </button>
                 </div>
               )}
@@ -2734,76 +2544,12 @@ export function Chat() {
               </div>
             )}
             <CatalogFilter
-              editing={projectFormOpen || workspaceManagerOpen}
-              agentMode={agentMode}
+              editing={projectFormOpen}
+              agentMode={false}
               query={catalogQuery}
               onChange={setCatalogQuery}
             />
-            {workspaceManagerOpen ? (
-              <section className="workspace-manager" aria-labelledby="workspace-manager-title">
-                <div className="workspace-manager-heading">
-                  <div>
-                    <h2 id="workspace-manager-title">ワークスペースの追加・管理</h2>
-                    <p>既存ディレクトリの絶対パスを登録します。</p>
-                  </div>
-                  <button type="button" onClick={() => setWorkspaceManagerOpen(false)}>
-                    閉じる
-                  </button>
-                </div>
-                <form
-                  className="workspace-register-form"
-                  onSubmit={(event) => void registerWorkspace(event)}
-                >
-                  <label>
-                    <span>名前</span>
-                    <input
-                      value={workspaceName}
-                      onChange={(event) => setWorkspaceName(event.target.value)}
-                      maxLength={80}
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>絶対パス</span>
-                    <input
-                      value={workspacePath}
-                      onChange={(event) => setWorkspacePath(event.target.value)}
-                      placeholder="/path/to/workspace"
-                      required
-                    />
-                  </label>
-                  <div className="project-form-actions">
-                    <button type="submit" className="primary" disabled={savingWorkspace}>
-                      {savingWorkspace ? '追加中…' : '追加'}
-                    </button>
-                  </div>
-                </form>
-                <div className="workspace-manager-list">
-                  {workspaces.map((workspace) => (
-                    <div className="workspace-manager-row" key={workspace.id}>
-                      <span className="workspace-manager-copy">
-                        <strong>
-                          {workspace.name}
-                          {workspace.isDefault ? ' (default)' : ''}
-                        </strong>
-                        <small>{workspace.path}</small>
-                      </span>
-                      <button
-                        type="button"
-                        className="workspace-unregister"
-                        disabled={workspace.isDefault}
-                        title={
-                          workspace.isDefault ? 'default Workspaceは登録解除できません' : undefined
-                        }
-                        onClick={() => setWorkspaceToRemove(workspace)}
-                      >
-                        登録解除
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : projectFormOpen ? (
+            {projectFormOpen ? (
               <form className="project-form" onSubmit={(event) => void saveProject(event)}>
                 <label>
                   <span>名前</span>
@@ -2815,194 +2561,22 @@ export function Chat() {
                   />
                 </label>
                 <label>
-                  <span>{agentMode ? '個別指示' : '共通指示'}</span>
+                  <span>共通指示</span>
                   <textarea
                     value={projectPrompt}
                     onChange={(event) => setProjectPrompt(event.target.value)}
                     maxLength={20_000}
                     rows={5}
-                    placeholder={
-                      agentMode ? 'この担当に守ってほしい指示' : 'プロジェクト全体で共有する指示'
-                    }
+                    placeholder="プロジェクト全体で共有する指示"
                   />
                 </label>
-                {agentMode ? (
-                  <>
-                    <label>
-                      <span>ワークスペース</span>
-                      <select
-                        aria-label="ワークスペース"
-                        value={projectWorkspaceId}
-                        onChange={(event) => setProjectWorkspaceId(event.target.value)}
-                      >
-                        {workspaces.map((workspace) => (
-                          <option key={workspace.id} value={workspace.id}>
-                            {workspace.name}
-                            {workspace.isDefault ? ' (default)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <small>
-                      このエージェントは、会話でも委譲された作業でも、この場所で動きます。
-                    </small>
-                    <label>
-                      得意なことを一言
-                      <input value={agentRole} onChange={(e) => setAgentRole(e.target.value)} />
-                    </label>
-                  </>
-                ) : null}
-                {agentMode && (
-                  <fieldset className="project-model-settings">
-                    <legend>使用するAI</legend>
-                    <label>
-                      <span>バックエンド</span>
-                      <select
-                        aria-label="バックエンド"
-                        value={projectBackend}
-                        onChange={(event) => {
-                          setProjectBackend(event.target.value);
-                          setProjectModel('');
-                          setProjectEffort('');
-                          setAgentLlmMode('');
-                          setAgentReasoning('');
-                        }}
-                      >
-                        <option value="">xangiのデフォルト</option>
-                        {config.allowedBackends.map((backend) => (
-                          <option key={backend} value={backend}>
-                            {backend}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {projectBackend === 'local-llm' && (
-                      <>
-                        <label>
-                          <span>動作モード</span>
-                          <select
-                            aria-label="動作モード"
-                            value={agentLlmMode}
-                            onChange={(e) => setAgentLlmMode(e.target.value)}
-                          >
-                            <option value="">xangiの既定設定</option>
-                            <option value="agent">Agent（ツールを使って作業）</option>
-                            <option value="chat">Chat（会話のみ）</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Local LLMの推論強度</span>
-                          <select
-                            aria-label="Local LLMの推論強度"
-                            value={agentReasoning}
-                            onChange={(e) => setAgentReasoning(e.target.value)}
-                          >
-                            <option value="">xangiの既定設定</option>
-                            {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(
-                              (value) => (
-                                <option key={value} value={value}>
-                                  {value}
-                                </option>
-                              )
-                            )}
-                          </select>
-                          <small>モデルが対応している値を選んでください。</small>
-                        </label>
-                      </>
-                    )}
-                    {projectBackend && (
-                      <>
-                        <label>
-                          <span>モデル</span>
-                          <select
-                            aria-label="モデル"
-                            value={projectModel}
-                            disabled={loadingProjectModels}
-                            onChange={(event) => {
-                              setProjectModel(event.target.value);
-                              const model = projectModelOptions.find(
-                                (candidate) => candidate.id === event.target.value
-                              );
-                              if (
-                                projectEffort &&
-                                model?.supportedEfforts?.length &&
-                                !model.supportedEfforts.includes(projectEffort)
-                              ) {
-                                setProjectEffort('');
-                                setAgentLlmMode('');
-                                setAgentReasoning('');
-                              }
-                            }}
-                          >
-                            <option value="">バックエンドのデフォルト</option>
-                            {projectModel &&
-                              !projectModelOptions.some((model) => model.id === projectModel) && (
-                                <option value={projectModel}>{projectModel}</option>
-                              )}
-                            {projectModelOptions.map((model) => (
-                              <option key={model.id} value={model.id}>
-                                {model.displayName && model.displayName !== model.id
-                                  ? `${model.displayName} (${model.id})`
-                                  : model.id}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <details>
-                          <summary>詳細設定</summary>
-                          <label>
-                            <span>effort</span>
-                            <select
-                              value={projectEffort}
-                              disabled={projectEffortOptions.length === 0}
-                              onChange={(event) => setProjectEffort(event.target.value)}
-                            >
-                              <option value="">デフォルト</option>
-                              {(
-                                (projectModel
-                                  ? projectModelOptions.find((model) => model.id === projectModel)
-                                  : projectModelOptions.find((model) => model.isDefault)
-                                )?.supportedEfforts?.filter((effort) =>
-                                  projectEffortOptions.includes(effort)
-                                ) || projectEffortOptions
-                              ).map((effort) => (
-                                <option key={effort} value={effort}>
-                                  {effort}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </details>
-                        {(loadingProjectModels || projectModelStatus) && (
-                          <small className="project-model-status" role="status">
-                            {loadingProjectModels ? 'モデルを取得中…' : projectModelStatus}
-                          </small>
-                        )}
-                      </>
-                    )}
-                  </fieldset>
-                )}
+                <p>共通の指示は、このプロジェクトの通常会話に適用されます。</p>
                 <p>
-                  {agentMode
-                    ? 'どの会話からも使える設定です。変更は次の作業から反映されます。'
-                    : '共通の指示は、このプロジェクトの通常会話に適用されます。'}
+                  作業場所や使用するAIは<a href="/settings#agents">エージェント設定</a>
+                  で変更できます。
                 </p>
-                {!agentMode && (
-                  <p>
-                    作業場所は各エージェントで設定します。担当への委譲でも、その担当のワークスペースを使います。
-                  </p>
-                )}
                 <div className="project-form-actions">
-                  {editingProjectId && agentMode && (
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => setAgentToDelete(editingProjectId)}
-                    >
-                      エージェントを削除
-                    </button>
-                  )}
-                  {editingProjectId && !agentMode && (
+                  {editingProjectId && (
                     <button
                       type="button"
                       className="danger"
@@ -3029,39 +2603,6 @@ export function Chat() {
                   </button>
                 </div>
               </form>
-            ) : agentMode ? (
-              <nav className="project-view-list" aria-label="エージェント一覧">
-                {agents.filter(catalogVisible).map((agent) => (
-                  <div className="project-view-row agent-view-row" key={agent.id}>
-                    <button
-                      type="button"
-                      className="project-view-main"
-                      aria-label={`${agent.name}を編集`}
-                      onClick={() => openProjectEditor(agent)}
-                    >
-                      <span className="project-view-icon" aria-hidden="true">
-                        ◇
-                      </span>
-                      <span className="project-view-copy">
-                        <strong title={agent.name}>{agent.name}</strong>
-                        <small>
-                          {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
-                            'xangiの既定設定'}
-                        </small>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="project-view-edit agent-view-delete"
-                      aria-label={`${agent.name}を削除`}
-                      onClick={() => setAgentToDelete(agent.id)}
-                    >
-                      削除
-                    </button>
-                  </div>
-                ))}
-                {!agents.length && <p>新規エージェントから役割と使用モデルを登録してください。</p>}
-              </nav>
             ) : (
               <nav className="project-view-list" aria-label="Project一覧">
                 <button
@@ -3329,33 +2870,6 @@ export function Chat() {
         }}
       />
       <ConfirmDialog
-        open={Boolean(agentToDelete)}
-        title="エージェントを削除"
-        description={`「${agents.find((agent) => agent.id === agentToDelete)?.name || ''}」を削除します。プロジェクトに参加中、または会話で使用中のエージェントは削除できません。`}
-        confirmLabel="削除"
-        busyLabel="削除中…"
-        busy={deletingAgent}
-        variant="danger"
-        onCancel={() => {
-          if (!deletingAgent) setAgentToDelete(undefined);
-        }}
-        onConfirm={() => {
-          if (!agentToDelete || deletingAgent) return;
-          setDeletingAgent(true);
-          void requestJson(`/api/agents/${encodeURIComponent(agentToDelete)}`, { method: 'DELETE' })
-            .then(async () => {
-              setAgents((await requestJson<{ agents: Project[] }>('/api/agents')).agents);
-              setSelectedAgentId((current) => (current === agentToDelete ? '' : current));
-              setProjectFormOpen(false);
-            })
-            .catch((e) => setNotice(e.message))
-            .finally(() => {
-              setDeletingAgent(false);
-              setAgentToDelete(undefined);
-            });
-        }}
-      />
-      <ConfirmDialog
         open={Boolean(projectToDelete)}
         title="Projectを削除"
         description={`「${projectToDelete?.name || ''}」を削除します。所属する会話は「Projectなし」へ移動し、会話履歴・Workspace・ディレクトリ・ファイルは削除しません。`}
@@ -3367,19 +2881,6 @@ export function Chat() {
           if (!deletingProject) setProjectToDelete(null);
         }}
         onConfirm={() => void deleteProject()}
-      />
-      <ConfirmDialog
-        open={Boolean(workspaceToRemove)}
-        title="Workspaceの登録を解除"
-        description={`「${workspaceToRemove?.name || ''}」の登録だけを解除します。ディレクトリとファイルは削除しません。`}
-        confirmLabel="登録解除"
-        busyLabel="解除中…"
-        busy={removingWorkspace}
-        variant="danger"
-        onCancel={() => {
-          if (!removingWorkspace) setWorkspaceToRemove(null);
-        }}
-        onConfirm={() => void unregisterWorkspace()}
       />
     </main>
   );

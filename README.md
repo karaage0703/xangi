@@ -142,6 +142,7 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 - [xangi-search](https://github.com/karaage0703/xangi-search) - ワークスペースを検索する拡張機能
 - [xangi-stackchan](https://github.com/karaage0703/xangi-stackchan) - xangiの応答をM5Stackで喋らせ、表情や首振りと連動する拡張機能
 - [xangi-even-g2](https://github.com/karaage0703/xangi-even-g2) - Even Realities G2からxangiを操作するEven Hubアプリとbridgeの拡張機能
+- [xangi-avatar](https://github.com/karaage0703/xangi-avatar) - 音声会話・画面共有・OBSに対応するブラウザ2Dアバター
 
 ## 関連プロジェクト
 

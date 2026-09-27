@@ -147,6 +147,14 @@ describe('development extension catalog', () => {
         uiAvailable: false,
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-even-g2',
       }),
+      expect.objectContaining({
+        id: 'xangi-avatar',
+        displayName: 'xangi-avatar',
+        capabilities: ['avatar.ui'],
+        installed: false,
+        uiAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
+      }),
     ]);
     expect(entries.every((entry) => !('version' in entry))).toBe(true);
     const readmes = await Promise.all([
@@ -159,18 +167,18 @@ describe('development extension catalog', () => {
     }
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar']);
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/example/other'),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar']);
     expect([
       ...(await loadExtensionIdsReservedForRepository(
         'https://github.com/karaage0703/xangi-search'
       )),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar']);
     expect([
       ...(await loadExtensionIdsReservedForRepository('https://github.com/example/other')),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar']);
   });
 
   it('isolates an unsupported repository manifest and keeps the official catalog visible', async () => {
@@ -192,6 +200,7 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-search' }),
         expect.objectContaining({ id: 'xangi-stackchan' }),
         expect.objectContaining({ id: 'xangi-even-g2' }),
+        expect.objectContaining({ id: 'xangi-avatar' }),
       ],
       issues: [
         expect.objectContaining({
@@ -224,6 +233,7 @@ describe('development extension catalog', () => {
         }),
         expect.objectContaining({ id: 'xangi-stackchan', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-even-g2', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-avatar', statusKnown: false }),
       ],
       issues: expect.arrayContaining([
         expect.objectContaining({ code: 'source-store-invalid' }),
@@ -275,6 +285,7 @@ describe('development extension catalog', () => {
       }),
       expect.objectContaining({ id: 'xangi-stackchan', installed: false }),
       expect.objectContaining({ id: 'xangi-even-g2', installed: false }),
+      expect.objectContaining({ id: 'xangi-avatar', installed: false }),
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ code: 'manifest-invalid' })]);
   });
@@ -390,6 +401,7 @@ describe('development extension catalog', () => {
       }),
       expect.objectContaining({ id: 'xangi-stackchan', installed: false }),
       expect.objectContaining({ id: 'xangi-even-g2', installed: false }),
+      expect.objectContaining({ id: 'xangi-avatar', installed: false }),
     ]);
     expect(result.extensions.some((entry) => entry.id === 'changed-id')).toBe(false);
     expect(result.issues).toEqual([
@@ -436,7 +448,7 @@ describe('development extension catalog', () => {
 
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/karaage0703/xangi-search')
-    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2']));
+    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar']));
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/example/other')
     ).rejects.toThrow('invalid extension manifest');
