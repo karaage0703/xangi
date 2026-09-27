@@ -71,6 +71,38 @@ describe('runWithBubbleEvents', () => {
     }
   });
 
+  it.each(['claude-code', 'codex', 'opencode', 'cursor', 'grok', 'antigravity', 'github-copilot', 'local-llm', 'extension'])('persists edits announced by tool notifications for %s', async (backend) => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { getTurnHistory, readTurnHistory } = await import('../src/activity-store.js');
+    const runner = new FakeRunner(async (_p, cb, options) => {
+      expect(options?.defaultBackend).toBe(backend);
+      cb.onToolUse?.('Write', {file_path:'index.html'});
+      writeFileSync(join(testDir, 'index.html'), '<h1>hello</h1>');
+      const result = { result: 'done', sessionId: 's' };
+      cb.onComplete?.(result);
+      return result;
+    });
+    await runWithBubbleEvents(runner, 'edit', {threadId: 'web:files', turnId: 'file-turn', platform: 'web'}, {}, {workdir: testDir, defaultBackend: backend});
+    const history = getTurnHistory('web:files');
+    expect(history).toHaveLength(2);
+    expect(history[1]).toMatchObject({kind: 'tool', fileChanges: { files: [{path: 'index.html', operation: 'added', workspaceId: 'default'}] }});
+    expect(readTurnHistory('web:files')).toEqual(history);
+  });
+
+  it('preserves partial edits after cancellation, including persisted history', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { readTurnHistory } = await import('../src/activity-store.js');
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onToolUse?.('Write', {file_path:'partial.txt'});
+      writeFileSync(join(testDir, 'partial.txt'), 'saved before cancellation');
+      const error = new Error('Request cancelled by user');
+      cb.onError?.(error);
+      throw error;
+    });
+    await expect(runWithBubbleEvents(runner, 'edit', {threadId:'web:cancel-file',turnId:'c',platform:'web'}, {}, {workdir:testDir})).rejects.toThrow('cancelled');
+    expect(readTurnHistory('web:cancel-file')).toEqual(expect.arrayContaining([expect.objectContaining({fileChanges: expect.objectContaining({files: [expect.objectContaining({path:'partial.txt'})]})})]));
+  });
+
   it('publishes turn.started → message.delta×N → turn.complete in normal flow', async () => {
     const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
     const runner = new FakeRunner(async (_p, cb) => {

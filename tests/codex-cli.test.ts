@@ -450,6 +450,20 @@ describe('CodexRunner エラー本文の救出', () => {
     expect(result.result).toBe('done');
   });
 
+  it('emits only completed native file changes, including events without tool calls', async () => {
+    const runner = new CodexRunner({});
+    const onFileChanges = vi.fn();
+    const promise = runner.runStream('hi', {onFileChanges});
+    await emitEventsThenClose([
+      {type:'item.started',item:{type:'file_change',status:'in_progress',changes:[{path:'a',kind:'add'}]}},
+      {type:'item.completed',item:{type:'file_change',status:'failed',changes:[{path:'bad',kind:'add'}]}},
+      {type:'item.completed',item:{type:'file_change',status:'completed',changes:[{path:'a',kind:'add'}]}},
+    ], 0);
+    await promise;
+    expect(onFileChanges).toHaveBeenCalledTimes(1);
+    expect(onFileChanges).toHaveBeenCalledWith([{path:'a',operation:'added',diff:undefined}]);
+  });
+
   it('runStream: Codex tool call event を onToolUse に流す', async () => {
     const runner = new CodexRunner({});
     const tools: Array<{ name: string; input: Record<string, unknown> }> = [];

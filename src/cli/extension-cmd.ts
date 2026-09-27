@@ -15,12 +15,36 @@ const ACTIONS = new Set<ExtensionAction>([
   'doctor',
   'update',
 ]);
+const MUTATING_ACTIONS = new Set(['start', 'stop', 'restart']);
+const EXTENSION_HELP = `Usage:
+  xangi extension list
+  xangi extension <start|stop|restart> <ID>
+  xangi extension <start|stop|restart> --all
+  xangi extension <status|doctor> [ID]
+  xangi extension link <MANIFEST>
+  xangi extension unlink <ID>
+  xangi extension update <ID> --to <COMMIT_SHA>
+
+Options:
+  --help, -h  Show this help without running an action
+  --all       Explicitly select every linked extension for start, stop, or restart`;
 
 export async function extensionCmd(
   action: string,
   positionals: string[],
   flags: Record<string, string | boolean>
 ): Promise<string> {
+  if (flags.help === true || flags.help === 'true') return EXTENSION_HELP;
+  const all = flags.all === true || flags.all === 'true';
+  if (all && positionals[0]) {
+    throw new Error('xangi extension accepts either an ID or --all, not both');
+  }
+  if (all && !['start', 'stop', 'restart', 'status', 'doctor'].includes(action)) {
+    throw new Error(`xangi extension ${action} does not support --all`);
+  }
+  if (MUTATING_ACTIONS.has(action) && !positionals[0] && !all) {
+    throw new Error(`xangi extension ${action} requires an ID or explicit --all`);
+  }
   if (action === 'link') {
     const manifestPath = positionals[0];
     if (!manifestPath) throw new Error('xangi extension link requires a manifest path');
@@ -59,6 +83,7 @@ export async function extensionCmd(
       '--action',
       action,
       ...(positionals[0] ? ['--id', positionals[0]] : []),
+      ...(all ? ['--all', 'true'] : []),
     ]);
   }
   const id = positionals[0];

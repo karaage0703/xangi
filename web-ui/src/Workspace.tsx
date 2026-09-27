@@ -1,3 +1,4 @@
+import { HtmlArtifact } from './MessageContent';
 import {
   type CSSProperties,
   lazy,
@@ -165,7 +166,7 @@ export function Workspace() {
         );
         setSelected(file);
         setDraft(file.content);
-        setMode(line ? 'edit' : file.path.toLowerCase().endsWith('.md') ? 'preview' : 'edit');
+        setMode(line ? 'edit' : /\.(?:md|html?)$/i.test(file.path) ? 'preview' : 'edit');
         pendingLocation.current = line ? { line, column } : undefined;
         setMobilePane('editor');
         const viewer = workspaceViewerUrl({ path: file.path, line, column });
@@ -507,7 +508,7 @@ export function Workspace() {
                       {stateLabel(visibleSaveState)}
                     </span>
                   )}
-                  {markdown && (
+                  {(markdown || /\.html?$/i.test(selected.path)) && (
                     <div className="workspace-editor-tabs" role="group" aria-label="表示モード">
                       <button
                         type="button"
@@ -549,7 +550,16 @@ export function Workspace() {
                 </div>
               </header>
 
-              {mode === 'preview' && markdown ? (
+              {mode === 'preview' && /\.html?$/i.test(selected.path) ? (
+                <div className="workspace-html-preview">
+                  <HtmlArtifact
+                    key={selected.version}
+                    path={selected.path}
+                    workspaceId={workspaceId}
+                  />
+                  <p>保存済みファイルのプレビューです。</p>
+                </div>
+              ) : mode === 'preview' && markdown ? (
                 <article className="workspace-markdown-preview markdown-message">
                   <div className="workspace-markdown-document">
                     <Suspense fallback={<p>プレビューを読み込み中…</p>}>

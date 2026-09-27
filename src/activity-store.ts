@@ -1,3 +1,4 @@
+import { fileChangeSummary, type FileChangeReport } from './file-changes.js';
 import type { Platform } from './events-emitter.js';
 import {
   appendFileSync,
@@ -59,6 +60,7 @@ export type TurnHistoryEntry =
       toolName: string;
       summary: string;
       inputPreview?: string;
+      fileChanges?: FileChangeReport;
     };
 
 interface ActivityRecord {
@@ -168,6 +170,7 @@ interface ActivityLogEvent {
   toolName?: string;
   summary?: string;
   toolInputPreview?: string;
+  fileChanges?: FileChangeReport;
   turnHistory?: TurnHistoryEntry[];
 }
 
@@ -222,6 +225,7 @@ export function readToolHistory(threadId: string, requestedLimit = 100): ToolHis
       toolName: event.toolName,
       summary: event.summary || event.toolName,
       inputPreview: event.toolInputPreview,
+      ...(event.fileChanges ? { fileChanges: event.fileChanges } : {}),
     });
   }
   return result.reverse();
@@ -268,6 +272,7 @@ export function readTurnHistory(threadId: string, requestedLimit = 100): TurnHis
         toolName: event.toolName,
         summary: event.summary || event.toolName,
         inputPreview: event.toolInputPreview,
+        ...(event.fileChanges ? { fileChanges: event.fileChanges } : {}),
       });
     }
   }
@@ -283,6 +288,7 @@ function appendActivityLog(
     text?: string;
     toolName?: string;
     toolInputPreview?: string;
+    fileChanges?: FileChangeReport;
     turnHistory?: TurnHistoryEntry[];
   } = {}
 ): void {
@@ -341,6 +347,7 @@ function pushHistory(
     persist?: boolean;
     toolName?: string;
     toolInputPreview?: string;
+    fileChanges?: FileChangeReport;
     turnHistory?: TurnHistoryEntry[];
   } = {}
 ): void {
@@ -448,6 +455,23 @@ export function updateActivityTool(
     summary: record.summary,
     inputPreview,
   });
+  notifyActivity(ctx.threadId);
+}
+
+export function updateActivityFileChanges(ctx: ActivityContext, report: FileChangeReport): void {
+  if (!report.files.length && !report.partial) return;
+  const record = getExisting(ctx);
+  const at = now();
+  const summary = fileChangeSummary(report);
+  record.turnHistory.push({
+    kind: 'tool',
+    at,
+    turnId: ctx.turnId,
+    toolName: 'ファイル変更',
+    summary,
+    fileChanges: report,
+  });
+  appendActivityLog(record, 'tool', summary, at, { toolName: 'ファイル変更', fileChanges: report });
   notifyActivity(ctx.threadId);
 }
 

@@ -1,3 +1,5 @@
+import { createFileObservation } from './file-changes.js';
+import { getSessionEntry } from './sessions.js';
 /**
  * `runner.runStream` を呼びつつ xangi-events (turn.started / message.delta /
  * turn.complete / turn.aborted / agent.error) を漏れなく発火するラッパー。
@@ -20,6 +22,7 @@
  * incremental にしないが pet 側では typing animation が出る。
  */
 
+import { registerRunningSession } from './running-session-context.js';
 import { events, type Platform } from './events-emitter.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
@@ -29,6 +32,7 @@ import {
   startActivity,
   updateActivityText,
   updateActivityTool,
+  updateActivityFileChanges,
 } from './activity-store.js';
 
 export interface BubbleEventContext {
@@ -56,6 +60,23 @@ export async function runWithBubbleEvents(
   events.turnStarted({ ...eventBase, userText });
   let errorEmitted = false;
   let lastPublicText = '';
+  let completion: RunResult | undefined;
+  let callbackError: Error | undefined;
+  const session = options?.appSessionId ? getSessionEntry(options.appSessionId) : undefined;
+  const workdir = options?.workdir ?? process.env.WORKSPACE_PATH;
+  const workspaceId =
+    session?.workspaceId ?? (workdir === process.env.WORKSPACE_PATH ? 'default' : undefined);
+  const observation =
+    workdir && !options?.internalTask ? createFileObservation(workdir, workspaceId) : undefined;
+  const collectChanges = () => {
+    if (!observation) return;
+    try {
+      updateActivityFileChanges(ctx, observation.finish());
+    } catch {
+      updateActivityFileChanges(ctx, { files: [], partial: true, concurrent: false });
+    }
+  };
+  const releaseSession = registerRunningSession(options?.channelId, options?.appSessionId);
   try {
     const runOptions = {
       ...options,
@@ -63,7 +84,7 @@ export async function runWithBubbleEvents(
       userText: options?.userText ?? userText,
     };
 
-    return await runner.runStream(
+    const result = await runner.runStream(
       prompt,
       {
         onBackendReady: () => callbacks.onBackendReady?.(),
@@ -87,33 +108,36 @@ export async function runWithBubbleEvents(
           callbacks.onText?.(chunk, fullText);
         },
         onToolUse: (toolName, toolInput) => {
+          observation?.onToolUse(toolName, toolInput);
           updateActivityTool(ctx, toolName, toolInput);
           callbacks.onToolUse?.(toolName, toolInput);
         },
+        onFileChanges: (changes) => {
+          observation?.onFileChanges(changes);
+          callbacks.onFileChanges?.(changes);
+        },
         onTraceEvent: (event) => callbacks.onTraceEvent?.(event),
         onComplete: (result) => {
-          const publicResult = eventTextSanitizer
-            ? eventTextSanitizer(result.result)
-            : result.result;
-          completeActivity(ctx, publicResult);
-          events.turnComplete({ ...eventBase, text: publicResult });
-          callbacks.onComplete?.(result);
+          completion = result;
         },
         onError: (error) => {
-          if (error.message === CANCEL_MESSAGE) {
-            abortActivity(ctx);
-            events.turnAborted(eventBase);
-          } else {
-            errorActivity(ctx, error.message);
-            events.agentError({ ...eventBase, message: error.message });
-          }
-          errorEmitted = true;
-          callbacks.onError?.(error);
+          callbackError = error;
         },
       },
       runOptions
     );
+    collectChanges();
+    if (callbackError) throw callbackError;
+    const completed = completion ?? result;
+    const publicResult = eventTextSanitizer
+      ? eventTextSanitizer(completed.result)
+      : completed.result;
+    completeActivity(ctx, publicResult);
+    events.turnComplete({ ...eventBase, text: publicResult });
+    callbacks.onComplete?.(completed);
+    return result;
   } catch (e) {
+    collectChanges();
     if (!errorEmitted) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === CANCEL_MESSAGE) {
@@ -124,6 +148,10 @@ export async function runWithBubbleEvents(
         events.agentError({ ...eventBase, message: msg });
       }
     }
+    errorEmitted = true;
+    callbacks.onError?.(e instanceof Error ? e : new Error(String(e)));
     throw e;
+  } finally {
+    releaseSession();
   }
 }

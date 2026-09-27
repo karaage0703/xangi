@@ -380,7 +380,13 @@ async function withoutMinimumDisplayDelay<T>(run: () => Promise<T>): Promise<T> 
   vi.useFakeTimers({ toFake: ['setTimeout'] });
   try {
     const pending = run();
-    await vi.runAllTimersAsync();
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    const deadline = performance.now() + 4000;
+    while (!settled && performance.now() < deadline) {
+      await new Promise(resolve => setImmediate(resolve));
+      await vi.runAllTimersAsync();
+    }
     return await pending;
   } finally {
     vi.clearAllTimers();
@@ -432,11 +438,13 @@ let tempDir: string | undefined;
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'xangi-slack-test-'));
+  vi.stubEnv('WORKSPACE_PATH', tempDir);
   initSessions(tempDir);
   _resetSlackStateForTest();
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   clearSessions();
   _resetSlackStateForTest();
   if (tempDir) {
@@ -1376,7 +1384,7 @@ describe('processMessage', () => {
       agentRunner,
       config
     );
-    await new Promise((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(1));
 
     await processMessage(
       AUTO_REPLY_CHANNEL,

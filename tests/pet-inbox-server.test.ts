@@ -159,6 +159,16 @@ describe('pet-inbox-server', () => {
     delete process.env.XANGI_EVENTS_ENABLED;
   });
 
+  it('rejects agent sessions when the execution resolver is missing', async () => {
+    const { createWebSession } = await import('../src/sessions.js');
+    const appSessionId = createWebSession({ selectedAgentId: 'selected-agent' });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await postJson(`${server.url}/api/device/inbox`, { appSessionId, text: 'hello' });
+      expect(res.status).toBe(503);
+      expect(server.lastRun).toBeNull();
+    }
+  });
+
   it('accepts loopback POST with text → 202 + invokes runner', async () => {
     const res = await postJson(`${server.url}/api/pet/inbox`, { text: 'hello pet' });
     expect(res.status).toBe(202);

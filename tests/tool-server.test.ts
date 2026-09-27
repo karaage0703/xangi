@@ -264,6 +264,35 @@ describe('tool-server HTTP status codes', () => {
     expect(body.error).toContain('extension_uninstall requires --id');
   });
 
+  it.each(['start', 'stop', 'restart'])(
+    'rejects extension_runtime %s without --id or --all before dispatch',
+    async (action) => {
+      const res = await fetch(`${serverUrl}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'extension_runtime', flags: { action } }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { ok: boolean; error: string };
+      expect(body.ok).toBe(false);
+      expect(body.error).toContain('requires --id or explicit --all');
+    }
+  );
+
+  it('rejects extension_runtime when --id and --all are combined', async () => {
+    const res = await fetch(`${serverUrl}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'extension_runtime',
+        flags: { action: 'restart', id: 'xangi-studio', all: 'true' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.error).toContain('either --id or --all');
+  });
+
   it('routes schedule_update validation errors as HTTP 400', async () => {
     const res = await fetch(`${serverUrl}/api/execute`, {
       method: 'POST',

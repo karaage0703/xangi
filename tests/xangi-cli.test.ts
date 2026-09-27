@@ -95,6 +95,10 @@ beforeAll(async () => {
     });
 
     const parsedUrl = new URL(req.url || '/', serverUrl);
+    if (parsedUrl.pathname === '/api/execute') {
+      json(res, 200, { ok: true, result: 'extension action accepted' });
+      return;
+    }
     if (parsedUrl.pathname === '/api/sessions') {
       json(res, 200, {
         sessions: [
@@ -209,6 +213,59 @@ exit 0
     expect(result.stdout).toContain('setup --apply');
     expect(result.stdout).toContain('--workspace-mode');
     expect(result.stdout).not.toContain('--browser');
+  });
+
+  it.each([
+    ['extension', '--help'],
+    ['extension', 'restart', '--help'],
+    ['extension', 'restart', '-h'],
+    ['extension', 'restart', 'xangi-studio', '--help'],
+  ])('shows extension help without contacting the runtime for %s %s', async (...args) => {
+    const result = await runCli(args, { XANGI_TOOL_SERVER: serverUrl });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('xangi extension <start|stop|restart> --all');
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each(['start', 'stop', 'restart'])(
+    'requires an ID or --all before %s can reach the runtime',
+    async (action) => {
+      const result = await runCli(['extension', action], { XANGI_TOOL_SERVER: serverUrl });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain('requires an ID or explicit --all');
+      expect(requests).toHaveLength(0);
+    }
+  );
+
+  it('forwards an explicit ID or --all and rejects their combination', async () => {
+    const target = await runCli(['extension', 'restart', 'xangi-studio'], {
+      XANGI_TOOL_SERVER: serverUrl,
+    });
+    expect(target.code).toBe(0);
+    expect(requests[0].body).toMatchObject({
+      command: 'extension_runtime',
+      flags: { action: 'restart', id: 'xangi-studio' },
+    });
+    expect((requests[0].body as { flags: Record<string, string> }).flags).not.toHaveProperty('all');
+
+    requests = [];
+    const all = await runCli(['extension', 'restart', '--all'], {
+      XANGI_TOOL_SERVER: serverUrl,
+    });
+    expect(all.code).toBe(0);
+    expect(requests[0].body).toMatchObject({
+      command: 'extension_runtime',
+      flags: { action: 'restart', all: 'true' },
+    });
+    expect((requests[0].body as { flags: Record<string, string> }).flags).not.toHaveProperty('id');
+
+    requests = [];
+    const invalid = await runCli(['extension', 'restart', 'xangi-studio', '--all'], {
+      XANGI_TOOL_SERVER: serverUrl,
+    });
+    expect(invalid.code).not.toBe(0);
+    expect(invalid.stderr).toContain('either an ID or --all');
+    expect(requests).toHaveLength(0);
   });
 
   it('suggests AI rescue when service startup fails', async () => {

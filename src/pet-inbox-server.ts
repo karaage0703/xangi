@@ -25,7 +25,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
-import type { AgentRunner } from './agent-runner.js';
+import type { AgentRunner, RunOptions } from './agent-runner.js';
 import type { Config } from './config.js';
 import {
   WEB_CHAT_CONTEXT_PREFIX,
@@ -152,7 +152,14 @@ export async function handlePetInboxRequest(
   replySuggestions: Config['web'] = {
     replySuggestions: false,
     replySuggestionCount: 3,
-  }
+  },
+  resolveExecution?: (
+    appSessionId: string,
+    text: string
+  ) => Promise<{
+    prompt: string;
+    options: RunOptions;
+  }>
 ): Promise<boolean> {
   const url = (req.url || '/').split('?')[0];
   if (req.method !== 'POST' || !isInboxPath(url)) return false;
@@ -250,7 +257,21 @@ export async function handlePetInboxRequest(
     eventTextSanitizer: stripReplySuggestionMarkup,
   };
 
-  let prompt = `[プラットフォーム: Web (${label})]\n${text}`;
+  // Resolve the selected agent on every send, before accepting the request.
+  busy.add(appSessionId);
+  let execution: Awaited<ReturnType<NonNullable<typeof resolveExecution>>> | undefined;
+  try {
+    execution = await resolveExecution?.(appSessionId, text);
+  } catch (error) {
+    busy.delete(appSessionId);
+    throw error;
+  }
+  if (!execution && (entry.selectedAgentId || entry.projectId)) {
+    busy.delete(appSessionId);
+    sendJson(res, 503, { error: 'Agent execution settings are unavailable' });
+    return true;
+  }
+  let prompt = `[プラットフォーム: Web (${label})]\n${execution?.prompt ?? text}`;
   const replySuggestionsEnabled = loadReplySuggestionsEnabled(replySuggestions.replySuggestions);
   if (replySuggestionsEnabled) {
     prompt = appendReplySuggestionInstruction(prompt, replySuggestions.replySuggestionCount);
@@ -267,7 +288,6 @@ export async function handlePetInboxRequest(
     events_url: `/api/events/stream?thread_id=${encodeURIComponent(threadId)}`,
   });
 
-  busy.add(appSessionId);
   console.log(`[inbox:${label}] Message (session ${appSessionId}): ${text.slice(0, 100)}`);
   void (async () => {
     try {
@@ -291,6 +311,7 @@ export async function handlePetInboxRequest(
           settingsChannelId: ctxKey,
           appSessionId,
           workdir: entry.workspacePath,
+          ...execution?.options,
           platform: 'web',
         }
       );

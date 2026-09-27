@@ -582,7 +582,7 @@ describe('Discord thread run lock', () => {
     const onMessageCreate = handlers.get(Events.MessageCreate)!;
 
     const first = onMessageCreate(firstMessage);
-    await new Promise((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(1));
     await onMessageCreate(secondMessage);
     releaseFirst();
     await first;

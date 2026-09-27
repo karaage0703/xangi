@@ -2,6 +2,7 @@ import { FavoriteLinks, useExtensionFavorites } from './extensionFavorites';
 import { useEffect, useState } from 'react';
 import { AppNavigation, DESTINATIONS, NavigationIcon, type AppSurface } from './AppNavigation';
 import { ThemeControl, useThemePreference } from './ThemeSelect';
+import { HistoryControls } from './HistoryControls';
 
 export function AppTopbar({ current }: { current: AppSurface }) {
   const { favorites, error: favoritesError } = useExtensionFavorites();
@@ -21,6 +22,7 @@ export function AppTopbar({ current }: { current: AppSurface }) {
     <>
       <header className="app-topbar">
         <div className="app-page-navigation">
+          <HistoryControls />
           <a className="brand" href="/" aria-label="xangi チャット">
             <span aria-hidden="true">x</span>
           </a>

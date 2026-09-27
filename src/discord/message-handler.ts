@@ -694,7 +694,9 @@ export async function processPrompt(
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
     const turnHistory = withoutFinalResponse(
-      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
+      getTurnHistory(eventCtx.threadId, eventCtx.turnId).filter(
+        (entry) => !(entry.kind === 'tool' && entry.fileChanges)
+      ),
       result
     );
     const showToolsButton =

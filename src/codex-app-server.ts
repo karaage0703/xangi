@@ -1,3 +1,4 @@
+import { codexFileChanges } from './file-changes.js';
 import { readCodexTurnEvidence } from './codex-model-evidence.js';
 import { updateSessionContextUsage } from './sessions.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -201,6 +202,10 @@ export class CodexAppServerRunner extends CliRunnerBase {
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = obj(p.item);
       const type = str(item.type);
+      if (method === 'item/completed') {
+        const changes = codexFileChanges(item);
+        if (changes.length) t.callbacks.onFileChanges?.(changes);
+      }
       if (type === 'agentMessage' && method === 'item/completed') {
         // Only the final message is the returned answer; deltas remain available to UI.
         if (item.phase === 'final_answer' || item.phase == null) t.result.result = str(item.text);

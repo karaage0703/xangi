@@ -112,10 +112,10 @@ flowchart LR
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
 - session詳細の一時的な読込失敗は安全なGET retry後に表示するが、後続の正常読込でその読込エラーだけを消す。より新しい送信・upload等の操作エラーは消さない
-- Web ProjectはDiscordのチャンネル相当の論理namespaceとして扱う。`DATA_DIR/web-projects.json`に名前・追加prompt・任意のbackend/model/effortを保存し、sessionの`projectId`で関連付ける。既存Web sessionの`projectId`は実行中でなければ変更・解除できる。Project作成時にdirectory・Git repository・instruction fileは作成しない。不正なProject項目はその項目だけを読み飛ばし、利用できないbackend/model/effortはそのProjectで無効化して、他の機能を起動し続ける
-- 設定画面とWeb Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、Project・既存sessionからの参照、platform channel bindingがある場合は拒否する
+- プロジェクトとエージェントは`DATA_DIR/project-catalog.json`へ一括保存し、sessionの`projectId`と`selectedAgentId`で関連付ける。旧定義はIDを保って移行する。作成時にdirectory・Git repositoryは作らない。共通指示と担当エージェントの指示を実行時に合成する。
+- 設定画面とWeb Project画面は既存の絶対pathを中央registryへ追加し、未使用Workspaceの登録解除も行う。登録解除はdirectoryやfileを変更せず、default、エージェント・既存sessionからの参照、platform channel bindingがある場合は拒否する
 - `xangi service restart`と`xangi tool system_restart`は、再起動要求の前に新しいCLIが本番のWeb Project stateをread-only検証する。互換性のない状態を見つけた場合は再起動を中止し、stateファイルは変更しない
-- Web backendの解決優先順位はsession固有override（`/backend set`）→ Project既定値 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
+- Web backendの解決優先順位はsession固有override（`/backend set`）→ 選択エージェントの設定 → runtime既定値。`/backend reset`はsession overrideだけを消す。Project移動でprovider backendが変わる場合は、provider session IDを再利用せず保存済みtranscriptを次turnへ先読みして文脈を保つ
 - `/settings`は`runtime-settings-command.ts`の7項目を共通dispatcher経由で変更する。既定モデルはbackendから候補を取得できた場合は選択欄、取得できない場合は自由入力として表示する。チャンネル選択肢は接続済みDiscord clientのcacheまたはSlack `conversations.list`から名前を取得し、UIには名前を表示してIDを内部値として保存する。Slackのscope不足は`channels:read` / `groups:read`と再インストール手順へ変換する。選択中チャンネルの保存済みoverrideと実効値は専用GET APIから取得して各入力へ反映する。非秘密の起動設定は`web-startup-settings.ts`の型付きallowlistだけを既存`.env`へ保存する。接続tokenとAPIキーは既存`SecretStore`へ書き込み専用入力から保存でき、Webへは値でなく設定有無だけを返す。`backend-auth-status.ts`は対応する全AIエージェントCLIを列挙し、専用status、認証一覧、モデル一覧、または既存Copilot SDKのアカウント問い合わせで非対話にログイン状態を判定する。AI CLI更新は同モジュールの固定allowlistにある自己更新サブコマンドだけを`shell`なしで実行し、生出力を返さず更新後のversionだけを再取得する。秘密値やCLI出力は返さず、認証以外の失敗は未認証と断定せず判定不能にする。任意の環境変数は受け付けず、明示的な環境変数は引き続き保存値より優先する。変更APIはsame-origin mutationを強制し、画面は即時・次のturn・再起動後を別ラベルで表示する
 - `GET /api/sessions` は既定で最新100件と`activity`、provider文脈を継続できるかを示す`sessionMode`を返し、`lifecycle=open|closed`と`updatedSince`でSession状態・更新日時をserver側絞り込みできる。`GET /api/sessions/:id`も`isActive`と`activity`を返し、Web送信SSEが切れても同じturnのserver状態または保存済みtranscriptへ復帰する。POSTは自動再送しない。タイトル導出ではログ全体を読まず先頭のJSONL 1行だけをchunk読込する
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
@@ -124,7 +124,7 @@ flowchart LR
 - `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は入力待ち・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
 - `/schedules` は予定管理モード。Web / Discord / Slack / Telegram予定の追加・編集・有効状態変更・削除・手動実行をHTTP API経由で行う。手動実行は確認dialogを経て通常のscheduler runner経路を使い、停止中の予定も実行できるが、保存済みの有効状態と次回発火時刻は変えない。同一予定が実行中なら重複実行を拒否する。Web予定の`channelId`は新規会話を示す予約値へ統一し、任意の`projectId`を保存する。実行時にProjectの存在を再検証して新しいWeb sessionを作成し、そのsessionへ通常のWeb agent runner経路でturnを追加する
-- `agent-runs.ts`は比較・委譲向けの独立実行台帳を`DATA_DIR/agent-runs.json`へmode 0600でatomic保存する。`POST /api/agent-runs`はbackend・model・effort・登録済みworkspaceを固定した新規Web sessionを作り、既存Dynamic Runnerで非同期実行する。台帳にはtask SHA-256、session ID、状態、所要時間、backend別usageを保存し、trajectory pathは実ファイルが生成された場合だけ保存する。`GET /api/agent-runs`と`GET /api/agent-runs/:id`で取得できる。初版はgate、自動修復、並列benchmark orchestrationを持たない
+- `agent-runs.ts`は比較・委譲向けの独立実行台帳を`DATA_DIR/agent-runs.json`へmode 0600でatomic保存する。`POST /api/agent-runs`はbackend・model・effort・登録済みworkspaceを固定した新規Web sessionを作り、既存Dynamic Runnerで非同期実行する。台帳にはtask SHA-256、session ID、状態、所要時間、backend別usageを保存し、trajectory pathは実ファイルが生成された場合だけ保存する。`GET /api/agent-runs`と`GET /api/agent-runs/:id`で取得できる。Projectの子実行は親のWorkspace配下を拒否し、複数の子が終端状態になったら親の既存会話を1ターン再開して結果を渡す。親が作業中ならホスト側で待ち、モデルによる短周期の`agent wait`反復を避ける。Local LLMがエラー文を返した場合は成功扱いせずfailedを記録する。gateと自動修復は外部の作業フローが担当する
 - Chat / Files / Schedules / Monitor / Extensionsは共通navigation shellを使う。desktopでは左のactivity rail、768px以下またはtouch端末の低い横画面では下部navigationへ切り替え、Monitor・Extensions・theme selectorを`その他`sheetへ収める。system / light / darkの選択をlocalStorageへ保存して`data-theme`でsemantic color tokenを切り替える。Monitorの表示分類は`isActive`なら実行中、Openかつ非実行なら入力待ち、Closedなら完了とする。内部では`lifecycle`をOpen / Closed、`isCurrent`を次回投稿のrouting pointerとして別々に維持する。`lifecycle`がない既存Sessionはrouting pointerの有無にかかわらずClosedとし、実際に次の入力を受けた時点でOpenへ移行する
 - Reactはbuild時に静的assetへbundleするため、配布先にNode.js以外のフロントエンド実行依存を追加しない
 
@@ -671,6 +671,8 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 
 ### スケジューラー（scheduler.ts）
 
+`runWithBubbleEvents` は実行中Sessionをchannel単位で登録し、成功・失敗・cancelすべての終了経路で解除します。`progress_card` は一意な実行中Sessionを優先し、実行がない場合だけ通常のactive Sessionを参照します。同じchannelに異なるSessionが同時実行中なら更新を拒否します。これは更新先の解決であり、HTTP呼び出し元の認証機構ではありません。
+
 定期実行とリマインダーを管理：
 
 ```
@@ -1206,6 +1208,50 @@ src/
 
 `agent.model` はresume判定用の指定値であり、実測モデルで上書きしない。CLIやプロバイダーによるalias解決・fallbackは実行スナップショットで表現する。UIは最後の実測モデルを先頭にし、同turnの他の確認モデルも表示する。過去の設定やモデルを現在のresolverから補完しない。古い `agent.model` は設定値・実行未確認、証拠のないモデルは不明とする。復元済みの `modelHistory` だけが存在する場合はその最新記録を表示する。Webの次回設定は別の `nextBackend` として扱い、Discordでは設定対象の親チャンネルと実行記録を参照するthreadのcontext keyを分離する。
 
+## プロジェクトとエージェントの共用
+
+プロジェクトは会話と共通指示をまとめます。エージェントは名前・役割・個別指示・ワークスペース・使用AIを持つ独立した設定です。参加登録やプロジェクトの既定担当はありません。「新規会話の担当」には常に登録済みの全エージェントを表示します。会話のプロジェクトを移動しても担当を保持します。会話個別のbackend設定は引き続き優先されます。
+
+Studioは拡張一覧から開きます。会話画面上部の「Studioで制作」リンクは表示しません。制作・確認・分担調査の担当だけを作業ごとに選びます。必要な共通指示や、引き継ぐ会話を最大5件まで明示選択できます。会話本文は各30,000文字、作業へ渡す資料合計は50,000文字までです。URLを共通指示へ書くだけでは自動取得しません。
+
+設定はDATA_DIR/project-catalog.jsonへ保存し、/api/projectsと/api/agentsで別々に管理します。プロジェクトにAI設定や参加者を保存しません。未完了・実行中の会話で使用するエージェントの削除は拒否します。終了済み・アーカイブ済み会話だけが参照する担当は削除でき、その担当選択だけを解除します。本文・プロジェクト所属・作業場所は保持します。プロジェクトの削除で会話本文やStudio成果物は消えません。
+
+Studio側と本体を対応版の組み合わせで更新してください。ロールバック時は両サービスを止め、事前バックアップを一式復元します。旧web-projects.jsonは移行後の編集を反映しないため、そのファイルだけへ戻すと新しい設定は引き継がれません。
+
+
+### エージェントへの委譲
+
+`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、自分への依頼、同一担当への重複実行、再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
+
+### エージェントの実行設定
+
+エージェントのワークスペースは通常会話と委譲先の両方で使用します。親のワークスペースは引き継ぎません。未設定の既存エージェントはdefaultを使用するため、必要な作業場所をエージェント編集画面で選択してください。設定を変更した後の実行は新しい作業場所を使用します。プロジェクトには作業場所を設定しません。
+
+local-llmを選ぶとAgent（ツールを使って作業）/Chat（会話のみ）とLocal LLMの推論強度を設定できます。空欄はxangiの既定設定を使用します。推論強度はモデル側が対応する値を選んでください。これらは通常のeffortとは別項目で、保存後の通常会話と委譲に反映します。会話個別のモード設定がある場合はそちらが優先されます。
+
+
 ### 拡張お気に入りの保存
 
 `ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ拡張IDの順序付き配列をatomic renameで保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動を行う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
+
+
+### 外部入力のAgent設定
+
+送信の実行設定はWeb側でAgent/Projectから解決し、device/pet/terminal inboxへ渡す。会話作成時の保存値だけに依存せず、各送信でAI・モード・指示・workspaceを再解決する。解決できないAgent会話を本体既定AIへフォールバックさせない。
+
+エージェントへの依頼手順には、稼働中の本体に付属するCLIの絶対パスを渡します。ログインシェルでPATHが変わっても別のxangiへ切り替わりません。一覧検索はプロジェクトとエージェントで文言を分け、作成・編集画面には表示しません。名前が `Avatar:` で始まる項目も他と同じように表示します。
+
+共通の操作案内には稼働中CLIの絶対パスと一覧・依頼・結果確認の手順を載せます。名簿を会話へ常時埋め込まず、必要なときに全件一覧を取得します。子へはそのAgent固有の指示と依頼文だけを渡し、親のプロジェクト指示や会話履歴は暗黙に継承しません。通常のプロジェクト内会話は共通指示と選択したAgentの指示を使います。
+
+「共通の参考資料」専用欄は廃止しました。資料の説明やURLは共通指示にまとめます。保存済みの旧欄の文章は、読み込み時に共通指示へ一度だけ移します。
+
+
+### 編集通知を使うファイル観測
+
+`file-changes.ts`は編集ツール引数から対象パスを抽出し、対象だけを同期読み取り・比較する。observer作成はI/Oゼロで、ディレクトリ列挙APIを使わない。プロセス内のLocal LLMはツール実行前の取得順序を保証できるが、外部CLIの通知タイミングでは保証しない。`StreamCallbacks.onFileChanges`は成功済みのbackend変更だけを運び、Codexの完了イベントとOpenCodeの成功結果diffを接続する。既存の履歴JSONL/APIへ上限付き差分・省略理由を保存する。通常会話の観測I/Oゼロ、対象以外の非読込、失敗通知の非表示を回帰テストで検証する。各パスの同時観測を追跡し、終了時に解放する。安全なパス確認・機密パターン除去・HTML sandboxは維持する。
+
+### 文書添付の共通配信
+
+`/api/session-attachment`はsessionIdとpathを受け取り、保存済み返答のコード例を除いたMEDIA宣言・構造化添付、または検証済み受信添付と照合する。任意の一時ファイルを公開せず、会話の作業フォルダ・添付保存先・一時領域のrealpath境界と既存ダウンロード拡張子設定を適用する。`workspace-file`の許可範囲は変更しない。
+
+DocumentAttachmentsが検証済みファイルのコピー、形式判定、LibreOfficeによるPDF変換、PopplerによるページごとのPNG描画を担当する。変換は独立したプロファイル・マクロ無効・同時2件・時間制限付き。原本は変更しない。サイズ・mtime・ctimeによってキャッシュを更新し、一度表示した一時ファイルは元が消えても保存コピーから表示できる。APIはinfo/page/raw/download/listを提供し、WebとStudioが同じ操作を使う。HTMLはsandbox/CSPで隔離し、任意バイナリは常にダウンロード扱いとする。

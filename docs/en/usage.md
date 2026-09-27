@@ -218,6 +218,8 @@ Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` wit
 
 For long, multi-step work, the agent updates a durable plan with the `progress_card` tool. Monitor list cards show the current step and completed-step count; selecting the Session shows every step with textual Pending / Current / Completed states plus an optional note. The card survives page reloads and xangi restarts, and xangi does not infer a percentage. For manual use, check the current contract with `xangi tool help progress_card` instead of guessing flags.
 
+During a scheduled run, progress is saved to that reservation Session without changing the normal conversation plan. If multiple Sessions execute simultaneously and the target is ambiguous, the update returns an error.
+
 Each Monitor card and its detail panel also show the cumulative wall-clock time spent running agent turns in that Session. The value is persisted with the Session across xangi restarts. `Chat`, `Web`, and `Schedule` are independent toggles, with only `Chat` and `Web` enabled by default. Enabling `Schedule` adds scheduled-run Sessions alongside the other enabled types with the same token and processing-time format. New scheduled-run Sessions use the schedule label instead of the full execution prompt as their title, while long card titles are truncated to one line.
 
 ### Agent Run API
@@ -748,7 +750,7 @@ Discord exposes the arguments as slash-command fields. Add a `/workspace` Slash 
 
 In the Web UI, use `Add Workspace` on the Settings or Projects screen to register an existing absolute path accessible to the xangi process. On the Settings screen, you can enter a path or use `Browse…` to choose a directory on the machine running xangi. When allowed roots are configured, the picker only shows directories within them. It cannot select a local directory on the device running the browser. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
 
-Web Projects also select a registered workspace. A new Web session snapshots the Project workspace when the session is created, so changing a Project or channel binding never moves an existing conversation to another directory. The Workspace editor provides the same registered-workspace selector.
+Agents select a registered workspace. Both new conversations and delegated tasks use the selected agent’s workspace. Changing the agent workspace affects subsequent execution. The Workspace browser and editor resolve paths relative to the conversation’s agent workspace.
 
 #### effort Option
 
@@ -1005,6 +1007,8 @@ XANGI_WORKSPACE=/home/user/my-workspace
 ## Extension Integration
 
 Add and manage external extensions from Extensions in the Web UI. Installation, configuration, stored data, standalone UI, and update instructions remain canonical in each extension repository instead of being duplicated in xangi documentation.
+
+`xangi extension restart --help` (or `-h`) prints help without taking action. `start`, `stop`, and `restart` require an extension ID. Use explicit `--all` only when every linked extension should be affected (for example, `xangi extension restart xangi-studio` or `xangi extension restart --all`). The same guard applies to `xangi tool extension_runtime`.
 
 Managed extension status reports `running`, `healthy`, and `ready` separately. `running` means the child process is alive, `healthy` means its health endpoint returned 2xx, and `ready` means that 2xx payload did not explicitly contain `ready: false`. Legacy extensions that omit `ready` are treated as ready. If the initial health probe times out, returns non-2xx, or reports `ready: false` during a cold start, xangi keeps the validated child running so later `status` / `doctor` calls can observe recovery. `doctor` does not succeed until the extension is ready.
 
@@ -1572,7 +1576,7 @@ Web Chat uses React + Vite and supports new conversations, paged session search,
 
 Directed requests use bearer-authenticated HTTP to URLs registered in `INTER_INSTANCE_CHAT_PEERS` by default. `INTER_INSTANCE_CHAT_ALLOWED_PEERS` accepts a comma-separated inbound allowlist; when unset or `*`, any instance holding the shared token is allowed.
 
-Web Projects are logical conversation groups equivalent to Discord channels. Each Project can define an extra prompt and default backend, model, and effort. Model and effort choices are discovered dynamically from the selected backend. The `Projects` link in the sidebar opens a dedicated list for creating, configuring, and filtering by Project. Use `Move to Project` on an existing Web conversation to change its Project or return it to `No Project`. Project defaults apply from the next turn; a conversation-level `/backend set` takes precedence, and `/backend reset` returns to the Project default. Project names are not expanded in the sidebar itself. All Projects use the same `WORKSPACE_PATH`; creating one does not create a directory, Git repository, or `AGENTS.md`. Project definitions are stored in `DATA_DIR/web-projects.json`, while the Project association is stored with each session.
+Web Projects group conversations and shared context. See Shared projects and agents below for management and migration.
 
 The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
@@ -1598,6 +1602,8 @@ AI usage note: Each account window uses a filled bar for actual usage. When an o
 ### External Event Stream and Device Input
 
 xangi exposes response lifecycle events through pull SSE (`GET /api/events/stream`) and small write endpoints for external UI clients (`POST /api/pet/inbox`, `/api/device/inbox`, `/api/terminal/inbox`). When Web reply suggestions are enabled, inbox responses expose generated suggestions through `GET /api/sessions/:id`. See [External Event Stream](events.md) for schemas and examples.
+
+External client messages, including Avatar, resolve the selected Agent (or the Project default Agent) on every send: backend, model, reasoning settings, Local LLM mode, instructions, and workspace. The Agent’s chat mode disables tools.
 
 To connect a desktop companion without enabling the browser UI, set `XANGI_EVENTS_SERVER_ENABLED=true`. The shared server then exposes only health, event streaming, session reads, and inbox routes; Web UI assets and unrelated Web APIs remain unavailable.
 
@@ -1833,6 +1839,29 @@ When you see this message, stop one of the instances or separate `DATA_DIR` and 
 
 The lock heartbeat updates the mtime every 30 seconds. Locks that haven't been updated for 60 seconds are treated as stale and the next startup forcibly takes them over, so locks left behind by crashes or SIGKILL are auto-reclaimed — no manual cleanup is required.
 
+## Main data locations
+
+Unless set explicitly, `DATA_DIR` below is `<WORKSPACE_PATH>/.xangi`. Use the corresponding `DATA_DIR` for each instance. A registered workspace is where the AI works; it is not where conversation history or agent settings are stored.
+
+| Data | Location | Contents |
+| --- | --- | --- |
+| Workspace registry | `DATA_DIR/workspaces.json` | Names, actual directory paths, the default workspace, and channel bindings |
+| Project and agent settings | `DATA_DIR/project-catalog.json` | Shared instructions and each agent's instructions, role, AI settings, and workspace ID. Both collections share one file |
+| Session index and associations | `DATA_DIR/sessions.json` | Conversation ID, platform, selected agent, project, workspace, and other metadata. It does not contain the conversation text |
+| Conversation transcripts | `DATA_DIR/logs/sessions/<appSessionId>.jsonl` | Requests, replies, and errors for each parent or child session. A child has its own Web session |
+| Local LLM history compaction | `DATA_DIR/logs/session-compactions/<appSessionId>.jsonl` | Recovery checkpoints when history is compacted; not shown in the normal chat view |
+| Child agent and Agent Run records | `DATA_DIR/agent-runs.json` | Run ID, task, agent, status, result, `appSessionId`, execution workspace, and other run metadata |
+| Tool trajectory | `<execution workspace>/logs/tool-trajectory/<appSessionId>.jsonl` | Tool events when logging is enabled and a file was actually created. Separate from the transcript |
+| Schedules and triggers | `DATA_DIR/schedules.json`, `DATA_DIR/trigger-receipts.json` | Schedule definitions and trigger delivery receipts |
+| Web and chat runtime settings | `DATA_DIR/settings.json` | Reply suggestions, per-channel options, and other runtime settings |
+| Extensions | `DATA_DIR/extensions.json`, `DATA_DIR/extension-sources.json`, `DATA_DIR/extension-favorites.json` | Linked extensions, sources, and sidebar favorites |
+| Antigravity usage | `DATA_DIR/antigravity-status.json` | Usage snapshot when statusline integration is configured |
+| Received attachments | `DATA_DIR/media/attachments/` | Stored attachments; contents depend on the platform and retention settings |
+
+To inspect a delegated run, find its run ID in `agent-runs.json`, read its `appSessionId`, then open `logs/sessions/<appSessionId>.jsonl`. Parent and child conversations are separate files. A run has a `trajectoryPath` only when the tool trajectory file exists. The parent's full conversation is not automatically shared with the child.
+
+Files in a registered workspace, such as `AGENTS.md`, `skills/`, and AI-created outputs, remain in that workspace directory. Check each extension's documentation for its own artifacts and state. Startup configuration and credentials are separate from the table: a source checkout uses `.env`, while a managed installation uses its config directory. For backups, check the running instance's `DATA_DIR`, the relevant workspaces, and startup configuration separately.
+
 ## Session Retention
 
 By default, **all session history is kept** (each `sessions.json` entry is only a few hundred bytes, so long-term growth is negligible).
@@ -1891,6 +1920,81 @@ Grok reads native primary-turn model evidence matched to the exact session, work
 
 Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-dir` set to the running xangi instance's actual `DATA_DIR` (an absolute path, quoted when it contains spaces). This path remains valid across updates. The helper prefers the bundled Node runtime. Do not overwrite an existing Antigravity statusline without checking it first. After configuring `/statusline`, run an Antigravity session until quota is received and confirm Monitor shows it. This integration is optional and only needed to show usage in xangi Monitor. Antigravity works without it; unconfigured usage cards stay hidden. Enabling Antigravity’s built-in status line alone does not save this snapshot. Bundling the helper saves interested users a separate download.
 
+## Shared projects and agents
+
+Projects group conversations and shared instructions. Agents independently define a name, role, instructions, workspace and AI settings. There is no project membership or project default agent. New conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Conversation-specific backend overrides retain precedence.
+
+Open Studio from the extensions list to choose makers and reviewers for each task. The chat toolbar no longer shows a Studio shortcut. Shared instructions and past conversations are provided explicitly (up to five, 30,000 characters each and 50,000 total source characters). Reference URLs in shared instructions are not automatically fetched.
+
+DATA_DIR/project-catalog.json stores projects and agents, managed separately through /api/projects and /api/agents. Projects do not store AI settings or membership. Agents used by open or running conversations cannot be deleted. References from closed or archived conversations do not block deletion; only the selected agent is cleared, preserving text, project and workspace. Deleting a project does not delete conversation text or Studio artifacts.
+
+Update the host and Studio together. For rollback, stop both services and restore the pre-upgrade backup as a set. The legacy file does not include edits made after migration.
+
+The agent list shows names, roles and models with edit and delete actions. The new-conversation selector always offers every registered agent. Agents used by open or running conversations cannot be deleted; closed conversations do not block deletion.
+
+
+### Agent delegation
+
+The parent agent can register a worker after preparing a separate directory. For development, create a task-specific Git worktree and branch from the target repository, and make its `AGENTS.md` and required skills available there. The parent workspace itself is rejected.
+
+```bash
+xangi agent create --name Developer --workspace /absolute/path/to/worktree --role "Implement and test code"
+```
+
+`create` registers an existing workspace directory and saves the agent, without creating or joining a project. Use its Agent ID with `xangi agent run AGENT_ID --task "..."`. The parent prepares the Git worktree and skills. Place the child workspace outside the parent workspace; separate directories are not an OS-level filesystem sandbox.
+
+`xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; concurrent child results are delivered together. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
+
+`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. No child-to-child messaging or nested delegation; at most three active requests per parent.
+
+Project forms contain a name and shared instructions. Agent forms contain a name, workspace, role, individual instructions and AI settings. There are no participant or project default agent settings.
+
+A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Agent-bound Studio runs also use that workspace; only runs without an agent accept a caller-selected workspace.
+
+### Agent execution settings
+
+Agents own their workspace for direct conversations and delegated tasks. Children never inherit the parent workspace. Existing agents without a workspace use default; select their workspace in the agent editor. Subsequent execution uses the updated workspace. Projects do not define workspaces.
+
+The local-llm backend exposes Agent (tools enabled)/Chat (conversation only) and Local LLM reasoning effort. Empty values use the instance defaults. Choose reasoning values supported by your model. These settings are separate from ordinary effort and flow through persistence to both direct conversations and delegation. Conversation-specific mode overrides retain precedence.
+
+
 ### Extension favorites
 
 Use “☆ お気に入り” on installed extensions with a UI to add shortcuts to the left navigation rail. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.
+
+Delegation instructions use the absolute CLI path of the running instance, so login-shell PATH changes cannot select another xangi installation. Search controls are labeled for projects or agents and appear only on lists, not create/edit forms. Names beginning with `Avatar:` receive no special filtering.
+
+Common command guidance includes the running instance CLI absolute path and discovery, delegation and result commands. Rosters are fetched on demand. Child runs receive only the selected agent instructions and the task, never implicit parent project instructions or history. Ordinary project conversations still use their shared instructions and selected agent settings.
+
+The separate shared reference material field has been removed. Put descriptions and URLs in shared instructions. Existing text in the retired field is moved into shared instructions once when loaded.
+
+
+### File changes and HTML previews in conversations
+
+HTML previews inside Studio allow only same-origin frames. External sites cannot be embedded; the preview sandbox and restrictions on external network access remain in place.
+
+Web Chat and Studio inspect only files named by editor notifications. There is no workspace scan at turn start or end. Ordinary conversation, reads and shell notifications cause no file-observation I/O. Discord/Slack replies and History do not show file changes.
+
+- Local LLM write/edit callbacks run before tool execution. Claude Code (CLI/persistent), Cursor, Grok, Antigravity and GitHub Copilot use the same targeted comparison when their existing notifications contain a recognized editor name and path. External CLI notifications can arrive after the edit; before-content and complete coverage are not guaranteed.
+- Successful Codex exec/app-server file-change events preserve paths even without before-content. App-server diffs and successful OpenCode single-file result diffs are reused. Missing diffs are explicitly omitted without invented line counts. Failed/in-progress notifications are not proof of an edit.
+- Extension backends can provide editor or confirmed-change callbacks. Backends without such notifications, unreported shell edits, files outside the workspace and remote-only changes are not collected. No scan is used as a fallback.
+- Comparisons span the first editor notification and turn termination, including cancellation/failure. They may include external editor changes and do not prove exclusive AI authorship. Overlapping observations of the same path are flagged. Old turns are not backfilled.
+- Limits: 100 targets, 128 KiB per file, 16 MiB total reads; 8,000 characters per diff and approximately 160,000 total. Native diffs exceeding 128 Ki characters are omitted in full. Only actual target read failures/limits cause a partial warning; conversation without editor targets produces no warning.
+- Symlinks, sensitive files, dependency/build and internal state/log directories are excluded. Known credential patterns are redacted. Paths and links remain workspace/origin-relative.
+- HTML cards preview the current file in the existing sandbox, not a historical version. Network access, sibling assets and access to the parent page are blocked.
+
+Git credential stores (`.git-credentials`) are excluded at every depth. URL usernames and passwords in ordinary files are redacted before generating diffs.
+
+Complete YAML multiline values and AWS credential fields are redacted before generating diffs.
+
+### PWA back and forward
+
+The shared navigation arrows traverse native browser session history. Chat session switches add entries and browser traversal restores the selected conversation. No separate URL stack or history storage is maintained. Browsers with the Navigation API disable unavailable directions; older browsers keep both controls available and the standard History API does nothing when no destination exists.
+
+### Document attachments in Web and Studio
+
+Attachments provide Preview and Download original actions. Text, Markdown and CSV display their contents; PDF, Word (doc/docx), PowerPoint (ppt/pptx), Excel (xls/xlsx), OpenDocument and RTF provide paginated previews with page selection and a closable mobile fullscreen view. Office previews use print layout, not editing, recalculation, animation or embedded video playback. Other formats remain downloadable.
+
+Install Poppler (`pdfinfo` / `pdftoppm`) on the server for PDF and LibreOffice for Office conversion. Documents are not sent to an external viewer service. Missing converters, damaged or password-protected files produce explicit errors while retaining the original download. Images, audio, video and HTML are also supported.
+
+Previews accept files up to 100MB; text previews show the first 2MB with a truncation notice. Downloads retain the complete original without that preview limit. Explicit session attachments in temporary storage are accepted. Viewed copies and conversion results are stored under `DATA_DIR/document-previews`; this does not automatically archive unviewed temporary files. Save durable outputs in the workspace. Unneeded preview caches may be removed while the service is stopped.

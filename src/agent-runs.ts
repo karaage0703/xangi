@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { AgentBackend, EffortLevel } from './config.js';
+import type { AgentBackend, EffortLevel, LocalLlmReasoningEffort } from './config.js';
+
+import type { LocalLlmMode } from './backend-resolver.js';
 
 const FILE_NAME = 'agent-runs.json';
 const VERSION = 1;
@@ -14,9 +16,16 @@ export interface AgentRun {
   status: AgentRunStatus;
   task: string;
   taskHash: string;
+  projectId?: string;
+  agentId?: string;
+  parentContextKey?: string;
+  /** Platform of the parent conversation, used for completion delivery. */
+  parentPlatform?: 'discord' | 'slack' | 'telegram' | 'web' | 'line';
   backend: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  localLlmMode?: LocalLlmMode;
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
   workspaceId: string;
   workspacePath: string;
   appSessionId: string;
@@ -24,6 +33,7 @@ export interface AgentRun {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  parentNotifiedAt?: string;
   durationMs?: number;
   usage?: {
     inputTokens?: number;
@@ -41,10 +51,16 @@ interface State {
 }
 
 export interface CreateAgentRunInput {
+  projectId?: string;
+  agentId?: string;
+  parentContextKey?: string;
+  parentPlatform?: AgentRun['parentPlatform'];
   task: string;
   backend: AgentBackend;
   model?: string;
   effort?: EffortLevel;
+  localLlmMode?: LocalLlmMode;
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
   workspaceId: string;
   workspacePath: string;
   appSessionId: string;
@@ -85,9 +101,15 @@ export class AgentRunStore {
       status: 'queued',
       task,
       taskHash: createHash('sha256').update(task).digest('hex'),
+      projectId: input.projectId,
+      agentId: input.agentId,
+      parentContextKey: input.parentContextKey,
+      parentPlatform: input.parentPlatform,
       backend: input.backend,
       model: input.model,
       effort: input.effort,
+      localLlmMode: input.localLlmMode,
+      localLlmReasoningEffort: input.localLlmReasoningEffort,
       workspaceId: input.workspaceId,
       workspacePath: input.workspacePath,
       appSessionId: input.appSessionId,
@@ -129,6 +151,14 @@ export class AgentRunStore {
       run.durationMs = durationSince(run.startedAt, run.completedAt);
       run.error = error instanceof Error ? error.message : String(error);
       this.refreshTrajectoryPath(run);
+    });
+  }
+
+  markParentNotified(id: string): AgentRun {
+    return this.update(id, (run) => {
+      if (run.status !== 'succeeded' && run.status !== 'failed')
+        throw new AgentRunError('実行中の結果は通知済みにできません', 409);
+      run.parentNotifiedAt = new Date().toISOString();
     });
   }
 

@@ -1,3 +1,4 @@
+import { editedPaths } from './file-changes.js';
 import { readOpenCodeTurnModels } from './opencode-model-evidence.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { ProviderModels } from './provider-model.js';
@@ -17,6 +18,7 @@ interface OpenCodeToolState {
   output?: string;
   metadata?: {
     exit?: number;
+    diff?: string;
   };
 }
 
@@ -173,6 +175,17 @@ export class OpenCodeRunner extends CliRunnerBase {
             emittedToolIds.add(eventKey);
             const input = this.normalizeToolInput(event.part.state?.input);
             callbacks.onToolUse?.(event.part.tool, input);
+            // This backend reports tool_use after execution; reuse its actual diff.
+            const paths = editedPaths(event.part.tool, input);
+            const diff = event.part.state?.metadata?.diff;
+            if (
+              event.part.state?.status === 'completed' &&
+              paths.length === 1 &&
+              typeof diff === 'string' &&
+              /^@@/m.test(diff)
+            ) {
+              callbacks.onFileChanges?.([{ path: paths[0], operation: 'modified', diff }]);
+            }
             callbacks.onTraceEvent?.({
               type: 'tool_started',
               toolId,

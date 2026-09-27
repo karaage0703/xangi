@@ -646,6 +646,7 @@ button:disabled {
   font-size: 13px;
 }
 
+.catalog-filter input[type='search'],
 .project-form input,
 .project-form select,
 .project-form textarea {
@@ -985,6 +986,7 @@ button:disabled {
   background: var(--hover);
 }
 
+.catalog-filter input[type='search']:focus,
 .project-form input:focus,
 .project-form select:focus,
 .project-form textarea:focus {
@@ -6299,6 +6301,125 @@ video.media-preview {
   }
 }
 
+/* Shared project membership uses a compact native checkbox, not full-width fields. */
+.project-form label:has(> input[type='checkbox']) {
+  display: flex;
+  align-items: center;
+  flex-direction: row;
+  gap: 8px;
+  min-height: 36px;
+}
+.project-form input[type='checkbox'] {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+}
+.project-view-header > div > button {
+  margin-right: 8px;
+}
+.new-conversation-agent {
+  display: grid;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+}
+.new-conversation-agent label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.new-conversation-agent select {
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
+}
+.new-conversation-agent small {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.new-conversation-agent button {
+  justify-self: start;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.agent-view-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.agent-view-row .project-view-copy strong,
+.agent-view-row .project-view-copy small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-view-delete {
+  min-height: 44px;
+  min-width: 44px;
+}
+.project-catalog-tabs button[aria-pressed='true'] {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+.project-catalog-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+.project-catalog-tabs button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .project-view-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .project-view-header-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .project-view-new,
+  .project-catalog-tabs button {
+    white-space: nowrap;
+  }
+}
+
+.catalog-filter {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+.catalog-filter label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.catalog-filter input[type='search'] {
+  min-width: 0;
+  flex: 1;
+}
+.project-form details {
+  min-width: 0;
+}
+.project-form summary {
+  cursor: pointer;
+  padding: 12px 0;
+}
+.project-form details > label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+
 /* Extension shortcuts follow the existing rail and mobile overflow menu. */
 .app-navigation-primary,
 .app-navigation-secondary {
@@ -6399,4 +6520,96 @@ video.media-preview {
 .extension-favorite-controls button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.file-changes {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.75rem 0;
+  min-width: 0;
+}
+.file-changes > small,
+.file-change > small {
+  opacity: 0.8;
+}
+.file-change {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  min-width: 0;
+}
+.file-change header {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.file-change header strong {
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+.file-change-count {
+  white-space: nowrap;
+  font-family: monospace;
+}
+.file-change summary {
+  cursor: pointer;
+  padding: 0.5rem 0;
+}
+.file-change pre {
+  max-height: 28rem;
+  overflow: auto;
+  font-size: 0.8rem;
+  white-space: pre;
+}
+.file-change pre span {
+  display: inline;
+}
+.file-change .diff-added {
+  background: rgba(30, 160, 85, 0.16);
+}
+.file-change .diff-deleted {
+  background: rgba(220, 60, 65, 0.16);
+}
+.file-change a:focus-visible,
+.file-change summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.workspace-html-preview {
+  overflow: auto;
+  padding: 1rem;
+  min-width: 0;
+}
+
+.history-controls {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+.history-controls button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 20px;
+  cursor: pointer;
+}
+.history-controls button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.history-controls button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .history-controls {
+    flex-direction: row;
+    align-items: center;
+  }
 }

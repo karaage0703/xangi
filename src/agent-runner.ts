@@ -1,3 +1,4 @@
+import type { BackendFileChange } from './file-changes.js';
 import type { AgentBackend, AgentConfig, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import type { LocalLlmMode } from './backend-resolver.js';
 import type { ChatPlatform } from './prompts/index.js';
@@ -46,6 +47,8 @@ export interface RunOptions {
 export interface RunResult {
   result: string;
   sessionId: string;
+  /** The backend returned a user-facing error instead of completing the task. */
+  failed?: boolean;
   /** Main-conversation model reported by the provider, never a configured default. */
   model?: string;
   /** Provider-reported selection mode when the underlying model is undisclosed. */
@@ -133,6 +136,8 @@ export interface ExtendTimeoutResult {
 }
 
 export interface StreamCallbacks {
+  /** Successful native file changes; requested edits alone are not confirmation. */
+  onFileChanges?: (changes: BackendFileChange[]) => void;
   /** Provider-confirmed main-conversation model, including changes during a turn. */
   onModel?: (model: string) => void;
   onModelSelection?: (selection: string) => void;

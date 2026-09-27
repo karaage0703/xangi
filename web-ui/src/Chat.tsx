@@ -1,3 +1,6 @@
+import { DocumentAttachment } from './DocumentAttachment';
+import { FileChanges } from './FileChanges';
+import { CatalogFilter } from './CatalogFilter';
 import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import {
   ChangeEvent,
@@ -59,6 +62,7 @@ import {
   messageIdFromHash,
   messagePermalink,
   sessionPath,
+  sessionIdFromPathname,
 } from './sessionPermalink';
 import { associateToolHistory } from './toolHistory';
 import type { RuntimeConfig as Config, TurnHistoryEntry, TurnHistoryResponse } from './types';
@@ -116,6 +120,7 @@ interface Session {
 }
 
 interface Project {
+  role?: string;
   id: string;
   name: string;
   prompt: string;
@@ -123,6 +128,8 @@ interface Project {
   model?: string;
   effort?: string;
   workspaceId?: string;
+  localLlmMode?: string;
+  localLlmReasoningEffort?: string;
 }
 
 interface RegisteredWorkspace {
@@ -336,6 +343,12 @@ function MessageView({
         {message.edited && <em>編集済み</em>}
         {usageText && <small>{usageText}</small>}
       </header>
+      {message.role === 'assistant' &&
+        history.map((entry, index) =>
+          entry.kind === 'tool' && entry.fileChanges ? (
+            <FileChanges key={`changes-${index}`} report={entry.fileChanges} />
+          ) : null
+        )}
       {message.role === 'assistant' && history.length > 0 && (
         <details className="message-tools">
           <summary>
@@ -389,7 +402,11 @@ function MessageView({
         </div>
       ) : (
         <>
-          <MessageContent content={promptDisplay.content} markdown={message.role === 'assistant'} />
+          <MessageContent
+            sessionId={sessionId}
+            content={promptDisplay.content}
+            markdown={message.role === 'assistant'}
+          />
           {promptDisplay.contexts.length > 0 && (
             <details className="message-tools message-hook-contexts">
               <summary>
@@ -415,7 +432,7 @@ function MessageView({
           {message.attachments?.length ? (
             <div className="message-attachments">
               {message.attachments.map((path) => (
-                <MessageContent key={path} content={`MEDIA:${path}`} markdown />
+                <DocumentAttachment sessionId={sessionId} key={path} path={path} />
               ))}
             </div>
           ) : null}
@@ -501,6 +518,7 @@ function ChatPane({
   active,
   config,
   projectId,
+  selectedAgentId,
   summary,
   onFocus,
   onClose,
@@ -515,6 +533,7 @@ function ChatPane({
   active: boolean;
   config: Config;
   projectId?: string;
+  selectedAgentId?: string;
   summary?: Session;
   onFocus: () => void;
   onClose: () => void;
@@ -922,7 +941,7 @@ function ChatPane({
   async function createSession() {
     const result = await requestJson<{ sessionId: string }>(
       '/api/sessions',
-      jsonInit('POST', projectId ? { projectId } : {})
+      jsonInit('POST', { projectId, agentId: selectedAgentId })
     );
     onSessionChange(result.sessionId);
     setDetail({
@@ -1799,8 +1818,20 @@ export function Chat() {
   const restored = useMemo(restorePanes, []);
   const [panes, setPanes] = useState<PaneDescriptor[]>(restored.panes);
   const [activeKey, setActiveKey] = useState(restored.activeKey);
+  const initialHistory = useRef(true);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [agents, setAgents] = useState<Project[]>([]);
+  const [agentMode, setAgentMode] = useState(false);
+  const [agentToDelete, setAgentToDelete] = useState<string>();
+  const [deletingAgent, setDeletingAgent] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const catalogVisible = (item: Project) =>
+    `${item.name} ${item.role || ''}`
+      .toLocaleLowerCase()
+      .includes(catalogQuery.trim().toLocaleLowerCase());
+  const [agentRole, setAgentRole] = useState('');
   const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
   const [activeProjectId, setActiveProjectId] = useState(
     () => window.localStorage.getItem(PROJECT_STATE_KEY) || ''
@@ -1814,6 +1845,8 @@ export function Chat() {
   const [projectModel, setProjectModel] = useState('');
   const [projectEffort, setProjectEffort] = useState('');
   const [projectWorkspaceId, setProjectWorkspaceId] = useState('default');
+  const [agentLlmMode, setAgentLlmMode] = useState('');
+  const [agentReasoning, setAgentReasoning] = useState('');
   const [projectModelOptions, setProjectModelOptions] = useState<ModelDiscoveryResponse['models']>(
     []
   );
@@ -1902,6 +1935,7 @@ export function Chat() {
     void Promise.all([
       loadSessions(0, '', false),
       requestJson<Config>('/api/config').then(setConfig),
+      requestJson<{ agents: Project[] }>('/api/agents').then((r) => setAgents(r.agents)),
       requestJson<ProjectsResponse>('/api/projects').then((result) => {
         setProjects(result.projects);
         setActiveProjectId((current) =>
@@ -1983,8 +2017,11 @@ export function Chat() {
     const activeSessionId = panes[activeIndex]?.sessionId;
     const nextPath = activeSessionId ? sessionPath(activeSessionId) : '/';
     if (window.location.pathname !== nextPath) {
-      window.history.replaceState(null, '', `${nextPath}${window.location.search}`);
+      if (initialHistory.current)
+        window.history.replaceState(null, '', `${nextPath}${window.location.search}`);
+      else window.history.pushState(null, '', `${nextPath}${window.location.search}`);
     }
+    initialHistory.current = false;
   }, [activeKey, panes]);
 
   useEffect(() => {
@@ -2120,6 +2157,20 @@ export function Chat() {
     setSidebarOpen(false);
   }
 
+  useEffect(() => {
+    const restore = () => {
+      const id = sessionIdFromPathname(location.pathname);
+      if (id) openSession(id);
+      else {
+        const blank = panes.find((pane) => !pane.sessionId);
+        if (blank) setActiveKey(blank.key);
+        else addPane(null);
+      }
+    };
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  });
+
   async function createSession() {
     const active = panes.find((pane) => pane.key === activeKey);
     const needsNewPane = !active || Boolean(busyPanes[activeKey]);
@@ -2137,7 +2188,10 @@ export function Chat() {
     try {
       const result = await requestJson<{ sessionId: string }>(
         '/api/sessions',
-        jsonInit('POST', activeProjectId ? { projectId: activeProjectId } : {})
+        jsonInit('POST', {
+          projectId: activeProjectId || undefined,
+          agentId: selectedAgentId || undefined,
+        })
       );
       setPanes((current) =>
         current.map((pane) =>
@@ -2153,6 +2207,7 @@ export function Chat() {
   }
 
   function openNewProjectForm() {
+    setAgentRole('');
     setWorkspaceManagerOpen(false);
     setEditingProjectId(undefined);
     setProjectName('');
@@ -2161,6 +2216,8 @@ export function Chat() {
     setProjectModel('');
     setProjectEffort('');
     setProjectWorkspaceId('default');
+    setAgentLlmMode('');
+    setAgentReasoning('');
     setProjectFormOpen(true);
   }
 
@@ -2170,12 +2227,15 @@ export function Chat() {
     if (!project) return;
     setWorkspaceManagerOpen(false);
     setEditingProjectId(project.id);
+    setAgentRole(project.role || '');
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
     setProjectBackend(project.backend || '');
     setProjectModel(project.model || '');
     setProjectEffort(project.effort || '');
     setProjectWorkspaceId(project.workspaceId || 'default');
+    setAgentLlmMode(project.localLlmMode || '');
+    setAgentReasoning(project.localLlmReasoningEffort || '');
     setProjectFormOpen(true);
   }
 
@@ -2187,21 +2247,29 @@ export function Chat() {
       const body = {
         name: projectName.trim(),
         prompt: projectPrompt.trim(),
-        backend: projectBackend || null,
-        model: projectBackend && projectModel ? projectModel : null,
-        effort: projectBackend && projectEffort ? projectEffort : null,
-        workspaceId: projectWorkspaceId,
+        ...(agentMode
+          ? {
+              backend: projectBackend || null,
+              model: projectBackend && projectModel ? projectModel : null,
+              effort: projectBackend && projectEffort ? projectEffort : null,
+              workspaceId: projectWorkspaceId,
+              localLlmMode: projectBackend === 'local-llm' ? agentLlmMode || null : null,
+              localLlmReasoningEffort:
+                projectBackend === 'local-llm' ? agentReasoning || null : null,
+              role: agentRole,
+            }
+          : {}),
       };
-      const endpoint = editingProjectId
-        ? `/api/projects/${encodeURIComponent(editingProjectId)}`
-        : '/api/projects';
-      const result = await requestJson<{ project: Project }>(
+      const base = agentMode ? '/api/agents' : '/api/projects';
+      const endpoint = editingProjectId ? `${base}/${encodeURIComponent(editingProjectId)}` : base;
+      const result = await requestJson<{ project?: Project; agent?: Project }>(
         endpoint,
         jsonInit(editingProjectId ? 'PATCH' : 'POST', body)
       );
       const refreshed = await requestJson<ProjectsResponse>('/api/projects');
       setProjects(refreshed.projects);
-      setActiveProjectId(result.project.id);
+      setAgents((await requestJson<{ agents: Project[] }>('/api/agents')).agents);
+      if (result.project) setActiveProjectId(result.project.id);
       setProjectViewOpen(false);
       setProjectFormOpen(false);
       setEditingProjectId(undefined);
@@ -2211,6 +2279,8 @@ export function Chat() {
       setProjectModel('');
       setProjectEffort('');
       setProjectWorkspaceId('default');
+      setAgentLlmMode('');
+      setAgentReasoning('');
       setNotice('');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
@@ -2263,7 +2333,7 @@ export function Chat() {
       setWorkspaces(refreshed.workspaces);
       setWorkspaceName('');
       setWorkspacePath('');
-      setNotice('Workspaceを追加しました');
+      setNotice('ワークスペースを管理しました');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -2444,6 +2514,24 @@ export function Chat() {
           <span>Projects</span>
           <span aria-hidden="true">›</span>
         </button>
+        <div className="new-conversation-agent">
+          <label>
+            新規会話の担当
+            <select
+              aria-describedby="conversation-agent-help"
+              value={selectedAgentId}
+              onChange={(e) => setSelectedAgentId(e.target.value)}
+            >
+              <option value="">xangiの既定設定</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small id="conversation-agent-help">登録済みの全エージェントから選択します。</small>
+        </div>
         <div className="sidebar-actions">
           <input
             className="search"
@@ -2598,15 +2686,44 @@ export function Chat() {
                 >
                   ← 会話
                 </button>
-                <h1>Projects</h1>
+                <h1>{agentMode ? 'エージェント' : 'プロジェクト'}</h1>
+                <div className="project-catalog-tabs">
+                  <button
+                    type="button"
+                    aria-pressed={!agentMode}
+                    onClick={() => {
+                      setAgentMode(false);
+                      setProjectFormOpen(false);
+                    }}
+                  >
+                    プロジェクト
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={agentMode}
+                    onClick={() => {
+                      setAgentMode(true);
+                      setProjectFormOpen(false);
+                      setWorkspaceManagerOpen(false);
+                    }}
+                  >
+                    エージェント
+                  </button>
+                </div>
               </div>
               {!projectFormOpen && !workspaceManagerOpen && (
                 <div className="project-view-header-actions">
-                  <button type="button" className="project-view-new" onClick={openWorkspaceManager}>
-                    Workspaceを追加
-                  </button>
+                  {!agentMode && (
+                    <button
+                      type="button"
+                      className="project-view-new"
+                      onClick={openWorkspaceManager}
+                    >
+                      ワークスペースを管理
+                    </button>
+                  )}
                   <button type="button" className="project-view-new" onClick={openNewProjectForm}>
-                    ＋ 新規Project
+                    ＋ {agentMode ? '新規エージェント' : '新規プロジェクト'}
                   </button>
                 </div>
               )}
@@ -2616,11 +2733,17 @@ export function Chat() {
                 {notice}
               </div>
             )}
+            <CatalogFilter
+              editing={projectFormOpen || workspaceManagerOpen}
+              agentMode={agentMode}
+              query={catalogQuery}
+              onChange={setCatalogQuery}
+            />
             {workspaceManagerOpen ? (
               <section className="workspace-manager" aria-labelledby="workspace-manager-title">
                 <div className="workspace-manager-heading">
                   <div>
-                    <h2 id="workspace-manager-title">Workspaceを追加・管理</h2>
+                    <h2 id="workspace-manager-title">ワークスペースの追加・管理</h2>
                     <p>既存ディレクトリの絶対パスを登録します。</p>
                   </div>
                   <button type="button" onClick={() => setWorkspaceManagerOpen(false)}>
@@ -2692,120 +2815,194 @@ export function Chat() {
                   />
                 </label>
                 <label>
-                  <span>追加プロンプト</span>
+                  <span>{agentMode ? '個別指示' : '共通指示'}</span>
                   <textarea
                     value={projectPrompt}
                     onChange={(event) => setProjectPrompt(event.target.value)}
                     maxLength={20_000}
                     rows={5}
-                    placeholder="このProjectの会話に追加する指示"
+                    placeholder={
+                      agentMode ? 'この担当に守ってほしい指示' : 'プロジェクト全体で共有する指示'
+                    }
                   />
                 </label>
-                <label>
-                  <span>ワークスペース</span>
-                  <select
-                    value={projectWorkspaceId}
-                    onChange={(event) => setProjectWorkspaceId(event.target.value)}
-                  >
-                    {workspaces.map((workspace) => (
-                      <option key={workspace.id} value={workspace.id}>
-                        {workspace.name}
-                        {workspace.isDefault ? ' (default)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <fieldset className="project-model-settings">
-                  <legend>既定のAI設定</legend>
-                  <label>
-                    <span>バックエンド</span>
-                    <select
-                      value={projectBackend}
-                      onChange={(event) => {
-                        setProjectBackend(event.target.value);
-                        setProjectModel('');
-                        setProjectEffort('');
-                      }}
-                    >
-                      <option value="">xangiのデフォルト</option>
-                      {config.allowedBackends.map((backend) => (
-                        <option key={backend} value={backend}>
-                          {backend}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {projectBackend && (
-                    <>
-                      <label>
-                        <span>モデル</span>
-                        <select
-                          value={projectModel}
-                          disabled={loadingProjectModels}
-                          onChange={(event) => {
-                            setProjectModel(event.target.value);
-                            const model = projectModelOptions.find(
-                              (candidate) => candidate.id === event.target.value
-                            );
-                            if (
-                              projectEffort &&
-                              model?.supportedEfforts?.length &&
-                              !model.supportedEfforts.includes(projectEffort)
-                            ) {
-                              setProjectEffort('');
-                            }
-                          }}
-                        >
-                          <option value="">バックエンドのデフォルト</option>
-                          {projectModel &&
-                            !projectModelOptions.some((model) => model.id === projectModel) && (
-                              <option value={projectModel}>{projectModel}</option>
+                {agentMode ? (
+                  <>
+                    <label>
+                      <span>ワークスペース</span>
+                      <select
+                        aria-label="ワークスペース"
+                        value={projectWorkspaceId}
+                        onChange={(event) => setProjectWorkspaceId(event.target.value)}
+                      >
+                        {workspaces.map((workspace) => (
+                          <option key={workspace.id} value={workspace.id}>
+                            {workspace.name}
+                            {workspace.isDefault ? ' (default)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <small>
+                      このエージェントは、会話でも委譲された作業でも、この場所で動きます。
+                    </small>
+                    <label>
+                      得意なことを一言
+                      <input value={agentRole} onChange={(e) => setAgentRole(e.target.value)} />
+                    </label>
+                  </>
+                ) : null}
+                {agentMode && (
+                  <fieldset className="project-model-settings">
+                    <legend>使用するAI</legend>
+                    <label>
+                      <span>バックエンド</span>
+                      <select
+                        aria-label="バックエンド"
+                        value={projectBackend}
+                        onChange={(event) => {
+                          setProjectBackend(event.target.value);
+                          setProjectModel('');
+                          setProjectEffort('');
+                          setAgentLlmMode('');
+                          setAgentReasoning('');
+                        }}
+                      >
+                        <option value="">xangiのデフォルト</option>
+                        {config.allowedBackends.map((backend) => (
+                          <option key={backend} value={backend}>
+                            {backend}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {projectBackend === 'local-llm' && (
+                      <>
+                        <label>
+                          <span>動作モード</span>
+                          <select
+                            aria-label="動作モード"
+                            value={agentLlmMode}
+                            onChange={(e) => setAgentLlmMode(e.target.value)}
+                          >
+                            <option value="">xangiの既定設定</option>
+                            <option value="agent">Agent（ツールを使って作業）</option>
+                            <option value="chat">Chat（会話のみ）</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Local LLMの推論強度</span>
+                          <select
+                            aria-label="Local LLMの推論強度"
+                            value={agentReasoning}
+                            onChange={(e) => setAgentReasoning(e.target.value)}
+                          >
+                            <option value="">xangiの既定設定</option>
+                            {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(
+                              (value) => (
+                                <option key={value} value={value}>
+                                  {value}
+                                </option>
+                              )
                             )}
-                          {projectModelOptions.map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.displayName && model.displayName !== model.id
-                                ? `${model.displayName} (${model.id})`
-                                : model.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>effort</span>
-                        <select
-                          value={projectEffort}
-                          disabled={projectEffortOptions.length === 0}
-                          onChange={(event) => setProjectEffort(event.target.value)}
-                        >
-                          <option value="">デフォルト</option>
-                          {(
-                            (projectModel
-                              ? projectModelOptions.find((model) => model.id === projectModel)
-                              : projectModelOptions.find((model) => model.isDefault)
-                            )?.supportedEfforts?.filter((effort) =>
-                              projectEffortOptions.includes(effort)
-                            ) || projectEffortOptions
-                          ).map((effort) => (
-                            <option key={effort} value={effort}>
-                              {effort}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {(loadingProjectModels || projectModelStatus) && (
-                        <small className="project-model-status" role="status">
-                          {loadingProjectModels ? 'モデルを取得中…' : projectModelStatus}
-                        </small>
-                      )}
-                    </>
-                  )}
-                </fieldset>
+                          </select>
+                          <small>モデルが対応している値を選んでください。</small>
+                        </label>
+                      </>
+                    )}
+                    {projectBackend && (
+                      <>
+                        <label>
+                          <span>モデル</span>
+                          <select
+                            aria-label="モデル"
+                            value={projectModel}
+                            disabled={loadingProjectModels}
+                            onChange={(event) => {
+                              setProjectModel(event.target.value);
+                              const model = projectModelOptions.find(
+                                (candidate) => candidate.id === event.target.value
+                              );
+                              if (
+                                projectEffort &&
+                                model?.supportedEfforts?.length &&
+                                !model.supportedEfforts.includes(projectEffort)
+                              ) {
+                                setProjectEffort('');
+                                setAgentLlmMode('');
+                                setAgentReasoning('');
+                              }
+                            }}
+                          >
+                            <option value="">バックエンドのデフォルト</option>
+                            {projectModel &&
+                              !projectModelOptions.some((model) => model.id === projectModel) && (
+                                <option value={projectModel}>{projectModel}</option>
+                              )}
+                            {projectModelOptions.map((model) => (
+                              <option key={model.id} value={model.id}>
+                                {model.displayName && model.displayName !== model.id
+                                  ? `${model.displayName} (${model.id})`
+                                  : model.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <details>
+                          <summary>詳細設定</summary>
+                          <label>
+                            <span>effort</span>
+                            <select
+                              value={projectEffort}
+                              disabled={projectEffortOptions.length === 0}
+                              onChange={(event) => setProjectEffort(event.target.value)}
+                            >
+                              <option value="">デフォルト</option>
+                              {(
+                                (projectModel
+                                  ? projectModelOptions.find((model) => model.id === projectModel)
+                                  : projectModelOptions.find((model) => model.isDefault)
+                                )?.supportedEfforts?.filter((effort) =>
+                                  projectEffortOptions.includes(effort)
+                                ) || projectEffortOptions
+                              ).map((effort) => (
+                                <option key={effort} value={effort}>
+                                  {effort}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </details>
+                        {(loadingProjectModels || projectModelStatus) && (
+                          <small className="project-model-status" role="status">
+                            {loadingProjectModels ? 'モデルを取得中…' : projectModelStatus}
+                          </small>
+                        )}
+                      </>
+                    )}
+                  </fieldset>
+                )}
                 <p>
-                  このProjectの会話は既定のAI設定を継承します。会話個別の設定がある場合はそちらを優先します。
+                  {agentMode
+                    ? 'どの会話からも使える設定です。変更は次の作業から反映されます。'
+                    : '共通の指示は、このプロジェクトの通常会話に適用されます。'}
                 </p>
-                <p>ワークスペース変更は、このProjectで次に作る新規会話から反映されます。</p>
+                {!agentMode && (
+                  <p>
+                    作業場所は各エージェントで設定します。担当への委譲でも、その担当のワークスペースを使います。
+                  </p>
+                )}
                 <div className="project-form-actions">
-                  {editingProjectId && (
+                  {editingProjectId && agentMode && (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => setAgentToDelete(editingProjectId)}
+                    >
+                      エージェントを削除
+                    </button>
+                  )}
+                  {editingProjectId && !agentMode && (
                     <button
                       type="button"
                       className="danger"
@@ -2832,6 +3029,39 @@ export function Chat() {
                   </button>
                 </div>
               </form>
+            ) : agentMode ? (
+              <nav className="project-view-list" aria-label="エージェント一覧">
+                {agents.filter(catalogVisible).map((agent) => (
+                  <div className="project-view-row agent-view-row" key={agent.id}>
+                    <button
+                      type="button"
+                      className="project-view-main"
+                      aria-label={`${agent.name}を編集`}
+                      onClick={() => openProjectEditor(agent)}
+                    >
+                      <span className="project-view-icon" aria-hidden="true">
+                        ◇
+                      </span>
+                      <span className="project-view-copy">
+                        <strong title={agent.name}>{agent.name}</strong>
+                        <small>
+                          {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
+                            'xangiの既定設定'}
+                        </small>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="project-view-edit agent-view-delete"
+                      aria-label={`${agent.name}を削除`}
+                      onClick={() => setAgentToDelete(agent.id)}
+                    >
+                      削除
+                    </button>
+                  </div>
+                ))}
+                {!agents.length && <p>新規エージェントから役割と使用モデルを登録してください。</p>}
+              </nav>
             ) : (
               <nav className="project-view-list" aria-label="Project一覧">
                 <button
@@ -2851,53 +3081,55 @@ export function Chat() {
                   </span>
                   <span aria-hidden="true">›</span>
                 </button>
-                {projects.map((project) => (
-                  <div
-                    className={
-                      project.id === activeProjectId
-                        ? 'project-view-row selected'
-                        : 'project-view-row'
-                    }
-                    key={project.id}
-                  >
-                    <button
-                      type="button"
-                      className="project-view-main"
-                      onClick={() => {
-                        setActiveProjectId(project.id);
-                        setProjectViewOpen(false);
-                      }}
+                {projects
+                  .filter((p) => catalogVisible(p) || p.id === activeProjectId)
+                  .map((project) => (
+                    <div
+                      className={
+                        project.id === activeProjectId
+                          ? 'project-view-row selected'
+                          : 'project-view-row'
+                      }
+                      key={project.id}
                     >
-                      <span className="project-view-icon" aria-hidden="true">
-                        ▱
-                      </span>
-                      <span className="project-view-copy">
-                        <strong>{project.name}</strong>
-                        <small>
-                          {project.backend
-                            ? [project.backend, project.model, project.effort]
-                                .filter(Boolean)
-                                .join(' · ')
-                            : project.prompt
-                              ? '追加プロンプト設定済み'
-                              : 'xangiのデフォルトAI設定'}
-                        </small>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="project-view-edit"
-                      aria-label={`${project.name}の設定`}
-                      onClick={() => {
-                        setActiveProjectId(project.id);
-                        openProjectEditor(project);
-                      }}
-                    >
-                      設定
-                    </button>
-                    <span aria-hidden="true">›</span>
-                  </div>
-                ))}
+                      <button
+                        type="button"
+                        className="project-view-main"
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          setProjectViewOpen(false);
+                        }}
+                      >
+                        <span className="project-view-icon" aria-hidden="true">
+                          ▱
+                        </span>
+                        <span className="project-view-copy">
+                          <strong>{project.name}</strong>
+                          <small>
+                            {project.backend
+                              ? [project.backend, project.model, project.effort]
+                                  .filter(Boolean)
+                                  .join(' · ')
+                              : project.prompt
+                                ? '追加プロンプト設定済み'
+                                : '会話をまとめる'}
+                          </small>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="project-view-edit"
+                        aria-label={`${project.name}の設定`}
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          openProjectEditor(project);
+                        }}
+                      >
+                        設定
+                      </button>
+                      <span aria-hidden="true">›</span>
+                    </div>
+                  ))}
                 {projects.length === 0 && (
                   <p className="project-empty">Projectはまだありません。</p>
                 )}
@@ -2936,7 +3168,7 @@ export function Chat() {
                       ? [activeProject.backend, activeProject.model, activeProject.effort]
                           .filter(Boolean)
                           .join(' · ')
-                      : 'xangiデフォルト'}
+                      : '共通の指示・会話'}
                   </small>
                 </button>
               )}
@@ -3017,6 +3249,7 @@ export function Chat() {
                   active={pane.key === activeKey}
                   config={config}
                   projectId={activeProjectId || undefined}
+                  selectedAgentId={selectedAgentId || undefined}
                   summary={sessions.find((session) => session.id === pane.sessionId)}
                   onFocus={() => setActiveKey(pane.key)}
                   onClose={() => closePane(pane.key)}
@@ -3093,6 +3326,33 @@ export function Chat() {
           const paneKey = paneToClose;
           setPaneToClose('');
           if (paneKey) closePaneNow(paneKey);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(agentToDelete)}
+        title="エージェントを削除"
+        description={`「${agents.find((agent) => agent.id === agentToDelete)?.name || ''}」を削除します。プロジェクトに参加中、または会話で使用中のエージェントは削除できません。`}
+        confirmLabel="削除"
+        busyLabel="削除中…"
+        busy={deletingAgent}
+        variant="danger"
+        onCancel={() => {
+          if (!deletingAgent) setAgentToDelete(undefined);
+        }}
+        onConfirm={() => {
+          if (!agentToDelete || deletingAgent) return;
+          setDeletingAgent(true);
+          void requestJson(`/api/agents/${encodeURIComponent(agentToDelete)}`, { method: 'DELETE' })
+            .then(async () => {
+              setAgents((await requestJson<{ agents: Project[] }>('/api/agents')).agents);
+              setSelectedAgentId((current) => (current === agentToDelete ? '' : current));
+              setProjectFormOpen(false);
+            })
+            .catch((e) => setNotice(e.message))
+            .finally(() => {
+              setDeletingAgent(false);
+              setAgentToDelete(undefined);
+            });
         }}
       />
       <ConfirmDialog

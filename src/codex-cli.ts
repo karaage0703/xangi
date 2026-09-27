@@ -1,3 +1,4 @@
+import { codexFileChanges } from './file-changes.js';
 import { CodexAppServerRunner } from './codex-app-server.js';
 import { readCodexTurnModels } from './codex-model-evidence.js';
 import { ProviderModels } from './provider-model.js';
@@ -527,6 +528,13 @@ export class CodexRunner extends CliRunnerBase {
     return {
       handleEvent: (json, phase) => {
         const event = json as CodexEvent;
+        if (event.type === 'item.completed') {
+          const item = event.item ?? event.payload?.item;
+          if (item) {
+            const changes = codexFileChanges(item);
+            if (changes.length) callbacks.onFileChanges?.(changes);
+          }
+        }
         if (['thread.started', 'turn.started', 'turn.completed'].includes(event.type))
           models.add(event.model);
 

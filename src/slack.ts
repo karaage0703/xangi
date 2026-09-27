@@ -1831,6 +1831,7 @@ export async function processMessage(
             channelId: runKey,
             settingsChannelId: channelId,
             appSessionId,
+            workdir: tWorkdir,
           }
         );
       } finally {
@@ -1860,6 +1861,7 @@ export async function processMessage(
             channelId: runKey,
             settingsChannelId: channelId,
             appSessionId,
+            workdir: tWorkdir,
           }
         );
         result = runResult.result;
@@ -1918,7 +1920,9 @@ export async function processMessage(
     // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
     const renderedText = markdownToSlackMrkdwn(displayText || '✅');
     const turnHistory = withoutFinalResponse(
-      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
+      getTurnHistory(eventCtx.threadId, eventCtx.turnId).filter(
+        (entry) => !(entry.kind === 'tool' && entry.fileChanges)
+      ),
       result
     );
     const showToolsButton = turnHistory.length > 0;
