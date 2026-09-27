@@ -94,3 +94,8 @@ describe('withoutFinalResponse', () => {
     ]);
   });
 });
+
+ it('hides file reports from platform History while preserving normal tools', () => {
+  const report = {kind: 'tool' as const, toolName: 'ファイル変更', summary: 'private.txt', fileChanges: {files: [], partial: false, concurrent: false}};
+  expect(formatTurnHistoryDisclosure([report])).toBe('履歴はありません');
+ });

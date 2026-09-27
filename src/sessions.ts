@@ -106,6 +106,7 @@ export interface SessionEntry {
   workspacePath?: string;
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
+  selectedAgentId?: string;
   /** xangi間HTTP会話で、このセッションに対応する送信元instance。 */
   interAgentPeerId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
@@ -129,6 +130,7 @@ interface SessionSnapshotOptions {
   workspaceId?: string;
   workspacePath?: string;
   projectId?: string;
+  selectedAgentId?: string;
 }
 
 let sessionsPath: string | null = null;
@@ -447,6 +449,7 @@ export function createWebSession(
     workspaceId: opts.workspaceId ?? resumedFrom?.workspaceId,
     workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
     projectId: opts.projectId ?? resumedFrom?.projectId,
+    selectedAgentId: opts.selectedAgentId ?? resumedFrom?.selectedAgentId,
     interAgentPeerId: opts.interAgentPeerId,
   });
 }
@@ -482,6 +485,7 @@ export function createSession(
     workspaceId: opts.workspaceId,
     workspacePath: opts.workspacePath,
     projectId: opts.projectId,
+    selectedAgentId: opts.selectedAgentId,
   });
 }
 
@@ -600,6 +604,26 @@ export function updateSessionProject(appSessionId: string, projectId?: string): 
   entry.updatedAt = new Date().toISOString();
   saveSessionsToFile();
   return true;
+}
+
+/** Clear retired agent selections without changing conversation history or project membership. */
+export function clearClosedSessionAgentSelections(agentIds: string[], projectId?: string): void {
+  let changed = false;
+  for (const entry of Object.values(data.sessions)) {
+    if (
+      getSessionLifecycle(entry.id) === 'closed' &&
+      (projectId === undefined || entry.projectId === projectId) &&
+      entry.selectedAgentId &&
+      agentIds.includes(entry.selectedAgentId)
+    ) {
+      delete entry.selectedAgentId;
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveSessionsToFile();
+    notifySessionChanges();
+  }
 }
 
 export function updateSessionContextUsage(
@@ -878,9 +902,9 @@ export function ensureSession(
 /**
  * 全セッション一覧（サイドバー用）
  */
-export function listAllSessions(): SessionEntry[] {
+export function listAllSessions(includeArchived = false): SessionEntry[] {
   return Object.values(data.sessions)
-    .filter((s) => !s.archived)
+    .filter((s) => includeArchived || !s.archived)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 

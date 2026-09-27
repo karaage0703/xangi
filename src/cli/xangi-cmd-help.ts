@@ -14,13 +14,27 @@ export interface XangiCmdHelpEntry {
     | 'extension'
     | 'progress'
     | 'worker'
-    | 'local';
+    | 'local'
+    | 'agent';
   summary: string;
   usage: string;
   notes?: string[];
 }
 
 export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
+  {
+    name: 'agent',
+    topic: 'agent',
+    summary: '開発担当の作成、依頼と結果取得',
+    usage:
+      'xangi agent create --name NAME --workspace PATH [--role TEXT] [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent run AGENT_ID --task TEXT\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID',
+    notes: [
+      'createは既存の別ディレクトリをWorkspaceへ登録し、Agentを登録する。開発では先に対象リポのgit worktreeを作る。',
+      'runは受付後にIDを返す。waitは最大25秒待ち、未完了なら同じIDで繰り返す。新規runで再送しない。',
+      '子には担当の指示・依頼文だけを渡す。必要な背景と成果物の条件を依頼文へ含める。',
+      '結果を受け取るまで親は依頼を完了扱いしない。子からの再委譲は不可。同時3件まで。',
+    ],
+  },
   {
     name: 'discord_history',
     topic: 'discord',

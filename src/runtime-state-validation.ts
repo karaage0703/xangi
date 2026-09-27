@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateWebProjectsState } from './web-projects.js';
 
@@ -17,9 +18,12 @@ export function validateRuntimeState(options: RuntimeStateValidationOptions = {}
   const env = options.env ?? process.env;
   if (env.WEB_CHAT_ENABLED !== 'true') return [];
   const dataDir = resolveRuntimeDataDir(options);
+  const filename = existsSync(join(dataDir, 'project-catalog.json'))
+    ? 'project-catalog.json'
+    : 'web-projects.json';
   return validateWebProjectsState(dataDir).map((issue) => {
     const project = issue.projectName || issue.projectId || '(unknown)';
-    return `web-projects.json: Project ${JSON.stringify(project)}: ${issue.message}`;
+    return `${filename}: Project ${JSON.stringify(project)}: ${issue.message}`;
   });
 }
 

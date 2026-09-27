@@ -44,6 +44,8 @@ export interface StartAiSessionTitleOptions {
     | 'defaultBackend'
     | 'defaultModel'
     | 'defaultEffort'
+    | 'defaultLocalLlmMode'
+    | 'defaultLocalLlmReasoningEffort'
     | 'workdir'
   >;
   onTitle: (title: string) => void | Promise<void>;

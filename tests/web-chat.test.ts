@@ -1,3 +1,4 @@
+import { executeProjectAgentCommand } from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import {
@@ -26,6 +27,7 @@ import {
   createSchedulerSession,
   createWebSession,
   closeSession,
+  archiveSession,
   setProviderSessionId,
   replaceSessionProgressCard,
   WEB_CHAT_CONTEXT_PREFIX,
@@ -125,12 +127,14 @@ describe('Web Chat session list actions', () => {
  */
 class FakeRunner implements AgentRunner {
   destroyed = new Set<string>();
+  activeContexts = new Set<string>();
   pending = new Map<string, () => void>();
   callbacks = new Map<string, StreamCallbacks>();
   callOrder: string[] = [];
   prompts: string[] = [];
   options: RunOptions[] = [];
   nextResult = 'ok';
+  nextFailed = false;
   nextError?: Error;
   persistResults = false;
 
@@ -181,7 +185,9 @@ class FakeRunner implements AgentRunner {
         const result: RunResult = {
           result: this.nextResult,
           sessionId: `provider-${channelId}`,
+          failed: this.nextFailed,
         };
+        this.nextFailed = false;
         if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
           const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
           mkdirSync(logsDir, { recursive: true });
@@ -226,6 +232,10 @@ class FakeRunner implements AgentRunner {
 
   hasRunner(channelId: string): boolean {
     return this.callOrder.includes(channelId) && !this.destroyed.has(channelId);
+  }
+
+  getTimeoutState(channelId: string) {
+    return { active: this.activeContexts.has(channelId) };
   }
 }
 
@@ -572,6 +582,438 @@ describe('web-chat HTTP API', () => {
     }
   });
 
+  it('delegates through the live catalog and run service and returns the result to the parent', async () => {
+    const post = async (path: string, body: unknown) =>
+      (
+        await fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).json();
+    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
+    const { workspace } = await post('/api/workspaces', { name: 'Review workspace', path: childPath });
+    const { agent } = await post('/api/agents', {
+      name: 'Review specialist',
+      role: 'Review code',
+      prompt: 'Check edge cases',
+      backend: 'codex',
+      workspaceId: workspace.id,
+    });
+    const { project } = await post('/api/projects', {
+      name: 'Delegation project',
+      prompt: 'Shared requirements',
+    });
+    const { sessionId } = await post('/api/sessions', { projectId: project.id });
+    const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+    const list = JSON.parse(await executeProjectAgentCommand({ action: 'list' }, context));
+    expect(list.agents[0]).toMatchObject({ id: agent.id, description: 'Review code' });
+    const run = JSON.parse(
+      await executeProjectAgentCommand(
+        { action: 'run', agent: agent.id, task: 'Inspect this patch' },
+        context
+      )
+    );
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    expect(runner.prompts.at(-1)).not.toContain('Shared requirements');
+    expect(runner.prompts.at(-1)).toContain('Check edge cases');
+    expect(runner.prompts.at(-1)).toContain('Inspect this patch');
+    expect(runner.prompts.at(-1)).not.toContain('xangi agent run');
+    expect(runner.options.at(-1)).toMatchObject({
+      defaultBackend: 'codex',
+      appSessionId: run.appSessionId,
+    });
+    expect(run.appSessionId).not.toBe(sessionId);
+    expect(getSessionEntry(run.appSessionId)?.projectId).toBeUndefined();
+    expect(getSessionEntry(run.appSessionId)).toMatchObject({
+      selectedAgentId: agent.id,
+      workspacePath: realpathSync(childPath),
+    });
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    runner.callbacks.get(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)?.onToolUse?.('Write', {file_path:'agent-result.html'});
+    writeFileSync(join(childPath, 'agent-result.html'), '<h1>Delegated result</h1>');
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    expect(
+      JSON.parse(await executeProjectAgentCommand({ action: 'wait', id: run.id }, context))
+    ).toMatchObject({ status: 'succeeded', result: 'ok', parentContextKey: context.channelId });
+    const history = await (await fetch(`${baseUrl}/api/sessions/${run.appSessionId}/turn-history`)).json();
+    expect(history.history).toEqual(expect.arrayContaining([expect.objectContaining({fileChanges: expect.objectContaining({files: [expect.objectContaining({path: 'agent-result.html', workspaceId: workspace.id})]})})]));
+    rmSync(childPath, { recursive: true, force: true });
+  });
+
+  it.each(['/api/device/inbox', '/api/pet/inbox', '/api/terminal/inbox'])(
+    '%s inherits selected agent execution settings on every send',
+    async (endpoint) => {
+      const post = async (path: string, body: unknown, method = 'POST') => {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        expect(response.ok).toBe(true);
+        return response.json();
+      };
+      resolver.isBackendSelectable = () => true;
+      const agentPath = join(testDir, 'inbox-agent');
+      mkdirSync(agentPath);
+      const { workspace } = await post('/api/workspaces', { name: 'Inbox', path: agentPath });
+      const { agent } = await post('/api/agents', {
+        name: 'Inbox agent', backend: 'local-llm', model: 'gpt-test',
+        localLlmMode: 'chat', localLlmReasoningEffort: 'low',
+        prompt: 'Agent instruction marker', workspaceId: workspace.id,
+      });
+      const { project } = await post('/api/projects', {
+        name: 'Inbox project',
+        prompt: 'Project instruction marker',
+      });
+      for (const selection of [{ agentId: agent.id }, { projectId: project.id, agentId: agent.id }]) {
+        const { sessionId } = await post('/api/sessions', selection);
+        const before = runner.options.length;
+        await post(endpoint, { appSessionId: sessionId, text: 'Hello from avatar' });
+        await vi.waitFor(() => expect(runner.options.length).toBe(before + 1));
+        expect(runner.options.at(-1)).toMatchObject({
+          appSessionId: sessionId, defaultBackend: 'local-llm', defaultModel: 'gpt-test',
+          defaultLocalLlmMode: 'chat', defaultLocalLlmReasoningEffort: 'low',
+          workdir: realpathSync(agentPath),
+        });
+        expect(runner.prompts.at(-1)).toContain('Agent instruction marker');
+        expect(runner.prompts.at(-1)).toContain('Hello from avatar');
+        if ('projectId' in selection) expect(runner.prompts.at(-1)).toContain('Project instruction marker');
+        runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+        await vi.waitFor(() => expect(getSessionEntry(sessionId)?.messageCount).toBe(1));
+      }
+      // An existing conversation must pick up changed model/mode/prompt/workspace too.
+      const { sessionId } = await post('/api/sessions', { agentId: agent.id });
+      await post(`/api/agents/${agent.id}`, {
+        backend: 'codex', model: 'gpt-test', effort: 'high',
+        localLlmMode: null, localLlmReasoningEffort: null,
+        prompt: 'Changed instruction marker', workspaceId: 'default',
+      }, 'PATCH');
+      const before = runner.options.length;
+      await post(endpoint, { appSessionId: sessionId, text: 'Changed settings' });
+      await vi.waitFor(() => expect(runner.options.length).toBe(before + 1));
+      expect(runner.options.at(-1)).toMatchObject({ defaultBackend: 'codex', defaultEffort: 'high' });
+      expect(runner.options.at(-1)?.defaultLocalLlmMode).toBeUndefined();
+      expect(runner.options.at(-1)?.workdir).not.toBe(realpathSync(agentPath));
+      expect(runner.prompts.at(-1)).toContain('Changed instruction marker');
+      expect(runner.prompts.at(-1)).not.toContain('Agent instruction marker');
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+      await vi.waitFor(() => expect(getSessionEntry(sessionId)?.messageCount).toBe(1));
+    }
+  );
+
+  it('runs direct conversations and delegated Local LLM work in the selected agent workspace', async () => {
+    const post = async (path: string, body: unknown, method = 'POST') => {
+      const response = await fetch(`${baseUrl}${path}`, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      expect(response.ok).toBe(true);
+      return response.json();
+    };
+    resolver.isBackendSelectable = (backend) => ['codex','claude-code','local-llm'].includes(backend);
+    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
+    const {workspace} = await post('/api/workspaces',{name:'Child',path:childPath});
+    const {agent} = await post('/api/agents',{name:'Child', backend:'local-llm',model:'gpt-test',workspaceId:workspace.id,localLlmMode:'chat',localLlmReasoningEffort:'low'});
+    const {project} = await post('/api/projects',{name:'Team', agentIds:[agent.id]});
+    const {sessionId:parent} = await post('/api/sessions',{projectId:project.id,workspaceId:'default'});
+    const {sessionId} = await post('/api/sessions',{agentId:agent.id,workspaceId:'default'});
+    expect(getSessionEntry(sessionId)?.workspacePath).toBe(realpathSync(childPath));
+    const send = fetch(`${baseUrl}/api/chat`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({appSessionId:sessionId,message:'hello'})});
+    await vi.waitFor(() => expect(runner.options.some((o) => o?.appSessionId===sessionId)).toBe(true));
+    expect(runner.options.find((o)=>o?.appSessionId===sessionId)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'chat',defaultLocalLlmReasoningEffort:'low'});
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`); await readSSEUntilDone((await send).body);
+    const context={channelId:`${WEB_CHAT_CONTEXT_PREFIX}${parent}`};
+    const run=JSON.parse(await executeProjectAgentCommand({action:'run',agent:agent.id,task:'work'},context));
+    expect(run).toMatchObject({workspaceId:workspace.id,localLlmMode:'chat',localLlmReasoningEffort:'low'});
+    expect(runner.options.at(-1)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'chat',defaultLocalLlmReasoningEffort:'low'});
+    expect(getSessionEntry(parent)?.workspacePath).not.toBe(realpathSync(childPath));
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    await executeProjectAgentCommand({action:'wait',id:run.id},context);
+    await post(`/api/agents/${agent.id}`,{localLlmMode:'agent',localLlmReasoningEffort:'high'},'PATCH');
+    const changed=await post('/api/agent-runs',{agentId:agent.id,workspaceId:'default',task:'again'});
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${changed.run.appSessionId}`)).toBe(true));
+    expect(runner.options.at(-1)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'agent',defaultLocalLlmReasoningEffort:'high'});
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${changed.run.appSessionId}`);
+    const invalid = await fetch(`${baseUrl}/api/agents/${agent.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({workspaceId:'missing'})});
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error).toContain('workspace');
+    rmSync(childPath, { recursive: true, force: true });
+  });
+
+  it('resumes a Web parent once after its delegated child finishes', async () => {
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.ok).toBe(true);
+      return response.json();
+    };
+    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
+    try {
+      const { workspace } = await post('/api/workspaces', { name: 'Child', path: childPath });
+      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: childAgent } = await post('/api/agents', {
+        name: 'Child', backend: 'codex', workspaceId: workspace.id,
+      });
+      const { project } = await post('/api/projects', {
+        name: 'Completion',
+        });
+      const { sessionId } = await post('/api/sessions', { projectId: project.id });
+      const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+      const run = JSON.parse(await executeProjectAgentCommand({
+        action: 'run', agent: childAgent.id, task: 'Implement one module',
+      }, context));
+      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+      await vi.waitFor(() => expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`));
+      const resumed = runner.callOrder.filter((key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+      expect(resumed).toHaveLength(1);
+      expect(runner.prompts.at(-1)).toContain(run.id);
+      expect(runner.prompts.at(-1)).toContain('succeeded');
+      await vi.waitFor(async () => {
+        const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
+        expect(detail.run.parentNotifiedAt).toBeTruthy();
+      });
+    } finally {
+      rmSync(childPath, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers a child result to a Discord parent conversation', async () => {
+    const deliveries: Array<{ prompt: string; channelId: string }> = [];
+    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
+      deliveries.push({ prompt, channelId });
+      return 'delivered';
+    });
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.ok).toBe(true);
+      return response.json();
+    };
+    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
+    try {
+      const { workspace } = await post('/api/workspaces', { name: 'Discord child', path: childPath });
+      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: childAgent } = await post('/api/agents', {
+        name: 'Child', backend: 'codex', workspaceId: workspace.id,
+      });
+      const { project } = await post('/api/projects', {
+        name: 'Discord completion',
+        });
+      const run = JSON.parse(await executeProjectAgentCommand({
+        action: 'run', agent: childAgent.id, task: 'Review one module',
+      }, { channelId: 'discord-thread-123', platform: 'discord' }));
+      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+      await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+      expect(deliveries[0].channelId).toBe('discord-thread-123');
+      expect(deliveries[0].prompt).toContain(run.id);
+      await vi.waitFor(async () => {
+        const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
+        expect(detail.run.parentNotifiedAt).toBeTruthy();
+      });
+    } finally {
+      rmSync(childPath, { recursive: true, force: true });
+    }
+  });
+
+  it('batches parallel child completions into one parent turn', async () => {
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.ok).toBe(true);
+      return response.json();
+    };
+    const childPaths = [mkdtempSync(join(tmpdir(), 'web-chat-child-')),
+      mkdtempSync(join(tmpdir(), 'web-chat-child-'))];
+    try {
+      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const children = [];
+      for (const [index, path] of childPaths.entries()) {
+        const { workspace } = await post('/api/workspaces', { name: `Child ${index}`, path });
+        const { agent } = await post('/api/agents', {
+          name: `Child ${index}`, backend: 'codex', workspaceId: workspace.id,
+        });
+        children.push(agent);
+      }
+      const { project } = await post('/api/projects', {
+        name: 'Parallel',
+        });
+      const { sessionId } = await post('/api/sessions', { projectId: project.id });
+      const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+      const runs = [];
+      for (const child of children) {
+        runs.push(JSON.parse(await executeProjectAgentCommand({
+          action: 'run', agent: child.id, task: 'Work independently',
+        }, context)));
+      }
+      for (const run of runs) {
+        await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      }
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${runs[0].appSessionId}`);
+      await vi.waitFor(async () => {
+        const detail = await (await fetch(`${baseUrl}/api/agent-runs/${runs[0].id}`)).json();
+        expect(detail.run.status).toBe('succeeded');
+      });
+      expect(runner.callOrder).not.toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${runs[1].appSessionId}`);
+      await vi.waitFor(() => expect(runner.callOrder.filter(
+        (key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)).toHaveLength(1));
+      expect(runner.prompts.at(-1)).toContain(runs[0].id);
+      expect(runner.prompts.at(-1)).toContain(runs[1].id);
+    } finally {
+      for (const path of childPaths) rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a busy parent before delivering child completion', async () => {
+    const post = async (path: string, body: unknown) => (await fetch(`${baseUrl}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })).json();
+    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
+    try {
+      const { workspace } = await post('/api/workspaces', { name: 'Child', path: childPath });
+      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: childAgent } = await post('/api/agents', {
+        name: 'Child', backend: 'codex', workspaceId: workspace.id,
+      });
+      const { project } = await post('/api/projects', {
+        name: 'Busy parent',
+        });
+      const { sessionId } = await post('/api/sessions', { projectId: project.id });
+      const parentKey = `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`;
+      const run = JSON.parse(await executeProjectAgentCommand({
+        action: 'run', agent: childAgent.id, task: 'Work independently',
+      }, { channelId: parentKey, platform: 'web' }));
+      runner.activeContexts.add(parentKey);
+      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+      await vi.waitFor(async () => {
+        const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
+        expect(detail.run.status).toBe('succeeded');
+      });
+      expect(runner.callOrder).not.toContain(parentKey);
+      runner.activeContexts.delete(parentKey);
+      await vi.waitFor(() => expect(runner.callOrder).toContain(parentKey));
+    } finally {
+      rmSync(childPath, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['legacy', 'selected', 'archived'])('removes a closed %s agent without deleting its project or history', async (kind) => {
+    const request = (path: string, body: unknown = {}, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const { agent } = await (await request('/api/agents', { name: 'Retired' })).json();
+    const { project } = await (await request('/api/projects', {
+      name: 'History',
+    })).json();
+    const sessionId = createWebSession({ projectId: project.id, ...(kind === 'legacy' ? {} : { selectedAgentId: agent.id }) });
+    logPrompt(testDir, sessionId, 'Keep this conversation');
+    closeSession(sessionId);
+    if (kind === 'archived') archiveSession(sessionId);
+    const before = readSessionMessages(testDir, sessionId);
+    expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(200);
+    expect(getSessionEntry(sessionId)?.projectId).toBe(project.id);
+    expect(getSessionEntry(sessionId)?.selectedAgentId).toBeUndefined();
+    expect(readSessionMessages(testDir, sessionId)).toEqual(before);
+    const { sessionId: resumed } = await (await request(`/api/sessions/${sessionId}/resume`)).json();
+    expect(getSessionEntry(resumed)?.projectId).toBe(project.id);
+    expect(getSessionEntry(resumed)?.selectedAgentId).toBeUndefined();
+    expect((await fetch(`${baseUrl}/api/sessions/${resumed}`)).status).toBe(200);
+  });
+
+  it('allows deleting a closed standalone agent but protects open conversations', async () => {
+    const request = (path: string, body: unknown = {}, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const { agent } = await (await request('/api/agents', { name: 'Standalone retired' })).json();
+    const sessionId = createWebSession({ selectedAgentId: agent.id });
+    expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(409);
+    closeSession(sessionId);
+    expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(200);
+    expect(getSessionEntry(sessionId)?.selectedAgentId).toBeUndefined();
+    expect(getSessionEntry(sessionId)).toBeDefined();
+  });
+
+  it('protects a running agent even if its conversation has been marked closed', async () => {
+    const request = (path: string, body: unknown = {}, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const { agent } = await (await request('/api/agents', { name: 'Running' })).json();
+    const { project } = await (await request('/api/projects', { name: 'Running project', })).json();
+    const { sessionId } = await (await request('/api/sessions', { projectId: project.id, agentId: agent.id })).json();
+    const send = request('/api/chat', { appSessionId: sessionId, message: 'Wait' });
+    const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`;
+    try {
+      await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+      closeSession(sessionId);
+      expect((await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH')).status).toBe(200);
+      expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(409);
+      expect(getSessionEntry(sessionId)?.selectedAgentId).toBe(agent.id);
+    } finally {
+      runner.release(contextKey);
+      await readSSEUntilDone((await send).body);
+    }
+  });
+
+  it('pins explicitly selected agents, supports agent-only workspaces and associates Studio runs', async () => {
+    const request = (path: string, body: unknown, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent } = await (
+      await request('/api/agents', { name: 'Standalone', backend: 'codex' })
+    ).json();
+    const { project } = await (
+      await request('/api/projects', {
+        name: 'Pinned',
+          })
+    ).json();
+    const { sessionId } = await (await request('/api/sessions', { projectId: project.id, agentId: agent.id })).json();
+    expect(getSessionEntry(sessionId)?.selectedAgentId).toBe(agent.id);
+    expect(
+      (await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH'))
+        .status
+    ).toBe(200);
+    const { sessionId: standalone } = await (
+      await request('/api/sessions', { agentId: agent.id, workspaceId: 'default' })
+    ).json();
+    expect(getSessionEntry(standalone)).toMatchObject({
+      selectedAgentId: agent.id,
+      workspaceId: 'default',
+    });
+    expect(getSessionEntry(standalone)?.projectId).toBeUndefined();
+    const response = await request('/api/agent-runs', {
+      task: 'studio work',
+      backend: 'codex',
+      projectId: project.id,
+      agentId: agent.id,
+    });
+    expect(response.status).toBe(202);
+    const { run } = await response.json();
+    expect(getSessionEntry(run.appSessionId)).toMatchObject({
+      projectId: project.id,
+      selectedAgentId: agent.id,
+    });
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    expect(
+      (
+        await request('/api/agent-runs', {
+          task: 'bad',
+          backend: 'codex',
+          projectId: 'missing',
+          agentId: agent.id,
+        })
+      ).status
+    ).toBe(404);
+  });
+
   it('creates an Agent Run with an isolated session and persists its result manifest', async () => {
     const response = await fetch(`${baseUrl}/api/agent-runs`, {
       method: 'POST',
@@ -622,6 +1064,23 @@ describe('web-chat HTTP API', () => {
       workdir: realpathSync(testDir),
     });
     expect(existsSync(join(testDir, '.xangi', 'agent-runs.json'))).toBe(true);
+  });
+
+  it('records a backend error result as a failed Agent Run', async () => {
+    const response = await fetch(`${baseUrl}/api/agent-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: 'Run local model', backend: 'codex' }),
+    });
+    const { run } = await response.json();
+    runner.nextResult = 'LLMからの応答がタイムアウトしました';
+    runner.nextFailed = true;
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    await vi.waitFor(async () => {
+      const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
+      expect(detail.run).toMatchObject({ status: 'failed', error: runner.nextResult });
+    });
   });
 
   it('serves the Web app route used by message permalinks', async () => {
@@ -1023,8 +1482,63 @@ describe('web-chat HTTP API', () => {
     expect(session.nextBackend).toBeUndefined();
   });
 
-  it('accepts and rejects Project effort using the selected model capabilities', async () => {
-    const accepted = await fetch(`${baseUrl}/api/projects`, {
+  it('shares agents across projects and only hands off selected project conversations', async () => {
+    const post = async (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent } = await (
+      await post('/api/agents', {
+        name: 'Writer',
+        prompt: 'Agent instruction',
+        role: 'editor',
+        backend: 'codex',
+      })
+    ).json();
+    const { project } = await (
+      await post('/api/projects', {
+        name: 'Talk',
+        goal: 'Teach',
+        prompt: 'Shared material',
+        })
+    ).json();
+    const { sessionId } = await (
+      await post('/api/sessions', { projectId: project.id, agentId: agent.id })
+    ).json();
+    const other = await (await post('/api/sessions', {})).json();
+    logPrompt(testDir, sessionId, 'Selected discussion');
+    logResponse(testDir, sessionId, { result: 'Selected answer' });
+    logPrompt(testDir, other.sessionId, 'PRIVATE_OTHER_PROJECT');
+    const handoff = await (
+      await post(`/api/projects/${project.id}/handoff`, { sessionIds: [sessionId] })
+    ).json();
+    expect(handoff.sources[0].content).toContain('Selected answer');
+    expect(handoff.sources[0].content).not.toContain('PRIVATE_OTHER_PROJECT');
+    expect(
+      (await post(`/api/projects/${project.id}/handoff`, { sessionIds: [other.sessionId] })).status
+    ).toBe(400);
+    expect((await post(`/api/projects/${project.id}/handoff`, { sessionIds: [] })).status).toBe(
+      200
+    );
+    const removed = await fetch(`${baseUrl}/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed project' }),
+    });
+    expect(removed.status).toBe(200);
+    const send = post('/api/chat', { appSessionId: sessionId, message: 'Write' });
+    for (let i = 0; i < 50 && runner.pending.size === 0; i++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runner.prompts.at(-1)).toContain('Agent instruction');
+    expect(runner.prompts.at(-1)).toContain('Shared material');
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+    await readSSEUntilDone((await send).body);
+  });
+
+  it('accepts and rejects Agent effort using the selected model capabilities', async () => {
+    const accepted = await fetch(`${baseUrl}/api/agents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1036,10 +1550,10 @@ describe('web-chat HTTP API', () => {
     });
     expect(accepted.status).toBe(201);
     expect(await accepted.json()).toMatchObject({
-      project: { backend: 'codex', model: 'gpt-test', effort: 'ultra' },
+      agent: { backend: 'codex', model: 'gpt-test', effort: 'ultra' },
     });
 
-    const rejected = await fetch(`${baseUrl}/api/projects`, {
+    const rejected = await fetch(`${baseUrl}/api/agents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1055,8 +1569,8 @@ describe('web-chat HTTP API', () => {
     });
   });
 
-  it('moves an existing Web conversation and inherits the Project backend settings', async () => {
-    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+  it('moves an existing Web conversation and retains its selected Agent settings', async () => {
+    const agentResponse = await fetch(`${baseUrl}/api/agents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1066,13 +1580,16 @@ describe('web-chat HTTP API', () => {
         effort: 'high',
       }),
     });
-    const { project } = (await projectResponse.json()) as {
-      project: { id: string; backend: string; model: string; effort: string };
-    };
+    const { agent } = (await agentResponse.json()) as { agent: { id: string } };
+    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '実装' }),
+    });
+    const { project } = (await projectResponse.json()) as { project: { id: string } };
     expect(projectResponse.status).toBe(201);
-    expect(project).toMatchObject({ backend: 'codex', model: 'gpt-test', effort: 'high' });
 
-    const created = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()) as {
+    const created = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({agentId: agent.id}) })).json()) as {
       sessionId: string;
     };
     setProviderSessionId(created.sessionId, 'provider-old', 'claude-code');
@@ -1085,6 +1602,7 @@ describe('web-chat HTTP API', () => {
     });
     expect(moved.status).toBe(200);
     expect(getSessionEntry(created.sessionId)?.projectId).toBe(project.id);
+    expect(getSessionEntry(created.sessionId)?.selectedAgentId).toBe(agent.id);
 
     const listed = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as {
       sessions: Array<{
@@ -1183,17 +1701,21 @@ describe('web-chat HTTP API', () => {
     ).json()) as { entries: Array<{ name: string }> };
     expect(entries.entries.map((entry) => entry.name)).toContain('only-here.md');
 
+    const agentResponse = await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Workspace owner', workspaceId: registered.workspace.id }),
+    });
+    const { agent } = await agentResponse.json();
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Alternate Project', workspaceId: registered.workspace.id }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Alternate Project' }),
     });
     const project = (await projectResponse.json()) as { project: { id: string } };
     const created = (await (
       await fetch(`${baseUrl}/api/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: project.project.id }),
+        body: JSON.stringify({ projectId: project.project.id, agentId: agent.id }),
       })
     ).json()) as { sessionId: string };
 
@@ -1269,7 +1791,7 @@ describe('web-chat HTTP API', () => {
     });
     expect(defaultResponse.status).toBe(409);
 
-    const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+    const projectResponse = await fetch(`${baseUrl}/api/agents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Uses Workspace', workspaceId: used.workspace.id }),
@@ -1280,7 +1802,7 @@ describe('web-chat HTTP API', () => {
     });
     expect(usedResponse.status).toBe(409);
     expect(await usedResponse.json()).toEqual({
-      error: 'WorkspaceはProject「Uses Workspace」で使用中です',
+      error: 'Workspaceはエージェント「Uses Workspace」で使用中です',
     });
 
     const removedResponse = await fetch(`${baseUrl}/api/workspaces/${unused.workspace.id}`, {
@@ -1303,19 +1825,23 @@ describe('web-chat HTTP API', () => {
       body: JSON.stringify({ name: 'session-used', path: sessionPath }),
     });
     const registered = (await registeredResponse.json()) as { workspace: { id: string } };
+    const agentResponse = await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Workspace owner', workspaceId: registered.workspace.id }),
+    });
+    const { agent } = await agentResponse.json();
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Session Project', workspaceId: registered.workspace.id }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Session Project' }),
     });
     const project = (await projectResponse.json()) as { project: { id: string } };
     const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId: project.project.id }),
+      body: JSON.stringify({ projectId: project.project.id, agentId: agent.id }),
     });
     expect(sessionResponse.status).toBe(200);
-    const moveProject = await fetch(`${baseUrl}/api/projects/${project.project.id}`, {
+    const moveProject = await fetch(`${baseUrl}/api/agents/${agent.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId: 'default' }),
@@ -1664,6 +2190,8 @@ process.stdin.on('end', () => process.exit(0));
       expect(page.headers.get('content-security-policy')).toContain("connect-src 'self'");
       expect(page.headers.get('content-security-policy')).toContain("form-action 'self'");
       expect(page.headers.get('content-security-policy')).toContain("base-uri 'self'");
+      expect(page.headers.get('content-security-policy')).toContain("frame-src 'self'");
+      expect(page.headers.get('content-security-policy')).toContain("default-src 'none'");
       expect(await page.text()).toContain('<base href="./service/">');
 
       const blocked = await fetch(`${baseUrl}/api/extensions/ui-extension/service/settings`, {
@@ -2433,17 +2961,17 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
-    expect(chatSource).toContain("jsonInit('POST', projectId ? { projectId } : {})");
+    expect(chatSource).toContain("jsonInit('POST', { projectId, agentId: selectedAgentId })");
     expect(chatSource).toContain('session-project-tag');
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
-    expect(chatSource).toContain('＋ 新規Project');
-    expect(chatSource).toContain('Workspaceを追加');
-    expect(chatSource).toContain('Workspaceを追加・管理');
+    expect(chatSource).toContain('新規プロジェクト');
+    expect(chatSource).toContain('ワークスペースを管理');
+    expect(chatSource).toContain('ワークスペースの追加・管理');
     expect(chatSource).toContain('ディレクトリとファイルは削除しません');
     expect(chatSource.match(/className="notice" role="status"/g)).toHaveLength(2);
     expect(chatSource).toContain('Projectへ移動');
-    expect(chatSource).toContain('既定のAI設定');
+    expect(chatSource).toContain('使用するAI');
     expect(chatSource).toContain('project-context-chip');
     expect(sourceStylesheet).toMatch(/\.project-model-settings\s*\{/);
     expect(sourceStylesheet).toMatch(/\.pane-backend-badge\s*\{/);
@@ -2940,6 +3468,31 @@ process.stdin.on('end', () => process.exit(0));
       if (previous === undefined) delete process.env.WEB_CHAT_UPLOAD_MAX_MB;
       else process.env.WEB_CHAT_UPLOAD_MAX_MB = previous;
     }
+  });
+
+  it('serves only declared session documents and keeps downloads available', async () => {
+    const sessionId = createWebSession();
+    const file = join(testDir, 'attachment.txt');
+    writeFileSync(file, 'transcript <script>unsafe()</script>');
+    logResponse(testDir, sessionId, { result: `MEDIA:${file}` });
+    const params = new URLSearchParams({ sessionId, path: file });
+    const info = await fetch(`${baseUrl}/api/session-attachment?${params}`);
+    expect(info.status).toBe(200);
+    expect(await info.json()).toMatchObject({
+      kind: 'text',
+      text: 'transcript <script>unsafe()</script>',
+    });
+    const download = await fetch(`${baseUrl}/api/session-attachment?${params}&mode=download`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get('content-disposition')).toContain('attachment');
+    expect(await download.text()).toBe('transcript <script>unsafe()</script>');
+    const otherSession = createWebSession();
+    const denied = await fetch(
+      `${baseUrl}/api/session-attachment?${new URLSearchParams({ sessionId: otherSession, path: file })}`
+    );
+    expect(denied.status).toBe(403);
+    const raw = await fetch(`${baseUrl}/api/session-attachment?${params}&mode=raw`);
+    expect(raw.status).toBe(400);
   });
 
   it('GET /api/workspace-file rejects sibling paths and downloads active content', async () => {

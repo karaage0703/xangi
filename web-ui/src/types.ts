@@ -1,3 +1,4 @@
+import type { FileChangeReport } from '../../src/file-changes';
 export type Platform = 'web' | 'discord' | 'slack' | 'line' | 'telegram' | string;
 
 export type ActivityState =
@@ -151,6 +152,7 @@ export type TurnHistoryEntry =
       toolName: string;
       summary: string;
       inputPreview?: string;
+      fileChanges?: FileChangeReport;
     };
 
 export interface TurnHistoryResponse {

@@ -289,6 +289,7 @@ describe('even-terminal compatibility API', () => {
       await client.waitFor((frames) =>
         frames.some((f) => f.data && JSON.parse(f.data).type === 'user_prompt')
       );
+      await waitUntil(() => server.runner.runs.length === 1);
       expect(server.runner.runs[0].prompt).toContain('[プラットフォーム: Web (Even Terminal)]');
       expect(server.runner.runs[0].prompt).toContain('hello g2');
 
@@ -383,17 +384,20 @@ describe('even-terminal compatibility API', () => {
       ],
     });
 
-    const sessionsRes = await fetch(`${server.url}/api/sessions?provider=codex&token=secret`);
-    expect(sessionsRes.ok).toBe(true);
-    const sessionsBody = await sessionsRes.json();
-    const session = sessionsBody.sessions.find((s: Record<string, unknown>) => s.id === sessionId);
-    expect(session).toMatchObject({
-      id: sessionId,
-      title: 'poll only new session',
-      status: 'idle',
-      messageCount: 2,
-      lastMessage: 'poll only answer',
-      lastRole: 'assistant',
+    // The final file snapshot completes before session metadata is published.
+    await vi.waitFor(async () => {
+      const sessionsRes = await fetch(`${server.url}/api/sessions?provider=codex&token=secret`);
+      expect(sessionsRes.ok).toBe(true);
+      const sessionsBody = await sessionsRes.json();
+      const session = sessionsBody.sessions.find((s: Record<string, unknown>) => s.id === sessionId);
+      expect(session).toMatchObject({
+        id: sessionId,
+        title: 'poll only new session',
+        status: 'idle',
+        messageCount: 2,
+        lastMessage: 'poll only answer',
+        lastRole: 'assistant',
+      });
     });
   });
 

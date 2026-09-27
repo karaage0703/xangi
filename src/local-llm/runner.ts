@@ -1428,7 +1428,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             appSid,
             `LLM chat retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
           );
-          return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
+          return {
+            result: errorMsg,
+            sessionId,
+            failed: true,
+            ...this.pendingModels.get(channelId)?.result(),
+          };
         }
       }
 
@@ -1438,7 +1443,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         appSid,
         `LLM chat error: ${err instanceof Error ? err.message : String(err)}`
       );
-      return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
+      return {
+        result: errorMsg,
+        sessionId,
+        failed: true,
+        ...this.pendingModels.get(channelId)?.result(),
+      };
     } finally {
       this.finishTurn(channelId);
     }
@@ -1577,7 +1587,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           const errorMsg = formatLlmError(retryErr);
           logError(this.workdir, appSid, `LLM stream retry failed: ${error.message}`);
           callbacks.onError?.(error);
-          return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
+          return {
+            result: errorMsg,
+            sessionId,
+            failed: true,
+            ...this.pendingModels.get(channelId)?.result(),
+          };
         }
       }
 
@@ -1585,7 +1600,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       const errorMsg = formatLlmError(err);
       logError(this.workdir, appSid, `LLM stream error: ${error.message}`);
       callbacks.onError?.(error);
-      return { result: errorMsg, sessionId, ...this.pendingModels.get(channelId)?.result() };
+      return {
+        result: errorMsg,
+        sessionId,
+        failed: true,
+        ...this.pendingModels.get(channelId)?.result(),
+      };
     } finally {
       this.finishTurn(channelId);
     }

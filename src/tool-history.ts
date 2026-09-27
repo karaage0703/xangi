@@ -89,6 +89,7 @@ export function withoutFinalResponse(
 }
 
 export function formatTurnHistoryDisclosure(history: TurnHistoryEntry[]): string {
+  history = history.filter((entry) => !(entry.kind === 'tool' && entry.fileChanges));
   if (history.length === 0) return '履歴はありません';
   const compactLine = (value: string): string => value.trim().replace(/\s*\r?\n+\s*/g, ' ');
   const body = history.map((entry) => {

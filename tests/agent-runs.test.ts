@@ -35,6 +35,7 @@ describe('AgentRunStore', () => {
       result: 'done',
       usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 3 },
     });
+    expect(store.markParentNotified(created.id).parentNotifiedAt).toBeTruthy();
     expect(JSON.parse(readFileSync(join(dataDir, 'agent-runs.json'), 'utf8'))).toMatchObject({
       version: 1,
       runs: [expect.objectContaining({ id: created.id, status: 'succeeded' })],

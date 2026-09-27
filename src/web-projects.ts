@@ -6,7 +6,11 @@ import {
   EFFORT_LEVELS,
   type AgentBackend,
   type EffortLevel,
+  type LocalLlmReasoningEffort,
 } from './config.js';
+
+import type { LocalLlmMode } from './backend-resolver.js';
+import { LOCAL_LLM_REASONING_EFFORTS } from './local-llm/reasoning-effort.js';
 
 const PROJECTS_FILE = 'web-projects.json';
 const PROJECTS_VERSION = 1;
@@ -33,7 +37,9 @@ export interface WebProject {
   backend?: AgentBackend;
   model?: string;
   effort?: EffortLevel;
-  /** 新規sessionの既定workspace。既存session snapshotは変更しない。 */
+  localLlmMode?: LocalLlmMode;
+  localLlmReasoningEffort?: LocalLlmReasoningEffort;
+  /** エージェントの作業場所。 */
   workspaceId?: string;
   createdAt: string;
   updatedAt: string;
@@ -172,11 +178,35 @@ export class WebProjectStore {
 }
 
 export function validateWebProjectsState(dataDir: string): WebProjectStateIssue[] {
+  const catalogPath = join(dataDir, 'project-catalog.json');
+  if (existsSync(catalogPath)) return validateProjectCatalogRaw(readFileSync(catalogPath, 'utf8'));
   const filePath = join(dataDir, PROJECTS_FILE);
   if (!existsSync(filePath)) return [];
   const issues: WebProjectStateIssue[] = [];
   try {
     parseProjects(readFileSync(filePath, 'utf8'), (issue) => issues.push(issue));
+  } catch (error) {
+    issues.push({
+      message: error instanceof Error ? error.message : String(error),
+      recovery: 'skip-project',
+    });
+  }
+  return issues;
+}
+
+export function validateProjectCatalogRaw(raw: string): WebProjectStateIssue[] {
+  const issues: WebProjectStateIssue[] = [];
+  try {
+    const state = JSON.parse(raw);
+    if (state.version !== 1 || !Array.isArray(state.projects) || !Array.isArray(state.agents))
+      throw new Error('project-catalog形式が不正です');
+    for (const items of [state.projects, state.agents])
+      parseProjects(JSON.stringify({ version: 1, projects: items }), (issue) => issues.push(issue));
+    for (const agent of state.agents) {
+      if (typeof agent.role !== 'string') throw new Error('エージェント情報が不正です');
+      normalizeAgentOptions(agent);
+      normalizePrompt(agent.role);
+    }
   } catch (error) {
     issues.push({
       message: error instanceof Error ? error.message : String(error),
@@ -267,7 +297,7 @@ function parseProjects(
   return { version: PROJECTS_VERSION, projects };
 }
 
-function normalizeName(value: string): string {
+export function normalizeName(value: string): string {
   const name = value.trim();
   if (!name) throw new WebProjectError('Project名を入力してください', 400);
   if (name.length > MAX_NAME_LENGTH) {
@@ -284,7 +314,7 @@ function normalizeName(value: string): string {
   return name;
 }
 
-function normalizePrompt(value: string): string {
+export function normalizePrompt(value: string): string {
   const prompt = value.trim();
   if (prompt.length > MAX_PROMPT_LENGTH) {
     throw new WebProjectError(`追加プロンプトは${MAX_PROMPT_LENGTH}文字以内にしてください`, 400);
@@ -303,7 +333,7 @@ function normalizeWorkspaceId(value: unknown): string | undefined {
   return normalized;
 }
 
-function normalizeBackendSettings(input: WebProjectBackendInput): WebProjectBackendSettings {
+export function normalizeBackendSettings(input: WebProjectBackendInput): WebProjectBackendSettings {
   const backend = input.backend || undefined;
   if (backend !== undefined && !ALL_AGENT_BACKENDS.includes(backend)) {
     throw new WebProjectError('Projectのバックエンドが不正です', 400);
@@ -327,4 +357,24 @@ function hasControlCharacter(value: string): boolean {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127;
   });
+}
+
+export function normalizeAgentOptions(input: Record<string, unknown>) {
+  const mode = input.localLlmMode === '' ? undefined : (input.localLlmMode ?? undefined);
+  const reasoning =
+    input.localLlmReasoningEffort === '' ? undefined : (input.localLlmReasoningEffort ?? undefined);
+  if (mode !== undefined && mode !== 'agent' && mode !== 'chat')
+    throw new WebProjectError('Local LLMモードが不正です', 400);
+  if (
+    reasoning !== undefined &&
+    !LOCAL_LLM_REASONING_EFFORTS.includes(reasoning as LocalLlmReasoningEffort)
+  )
+    throw new WebProjectError('Local LLMの推論強度が不正です', 400);
+  if ((mode || reasoning) && input.backend !== 'local-llm')
+    throw new WebProjectError('Local LLM設定にはlocal-llmバックエンドを指定してください', 400);
+  return {
+    workspaceId: normalizeWorkspaceId(input.workspaceId as string | undefined) || 'default',
+    localLlmMode: mode as LocalLlmMode | undefined,
+    localLlmReasoningEffort: reasoning as LocalLlmReasoningEffort | undefined,
+  };
 }

@@ -48,7 +48,16 @@ interface ClaudeStreamEvent {
   subtype?: string;
   parent_tool_use_id?: string | null;
   type?: string;
-  message?: { model?: string; content?: Array<{ type?: string; text?: string }> };
+  message?: {
+    model?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+      id?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+    }>;
+  };
   session_id?: string;
   is_error?: boolean;
   result?: string;
@@ -245,6 +254,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     let fullText = '';
     let sessionId = '';
     let usage: RunResult['usage'];
+    const tools = new Set<string>();
 
     return {
       handleEvent: (json, phase) => {
@@ -253,6 +263,13 @@ export class ClaudeCodeRunner extends CliRunnerBase {
 
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {
+            if (phase === 'stream' && block.type === 'tool_use' && block.name) {
+              const key = block.id ?? `${block.name}:${JSON.stringify(block.input)}`;
+              if (!tools.has(key)) {
+                tools.add(key);
+                callbacks.onToolUse?.(block.name, block.input ?? {});
+              }
+            }
             if (block.type === 'text' && typeof block.text === 'string') {
               const clean = stripToolCallArtifacts(block.text);
               if (clean) {

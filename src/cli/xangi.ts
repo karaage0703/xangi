@@ -127,8 +127,10 @@ Usage:
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi settings
   xangi extension <link|unlink|list|start|stop|restart|status|doctor|update> [ID|MANIFEST]
+  xangi extension <start|stop|restart> --all
   xangi worker install --pair CODE [--workspace PATH]
   xangi worker <run|start|stop|restart|status|uninstall>
+  xangi agent <create|list|run|status|wait> [--agent ID --task TEXT] [--id RUN_ID]
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -238,12 +240,18 @@ function parseArgs(argv: string[]): ParsedArgs {
     'yes',
     'apply',
     'complete',
+    'help',
+    'all',
   ]);
 
   for (let i = 3; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '-d') {
       flags.detach = true;
+      continue;
+    }
+    if (arg === '-h') {
+      flags.help = true;
       continue;
     }
     if (arg.startsWith('--')) {
@@ -502,6 +510,17 @@ export async function run(argv = process.argv): Promise<void> {
   }
   if (argv[2] === 'update' && argv.slice(3).some((arg) => arg === '--help' || arg === '-h')) {
     printUpdateHelp();
+    return;
+  }
+  if (argv[2] === 'agent') {
+    const action = argv[3] || 'list';
+    if (['help', '--help', '-h'].includes(action)) {
+      console.log(await runToolCommand(['help', 'agent']));
+    } else {
+      const args = argv.slice(4);
+      if (action === 'run' && args[0] && !args[0].startsWith('--')) args.unshift('--agent');
+      console.log(await runToolCommand(['agent', '--action', action, ...args]));
+    }
     return;
   }
   if (argv[2] === 'tool') {

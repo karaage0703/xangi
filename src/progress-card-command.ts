@@ -1,3 +1,4 @@
+import { resolveRunningSession } from './running-session-context.js';
 import { ValidationError } from './errors.js';
 import {
   getActiveSessionId,
@@ -42,11 +43,12 @@ function parsePlan(raw: string | undefined): SessionProgressStep[] {
 
 export function executeProgressCardCommand(
   flags: Record<string, string>,
-  context?: { channelId?: string }
+  context?: { channelId?: string; platform?: string }
 ): string {
   const contextKey = flags.channel || context?.channelId;
   if (!contextKey) throw new ValidationError('progress_card requires the current channel context');
-  const appSessionId = getActiveSessionId(contextKey);
+  const appSessionId =
+    resolveRunningSession(contextKey, context?.platform) ?? getActiveSessionId(contextKey);
   if (!appSessionId) throw new ValidationError('progress_card could not resolve an active session');
 
   if (flags.clear === 'true') {

@@ -1,3 +1,6 @@
+import { DocumentAttachments, AttachmentError, attachmentPaths } from './document-attachments.js';
+import { registerProjectAgents } from './project-agent-command.js';
+import { ProjectCatalog } from './project-catalog.js';
 import { ExtensionFavorites, parseFavoriteAction } from './extension-favorites.js';
 import { latestModelExecution } from './model-execution-display.js';
 /**
@@ -31,6 +34,7 @@ import {
   getActiveSessionId,
   updateSessionTitle,
   updateSessionProject,
+  clearClosedSessionAgentSelections,
   incrementMessageCount,
   createWebSession,
   clearResumedFromSessionId,
@@ -112,7 +116,7 @@ import { processManager } from './process-manager.js';
 import { requestProcessRestart } from './restart-process.js';
 import { executeWebCommand, getWebCommandDefinitions } from './web-slash-commands.js';
 import { WorkspaceBrowser, WorkspaceBrowserError } from './workspace-browser.js';
-import { prependWebProjectPrompt, WebProjectError, WebProjectStore } from './web-projects.js';
+import { prependWebProjectPrompt, WebProjectError, normalizeAgentOptions } from './web-projects.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import {
   createExtensionSetupRequest,
@@ -130,7 +134,7 @@ import {
 import { loadExtensionManifest, resolveExtensionAgentBackend } from './extensions.js';
 import { createExtensionUpdateRequest } from './extension-update.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
-import { AgentRunError, AgentRunStore } from './agent-runs.js';
+import { AgentRunError, AgentRunStore, type AgentRun } from './agent-runs.js';
 import {
   isAllowedExternalChatUrl,
   type ExternalChatPlatform,
@@ -340,14 +344,197 @@ export function startWebChat(options: WebChatOptions): void {
         : resolve(workspace.path, requestedPath),
     };
   };
+  const documentAttachments = new DocumentAttachments(join(dataDir, 'document-previews'));
+  const webProjects = new ProjectCatalog(dataDir);
   const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
-  const webProjects = WebProjectStore.fromDataDir(dataDir);
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
+  const notifyAgentRunParent = (completed: AgentRun) => {
+    const parent = completed.parentContextKey;
+    if (!parent || !options.scheduler) return;
+    // One completion turn can collect all parallel children. Do not repeatedly wake the parent.
+    if (
+      agentRuns
+        .list()
+        .some(
+          (run) =>
+            run.parentContextKey === parent && (run.status === 'queued' || run.status === 'running')
+        )
+    )
+      return;
+    const platform =
+      completed.parentPlatform ?? (parent.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined);
+    if (!platform) return;
+    const parentRunner = options.scheduler.getAgentRunner(platform);
+    if (!parentRunner) {
+      console.warn(`[agent-run] No completion runner for ${platform}`);
+      return;
+    }
+    const destination =
+      platform === 'web' && parent.startsWith(WEB_CHAT_CONTEXT_PREFIX)
+        ? parent.slice(WEB_CHAT_CONTEXT_PREFIX.length)
+        : parent;
+    const pending = agentRuns
+      .list()
+      .filter((run) => run.parentContextKey === parent && run.completedAt && !run.parentNotifiedAt);
+    if (!pending.length) return;
+    const results = pending.map((run) => ({
+      id: run.id,
+      status: run.status,
+      durationMs: run.durationMs,
+      usage: run.usage,
+      result: run.result?.slice(0, 2000),
+      error: run.error?.slice(0, 1000),
+    }));
+    const prompt =
+      `[子エージェントの実行完了]\n${JSON.stringify(results)}\n` +
+      '全結果を確認して依頼に回答してください。必要な修正があれば同じ子へ再依頼できます。';
+    void (async () => {
+      // The child can finish while the parent is still implementing another part.
+      // Wait in the host process, without spending parent model turns or racing its session.
+      while (agentRunner.getTimeoutState?.(parent).active) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      await parentRunner(prompt, destination);
+      for (const run of pending) agentRuns.markParentNotified(run.id);
+    })().catch((error) => {
+      console.error(`[agent-run] Parent completion delivery failed for ${completed.id}:`, error);
+    });
+  };
+  const startAgentRun = async (body: Record<string, unknown>) => {
+    if (!options.resolver) {
+      throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
+    }
+    const projectId = typeof body.projectId === 'string' ? body.projectId : undefined;
+    if (projectId && !webProjects.get(projectId))
+      throw new AgentRunError('Projectが見つかりません', 404);
+    const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
+    const execution = webProjects.execution(undefined, agentId);
+    const task = String(body.task || '');
+    const backend = String(
+      (agentId ? execution?.backend || options.resolver.resolve().backend : body.backend) ||
+        (body.parentContextKey
+          ? options.resolver.resolve(String(body.parentContextKey)).backend
+          : '')
+    ).trim() as AgentBackend;
+    const modelValue = agentId ? execution?.model : body.model;
+    const effortValue = agentId ? execution?.effort : body.effort;
+    const model = modelValue ? String(modelValue).trim() : undefined;
+    const effort = effortValue ? (String(effortValue) as EffortLevel) : undefined;
+    const localOptions = normalizeAgentOptions(
+      agentId ? { ...execution, backend } : { ...body, backend }
+    );
+    if (!options.resolver.isBackendSelectable(backend)) {
+      throw new AgentRunError(
+        `利用可能なバックエンドを指定してください: ${options.resolver.getSelectableBackends().join(', ')}`,
+        400
+      );
+    }
+    if (effort && !supportsEffort(backend, effort)) {
+      throw new AgentRunError(
+        `${backend} のeffortは ${getSupportedEffortLevels(backend).join(', ') || '未対応'} です`,
+        400
+      );
+    }
+    if (effort && !hasUsableModelForEffort(backend, model)) {
+      throw new AgentRunError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
+    }
+    await validateDiscoveredModelEffort(
+      backend,
+      model,
+      effort,
+      (message) => new AgentRunError(message, 400)
+    );
+
+    const workspace = await resolveWorkspace(agentId ? execution?.workspaceId : body.workspaceId);
+    const appSessionId = createWebSession({
+      projectId,
+      selectedAgentId: agentId,
+      title:
+        String(body.title || '').trim() || `Agent Run: ${backend}${model ? ` / ${model}` : ''}`,
+      workspaceId: workspace.id,
+      workspacePath: workspace.path,
+    });
+    const run = agentRuns.create({
+      task,
+      backend,
+      model,
+      effort,
+      localLlmMode: localOptions.localLlmMode,
+      localLlmReasoningEffort: localOptions.localLlmReasoningEffort,
+      workspaceId: workspace.id,
+      workspacePath: workspace.path,
+      appSessionId,
+      projectId,
+      agentId,
+      parentContextKey: body.parentContextKey as string | undefined,
+      parentPlatform: body.parentPlatform as AgentRun['parentPlatform'],
+    });
+    invalidateSessionSnapshots();
+
+    void (async () => {
+      const contextKey = webContextKey(appSessionId);
+      agentRuns.markRunning(run.id);
+      try {
+        const runOptions = {
+          channelId: contextKey,
+          settingsChannelId: contextKey,
+          appSessionId,
+          platform: 'web' as const,
+          defaultBackend: backend,
+          defaultModel: model,
+          defaultEffort: effort,
+          defaultLocalLlmMode: localOptions.localLlmMode,
+          defaultLocalLlmReasoningEffort: localOptions.localLlmReasoningEffort,
+          workdir: workspace.path,
+          skipPermissions: body.skipPermissions === true ? true : undefined,
+        };
+        const result = await runWithBubbleEvents(
+          agentRunner,
+          `[プラットフォーム: Web]\n${execution?.prompt || body.instruction ? String(execution?.prompt || body.instruction) + '\n\n' : ''}${run.task}`,
+          {
+            threadId: threadIdFor('web', appSessionId),
+            turnId: `agent-run-${run.id}`,
+            platform: 'web',
+            userText: run.task,
+          },
+          {},
+          runOptions
+        );
+        setSession(contextKey, result.sessionId);
+        setProviderSessionId(
+          appSessionId,
+          result.sessionId,
+          backend,
+          model,
+          effort,
+          result.sessionMode
+        );
+        incrementMessageCount(appSessionId);
+        if (result.failed) {
+          notifyAgentRunParent(agentRuns.markFailed(run.id, new Error(result.result)));
+        } else {
+          notifyAgentRunParent(agentRuns.markSucceeded(run.id, result));
+        }
+      } catch (error) {
+        notifyAgentRunParent(agentRuns.markFailed(run.id, error));
+      } finally {
+        invalidateSessionSnapshots();
+      }
+    })();
+
+    return run;
+  };
+  registerProjectAgents({
+    catalog: webProjects,
+    runs: agentRuns,
+    start: startAgentRun,
+    workspaces: workspaceRegistry,
+  });
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
 
   const resolveProject = (projectId: unknown) => {
     if (typeof projectId !== 'string' || !projectId.trim()) return undefined;
-    const project = webProjects.get(projectId.trim());
+    const project = webProjects.execution(projectId.trim());
     if (!project) throw new WebProjectError('Projectが見つかりません', 404);
     return project;
   };
@@ -359,6 +546,11 @@ export function startWebChat(options: WebChatOptions): void {
 
   const resolveSessionWorkspace = async (appSessionId: string) => {
     const entry = getSessionEntry(appSessionId);
+    if (entry?.selectedAgentId) {
+      return resolveWorkspace(
+        webProjects.execution(entry.projectId, entry.selectedAgentId)?.workspaceId
+      );
+    }
     if (!entry?.workspaceId || !entry.workspacePath) return resolveWorkspace();
     if (!workspaceRegistry) return resolveWorkspace();
     return workspaceRegistry.resolveSnapshot(entry.workspaceId, entry.workspacePath);
@@ -368,7 +560,13 @@ export function startWebChat(options: WebChatOptions): void {
     project: ReturnType<typeof resolveProject>
   ): ChannelOverride | undefined => {
     if (!project?.backend) return undefined;
-    return { backend: project.backend, model: project.model, effort: project.effort };
+    return {
+      backend: project.backend,
+      model: project.model,
+      effort: project.effort,
+      localLlmMode: project.localLlmMode,
+      localLlmReasoningEffort: project.localLlmReasoningEffort,
+    };
   };
 
   const validateDiscoveredModelEffort = async (
@@ -436,7 +634,7 @@ export function startWebChat(options: WebChatOptions): void {
   const resolveWebSessionBackend = (appSessionId: string) => {
     const entry = getSessionEntry(appSessionId);
     if (!entry || entry.platform !== 'web' || !options.resolver) return undefined;
-    const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+    const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
     const projectDefault = projectBackendDefault(project);
     const contextKey = webContextKey(appSessionId);
     const resolved = options.resolver.resolve(contextKey, projectDefault);
@@ -465,7 +663,7 @@ export function startWebChat(options: WebChatOptions): void {
       throw new Error(`Web session ${appSessionId} not found`);
     }
     const contextKey = webContextKey(appSessionId);
-    const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+    const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
     const backendDefault = projectBackendDefault(project);
     const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
     let result: Awaited<ReturnType<AgentRunner['run']>>;
@@ -481,6 +679,8 @@ export function startWebChat(options: WebChatOptions): void {
           defaultBackend: backendDefault?.backend,
           defaultModel: backendDefault?.model,
           defaultEffort: backendDefault?.effort,
+          defaultLocalLlmMode: backendDefault?.localLlmMode,
+          defaultLocalLlmReasoningEffort: backendDefault?.localLlmReasoningEffort,
           workdir: sessionWorkspace.path,
         }
       );
@@ -858,7 +1058,9 @@ export function startWebChat(options: WebChatOptions): void {
     body: Record<string, unknown>
   ): { workspace: boolean; backend: boolean } => {
     const workspace = body.workspaceId !== undefined;
-    const backend = ['backend', 'model', 'effort'].some((key) => body[key] !== undefined);
+    const backend = ['backend', 'model', 'effort', 'localLlmMode', 'localLlmReasoningEffort'].some(
+      (key) => body[key] !== undefined
+    );
     if (workspace && options.config?.features?.workspaceSwitching === false) {
       throw new WebProjectError('workspace switching is disabled', 403);
     }
@@ -978,7 +1180,29 @@ export function startWebChat(options: WebChatOptions): void {
     // 外部 device からのテキスト送信 (xangi-pet / Even G2 等の consumer 側 UI から POST される)
     if (isInboxPath(url)) {
       try {
-        const handled = await handlePetInboxRequest(req, res, agentRunner, replySuggestions);
+        const handled = await handlePetInboxRequest(
+          req,
+          res,
+          agentRunner,
+          replySuggestions,
+          async (appSessionId, text) => {
+            const entry = getSessionEntry(appSessionId)!;
+            const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
+            const workspace = await resolveSessionWorkspace(appSessionId);
+            const defaults = projectBackendDefault(project);
+            return {
+              prompt: prependWebProjectPrompt(project, text),
+              options: {
+                defaultBackend: defaults?.backend,
+                defaultModel: defaults?.model,
+                defaultEffort: defaults?.effort,
+                defaultLocalLlmMode: defaults?.localLlmMode,
+                defaultLocalLlmReasoningEffort: defaults?.localLlmReasoningEffort,
+                workdir: workspace.path,
+              },
+            };
+          }
+        );
         if (handled) return;
       } catch (err) {
         if (!res.headersSent) {
@@ -1322,91 +1546,34 @@ export function startWebChat(options: WebChatOptions): void {
         if (!acceptsSameHostMutation(req)) {
           throw new AgentRunError('cross-origin Agent Run creation is not allowed', 403);
         }
-        if (!options.resolver) {
-          throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
-        }
         const body = await readBody(req);
-        const task = String(body.task || '');
-        const backend = String(body.backend || '').trim() as AgentBackend;
-        const model = body.model ? String(body.model).trim() : undefined;
-        const effort = body.effort ? (String(body.effort) as EffortLevel) : undefined;
-        if (!options.resolver.isBackendSelectable(backend)) {
-          throw new AgentRunError(
-            `利用可能なバックエンドを指定してください: ${options.resolver.getSelectableBackends().join(', ')}`,
-            400
-          );
-        }
-        if (effort && !supportsEffort(backend, effort)) {
-          throw new AgentRunError(
-            `${backend} のeffortは ${getSupportedEffortLevels(backend).join(', ') || '未対応'} です`,
-            400
-          );
-        }
-        if (effort && !hasUsableModelForEffort(backend, model)) {
-          throw new AgentRunError(`${backend}でeffortを指定するにはモデルも必要です`, 400);
-        }
-        await validateDiscoveredModelEffort(
-          backend,
-          model,
-          effort,
-          (message) => new AgentRunError(message, 400)
-        );
-
-        const workspace = await resolveWorkspace(body.workspaceId);
-        const appSessionId = createWebSession({
-          title:
-            String(body.title || '').trim() || `Agent Run: ${backend}${model ? ` / ${model}` : ''}`,
-          workspaceId: workspace.id,
-          workspacePath: workspace.path,
-        });
-        const run = agentRuns.create({
+        // Parent context remains internal; project membership is validated by startAgentRun.
+        const {
           task,
           backend,
           model,
           effort,
-          workspaceId: workspace.id,
-          workspacePath: workspace.path,
-          appSessionId,
+          localLlmMode,
+          localLlmReasoningEffort,
+          workspaceId,
+          title,
+          skipPermissions,
+          projectId,
+          agentId,
+        } = body;
+        const run = await startAgentRun({
+          task,
+          backend,
+          model,
+          effort,
+          localLlmMode,
+          localLlmReasoningEffort,
+          workspaceId,
+          title,
+          skipPermissions,
+          projectId,
+          agentId,
         });
-        invalidateSessionSnapshots();
-
-        void (async () => {
-          const contextKey = webContextKey(appSessionId);
-          agentRuns.markRunning(run.id);
-          try {
-            const runOptions = {
-              channelId: contextKey,
-              settingsChannelId: contextKey,
-              appSessionId,
-              platform: 'web' as const,
-              defaultBackend: backend,
-              defaultModel: model,
-              defaultEffort: effort,
-              workdir: workspace.path,
-              skipPermissions: body.skipPermissions === true ? true : undefined,
-            };
-            const result = await agentRunner.runStream(
-              `[プラットフォーム: Web]\n${run.task}`,
-              {},
-              runOptions
-            );
-            setSession(contextKey, result.sessionId);
-            setProviderSessionId(
-              appSessionId,
-              result.sessionId,
-              backend,
-              model,
-              effort,
-              result.sessionMode
-            );
-            incrementMessageCount(appSessionId);
-            agentRuns.markSucceeded(run.id, result);
-          } catch (error) {
-            agentRuns.markFailed(run.id, error);
-          } finally {
-            invalidateSessionSnapshots();
-          }
-        })();
 
         sendJson(res, 202, { run });
       } catch (error) {
@@ -1666,7 +1833,7 @@ export function startWebChat(options: WebChatOptions): void {
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy':
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
         });
         res.end(body);
       } catch (error) {
@@ -1801,8 +1968,8 @@ export function startWebChat(options: WebChatOptions): void {
         }
         const commandSessionId = body.appSessionId ? String(body.appSessionId) : undefined;
         const commandSession = commandSessionId ? getSessionEntry(commandSessionId) : undefined;
-        const commandProject = commandSession?.projectId
-          ? webProjects.get(commandSession.projectId)
+        const commandProject = commandSession
+          ? webProjects.execution(commandSession.projectId, commandSession.selectedAgentId)
           : undefined;
         let result = await executeWebCommand(input, {
           appSessionId: commandSessionId,
@@ -1841,6 +2008,9 @@ export function startWebChat(options: WebChatOptions): void {
               defaultBackend: projectBackendDefault(commandProject)?.backend,
               defaultModel: projectBackendDefault(commandProject)?.model,
               defaultEffort: projectBackendDefault(commandProject)?.effort,
+              defaultLocalLlmMode: projectBackendDefault(commandProject)?.localLlmMode,
+              defaultLocalLlmReasoningEffort:
+                projectBackendDefault(commandProject)?.localLlmReasoningEffort,
               workdir: sessionWorkspace.path,
             },
           });
@@ -1970,11 +2140,11 @@ export function startWebChat(options: WebChatOptions): void {
           sendJson(res, 409, { error: 'default Workspaceは登録解除できません' });
           return;
         }
-        const project = webProjects
-          .list()
+        const agent = webProjects
+          .agents()
           .find((candidate) => candidate.workspaceId === workspace.id);
-        if (project) {
-          sendJson(res, 409, { error: `WorkspaceはProject「${project.name}」で使用中です` });
+        if (agent) {
+          sendJson(res, 409, { error: `Workspaceはエージェント「${agent.name}」で使用中です` });
           return;
         }
         const session = listAllSessions().find(
@@ -1999,17 +2169,93 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    if (url === '/api/projects/import-studio' && req.method === 'POST') {
+      await handleProjectMutation(res, async () => {
+        const body = await readBody(req);
+        return { body: { project: webProjects.importStudio(body) } };
+      });
+      return;
+    }
+    const handoffMatch = url.match(/^\/api\/projects\/([^/]+)\/handoff$/);
+    if (handoffMatch && req.method === 'POST') {
+      await handleProjectMutation(res, async () => {
+        const projectId = decodeURIComponent(handoffMatch[1]);
+        if (!webProjects.get(projectId)) throw new WebProjectError('Projectが見つかりません', 404);
+        const body = await readBody(req);
+        if (
+          !Array.isArray(body.sessionIds) ||
+          body.sessionIds.length > 5 ||
+          body.sessionIds.some((id: unknown) => typeof id !== 'string')
+        )
+          throw new WebProjectError('引き継ぐ会話は5件まで選べます', 400);
+        const sources = [];
+        for (const id of [...new Set<string>(body.sessionIds)]) {
+          const entry = getSessionEntry(id);
+          if (!entry || entry.projectId !== projectId)
+            throw new WebProjectError('このプロジェクトの会話だけ引き継げます', 400);
+          const workspace = await resolveSessionWorkspace(id);
+          const messages = readSessionMessages(workspace.path, id).filter(
+            (m) => m.role === 'user' || m.role === 'assistant'
+          );
+          const content = messages
+            .map(
+              (m) =>
+                `${m.role}: ${stripPromptMetadata(typeof m.content === 'string' ? m.content : String((m.content as Record<string, unknown>)?.result || ''))}`
+            )
+            .join('\n\n');
+          if (content.length > 30000)
+            throw new WebProjectError('会話が長すぎます。要点を参考資料へ転記してください', 413);
+          sources.push({ title: entry.title || id, content, locator: `xangi-session:${id}` });
+        }
+        return { body: { sources } };
+      });
+      return;
+    }
+    if (url === '/api/agents' && req.method === 'GET') {
+      sendJson(res, 200, { agents: webProjects.agents() }, { 'Cache-Control': 'no-store' });
+      return;
+    }
+    const agentMatch = url.match(/^\/api\/agents\/([^/]+)$/);
+    if (
+      (url === '/api/agents' && req.method === 'POST') ||
+      (agentMatch && ['PATCH', 'DELETE'].includes(req.method || ''))
+    ) {
+      await handleProjectMutation(res, async () => {
+        const id = agentMatch ? decodeURIComponent(agentMatch[1]) : undefined;
+        if (id && !webProjects.agent(id))
+          throw new WebProjectError('エージェントが見つかりません', 404);
+        if (req.method === 'DELETE') {
+          if (
+            listAllSessions(true).some(
+              (s) =>
+                s.selectedAgentId === id &&
+                (getSessionLifecycle(s.id) !== 'closed' || busySessions.has(s.id))
+            )
+          )
+            throw new WebProjectError('会話で使用中のエージェントです', 409);
+          webProjects.removeAgent(id!);
+          clearClosedSessionAgentSelections([id!]);
+          return { body: { ok: true } };
+        }
+        const body = await readBody(req);
+        assertProjectSettingsEnabled(body);
+        if (body.workspaceId !== undefined) await resolveWorkspace(body.workspaceId);
+        const previous = id ? webProjects.agent(id) : undefined;
+        const settings = await parseProjectBackendSettings({ ...previous, ...body });
+        const agent = webProjects.saveAgent({ ...body, ...settings }, id);
+        return { status: id ? 200 : 201, body: { agent } };
+      });
+      return;
+    }
     if (url === '/api/projects' && req.method === 'POST') {
       await handleProjectMutation(res, async () => {
         const body = await readBody(req);
         assertProjectSettingsEnabled(body);
-        const workspace = await resolveWorkspace(body.workspaceId);
-        const project = webProjects.create({
-          name: String(body.name || ''),
-          prompt: String(body.prompt || ''),
-          ...(await parseProjectBackendSettings(body)),
-          workspaceId: workspace.id,
-        });
+        if (body.backend || body.model || body.effort)
+          throw new WebProjectError('AI設定はエージェントへ登録してください', 400);
+        if (body.workspaceId !== undefined)
+          throw new WebProjectError('作業場所はエージェントで設定してください', 400);
+        const project = webProjects.create(body);
         return { status: 201, body: { project } };
       });
       return;
@@ -2039,15 +2285,12 @@ export function startWebChat(options: WebChatOptions): void {
       await handleProjectMutation(res, async () => {
         const projectId = decodeURIComponent(projectMatch[1]);
         const body = await readBody(req);
-        const { workspace: hasWorkspaceUpdate, backend: hasBackendUpdate } =
-          assertProjectSettingsEnabled(body);
-        if (hasWorkspaceUpdate) await resolveWorkspace(body.workspaceId);
-        const project = webProjects.update(projectId, {
-          name: body.name === undefined ? undefined : String(body.name),
-          prompt: body.prompt === undefined ? undefined : String(body.prompt),
-          ...(hasBackendUpdate ? await parseProjectBackendSettings(body) : {}),
-          ...(hasWorkspaceUpdate ? { workspaceId: String(body.workspaceId || 'default') } : {}),
-        });
+        assertProjectSettingsEnabled(body);
+        if (body.workspaceId !== undefined)
+          throw new WebProjectError('作業場所はエージェントで設定してください', 400);
+        if (body.backend || body.model || body.effort)
+          throw new WebProjectError('AI設定はエージェントで変更してください', 400);
+        const project = webProjects.update(projectId, body);
         return { body: { project } };
       });
       return;
@@ -2331,7 +2574,15 @@ export function startWebChat(options: WebChatOptions): void {
                 }
               : undefined,
           replySuggestions: assistantReplyData?.suggestions ?? [],
-          attachments: displayedUser.attachments,
+          attachments:
+            m.role === 'assistant'
+              ? attachmentPaths([
+                  { role: 'assistant', content: { attachments: obj.attachments } },
+                ]).filter(
+                  (path) =>
+                    !attachmentPaths([{ role: 'assistant', content: rawContent }]).includes(path)
+                )
+              : displayedUser.attachments,
         };
       });
       const isCurrentSession = Boolean(entry && getActiveSessionId(entry.contextKey) === entry.id);
@@ -2438,8 +2689,13 @@ export function startWebChat(options: WebChatOptions): void {
       try {
         const body = await readBody(req);
         const project = resolveProject(body.projectId);
-        const snapshot = await snapshotForProject(project);
-        const newAppId = createWebSession({ projectId: project?.id, ...snapshot });
+        const selectedAgentId = body.agentId ? String(body.agentId) : undefined;
+        const execution = webProjects.execution(project?.id, selectedAgentId);
+        const workspace = await resolveWorkspace(
+          selectedAgentId ? execution?.workspaceId : body.workspaceId
+        );
+        const snapshot = { workspaceId: workspace.id, workspacePath: workspace.path };
+        const newAppId = createWebSession({ projectId: project?.id, selectedAgentId, ...snapshot });
         console.log(
           `[web-chat] Created new web session ${newAppId}${project ? ` in Project ${project.id}` : ''}`
         );
@@ -2462,6 +2718,7 @@ export function startWebChat(options: WebChatOptions): void {
         title: sourceEntry?.title ? `${sourceEntry.title} (resumed)` : '',
         resumedFromSessionId: sourceId,
         projectId: sourceEntry?.projectId,
+        selectedAgentId: sourceEntry?.selectedAgentId,
         workspaceId: sourceEntry?.workspaceId,
         workspacePath: sourceEntry?.workspacePath,
       });
@@ -2826,6 +3083,86 @@ export function startWebChat(options: WebChatOptions): void {
       return;
     }
 
+    if (url === '/api/session-attachment' && (req.method === 'GET' || req.method === 'HEAD')) {
+      try {
+        const params = new URL(rawUrl, 'http://localhost').searchParams;
+        const sessionId = params.get('sessionId') || '';
+        const entry = getSessionEntry(sessionId);
+        if (!entry) throw new AttachmentError('会話が見つかりません。', 404);
+        const messages = readSessionMessages(workdir, sessionId);
+        const roots = [entry.workspacePath || workdir, join(dataDir, 'media', 'attachments')];
+        const declared = [
+          ...new Set([
+            ...attachmentPaths(messages),
+            ...messages
+              .filter((message) => message.role === 'user' && typeof message.content === 'string')
+              .flatMap(
+                (message) =>
+                  parseDisplayedUserAttachments(message.content as string, roots).attachments
+              ),
+          ]),
+        ];
+        const mode = params.get('mode') || 'info';
+        if (mode === 'list') {
+          sendJson(res, 200, { paths: declared });
+          return;
+        }
+        const source = await documentAttachments.source(
+          sessionId,
+          params.get('path') || '',
+          declared,
+          entry.workspacePath || workdir,
+          downloadAllowedExts,
+          mode === 'download'
+        );
+        if (mode === 'download') {
+          serveFile(
+            req,
+            res,
+            source.file,
+            'application/octet-stream',
+            `attachment; filename*=UTF-8''${encodeURIComponent(source.name)}`
+          );
+        } else if (mode === 'info') {
+          sendJson(res, 200, {
+            name: source.name,
+            size: source.size,
+            ...(await documentAttachments.info(source.file, source.dir)),
+          });
+        } else if (mode === 'page') {
+          const file = await documentAttachments.page(
+            source.file,
+            source.dir,
+            Number(params.get('page') || '1')
+          );
+          serveFile(req, res, file, 'image/png');
+        } else if (mode === 'raw') {
+          const info = await documentAttachments.info(source.file, source.dir);
+          if (!['image', 'audio', 'video', 'html'].includes(info.kind))
+            throw new AttachmentError('この形式は直接表示できません。');
+          serveFile(
+            req,
+            res,
+            source.file,
+            FILE_MIME_TYPES[extname(source.file)] || 'application/octet-stream',
+            undefined,
+            {
+              'Content-Security-Policy':
+                "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
+              'Cross-Origin-Resource-Policy': 'same-origin',
+              'Referrer-Policy': 'no-referrer',
+            }
+          );
+        } else throw new AttachmentError('不明な添付操作です。');
+      } catch (error) {
+        sendJson(res, error instanceof AttachmentError ? error.status : 500, {
+          error:
+            error instanceof AttachmentError ? error.message : '添付ファイルの取得に失敗しました。',
+        });
+      }
+      return;
+    }
+
     if (url.startsWith('/api/workspace-file') && (req.method === 'GET' || req.method === 'HEAD')) {
       let requestedFile;
       try {
@@ -2920,7 +3257,7 @@ export function startWebChat(options: WebChatOptions): void {
           // 安全網: contextKey と active が紐付いていることを保証
           ensureSession(ctxKey, { platform: 'web' });
           const sessionId = getSession(ctxKey);
-          const project = entry.projectId ? webProjects.get(entry.projectId) : undefined;
+          const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
           const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
           const backendDefault = projectBackendDefault(project);
           const resolvedBackend = options.resolver?.resolve(ctxKey, backendDefault);
@@ -3110,6 +3447,8 @@ export function startWebChat(options: WebChatOptions): void {
                 defaultBackend: backendDefault?.backend,
                 defaultModel: backendDefault?.model,
                 defaultEffort: backendDefault?.effort,
+                defaultLocalLlmMode: backendDefault?.localLlmMode,
+                defaultLocalLlmReasoningEffort: backendDefault?.localLlmReasoningEffort,
                 workdir: sessionWorkspace.path,
               },
               onTitle: (title) => {
@@ -3173,6 +3512,8 @@ export function startWebChat(options: WebChatOptions): void {
                 defaultBackend: backendDefault?.backend,
                 defaultModel: backendDefault?.model,
                 defaultEffort: backendDefault?.effort,
+                defaultLocalLlmMode: backendDefault?.localLlmMode,
+                defaultLocalLlmReasoningEffort: backendDefault?.localLlmReasoningEffort,
                 workdir: sessionWorkspace.path,
                 skipPermissions: body.skipPermissions === true ? true : undefined,
               }

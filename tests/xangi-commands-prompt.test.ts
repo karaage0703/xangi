@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildXangiCommands, XANGI_COMMANDS_COMMON } from '../src/prompts/xangi-commands.js';
 
@@ -34,6 +35,11 @@ describe('buildXangiCommands', () => {
   it('複数工程だけ進捗カードを使うよう案内する', () => {
     expect(XANGI_COMMANDS_COMMON).toContain('xangi tool progress_card');
     expect(XANGI_COMMANDS_COMMON).toContain('短い作業や単純な質問では使わない');
+  });
+
+  it('開発担当の作成方法をオンデマンドで確認させる', () => {
+    expect(XANGI_COMMANDS_COMMON).toContain('xangi tool help agent');
+    expect(XANGI_COMMANDS_COMMON).toContain('Agent作成から結果確認まで担当する');
   });
 
   it('指名された別xangiへの問い合わせを専用コマンドへ誘導する', () => {
@@ -119,9 +125,22 @@ describe('buildXangiCommands', () => {
     expect(buildXangiCommands('line')).not.toContain('## イベントトリガー');
   });
 
-  it('常駐promptを操作マニュアルより十分小さく保つ', () => {
-    expect(buildXangiCommands('discord').length).toBeLessThan(2_500);
-    expect(buildXangiCommands('slack').length).toBeLessThan(2_000);
-    expect(buildXangiCommands('web').length).toBeLessThan(1_600);
+  it('稼働checkoutの絶対CLIパスを各Agent操作へ注入する', () => {
+    const cli = fileURLToPath(new URL('../bin/xangi', import.meta.url)).replaceAll("'", "'\\''");
+    const prompt = buildXangiCommands('web');
+    for (const operation of ['list', 'run', 'status', 'wait']) {
+      expect(prompt).toContain(`'${cli}' agent ${operation}`);
+    }
+  });
+
+  it('設置先のパス長を除いた常駐promptを操作マニュアルより十分小さく保つ', () => {
+    // The installation path is repeated in Agent commands. Its length is not
+    // instruction growth and differs across CI runners and developer worktrees.
+    const cli = fileURLToPath(new URL('../bin/xangi', import.meta.url)).replaceAll("'", "'\\''");
+    const instructionLength = (platform: 'discord' | 'slack' | 'web') =>
+      buildXangiCommands(platform).replaceAll(`'${cli}'`, "'<xangi-cli>'").length;
+    expect(instructionLength('discord')).toBeLessThan(2_500);
+    expect(instructionLength('slack')).toBeLessThan(2_000);
+    expect(instructionLength('web')).toBeLessThan(1_600);
   });
 });

@@ -1,0 +1,108 @@
+.document-attachment {
+  border: 1px solid var(--border, #8886);
+  border-radius: 8px;
+  margin: 12px 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.document-attachment > header,
+.document-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid #8884;
+}
+.document-attachment strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.document-actions,
+.document-pages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.document-attachment button,
+.document-attachment a {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+}
+.document-content {
+  padding: 12px;
+  overflow: auto;
+  max-height: 70dvh;
+  min-width: 0;
+}
+.document-text {
+  overflow-wrap: anywhere;
+}
+.document-text pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.document-text table {
+  display: block;
+  overflow: auto;
+}
+.document-page {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 12px auto;
+  background: white;
+}
+.document-pages input {
+  width: 5em;
+  min-height: 40px;
+}
+.document-content iframe {
+  width: 100%;
+  height: 65dvh;
+  border: 0;
+  background: white;
+}
+.document-content audio,
+.document-content video {
+  max-width: 100%;
+}
+.document-dialog {
+  padding: 0;
+  width: calc(100vw - 16px);
+  max-width: 1400px;
+  height: calc(100dvh - 16px);
+  max-height: calc(100dvh - 16px);
+  color: inherit;
+  background: var(--surface, Canvas);
+  border: 1px solid #8886;
+}
+.document-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.document-dialog::backdrop {
+  background: #0008;
+}
+.document-dialog > header {
+  flex-shrink: 0;
+  padding-top: max(12px, env(safe-area-inset-top));
+}
+.document-dialog .document-content {
+  flex: 1;
+  max-height: none;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+.document-image-scroll {
+  overflow: auto;
+  max-width: 100%;
+}
+.document-pages select {
+  min-height: 40px;
+  max-width: 160px;
+}

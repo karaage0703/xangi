@@ -1,3 +1,4 @@
+import { executeProjectAgentCommand } from './project-agent-command.js';
 /**
  * xangi Tool Server — Claude Code向けHTTPエンドポイント
  *
@@ -159,6 +160,8 @@ async function executeCommand(
     );
   } else if (command === 'web_status') {
     return webStatusCommand();
+  } else if (command === 'agent') {
+    return executeProjectAgentCommand(flags, context);
   } else if (command === 'progress_card') {
     return executeProgressCardCommand(flags, context);
   } else if (command.startsWith('inter_chat_')) {
@@ -172,6 +175,13 @@ async function executeCommand(
     const action = flags.action as ExtensionAction | undefined;
     if (!action || !['start', 'stop', 'restart', 'status', 'doctor'].includes(action)) {
       throw new ValidationError('extension_runtime requires a lifecycle action');
+    }
+    const all = flags.all === 'true';
+    if (flags.id && all) {
+      throw new ValidationError('extension_runtime accepts either --id or --all, not both');
+    }
+    if (['start', 'stop', 'restart'].includes(action) && !flags.id && !all) {
+      throw new ValidationError(`extension_runtime ${action} requires --id or explicit --all`);
     }
     const linked = await listExtensions();
     const selected = flags.id ? linked.filter((item) => item.id === flags.id) : linked;

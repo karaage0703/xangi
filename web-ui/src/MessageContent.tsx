@@ -1,3 +1,4 @@
+import { DocumentAttachment } from './DocumentAttachment';
 import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react';
 import { artifactPreviewUrl, workspaceFileUrl } from './api';
 
@@ -23,12 +24,12 @@ async function copyText(value: string): Promise<void> {
 
 const MarkdownBody = lazy(() => import('./MarkdownBody'));
 
-function HtmlArtifact({ path }: { path: string }) {
+export function HtmlArtifact({ path, workspaceId }: { path: string; workspaceId?: string }) {
   const [fullscreen, setFullscreen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
-  const previewUrl = artifactPreviewUrl(path);
-  const downloadUrl = workspaceFileUrl(path);
+  const previewUrl = artifactPreviewUrl(path, workspaceId);
+  const downloadUrl = workspaceFileUrl(path, workspaceId);
   const name = path.split('/').pop() || path;
 
   useEffect(() => {
@@ -96,7 +97,8 @@ function HtmlArtifact({ path }: { path: string }) {
   );
 }
 
-function Media({ path }: { path: string }) {
+function Media({ path, sessionId }: { path: string; sessionId?: string }) {
+  if (sessionId) return <DocumentAttachment path={path} sessionId={sessionId} />;
   const url = workspaceFileUrl(path);
   const name = path.split('/').pop() || path;
   if (HTML_EXTENSIONS.test(path)) {
@@ -200,16 +202,18 @@ export function splitMedia(content: string): Array<{ kind: 'text' | 'media'; val
 export const MessageContent = memo(function MessageContent({
   content,
   markdown,
+  sessionId,
 }: {
   content: string;
   markdown: boolean;
+  sessionId?: string;
 }) {
   if (!markdown) return <div className="plain-message">{content}</div>;
   return (
     <div className="markdown-message">
       {splitMedia(content).map((part, index) =>
         part.kind === 'media' ? (
-          <Media key={`media-${index}`} path={part.value} />
+          <Media key={`media-${index}`} path={part.value} sessionId={sessionId} />
         ) : (
           <Suspense
             key={`text-${index}`}

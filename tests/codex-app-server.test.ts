@@ -169,6 +169,15 @@ describe('persistent Codex transport', () => {
     expect(turns[0].params.effort).toBe('medium');
     expect(turns[0].params.sandboxPolicy.type).toBe('workspaceWrite');
   });
+  it('forwards completed file changes and ignores rejected edits', async () => {
+    const r = runner(); await r.warm(); server.autoComplete = false;
+    const onFileChanges = vi.fn(); const pending = r.runStream('edit',{onFileChanges},opts);
+    await vi.waitFor(()=>expect(server.turns).toBe(1));
+    for (const status of ['inProgress','failed','completed']) server.send({method:'item/completed',params:{threadId:server.thread,turnId:'turn-1',item:{id:status,type:'fileChange',status,changes:[{path:'a',kind:{type:'update',move_path:null},diff:'@@ -1 +1 @@\n-old\n+new'}]}}});
+    server.complete(); await pending;
+    expect(onFileChanges).toHaveBeenCalledTimes(1);
+    expect(onFileChanges).toHaveBeenCalledWith([{path:'a',operation:'modified',diff:'@@ -1 +1 @@\n-old\n+new'}]);
+  });
   it('resumes existing thread once and forwards image attachment prompt', async () => {
     const r = runner();
     await r.run('attached image /tmp/photo.png', { ...opts, sessionId: 'thread-a' });
