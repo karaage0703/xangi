@@ -1,4 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   access,
   chmod,
@@ -104,7 +105,7 @@ export interface DetectBackendsOptions {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   canExecute?: (path: string) => Promise<boolean>;
-  version?: (command: string) => string | undefined;
+  version?: (command: string) => string | undefined | Promise<string | undefined>;
   authStatus?: (command: string, args: readonly string[]) => boolean;
 }
 
@@ -133,14 +134,17 @@ export async function detectGuidedBackends(
     });
   const version =
     options.version ??
-    ((command: string) => {
-      const result = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 5_000 });
-      if (result.status !== 0) return undefined;
-      return (
-        String(result.stdout || result.stderr || '')
-          .trim()
-          .split('\n')[0] || undefined
-      );
+    (async (command: string) => {
+      try {
+        const result = await promisify(execFile)(command, ['--version'], {
+          encoding: 'utf8',
+          timeout: 5_000,
+          maxBuffer: 256 * 1024,
+        });
+        return (result.stdout || result.stderr || '').trim().split('\n')[0] || undefined;
+      } catch {
+        return undefined;
+      }
     });
   const authStatus =
     options.authStatus ??
@@ -154,7 +158,7 @@ export async function detectGuidedBackends(
       if (!isAbsolute(directory)) continue;
       const executable = join(directory, backend.command);
       if (!(await canExecute(executable))) continue;
-      const detectedVersion = version(executable);
+      const detectedVersion = await version(executable);
       if (!detectedVersion) continue;
       detected.push({
         ...backend,

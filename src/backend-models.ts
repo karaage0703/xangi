@@ -1,3 +1,4 @@
+import { LOCAL_LLM_REASONING_EFFORTS } from './local-llm/reasoning-effort.js';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -25,6 +26,9 @@ export interface BackendModel {
   description?: string;
   isDefault?: boolean;
   supportedEfforts?: string[];
+  defaultEffort?: string;
+  reasoningMandatory?: boolean;
+  reasoningDefaultEnabled?: boolean;
 }
 
 export interface BackendModelDiscovery {
@@ -452,6 +456,54 @@ export async function discoverBackendModels(
         message: '拡張バックエンドはモデル一覧を提供していません',
       };
     }
+    if (backend === 'openrouter') {
+      const response = await (options.fetchFn ?? fetch)('https://openrouter.ai/api/v1/models', {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`OpenRouter models HTTP ${response.status}`);
+      const data = (await response.json()) as {
+        data: Array<{
+          id: string;
+          name?: string;
+          supported_parameters?: string[];
+          reasoning?: {
+            supported_efforts?: string[] | null;
+            default_effort?: string;
+            mandatory?: boolean;
+            default_enabled?: boolean;
+          };
+        }>;
+      };
+      const models = data.data
+        .filter(
+          (m) =>
+            m.supported_parameters?.includes('tools') &&
+            !m.id.startsWith('openrouter/') &&
+            !m.id.endsWith(':batch')
+        )
+        .map((m) => ({
+          id: m.id,
+          displayName: m.name,
+          // null means all gateway values; absence means no effort selector.
+          supportedEfforts: LOCAL_LLM_REASONING_EFFORTS.filter(
+            (effort) =>
+              (m.reasoning?.supported_efforts === null ||
+                m.reasoning?.supported_efforts?.includes(effort)) &&
+              !(m.reasoning?.mandatory && effort === 'none')
+          ),
+          defaultEffort: m.reasoning?.default_effort,
+          reasoningMandatory: m.reasoning?.mandatory,
+          reasoningDefaultEnabled: m.reasoning?.default_enabled,
+        }));
+      return {
+        backend,
+        source: 'OpenRouter /api/v1/models',
+        status: 'available',
+        models,
+        message:
+          'ツール対応モデル。選択したデータ利用条件に合う接続先がないモデルは実行時にエラーになります。',
+      };
+    }
     if (backend === 'local-llm') {
       return discoverLocalLlmModels(options.fetchFn ?? fetch);
     }
@@ -548,17 +600,19 @@ export async function discoverBackendModels(
     return {
       backend,
       source:
-        backend === 'codex'
-          ? 'codex app-server model/list'
-          : backend === 'cursor'
-            ? 'cursor-agent models'
-            : backend === 'grok'
-              ? 'grok models'
-              : backend === 'opencode'
-                ? 'opencode models --verbose'
-                : backend === 'github-copilot'
-                  ? 'GitHub Copilot SDK listModels'
-                  : antigravitySource,
+        backend === 'openrouter'
+          ? 'OpenRouter /api/v1/models'
+          : backend === 'codex'
+            ? 'codex app-server model/list'
+            : backend === 'cursor'
+              ? 'cursor-agent models'
+              : backend === 'grok'
+                ? 'grok models'
+                : backend === 'opencode'
+                  ? 'opencode models --verbose'
+                  : backend === 'github-copilot'
+                    ? 'GitHub Copilot SDK listModels'
+                    : antigravitySource,
       status: 'unavailable',
       models: [],
       message: error instanceof Error ? error.message : String(error),

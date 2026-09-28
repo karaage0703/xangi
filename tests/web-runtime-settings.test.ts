@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { parse } from 'dotenv';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRunner } from '../src/agent-runner.js';
-import type { BackendResolver } from '../src/backend-resolver.js';
+import { BackendResolver } from '../src/backend-resolver.js';
 import type { AgentBackend, Config, EffortLevel } from '../src/config.js';
 import { clearSettingsCache, initSettings, loadSettings } from '../src/settings.js';
 import {
@@ -132,7 +133,12 @@ describe('Web runtime settings', () => {
     resolver = {
       getDefault: () => ({ backend: 'codex' }),
       getChannelOverride: () => ({ backend: 'claude-code', localLlmMode: 'chat' }),
-      resolve: () => ({ backend: 'claude-code', model: 'sonnet', effort: 'high', localLlmMode: 'chat' }),
+      resolve: () => ({
+        backend: 'claude-code',
+        model: 'sonnet',
+        effort: 'high',
+        localLlmMode: 'chat',
+      }),
     } as unknown as BackendResolver;
     await updateWebRuntimeSetting(
       { name: 'autoreply', action: 'set', value: 'off', platform: 'discord', channelId: '123' },
@@ -149,5 +155,66 @@ describe('Web runtime settings', () => {
       notify: { value: 'inherit', effective: 'message' },
       threadMode: { value: 'inherit', effective: 'off' },
     });
+  });
+  it('persists channel model, reasoning and mode through the Web API dispatcher and resolver reload', async () => {
+    const old = process.env.CHANNEL_OVERRIDES;
+    delete process.env.CHANNEL_OVERRIDES;
+    try {
+      config.agent = {
+        ...config.agent,
+        config: {},
+        backend: 'codex',
+        allowedBackends: ['codex', 'openrouter'],
+      };
+      const real = new BackendResolver(config);
+      const deps = {
+        config,
+        resolver: real,
+        agentRunner: {} as AgentRunner,
+        modelDiscovery: async () => ({
+          backend: 'openrouter' as const,
+          source: 'test',
+          status: 'available' as const,
+          models: [{ id: 'vendor/model', supportedEfforts: ['low', 'high'] }],
+        }),
+      };
+      const input = {
+        name: 'backend',
+        action: 'set',
+        scope: 'channel',
+        channelId: 'C1',
+        platform: 'slack',
+        backend: 'openrouter',
+        model: 'vendor/model',
+        localLlmReasoningEffort: 'high',
+        localLlmMode: 'chat',
+      };
+      await updateWebRuntimeSetting(input, deps);
+      process.env.CHANNEL_OVERRIDES = parse(
+        readFileSync(process.env.XANGI_ENV_PATH!)
+      ).CHANNEL_OVERRIDES;
+      const reloaded = new BackendResolver(config);
+      expect(reloaded.resolve('C1')).toMatchObject({
+        backend: 'openrouter',
+        model: 'vendor/model',
+        localLlmReasoningEffort: 'high',
+        localLlmMode: 'chat',
+      });
+      expect(reloaded.resolve('C2').backend).toBe('codex');
+      expect(
+        webChannelRuntimeSettingsSnapshot('slack', 'C1', config, reloaded).backend
+      ).toMatchObject({ model: 'vendor/model', localLlmReasoningEffort: 'high' });
+      await expect(
+        updateWebRuntimeSetting({ ...input, localLlmReasoningEffort: 'medium' }, deps)
+      ).rejects.toThrow();
+      expect(real.resolve('C1').localLlmReasoningEffort).toBe('high');
+      await updateWebRuntimeSetting({ ...input, action: 'reset' }, deps);
+      delete process.env.CHANNEL_OVERRIDES;
+      expect(parse(readFileSync(process.env.XANGI_ENV_PATH!)).CHANNEL_OVERRIDES).toBeUndefined();
+      expect(new BackendResolver(config).resolve('C1').backend).toBe('codex');
+    } finally {
+      if (old === undefined) delete process.env.CHANNEL_OVERRIDES;
+      else process.env.CHANNEL_OVERRIDES = old;
+    }
   });
 });

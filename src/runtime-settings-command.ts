@@ -22,6 +22,10 @@ import { getBackendDisplayName } from './agent-runner.js';
 import { updateEnvKeyValue } from './env-persist.js';
 import { ValidationError } from './errors.js';
 import type { ChatPlatform } from './prompts/index.js';
+import {
+  LOCAL_LLM_REASONING_EFFORTS,
+  type LocalLlmReasoningEffort,
+} from './local-llm/reasoning-effort.js';
 import { discoverBackendModels } from './backend-models.js';
 
 export type RuntimeSettingName =
@@ -40,6 +44,8 @@ export interface RuntimeSettingsRequest {
   backend?: string;
   model?: string;
   effort?: string;
+  localLlmMode?: string;
+  localLlmReasoningEffort?: string;
   channelId?: string;
   parentChannelId?: string;
   appSessionId?: string;
@@ -232,8 +238,11 @@ async function executeBackend(
     );
   }
   let selectedModel;
-  if ((request.model || request.effort) && discover) {
-    const discovery = await discover(backend);
+  if (
+    (request.model || request.effort || request.localLlmReasoningEffort) &&
+    (discover || backend === 'openrouter')
+  ) {
+    const discovery = await (discover ?? discoverBackendModels)(backend);
     if (
       request.model &&
       discovery.status === 'available' &&
@@ -268,7 +277,45 @@ async function executeBackend(
       `runtime_settings backend: ${backend} requires an explicit model for effort`
     );
   }
-  resolver.setChannelOverride(channelId!, { backend, model: request.model, effort });
+  const localBackend = backend === 'openrouter' || backend === 'local-llm';
+  const mode = request.localLlmMode || undefined;
+  const reasoning = request.localLlmReasoningEffort || undefined;
+  if ((mode || reasoning) && !localBackend) {
+    throw new ValidationError('動作モード・推論強度はLocal LLMまたはOpenRouterで指定してください');
+  }
+  if (mode && mode !== 'chat' && mode !== 'agent') {
+    throw new ValidationError('動作モードはchatまたはagentを指定してください');
+  }
+  if (reasoning && !LOCAL_LLM_REASONING_EFFORTS.includes(reasoning as LocalLlmReasoningEffort)) {
+    throw new ValidationError('推論強度が不正です');
+  }
+  if (
+    backend === 'openrouter' &&
+    reasoning &&
+    !selectedModel?.supportedEfforts?.includes(reasoning)
+  ) {
+    throw new ValidationError(
+      'モデルの推論強度を確認できないか非対応の値です。モデルを再取得するか既定設定を選んでください'
+    );
+  }
+  const previous = localBackend ? resolver.getChannelOverride(channelId!) : undefined;
+  resolver.setChannelOverride(channelId!, {
+    backend,
+    model: request.model || undefined,
+    effort,
+    localLlmMode: localBackend
+      ? request.localLlmMode === undefined
+        ? previous?.localLlmMode
+        : (mode as LocalLlmMode | undefined)
+      : undefined,
+    localLlmReasoningEffort: localBackend
+      ? request.localLlmReasoningEffort === undefined &&
+        previous?.backend === backend &&
+        previous?.model === request.model
+        ? previous?.localLlmReasoningEffort
+        : (reasoning as LocalLlmReasoningEffort | undefined)
+      : undefined,
+  });
   return [
     'バックエンド設定を保存しました。新しいセッションを開始します。次のturnから適用されます。',
     `- backend: ${getBackendDisplayName(backend)}`,

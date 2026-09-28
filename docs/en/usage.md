@@ -1559,7 +1559,11 @@ Loading Slack channel names requires the `channels:read` (public) and `groups:re
 
 Settings joins Chat, Files, Schedules, Monitor, and Extensions in the shared navigation. On mobile, it appears in the More sheet.
 
+Channel backend, model, Effort, and operation mode are saved together and apply from the next turn. OpenRouter Effort choices follow the selected model; unknown or unsupported explicit values are rejected. Changing the model resets Effort to its default. Saving the inherit option clears the channel backend overrides.
+
 Self-contained HTML attached to a response is previewed inline in a sandbox that blocks network and form submissions, while the original file remains available to save.
+
+Conversation attachments open their previews by default. Images and audio players appear without pressing a preview button; previews can still be collapsed. Audio and video do not autoplay.
 
 While an attachment is transferring, desktop and mobile show its name, position in a multi-file selection, and upload percentage above the composer. Audio and video use byte-range delivery so mobile browsers can load metadata, seek, and play.
 
@@ -1998,3 +2002,22 @@ Attachments provide Preview and Download original actions. Text, Markdown and CS
 Install Poppler (`pdfinfo` / `pdftoppm`) on the server for PDF and LibreOffice for Office conversion. Documents are not sent to an external viewer service. Missing converters, damaged or password-protected files produce explicit errors while retaining the original download. Images, audio, video and HTML are also supported.
 
 Previews accept files up to 100MB; text previews show the first 2MB with a truncation notice. Downloads retain the complete original without that preview limit. Explicit session attachments in temporary storage are accepted. Viewed copies and conversion results are stored under `DATA_DIR/document-previews`; this does not automatically archive unviewed temporary files. Save durable outputs in the workspace. Unneeded preview caches may be removed while the service is stopped.
+
+### Multiple model agents through OpenRouter
+
+The `openrouter` backend is independent of `local-llm`: keep the existing Qwen URL, key and generation settings. Create one agent per model, selecting OpenRouter and a concrete model ID in each agent form. A model is required; automatic routers are not supported. Agent and Chat modes control tool use.
+
+1. Review the account-level privacy options: keep **OpenRouter Use of Inputs/Outputs OFF** in [Privacy](https://openrouter.ai/settings/privacy), and **Private Input & Output Logging OFF** in [Observability](https://openrouter.ai/settings/observability).
+2. Save the **OpenRouter API key** in Settings → Connections (or `OPENROUTER_API_KEY` in `.env`). Secret values are not returned by the settings API.
+3. Restart xangi to apply the settings. Add `openrouter` if `ALLOWED_BACKENDS` is explicitly configured. No change to the default backend or `LOCAL_LLM_*` is required.
+4. Create separate agents with different models, instructions and workspaces; select them for conversations or use the existing agent delegation feature.
+
+Settings → OpenRouter Startup offers independent no-training (`OPENROUTER_NO_TRAINING`) and ZDR (`OPENROUTER_ZDR`) switches. Both default to ON; only an explicit `false` disables an environment setting. Unset, empty or invalid values remain safe. Restart to apply changes.
+
+Every inference request, including tool roundtrips, final answers and compaction, sends `provider.data_collection="deny"` when no-training is ON, or `"allow"` when OFF; `provider.zdr` follows the ZDR switch. `provider.require_parameters=true` is always enforced. Missing eligible endpoints fail without automatically relaxing the selected restrictions or switching models. Disabling a request-level restriction does not override stricter account or guardrail policies. Account-level OpenRouter data use is separate from downstream provider routing. xangi still stores local conversation history.
+
+For Discord `/backend`, select `openrouter` as the backend and type `gemini` or `google/` into the model field to filter candidates. An empty query shows only the first 25 entries, not every available model.
+
+The agent editor filters reasoning effort using each model’s `reasoning.supported_efforts`, shows its published default, and excludes `none` when reasoning is mandatory. Missing metadata leaves only the inherited default; discovery failure does not enable all values. Changing models clears an incompatible selection. Saving an explicit effort validates it against current model metadata. Unspecified agent effort inherits `OPENROUTER_REASONING_EFFORT`; if that is also unset, no effort is sent and the provider default applies. The generic CLI `--effort` is separate and is not supported for OpenRouter.
+
+Discovery lists tools-capable models from the public API; listing does not guarantee current ZDR endpoint availability or verified xangi compatibility. Keep API keys out of chat. See [data collection](https://openrouter.ai/docs/guides/privacy/data-collection) and [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection).

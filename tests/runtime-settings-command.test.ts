@@ -409,4 +409,58 @@ describe('runtime_settings', () => {
       )
     ).rejects.toThrow('this command is disabled');
   });
+  it('saves model-specific OpenRouter effort atomically and rejects unsupported or unknown values', async () => {
+    vi.spyOn(resolver, 'isBackendSelectable').mockReturnValue(true);
+    const modelDiscovery = vi.fn(async () => ({
+      status: 'available' as const,
+      backend: 'openrouter' as const,
+      models: [{ id: 'vendor/model', supportedEfforts: ['low', 'high'] }],
+    }));
+    const request = {
+      name: 'backend',
+      action: 'set',
+      scope: 'channel',
+      channelId: 'C1',
+      backend: 'openrouter',
+      model: 'vendor/model',
+      localLlmMode: 'agent',
+      localLlmReasoningEffort: 'high',
+    };
+    await executeRuntimeSettingsCommand(request, { config, resolver, modelDiscovery });
+    expect(overrides.get('C1')).toMatchObject({
+      backend: 'openrouter',
+      model: 'vendor/model',
+      localLlmMode: 'agent',
+      localLlmReasoningEffort: 'high',
+    });
+    for (const value of ['none', 'medium', 'invalid']) {
+      await expect(
+        executeRuntimeSettingsCommand(
+          { ...request, localLlmReasoningEffort: value },
+          { config, resolver, modelDiscovery }
+        )
+      ).rejects.toThrow();
+      expect(overrides.get('C1')?.localLlmReasoningEffort).toBe('high');
+    }
+    modelDiscovery.mockResolvedValueOnce({
+      status: 'unavailable' as 'available',
+      source: 'test',
+      backend: 'openrouter',
+      models: [],
+    });
+    await expect(
+      executeRuntimeSettingsCommand(request, { config, resolver, modelDiscovery })
+    ).rejects.toThrow();
+    await executeRuntimeSettingsCommand(
+      { ...request, localLlmReasoningEffort: '', localLlmMode: '' },
+      { config, resolver, modelDiscovery }
+    );
+    expect(overrides.get('C1')?.localLlmReasoningEffort).toBeUndefined();
+    expect(overrides.get('C1')?.localLlmMode).toBeUndefined();
+    await executeRuntimeSettingsCommand(
+      { ...request, action: 'reset' },
+      { config, resolver, modelDiscovery }
+    );
+    expect(overrides.has('C1')).toBe(false);
+  });
 });

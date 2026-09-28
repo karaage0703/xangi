@@ -1,3 +1,4 @@
+import { openRouterRunnerEnv } from '../openrouter.js';
 import { ProviderModels } from '../provider-model.js';
 /**
  * ローカルLLMバックエンド — xangi本体に統合
@@ -957,24 +958,22 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    */
   private readonly stopHooks: ReloadingStopHookRunner | null;
 
-  constructor(config: AgentConfig & { platform?: ChatPlatform }) {
+  private readonly provider: 'local-llm' | 'openrouter';
+
+  constructor(config: AgentConfig & { platform?: ChatPlatform; provider?: 'openrouter' }) {
     super();
     this.platform = config.platform;
-    const baseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
-    const model = config.model || process.env.LOCAL_LLM_MODEL || '';
-    const apiKey = process.env.LOCAL_LLM_API_KEY || '';
-    const thinking = process.env.LOCAL_LLM_THINKING === 'true';
-    const maxTokens = process.env.LOCAL_LLM_MAX_TOKENS
-      ? parseInt(process.env.LOCAL_LLM_MAX_TOKENS, 10)
-      : 8192;
-    const numCtx = process.env.LOCAL_LLM_NUM_CTX
-      ? parseInt(process.env.LOCAL_LLM_NUM_CTX, 10)
-      : undefined;
+    this.provider = config.provider ?? 'local-llm';
+    const env = config.provider === 'openrouter' ? openRouterRunnerEnv(process.env) : process.env;
+    const baseUrl = (env.LOCAL_LLM_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
+    const model = config.model || env.LOCAL_LLM_MODEL || '';
+    const apiKey = env.LOCAL_LLM_API_KEY || '';
+    const thinking = env.LOCAL_LLM_THINKING === 'true';
+    const maxTokens = env.LOCAL_LLM_MAX_TOKENS ? parseInt(env.LOCAL_LLM_MAX_TOKENS, 10) : 8192;
+    const numCtx = env.LOCAL_LLM_NUM_CTX ? parseInt(env.LOCAL_LLM_NUM_CTX, 10) : undefined;
     const temperature =
-      process.env.LOCAL_LLM_TEMPERATURE !== undefined
-        ? parseFloat(process.env.LOCAL_LLM_TEMPERATURE)
-        : undefined;
-    const reasoningEffortRaw = process.env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
+      env.LOCAL_LLM_TEMPERATURE !== undefined ? parseFloat(env.LOCAL_LLM_TEMPERATURE) : undefined;
+    const reasoningEffortRaw = env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
     const reasoningEffort = LOCAL_LLM_REASONING_EFFORTS.includes(
       reasoningEffortRaw as LocalLlmReasoningEffort
     )
@@ -988,22 +987,18 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     }
 
     // 個別フラグ（環境変数で制御、未設定時はLOCAL_LLM_MODEから推定）
-    const modeEnv = (process.env.LOCAL_LLM_MODE || '').toLowerCase();
+    const modeEnv = (env.LOCAL_LLM_MODE || '').toLowerCase();
     const defaults = MODE_DEFAULTS[modeEnv as LocalLlmMode] || MODE_DEFAULTS.agent;
     this.startupMode =
       modeEnv === 'agent' || modeEnv === 'chat' ? (modeEnv as LocalLlmMode) : 'agent';
 
     this.enableTools =
-      process.env.LOCAL_LLM_TOOLS !== undefined
-        ? process.env.LOCAL_LLM_TOOLS !== 'false'
-        : defaults.tools;
+      env.LOCAL_LLM_TOOLS !== undefined ? env.LOCAL_LLM_TOOLS !== 'false' : defaults.tools;
     this.enableSkills =
-      process.env.LOCAL_LLM_SKILLS !== undefined
-        ? process.env.LOCAL_LLM_SKILLS !== 'false'
-        : defaults.skills;
+      env.LOCAL_LLM_SKILLS !== undefined ? env.LOCAL_LLM_SKILLS !== 'false' : defaults.skills;
     this.enableXangiCommands =
-      process.env.LOCAL_LLM_XANGI_COMMANDS !== undefined
-        ? process.env.LOCAL_LLM_XANGI_COMMANDS !== 'false'
+      env.LOCAL_LLM_XANGI_COMMANDS !== undefined
+        ? env.LOCAL_LLM_XANGI_COMMANDS !== 'false'
         : defaults.xangiCommands;
     this.llm = new LLMClient(
       baseUrl,
@@ -1013,7 +1008,8 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       maxTokens,
       numCtx,
       temperature,
-      reasoningEffort
+      reasoningEffort,
+      config.provider
     );
     this.workdir = config.workdir || process.cwd();
 
@@ -1021,14 +1017,14 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.stopHooks = createReloadingStopHookRunner(this.workdir);
 
     // Context budget を env から計算（明示優先、未指定なら NUM_CTX から逆算）
-    this.contextBudget = loadContextBudget(process.env);
-    this.agentStepLimit = loadAgentStepLimit(process.env);
+    this.contextBudget = loadContextBudget(env);
+    this.agentStepLimit = loadAgentStepLimit(env);
 
     // tool_search 機能の制御
-    this.toolSearchEnabled = process.env.LOCAL_LLM_TOOL_SEARCH_ENABLED !== 'false';
+    this.toolSearchEnabled = env.LOCAL_LLM_TOOL_SEARCH_ENABLED !== 'false';
     if (this.toolSearchEnabled) {
       // 常駐 tool 名（env LOCAL_LLM_ALWAYS_LOADED_TOOLS、未指定なら builtin core + tool_search）
-      this.defaultActiveToolNames = loadAlwaysLoadedToolNames(process.env);
+      this.defaultActiveToolNames = loadAlwaysLoadedToolNames(env);
     } else {
       // 無効時は全 tool を常駐扱い（従来挙動）
       this.defaultActiveToolNames = new Set(getAllTools().map((t) => t.name));
@@ -1129,7 +1125,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     return {
       appSessionId,
       platform: this.platform,
-      backend: 'local-llm',
+      backend: this.provider,
       model: this.modelName,
       channelId,
       turnIndex: this.turnIndexByAppSession.get(appSessionId),
@@ -1801,7 +1797,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         throw err;
       }
       this.addUsage(channelId, response);
-      session.messages.push({ role: 'assistant', content: response.content });
+      session.messages.push({
+        role: 'assistant',
+        content: response.content,
+        reasoningDetails: response.reasoningDetails,
+      });
 
       // 非ストリーミング経路でも drift strip を適用する（executeStreamLoop と対称）。
       // Local LLMでは擬似テキスト (`<|channel>thought<channel|>` 等) が漏れうるため。
@@ -1841,7 +1841,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         response.toolCalls.length === 0
       ) {
         finalContent = response.content;
-        session.messages.push({ role: 'assistant', content: response.content });
+        session.messages.push({
+          role: 'assistant',
+          content: response.content,
+          reasoningDetails: response.reasoningDetails,
+        });
         break;
       }
 
@@ -1850,6 +1854,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         role: 'assistant',
         content: response.content ?? '',
         toolCalls: response.toolCalls,
+        reasoningDetails: response.reasoningDetails,
       });
 
       await this.executeToolCalls(
@@ -2048,6 +2053,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           role: 'assistant',
           content: response.content ?? '',
           toolCalls: response.toolCalls,
+          reasoningDetails: response.reasoningDetails,
         });
 
         await this.executeToolCalls(

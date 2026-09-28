@@ -65,6 +65,46 @@ describe('guided setup backend preflight', () => {
     expect(buildGuidedLaunchArgs(backend, 'setup prompt')).toEqual(['-i', 'setup prompt']);
   });
 
+  it('keeps the event loop responsive while a real CLI version probe is running', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-async-version-'));
+    roots.push(root);
+    const command = join(root, 'codex');
+    const marker = join(root, 'responsive');
+    await writeFile(
+      command,
+      [
+        '#!' + process.execPath,
+        "const fs = require('node:fs');",
+        // A synchronous probe prevents the parent timer from creating this marker.
+        'setTimeout(() => { console.log(fs.existsSync(' +
+          JSON.stringify(marker) +
+          ') ? "codex responsive" : "codex blocked"); }, 500);',
+      ].join('\n')
+    );
+    await chmod(command, 0o755);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const detected = await detectGuidedBackends({
+        pathEnv: root,
+        homeDir: root,
+        env: {},
+        canExecute: async (path) => {
+          if (path !== command) return false;
+          timer = setTimeout(() => {
+            void writeFile(marker, 'ready');
+          }, 50);
+          return true;
+        },
+        authStatus: () => true,
+      });
+      expect(detected).toEqual([
+        expect.objectContaining({ id: 'codex', version: 'codex responsive' }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it('detects only executable supported agent CLIs and records versions', async () => {
     const executable = new Set([
       '/agents/codex',

@@ -31,6 +31,25 @@ describe('Web startup settings', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('defaults both OpenRouter protections ON and saves each option independently', () => {
+    const settings = () => webStartupSettingsSnapshot().flatMap((g) => g.settings);
+    for (const key of ['OPENROUTER_NO_TRAINING', 'OPENROUTER_ZDR']) {
+      expect(settings().find((f) => f.key === key)).toMatchObject({
+        defaultValue: 'true',
+        value: 'true',
+        applyMode: 'restart',
+      });
+    }
+    updateWebStartupSetting({ key: 'OPENROUTER_ZDR', value: 'false' });
+    expect(settings().find((f) => f.key === 'OPENROUTER_NO_TRAINING')?.value).toBe('true');
+    expect(settings().find((f) => f.key === 'OPENROUTER_ZDR')?.value).toBe('false');
+    expect(() =>
+      updateWebStartupSetting({ key: 'OPENROUTER_NO_TRAINING', value: 'oops' })
+    ).toThrow();
+    updateWebStartupSetting({ key: 'OPENROUTER_NO_TRAINING', value: 'false' });
+    expect(settings().find((f) => f.key === 'OPENROUTER_NO_TRAINING')?.value).toBe('false');
+  });
+
   it('returns only allowlisted non-secret settings with restart timing', () => {
     const settings = webStartupSettingsSnapshot().flatMap((group) => group.settings);
     expect(settings.find((setting) => setting.key === 'DISCORD_STREAMING')).toMatchObject({
@@ -82,5 +101,27 @@ describe('Web startup settings', () => {
     await expect(
       updateWebConnectionSetting({ key: 'ANTHROPIC_API_KEY', value: 'line1\nline2' })
     ).rejects.toThrow('制御文字');
+  });
+  it('saves an OpenRouter key write-only without an account confirmation setting', async () => {
+    await updateWebConnectionSetting({
+      key: 'OPENROUTER_API_KEY',
+      value: 'openrouter-test-secret',
+    });
+    const snapshot = await webConnectionSettingsSnapshot(authenticationSnapshot);
+    expect(
+      snapshot.groups.flatMap((g) => g.fields).find((f) => f.key === 'OPENROUTER_API_KEY')
+    ).toMatchObject({ configured: true, type: 'password' });
+    expect(JSON.stringify(snapshot)).not.toContain('openrouter-test-secret');
+    const setting = () =>
+      webStartupSettingsSnapshot()
+        .flatMap((g) => g.settings)
+        .find((f) => f.key === 'OPENROUTER_PRIVACY_CONFIRMED');
+    expect(setting()).toBeUndefined();
+    expect(() =>
+      updateWebStartupSetting({ key: 'OPENROUTER_PRIVACY_CONFIRMED', value: 'true' })
+    ).toThrow('変更できない');
+    expect(readFileSync(process.env.XANGI_ENV_PATH!, 'utf8')).not.toContain(
+      'openrouter-test-secret'
+    );
   });
 });

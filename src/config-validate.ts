@@ -152,6 +152,7 @@ const BUILTIN_BACKENDS = [
   'antigravity',
   'github-copilot',
   'local-llm',
+  'openrouter',
 ] as const;
 
 function validBackends(): string[] {

@@ -89,17 +89,26 @@ export function webChannelRuntimeSettingsSnapshot(
     platform === 'discord'
       ? getChannelAutoReply(settings, channelId, autoReplyDefault)
       : getSlackChannelAutoReply(settings, channelId, autoReplyDefault);
-  const localLlmDefault = process.env.LOCAL_LLM_MODE === 'chat' ? 'chat' : 'agent';
+  const localLlmDefault =
+    (resolved.backend === 'openrouter'
+      ? process.env.OPENROUTER_MODE
+      : process.env.LOCAL_LLM_MODE) === 'chat'
+      ? 'chat'
+      : 'agent';
   const notifyOverride = settings.discordCompletionNotifyChannels?.[channelId];
   const threadModeOverride = settings.discordThreadModeChannels?.[channelId];
 
   return {
     backend: {
       value: override?.backend ?? 'inherit',
+      model: override?.model,
+      effort: override?.effort,
+      localLlmReasoningEffort: override?.localLlmReasoningEffort,
       effective: {
         backend: resolved.backend,
         model: resolved.model,
         effort: resolved.effort,
+        localLlmReasoningEffort: resolved.localLlmReasoningEffort,
       },
     },
     llmMode: {
@@ -170,6 +179,11 @@ export async function updateWebRuntimeSetting(
     backend: input.backend === undefined ? undefined : String(input.backend),
     model: input.model === undefined ? undefined : String(input.model),
     effort: input.effort === undefined ? undefined : String(input.effort),
+    localLlmMode: input.localLlmMode === undefined ? undefined : String(input.localLlmMode),
+    localLlmReasoningEffort:
+      input.localLlmReasoningEffort === undefined
+        ? undefined
+        : String(input.localLlmReasoningEffort),
     channelId: input.channelId === undefined ? undefined : String(input.channelId),
     platform:
       name === 'respondtobots'

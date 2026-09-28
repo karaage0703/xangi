@@ -590,6 +590,29 @@ export function startWebChat(options: WebChatOptions): void {
     }
   };
 
+  const validateOpenRouterEffort = async (
+    backend: string,
+    model: string | undefined,
+    effort: unknown
+  ) => {
+    if (backend !== 'openrouter' || effort === undefined || effort === null || effort === '')
+      return;
+    const discovery = await (options.discoverModels ?? discoverBackendModels)('openrouter');
+    const selected = discovery.models.find((candidate) => candidate.id === model);
+    if (discovery.status !== 'available' || !selected) {
+      throw new WebProjectError(
+        'モデルの推論強度を確認できません。再取得するか既定設定を選んでください',
+        400
+      );
+    }
+    if (typeof effort !== 'string' || !selected.supportedEfforts?.includes(effort)) {
+      throw new WebProjectError(
+        `モデル ${model} の推論強度は ${selected.supportedEfforts?.join(', ') || '指定非対応'} です`,
+        400
+      );
+    }
+  };
+
   const parseProjectBackendSettings = async (body: Record<string, unknown>) => {
     const backend = body.backend ? String(body.backend) : undefined;
     const model = body.model ? String(body.model).trim() : undefined;
@@ -624,6 +647,7 @@ export function startWebChat(options: WebChatOptions): void {
       effort as EffortLevel | undefined,
       (message) => new WebProjectError(message, 400)
     );
+    await validateOpenRouterEffort(backend, model, body.localLlmReasoningEffort);
     return {
       backend: backend as AgentBackend,
       model: model || null,

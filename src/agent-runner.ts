@@ -218,6 +218,8 @@ export function createAgentRunner(
       return new AntigravityRunner({ ...config, platform: options?.platform });
     case 'github-copilot':
       return new GitHubCopilotRunner({ ...config, platform: options?.platform });
+    case 'openrouter':
+      return new LocalLlmRunner({ ...config, platform: options?.platform, provider: 'openrouter' });
     case 'local-llm':
       return new LocalLlmRunner({ ...config, platform: options?.platform });
     default:
@@ -281,6 +283,8 @@ export function getBackendDisplayName(backend: AgentBackend): string {
       return 'GitHub Copilot';
     case 'local-llm':
       return 'Local LLM';
+    case 'openrouter':
+      return 'OpenRouter';
     default:
       return resolveExtensionAgentBackend(backend)?.displayName ?? backend;
   }

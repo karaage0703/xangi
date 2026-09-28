@@ -4,6 +4,7 @@ import { getJson, getJsonWithTimeout, requestJson } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DirectoryPicker } from './DirectoryPicker';
 import { AgentSettings } from './AgentSettings';
+import { ChannelBackendSettings, type ChannelBackendSnapshot } from './ChannelBackendSettings';
 
 type ApplyMode = 'immediate' | 'next-turn';
 
@@ -107,12 +108,7 @@ interface SettingsChannelsResponse {
   message?: string;
 }
 
-interface ChannelRuntimeSettings {
-  backend: {
-    value: string;
-    effective: { backend: string; model?: string; effort?: string };
-  };
-  llmMode: { value: string; effective: string };
+interface ChannelRuntimeSettings extends ChannelBackendSnapshot {
   autoReply: { value: string; effective: string };
   notify?: { value: string; effective: string };
   threadMode?: { value: string; effective: string };
@@ -209,6 +205,8 @@ export function Settings() {
   const [channelSettingsLoading, setChannelSettingsLoading] = useState(false);
   const [connectionValues, setConnectionValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
+  const [connectionsError, setConnectionsError] = useState('');
   const [saving, setSaving] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -231,20 +229,31 @@ export function Settings() {
     void Promise.all([
       getJson<RuntimeSettingsSnapshot>('/api/runtime-settings'),
       getJson<{ groups: StartupGroup[] }>('/api/startup-settings'),
-      getJson<ConnectionSettingsResponse>('/api/connection-settings'),
     ])
-      .then(([runtime, startup, connections]) => {
+      .then(([runtime, startup]) => {
         setSettings(runtime);
         setBackend(runtime.backend.value.backend);
         setModel(runtime.backend.value.model || '');
         setEffort(runtime.backend.value.effort || '');
         setStartupGroups(startup.groups);
-        setConnectionGroups(connections.groups);
-        setBackendAuthentication(connections.backends);
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setLoading(false));
   }, []);
+
+  const loadConnections = () => {
+    setConnectionsLoading(true);
+    setConnectionsError('');
+    void getJson<ConnectionSettingsResponse>('/api/connection-settings')
+      .then((connections) => {
+        setConnectionGroups(connections.groups);
+        setBackendAuthentication(connections.backends);
+      })
+      .catch((cause) => setConnectionsError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setConnectionsLoading(false));
+  };
+
+  useEffect(loadConnections, []);
 
   const loadWorkspaces = () => {
     setWorkspacesStatus('');
@@ -724,8 +733,12 @@ export function Settings() {
                 <label>
                   <span>チャンネル</span>
                   <select
+                    aria-label="チャンネル"
                     value={channelId}
-                    onChange={(event) => setChannelId(event.target.value)}
+                    onChange={(event) => {
+                      setChannelSettings(undefined);
+                      setChannelId(event.target.value);
+                    }}
                     disabled={channelsLoading || channels.length === 0}
                   >
                     <option value="">{channelsLoading ? '読み込み中…' : 'チャンネルを選択'}</option>
@@ -748,48 +761,17 @@ export function Settings() {
                   {channelsLoading ? '読み込み中…' : '一覧を再読み込み'}
                 </button>
               </div>
+              {channelId && channelSettings && !channelSettingsLoading && (
+                <ChannelBackendSettings
+                  key={`${platform}:${channelId}`}
+                  platform={platform}
+                  channelId={channelId}
+                  snapshot={channelSettings}
+                  backends={settings.backend.options}
+                  enabled={settings.backend.enabled}
+                />
+              )}
               <div className="settings-runtime-grid">
-                <label>
-                  <span>
-                    バックエンド <ApplyBadge mode="next-turn" />
-                  </span>
-                  <select
-                    value={channelSettings?.backend.value || 'inherit'}
-                    onChange={(event) => void updateChannel('backend', event.target.value)}
-                    disabled={!channelId || channelSettingsLoading || saving === 'channel-backend'}
-                  >
-                    <option value="inherit">全体設定を継承</option>
-                    {settings.backend.options.map((option) => (
-                      <option value={option} key={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  <small>
-                    現在: {channelSettings?.backend.effective.backend || '—'}
-                    {channelSettings?.backend.effective.model
-                      ? ` / ${channelSettings.backend.effective.model}`
-                      : ''}
-                    {channelSettings?.backend.effective.effort
-                      ? ` / effort ${channelSettings.backend.effective.effort}`
-                      : ''}
-                  </small>
-                </label>
-                <label>
-                  <span>
-                    Local LLMモード <ApplyBadge mode="next-turn" />
-                  </span>
-                  <select
-                    value={channelSettings?.llmMode.value || 'inherit'}
-                    onChange={(event) => void updateChannel('llmmode', event.target.value)}
-                    disabled={!channelId || channelSettingsLoading || saving === 'channel-llmmode'}
-                  >
-                    <option value="inherit">起動時設定を継承</option>
-                    <option value="agent">agent</option>
-                    <option value="chat">chat</option>
-                  </select>
-                  <small>現在: {channelSettings?.llmMode.effective || '—'}</small>
-                </label>
                 <label>
                   <span>メンションなし応答</span>
                   <select
@@ -916,6 +898,19 @@ export function Settings() {
                 </div>
                 <ApplyBadge mode="restart" />
               </div>
+              {connectionsLoading ? (
+                <p className="settings-status" role="status">
+                  接続と認証状態を確認しています…
+                </p>
+              ) : null}
+              {connectionsError ? (
+                <div className="settings-status error" role="alert">
+                  <p>接続と認証状態を取得できませんでした: {connectionsError}</p>
+                  <button type="button" className="secondary" onClick={loadConnections}>
+                    再読み込み
+                  </button>
+                </div>
+              ) : null}
               <div className="settings-auth-statuses" aria-label="AIサービスの認証状態">
                 {backendAuthentication.map((item) => (
                   <div className="settings-auth-status" key={item.id}>

@@ -23,6 +23,7 @@ export const SECRET_FIELDS: readonly SecretField[] = [
     label: 'GitHub Copilotトークン（任意）',
     group: 'AIプロバイダー',
   },
+  { name: 'OPENROUTER_API_KEY', label: 'OpenRouter APIキー', group: 'AIプロバイダー' },
   { name: 'LOCAL_LLM_API_KEY', label: 'Local LLM APIキー（任意）', group: 'AIプロバイダー' },
   { name: 'DISCORD_TOKEN', label: 'Botトークン', group: 'Discord' },
   {

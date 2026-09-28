@@ -1575,6 +1575,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 `/settings`では、共通`runtime_settings`が扱う7項目（backend、llmmode、autoreply、notify、threadmode、replysuggestions、respondtobots）と、日常運用で使う非秘密の起動設定を変更できる。チャンネル固有設定はプラットフォームを選び、接続先から取得したチャンネル名で対象を選択する。保存値には対応するチャンネルIDを使い、選択したチャンネルの保存済み設定と現在の実効値を各項目に表示する。各項目には「即時反映」「次のturnから」「再起動後」を表示する。
 
+チャンネルのバックエンド・モデル・Effort・動作モードはまとめて選択し、「チャンネルのモデル設定を保存」で次のturnから適用する。OpenRouterのEffortはモデル対応値だけを候補とし、未確認・非対応値は保存を拒否する。モデル変更時はEffortを既定へ戻す。「全体設定を継承」を保存するとチャンネルのモデル設定を解除する。
+
 起動設定APIは許可リストにある型・範囲検証済みの項目だけを既存`.env`へ保存し、現在のprocess環境は変更しない。接続token、許可ユーザー、AIプロバイダーのAPIキーは、Web UIの書き込み専用入力から既存の`SecretStore`へ保存できる。保存済みの秘密値はWebへ返さず、入力欄にも再表示しない。「設定済み／未設定」だけを返し、保存後は再起動すると反映される。明示的な環境変数がある場合はそちらが優先される。任意の環境変数名は受け付けない。
 
 「接続とAPIキー」にはCodex、OpenCode、Claude Code、Cursor Agent、Grok CLI、Antigravity、GitHub Copilot CLIを常に表示する。状態は「ログイン済み」「APIキー設定済み」「未認証」「判定不能」「未インストール」のいずれかで、CLIのversionも併記する。判定はモデル生成を行わない非対話コマンドまたは既存SDKのアカウント問い合わせを使用し、アカウント名、CLIの生出力、credentialはWebへ返さない。通信障害や未対応出力は「未認証」と断定せず「判定不能」にする。インストール済みCLIは確認ダイアログから公式の自己更新コマンドを実行できる。サーバーは任意コマンドを受け付けず、対応CLIごとに固定した実行ファイルと引数だけを`shell`なしで起動し、生のコマンド出力はWebへ返さない。更新後のCLIは次の実行から使用され、xangi自体は自動再起動しない。
@@ -1582,6 +1584,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 Slackのチャンネル名取得にはBot Token Scopeの`channels:read`（パブリック）と`groups:read`（プライベート）が必要になる。不足時は設定画面に追加すべきscopeと、Slack Appをワークスペースへ再インストールする手順を表示する。
 
 応答に添付された自己完結HTMLは、外部通信とform送信を止めたsandbox内でインラインプレビューし、元ファイルは別に保存できる。
+
+会話の添付ファイルはプレビューを開いた状態で表示する。画像や音声プレーヤーを表示するためにボタンを押す必要はなく、必要に応じて「プレビューを閉じる」で折りたためる。音声・動画は自動再生しない。
 
 添付の転送中はPC・スマートフォンともファイル名、複数選択時の順番、進捗率を入力欄の直上に表示する。音声・動画はbyte Range配信に対応し、スマートフォンでもmetadata取得・seek・再生を行える。
 
@@ -2024,3 +2028,24 @@ YAMLの複数行値（ブロック・引用符付き）とAWSの認証項目も�
 PDFにはPoppler（`pdfinfo` / `pdftoppm`）、Office文書には加えてLibreOfficeがサーバー側に必要です。外部の文書閲覧サービスには送信しません。変換ツールがない、破損、パスワード保護などの場合は理由を表示し、原本のダウンロードを残します。画像・音声・動画・HTMLにも対応します。
 
 プレビューは100MB以下、テキスト表示は先頭2MBです（省略を明示）。原本のダウンロードにはこのサイズ制限はありません。会話に実際に添付された`/tmp`ファイルも取得できます。閲覧時のコピーと変換結果は`DATA_DIR/document-previews`へ保存されます。未閲覧の一時ファイルを自動で保管する機能ではないため、長期保存する成果物は作業フォルダへ保存してください。使用しなくなったプレビューキャッシュはサービス停止中に削除できます。
+
+### OpenRouterで複数モデルのエージェントを使う
+
+`openrouter`は独立したバックエンドです。既存の`local-llm`（Qwen等）のURL・APIキー・生成設定を変えずに併用できます。モデルごとに「エージェント」を作成し、バックエンドを`openrouter`、モデルを一覧から選びます。モデルIDは保存必須で、自動ルーターは対象外です。動作モードはAgent（ツール利用）とChat（会話のみ）を選択できます。
+
+1. アカウント側の設定案内: OpenRouterの[Privacy設定](https://openrouter.ai/settings/privacy)で **OpenRouter Use of Inputs/OutputsをOFF** にし、[Observability設定](https://openrouter.ai/settings/observability)で **Private Input & Output LoggingをOFF** にします。
+2. xangiの「設定 → 接続設定」で **OpenRouter APIキー** を保存します。キーの値は画面・取得APIへ返しません。`.env`の`OPENROUTER_API_KEY`でも設定できます。
+3. 設定を反映するためxangiを再起動します。`ALLOWED_BACKENDS`を明示している場合は`openrouter`も追加します。既定の`AGENT_BACKEND`や`LOCAL_LLM_*`は変更不要です。
+4. エージェント画面で、名前・作業場所・個別指示を設定し、OpenRouterとモデルを選んで保存します。これをモデルごとに繰り返します。新規会話の担当に選ぶか、既存のAgent依頼機能で利用できます。
+
+「設定 → OpenRouterの起動設定」で **学習利用禁止**（`OPENROUTER_NO_TRAINING`）と **ZDR**（`OPENROUTER_ZDR`）を個別にON/OFFできます。どちらも既定ONです。環境変数も明示的な`false`だけをOFFとして扱い、未指定・空欄・不正な値はONを維持します。変更は再起動後に反映します。
+
+全推論リクエスト（ツール往復、最終回答、要約を含む）に、学習利用禁止ONなら`provider.data_collection="deny"`、OFFなら`"allow"`を送ります。ZDRはON/OFFを`provider.zdr`へ送り、`provider.require_parameters=true`は常に有効です。選んだ条件に合う提供先がなければエラーで終了します。OFFにしてもOpenRouterアカウント側・Guardrails側のより厳しい制限は解除できません。別モデルやローカルモデルへ自動で切り替えたり、選択した制約を自動で外して再送したりしません。OpenRouter本体のデータ利用設定と、下流提供先の制限は別です。xangi自身のローカル会話履歴は従来どおり保存します。
+
+Discordの`/backend`では`type: openrouter`を選び、`model`欄に`gemini`や`google/`と入力して候補を絞ります。空欄の候補は先頭25件だけで、全モデルの一覧ではありません。
+
+エージェント編集の「OpenRouterの推論強度」は、モデルの`reasoning.supported_efforts`に合わせて候補を絞り、公開されたモデル既定値も表示します。推論必須モデルでは`none`を除外します。情報がない場合は既定設定だけを表示し、取得失敗時に全候補へ戻しません。モデル変更時は非対応になった選択を解除し、明示値の保存時にも最新情報と照合します。Agent側で未指定なら共通の`OPENROUTER_REASONING_EFFORT`を使用し、それも未指定ならeffortを送らず提供先の既定動作になります。汎用CLIの`--effort`とは別の設定で、OpenRouterでは`--effort`は使えません。
+
+モデル一覧は公開APIのツール対応モデルを表示します。一覧への掲載は、現在ZDRの接続先が利用できることや、そのモデルのxangiでの実動作を保証しません。料金・対応機能・提供先は変わるため、利用時に確認してください。APIキーをDiscord等の会話へ貼らないでください。
+
+参考: [OpenRouterデータ利用](https://openrouter.ai/docs/guides/privacy/data-collection)、[提供先の制限](https://openrouter.ai/docs/guides/routing/provider-selection)。

@@ -5,7 +5,7 @@ import './document-attachment.css';
 
 type Info = { kind: string; text?: string; truncated?: boolean; pages?: number };
 export function DocumentAttachment({ path, sessionId }: { path: string; sessionId: string }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
@@ -22,7 +22,7 @@ export function DocumentAttachment({ path, sessionId }: { path: string; sessionI
     setError('');
     setPage(1);
     setZoom(100);
-    setOpen(false);
+    setOpen(true);
     setExpanded(false);
   }, [path, sessionId]);
   useEffect(() => {

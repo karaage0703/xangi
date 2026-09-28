@@ -349,6 +349,15 @@ export function normalizeBackendSettings(input: WebProjectBackendInput): WebProj
   if (!backend && (model || effort)) {
     throw new WebProjectError('モデルまたはeffortを設定するにはバックエンドが必要です', 400);
   }
+  if (
+    backend === 'openrouter' &&
+    (!model || !model.includes('/') || /\s/.test(model) || model.startsWith('openrouter/'))
+  ) {
+    throw new WebProjectError(
+      'OpenRouterの具体的なモデルID（provider/model）を指定してください',
+      400
+    );
+  }
   return { backend, model, effort };
 }
 
@@ -370,8 +379,11 @@ export function normalizeAgentOptions(input: Record<string, unknown>) {
     !LOCAL_LLM_REASONING_EFFORTS.includes(reasoning as LocalLlmReasoningEffort)
   )
     throw new WebProjectError('Local LLMの推論強度が不正です', 400);
-  if ((mode || reasoning) && input.backend !== 'local-llm')
-    throw new WebProjectError('Local LLM設定にはlocal-llmバックエンドを指定してください', 400);
+  if ((mode || reasoning) && input.backend !== 'local-llm' && input.backend !== 'openrouter')
+    throw new WebProjectError(
+      '動作モード・推論強度にはlocal-llmまたはopenrouterを指定してください',
+      400
+    );
   return {
     workspaceId: normalizeWorkspaceId(input.workspaceId as string | undefined) || 'default',
     localLlmMode: mode as LocalLlmMode | undefined,

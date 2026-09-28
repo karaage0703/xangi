@@ -393,7 +393,11 @@ describe('web-chat HTTP API', () => {
         backend,
         source: 'web-chat test discovery',
         status: 'available',
-        models: [
+        models: backend === 'openrouter' ? [
+          { id: 'vendor/a', supportedEfforts: ['low', 'high', 'max'] },
+          { id: 'vendor/b', supportedEfforts: ['low', 'medium', 'high'] },
+          { id: 'vendor/no-effort', supportedEfforts: [] },
+        ] : [
           {
             id: 'gpt-test',
             displayName: 'GPT Test',
@@ -639,6 +643,35 @@ describe('web-chat HTTP API', () => {
     const history = await (await fetch(`${baseUrl}/api/sessions/${run.appSessionId}/turn-history`)).json();
     expect(history.history).toEqual(expect.arrayContaining([expect.objectContaining({fileChanges: expect.objectContaining({files: [expect.objectContaining({path: 'agent-result.html', workspaceId: workspace.id})]})})]));
     rmSync(childPath, { recursive: true, force: true });
+  });
+
+  it('validates OpenRouter effort on create and model-only edits before saving', async () => {
+    resolver.isBackendSelectable = () => true;
+    const send = (path: string, body: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const create = await send('/api/agents', {
+      name: 'Router', backend: 'openrouter', model: 'vendor/a', localLlmReasoningEffort: 'max',
+    });
+    expect(create.status).toBe(201);
+    const { agent } = await create.json();
+    expect(agent.localLlmReasoningEffort).toBe('max');
+    for (const body of [
+      { model: 'vendor/b' }, // inherited max is incompatible with the new model
+      { localLlmReasoningEffort: 'none' },
+      { model: 'vendor/no-effort' },
+      { model: 'vendor/unknown' },
+    ]) {
+      const response = await send(`/api/agents/${agent.id}`, body, 'PATCH');
+      expect(response.status).toBe(400);
+    }
+    const saved = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(saved.agents.find((a: {id: string}) => a.id === agent.id)).toMatchObject({model: 'vendor/a', localLlmReasoningEffort: 'max'});
+    const cleared = await send(`/api/agents/${agent.id}`, {model: 'vendor/b', localLlmReasoningEffort: null}, 'PATCH');
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).agent.localLlmReasoningEffort).toBeUndefined();
+    expect((await send('/api/agents', {name: 'Invalid', backend: 'openrouter', model: 'vendor/a', localLlmReasoningEffort: 'medium'})).status).toBe(400);
+    expect((await send('/api/agents', {name: 'Default', backend: 'openrouter', model: 'vendor/no-effort'})).status).toBe(201);
   });
 
   it.each(['/api/device/inbox', '/api/pet/inbox', '/api/terminal/inbox'])(
