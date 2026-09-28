@@ -10,6 +10,8 @@ export interface LLMMessage {
   content: string;
   toolCalls?: LLMToolCall[];
   toolCallId?: string;
+  /** Opaque provider reasoning/signature blocks, replayed without modification. */
+  reasoningDetails?: unknown[];
   /** Attached images for multimodal messages */
   images?: LLMImageContent[];
   /** xangi内部のcheckpoint境界。providerへは送信しない。 */
@@ -65,6 +67,7 @@ export interface LLMChatOptions {
 
 export interface LLMChatResponse {
   content: string;
+  reasoningDetails?: unknown[];
   toolCalls?: LLMToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length';
   usage?: {

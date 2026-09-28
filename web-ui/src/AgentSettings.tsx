@@ -31,6 +31,9 @@ interface ModelDiscoveryResponse {
     displayName?: string;
     isDefault?: boolean;
     supportedEfforts?: string[];
+    defaultEffort?: string;
+    reasoningMandatory?: boolean;
+    reasoningDefaultEnabled?: boolean;
   }>;
   message?: string;
   supportedEfforts: string[];
@@ -83,6 +86,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     }
     let cancelled = false;
     setLoadingAgentModels(true);
+    setAgentModelOptions([]);
     setAgentModelStatus('');
     requestJson<ModelDiscoveryResponse>(`/api/models?backend=${encodeURIComponent(agentBackend)}`)
       .then((result) => {
@@ -139,9 +143,22 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     setAgentFormOpen(true);
   }
 
+  const openRouterModel =
+    agentBackend === 'openrouter'
+      ? agentModelOptions.find((model) => model.id === agentModel)
+      : undefined;
+  const reasoningOptions =
+    agentBackend === 'openrouter'
+      ? (openRouterModel?.supportedEfforts ?? [])
+      : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const invalidOpenRouterEffort =
+    agentBackend === 'openrouter' &&
+    Boolean(agentReasoning) &&
+    !reasoningOptions.includes(agentReasoning);
+
   async function saveAgent(event: FormEvent) {
     event.preventDefault();
-    if (!agentName.trim() || savingAgent) return;
+    if (!agentName.trim() || savingAgent || invalidOpenRouterEffort) return;
     setSavingAgent(true);
     try {
       const body = {
@@ -151,8 +168,12 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
         model: agentBackend && agentModel ? agentModel : null,
         effort: agentBackend && agentEffort ? agentEffort : null,
         workspaceId: agentWorkspaceId,
-        localLlmMode: agentBackend === 'local-llm' ? agentLlmMode || null : null,
-        localLlmReasoningEffort: agentBackend === 'local-llm' ? agentReasoning || null : null,
+        localLlmMode: ['local-llm', 'openrouter'].includes(agentBackend)
+          ? agentLlmMode || null
+          : null,
+        localLlmReasoningEffort: ['local-llm', 'openrouter'].includes(agentBackend)
+          ? agentReasoning || null
+          : null,
         role: agentRole,
       };
       const base = '/api/agents';
@@ -271,12 +292,17 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                 <option value="">xangiのデフォルト</option>
                 {config.allowedBackends.map((backend) => (
                   <option key={backend} value={backend}>
-                    {backend}
+                    {backend === 'openrouter' ? 'OpenRouter' : backend}
                   </option>
                 ))}
               </select>
             </label>
-            {agentBackend === 'local-llm' && (
+            {agentBackend === 'openrouter' && (
+              <small role="note">
+                モデルごとに別のエージェントを作れます。学習利用禁止・ZDRは既定ONです。起動設定で個別に変更でき、選んだ条件に合う提供先がなければ停止します。接続設定にAPIキーを保存してください。OpenRouter側のデータ利用・ログ保存はアカウント設定で管理します。
+              </small>
+            )}
+            {['local-llm', 'openrouter'].includes(agentBackend) && (
               <>
                 <label>
                   <span>動作モード</span>
@@ -291,20 +317,41 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                   </select>
                 </label>
                 <label>
-                  <span>Local LLMの推論強度</span>
+                  <span>
+                    {agentBackend === 'openrouter' ? 'OpenRouterの推論強度' : 'Local LLMの推論強度'}
+                  </span>
                   <select
-                    aria-label="Local LLMの推論強度"
+                    aria-label={
+                      agentBackend === 'openrouter' ? 'OpenRouterの推論強度' : 'Local LLMの推論強度'
+                    }
+                    disabled={agentBackend === 'openrouter' && loadingAgentModels}
                     value={agentReasoning}
                     onChange={(e) => setAgentReasoning(e.target.value)}
                   >
                     <option value="">xangiの既定設定</option>
-                    {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => (
+                    {invalidOpenRouterEffort && (
+                      <option value={agentReasoning} disabled>
+                        {agentReasoning}（対応未確認・選び直してください）
+                      </option>
+                    )}
+                    {reasoningOptions.map((value) => (
                       <option key={value} value={value}>
                         {value}
                       </option>
                     ))}
                   </select>
-                  <small>モデルが対応している値を選んでください。</small>
+                  {agentBackend === 'openrouter' ? (
+                    <small>
+                      {openRouterModel
+                        ? `モデル既定: ${openRouterModel.defaultEffort || '非公開'}${openRouterModel.reasoningDefaultEnabled === false ? '（推論OFF）' : ''}。${openRouterModel.reasoningMandatory ? '推論は必須です。' : ''}対応する値だけを表示します。`
+                        : 'モデル情報を確認できるまで、推論強度は指定できません。'}{' '}
+                      未指定時はxangiの共通設定、共通設定もなければモデル既定を使用します。
+                      {invalidOpenRouterEffort &&
+                        ' 現在の値を確認できません。既定設定または対応値を選び直してください。'}
+                    </small>
+                  ) : (
+                    <small>モデルが対応している値を選んでください。</small>
+                  )}
                 </label>
               </>
             )}
@@ -321,6 +368,13 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                       const model = agentModelOptions.find(
                         (candidate) => candidate.id === event.target.value
                       );
+                      if (
+                        agentBackend === 'openrouter' &&
+                        agentReasoning &&
+                        !model?.supportedEfforts?.includes(agentReasoning)
+                      ) {
+                        setAgentReasoning('');
+                      }
                       if (
                         agentEffort &&
                         model?.supportedEfforts?.length &&
@@ -393,7 +447,15 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
             <button type="button" disabled={savingAgent} onClick={() => setAgentFormOpen(false)}>
               キャンセル
             </button>
-            <button type="submit" className="primary" disabled={savingAgent}>
+            <button
+              type="submit"
+              className="primary"
+              disabled={
+                savingAgent ||
+                invalidOpenRouterEffort ||
+                (agentBackend === 'openrouter' && loadingAgentModels)
+              }
+            >
               {savingAgent ? '保存中…' : editingAgentId ? '更新' : '作成'}
             </button>
           </div>

@@ -1769,6 +1769,7 @@ details.settings-card[open] > summary::before {
 
 .settings-target-row input,
 .settings-target-row select,
+.settings-runtime-grid input,
 .settings-runtime-grid select,
 .settings-startup-control input,
 .settings-startup-control select {
@@ -6627,4 +6628,15 @@ video.media-preview {
     flex-direction: row;
     align-items: center;
   }
+}
+
+/* 補足文や反映バッジの有無に関わらず、同じ行の入力欄を揃える。 */
+.channel-backend-grid {
+  align-items: start;
+}
+.channel-backend-grid label {
+  align-content: start;
+}
+.channel-backend-grid label > span {
+  min-height: 24px;
 }

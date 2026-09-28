@@ -268,6 +268,7 @@ describe('config', () => {
       'github-copilot',
       'opencode',
       'local-llm',
+      'openrouter',
     ]);
   });
 

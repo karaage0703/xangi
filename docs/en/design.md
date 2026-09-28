@@ -348,6 +348,8 @@ AGENTS.md / CHARACTER.md / USER.md and other workspace settings are delegated to
 
 `backend-models.ts` centralizes backend model discovery. It only uses the Codex App Server `model/list` method, the Cursor / Grok / Antigravity `models` commands, and the Ollama or OpenAI-compatible Local LLM endpoints. It does not invent a static model list for CLIs that expose no discovery interface. `models-command.ts` builds the shared, read-only `/models [backend]` command for Discord, Slack, Web, Telegram, and LINE, plus the AI-facing `xangi tool models` command. With `--use <model-id>`, the AI can select the next turn's model after allowlist and dynamic-discovery validation. Both the external command and Tool Server use the single name `models`.
 
+The settings page loads and displays runtime/startup settings independently of connection/authentication checks. Pending and failed connection checks appear in the connection section, with a section-specific retry. CLI version probes use asynchronous processes with a timeout so the Web server can handle other requests while detection runs.
+
 `runtime-settings-command.ts` provides structured dispatch for chat- and Web-controlled runtime settings. Discord native commands, Slack `/backend`, the AI-facing `xangi tool runtime_settings`, and the Web UI's `/api/runtime-settings` share the same validation and persistence logic. It does not execute arbitrary slash-command strings: both the shared dispatcher and Web API explicitly allow only `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`.
 
 #### Shared One-shot CLI Runner Core (cli-runner-core.ts)
@@ -1259,3 +1261,7 @@ The separate shared reference material field has been removed. Put descriptions 
 `/api/session-attachment` validates sessionId/path against saved assistant MEDIA declarations outside code examples, structured attachments, or validated incoming attachments. Realpath checks restrict sources to the session workspace, attachment storage and temporary directories; the existing download-extension policy also applies. The broader workspace-file boundary is unchanged.
 
 DocumentAttachments snapshots validated files, classifies formats, converts Office documents with LibreOffice and renders individual PDF pages with Poppler. Conversion uses isolated profiles, disabled macros, at most two concurrent tasks and timeouts without modifying originals. Cache identities include file size, mtime and ctime. Previously viewed temporary files can be recovered from snapshots after deletion. Web and Studio consume the same info/page/raw/download/list API. HTML uses sandbox/CSP isolation; arbitrary binary files are download-only.
+
+### Isolated OpenRouter transport
+
+The `openrouter` backend reuses LocalLlmRunner with instance-scoped settings and never mutates process.env. Existing agent catalogs store backend/model. LLMClient applies independent default-on non-collection and ZDR options plus a fixed parameter-support constraint to every request, including streaming and compaction. A missing key blocks inference before network access. Tool-call reasoning_details are replayed as opaque provider data.

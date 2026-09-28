@@ -3,6 +3,7 @@
  */
 import type { LLMMessage, LLMToolCall, LLMChatOptions, LLMChatResponse } from './types.js';
 import { Agent } from 'undici';
+import { assertOpenRouterReady, openRouterProviderPolicy } from '../openrouter.js';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { parsePseudoToolCall } from './pseudo-toolcall.js';
 
@@ -106,6 +107,7 @@ interface OpenAIMessage {
     function: { name: string; arguments: string };
   }>;
   tool_call_id?: string;
+  reasoning_details?: unknown[];
 }
 
 interface OpenAIChatResponse {
@@ -115,6 +117,7 @@ interface OpenAIChatResponse {
       role: string;
       content: string | null;
       reasoning?: string | null;
+      reasoning_details?: unknown[];
       tool_calls?: Array<{
         id: string;
         type: 'function';
@@ -179,6 +182,7 @@ function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMess
     if (msg.toolCallId) {
       m.tool_call_id = msg.toolCallId;
     }
+    if (msg.reasoningDetails) m.reasoning_details = msg.reasoningDetails;
     return m;
   });
 }
@@ -196,7 +200,8 @@ export class LLMClient {
     private readonly defaultMaxTokens: number = 8192,
     private readonly numCtx?: number,
     private readonly defaultTemperature?: number,
-    private readonly defaultReasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort
+    private readonly defaultReasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort,
+    private readonly provider?: 'openrouter'
   ) {
     this.timeoutMs = parseInt(process.env.TIMEOUT_MS || '300000', 10);
     this.dispatcher = new Agent({
@@ -219,7 +224,11 @@ export class LLMClient {
     init: RequestInit,
     operation: string
   ): Promise<Response> {
-    const requestInit = { ...init, dispatcher: this.dispatcher } as RequestInit;
+    const requestInit = {
+      ...init,
+      ...(this.provider === 'openrouter' ? { redirect: 'error' } : {}),
+      dispatcher: this.dispatcher,
+    } as RequestInit;
     const startedAt = Date.now();
     try {
       return await fetch(url, requestInit);
@@ -281,6 +290,7 @@ export class LLMClient {
     options: LLMChatOptions | undefined,
     stream: boolean
   ): { body: Record<string, unknown>; headers: Record<string, string> } {
+    if (this.provider === 'openrouter') assertOpenRouterReady(this.apiKey, this.model);
     const requestMessages = toOpenAIMessages(messages, this.isOllamaUrl());
     if (options?.systemPrompt) {
       requestMessages.unshift({ role: 'system', content: options.systemPrompt });
@@ -292,7 +302,10 @@ export class LLMClient {
       max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
     };
     const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
-    if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+    if (this.provider === 'openrouter') {
+      body.provider = openRouterProviderPolicy();
+      if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
+    } else if (reasoningEffort) body.reasoning_effort = reasoningEffort;
     applyOpenAITools(body, options);
     const temperature = this.resolveTemperature(options?.temperature);
     if (temperature !== undefined) body.temperature = temperature;
@@ -426,7 +439,7 @@ export class LLMClient {
 
     // Thinking model: content が空で reasoning に推論が入ることがある
     let content = choice.message.content ?? '';
-    if (!content && choice.message.reasoning) {
+    if (this.provider !== 'openrouter' && !content && choice.message.reasoning) {
       content = choice.message.reasoning;
     }
 
@@ -453,6 +466,8 @@ export class LLMClient {
     return {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      reasoningDetails:
+        this.provider === 'openrouter' ? choice.message.reasoning_details : undefined,
       finishReason,
       usage: data.usage
         ? {
@@ -493,19 +508,26 @@ export class LLMClient {
       const trimmed = line.trim();
       if (!trimmed || trimmed === 'data: [DONE]') continue;
       if (trimmed.startsWith('data: ')) {
+        let chunk: {
+          model?: string;
+          error?: { code?: number; message?: string };
+          choices?: Array<{ delta: { content?: string; reasoning?: string } }>;
+        };
         try {
-          const chunk = JSON.parse(trimmed.slice(6)) as {
-            model?: string;
-            choices: Array<{ delta: { content?: string; reasoning?: string } }>;
-          };
-          if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
-          const delta = chunk.choices[0]?.delta;
-          if (delta?.content) {
-            hasContent = true;
-            yield delta.content;
-          }
+          chunk = JSON.parse(trimmed.slice(6)) as typeof chunk;
         } catch {
-          // skip malformed chunks
+          continue;
+        }
+        if (this.provider === 'openrouter' && chunk.error) {
+          throw new Error(
+            `OpenRouter stream error ${chunk.error.code ?? ''}: ${chunk.error.message ?? 'request failed'}`
+          );
+        }
+        if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
+        const delta = chunk.choices?.[0]?.delta;
+        if (delta?.content) {
+          hasContent = true;
+          yield delta.content;
         }
       }
     }

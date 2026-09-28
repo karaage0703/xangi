@@ -346,6 +346,8 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 
 `backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
+設定画面は通常設定・起動設定を接続／認証確認とは独立して読み込み、先に表示する。接続確認中・失敗は接続欄に表示し、その欄だけ再読み込みできる。CLIのバージョン取得はタイムアウト付き非同期プロセスで実行し、確認中もWebサーバーが別のリクエストへ応答できる。
+
 `runtime-settings-command.ts` はチャットとWeb設定画面から変更可能なランタイム設定を構造化ディスパッチする。Discordのネイティブコマンド、Slackの`/backend`、AI向け`xangi tool runtime_settings`、Web UIの`/api/runtime-settings`は同じ検証・保存処理を共有する。任意のスラッシュコマンド実行は許可せず、共通dispatcherとWeb APIは`backend` / `llmmode` / `autoreply` / `notify` / `threadmode` / `replysuggestions` / `respondtobots`だけを明示的に許可する。
 
 #### ワンショット CLI ランナー共通基盤（cli-runner-core.ts）
@@ -1255,3 +1257,7 @@ local-llmを選ぶとAgent（ツールを使って作業）/Chat（会話のみ�
 `/api/session-attachment`はsessionIdとpathを受け取り、保存済み返答のコード例を除いたMEDIA宣言・構造化添付、または検証済み受信添付と照合する。任意の一時ファイルを公開せず、会話の作業フォルダ・添付保存先・一時領域のrealpath境界と既存ダウンロード拡張子設定を適用する。`workspace-file`の許可範囲は変更しない。
 
 DocumentAttachmentsが検証済みファイルのコピー、形式判定、LibreOfficeによるPDF変換、PopplerによるページごとのPNG描画を担当する。変換は独立したプロファイル・マクロ無効・同時2件・時間制限付き。原本は変更しない。サイズ・mtime・ctimeによってキャッシュを更新し、一度表示した一時ファイルは元が消えても保存コピーから表示できる。APIはinfo/page/raw/download/listを提供し、WebとStudioが同じ操作を使う。HTMLはsandbox/CSPで隔離し、任意バイナリは常にダウンロード扱いとする。
+
+### OpenRouter接続の分離
+
+`openrouter`は既存LocalLlmRunnerへインスタンス専用設定を渡し、process.envを変更せず共通のツールループを再利用する。Agentのbackend/modelを既存catalogに保存する。LLMClientの共通リクエスト生成で既定ONの学習利用禁止・ZDRオプションと固定のパラメータ対応制限を適用し、stream/non-stream/要約に同じ制限を適用する。APIキーがない場合は送信前に停止する。tool callのreasoning_detailsは不透明データとして往復する。

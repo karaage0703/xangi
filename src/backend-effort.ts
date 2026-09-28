@@ -21,6 +21,7 @@ const BACKEND_EFFORT_LEVELS: Record<string, readonly EffortLevel[]> = {
   antigravity: ['low', 'medium', 'high'],
   'github-copilot': ['low', 'medium', 'high', 'xhigh', 'max'],
   'local-llm': [],
+  openrouter: [],
 };
 
 export function getSupportedEffortLevels(backend: AgentBackend): readonly EffortLevel[] {

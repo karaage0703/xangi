@@ -475,6 +475,26 @@ const DEFINITIONS: Definition[] = [
   },
 
   {
+    group: 'openrouter',
+    groupLabel: 'OpenRouter',
+    key: 'OPENROUTER_NO_TRAINING',
+    label: '学習利用を禁止する提供先に限定',
+    description:
+      '既定ON。OFFにするとデータ収集・学習利用する提供先も候補になります。OpenRouterアカウント側の制限は別途適用されます。',
+    type: 'boolean',
+    defaultValue: 'true',
+  },
+  {
+    group: 'openrouter',
+    groupLabel: 'OpenRouter',
+    key: 'OPENROUTER_ZDR',
+    label: 'ZDR（データ保持なし）の提供先に限定',
+    description:
+      '既定ON。OFFにするとZDR以外の提供先も候補になります。アカウント側でZDRが必須なら、ここをOFFにしても解除されません。',
+    type: 'boolean',
+    defaultValue: 'true',
+  },
+  {
     group: 'local-llm',
     groupLabel: 'Local LLM',
     key: 'LOCAL_LLM_MODE',

@@ -15,6 +15,7 @@ export const BUILTIN_AGENT_BACKENDS = [
   'github-copilot',
   'opencode',
   'local-llm',
+  'openrouter',
 ] as const;
 export type AgentBackend = string;
 
