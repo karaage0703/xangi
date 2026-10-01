@@ -58,7 +58,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "slackify-markdown": "^5.0.0",
-    "undici": "6.28.1",
+    "undici": "6.29.0",
     "unified": "^11.0.5",
     "ws": "^8.21.3",
     "yaml": "^2.9.1"
@@ -92,6 +92,6 @@
     "node": ">=22.0.0"
   },
   "overrides": {
-    "undici": "6.28.1"
+    "undici": "6.29.0"
   }
 }
