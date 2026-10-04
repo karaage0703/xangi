@@ -1,3 +1,5 @@
+import { channelIndividualAgent } from './agent-selection.js';
+import { channelAgent, resolveAgentBackend } from './agent-selection.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
 import type { Config } from './config.js';
@@ -80,7 +82,11 @@ export function webChannelRuntimeSettingsSnapshot(
 ) {
   const settings = loadSettings();
   const override = resolver.getChannelOverride(channelId);
-  const resolved = resolver.resolve(channelId);
+  const agent = channelAgent(platform, channelId);
+  const resolved =
+    agent && !(agent.team?.leadership === 'caller' && agent.id.startsWith('team:'))
+      ? resolveAgentBackend(resolver, agent)
+      : resolver.resolve(channelId);
   const autoReplyOverrides =
     platform === 'discord' ? settings.discordAutoReplyChannels : settings.slackAutoReplyChannels;
   const autoReplyDefault =
@@ -99,6 +105,15 @@ export function webChannelRuntimeSettingsSnapshot(
   const threadModeOverride = settings.discordThreadModeChannels?.[channelId];
 
   return {
+    team: agent?.team
+      ? { id: agent.team.id, name: agent.team.name, leadership: agent.team.leadership }
+      : null,
+    agent:
+      agent &&
+      (!agent.team ||
+        (agent.team.leadership === 'caller' && channelIndividualAgent(platform, channelId)))
+        ? { id: agent.id, name: agent.name, workspaceId: agent.workspaceId || 'default' }
+        : null,
     backend: {
       value: override?.backend ?? 'inherit',
       model: override?.model,
@@ -161,6 +176,8 @@ export async function updateWebRuntimeSetting(
   const name = String(input.name ?? '');
   if (
     ![
+      'agent',
+      'team',
       'backend',
       'llmmode',
       'autoreply',

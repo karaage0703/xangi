@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { expect, it } from 'vitest';
 import { ProjectCatalog } from '../src/project-catalog.js';
 import { AgentRunStore } from '../src/agent-runs.js';
-import { executeProjectAgentCommand } from '../src/project-agent-command.js';
+import { executeProjectAgentCommand, executeTeamCommand } from '../src/project-agent-command.js';
 import { initSessions, createWebSession } from '../src/sessions.js';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 
@@ -54,9 +54,9 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
       let body = '';
       for await (const chunk of req) body += chunk;
       const payload = JSON.parse(body);
-      expect(payload.command).toBe('agent');
+      expect(['agent', 'team']).toContain(payload.command);
       expect(payload.context.channelId).toBe(channelId);
-      const result = await executeProjectAgentCommand(
+      const result = await (payload.command === 'team' ? executeTeamCommand : executeProjectAgentCommand)(
         payload.flags,
         { channelId: payload.context.channelId },
         { catalog, runs, start, workspaces }
@@ -90,11 +90,22 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
     const run = await call(`run ${created.agent.id} --task 'bounded task'`);
     expect(await call(`status --id ${run.id}`)).toMatchObject({ status: 'succeeded' });
     expect(await call(`wait --id ${run.id}`)).toMatchObject({ result: 'CHILD_RESULT' });
+    expect(await call(`delete ${created.agent.id}`)).toEqual({ok:true});
+    expect(catalog.agent(created.agent.id)).toBeUndefined();
     expect(prompt).toContain(`${command} run`);
     expect(prompt).toContain(`${command} status`);
     expect(prompt).toContain('完了時に元の会話へ結果が届く');
     expect(prompt).toContain(`同期実行時だけ ${command} wait`);
     expect(catalog.execution(undefined, agent.id)!.prompt).not.toContain(command);
+    const team = catalog.saveTeam({ leadership: 'caller', name: 'リサーチ', prompt: '出典を示す', members: [{ agentId: agent.id, role: '調査' }] });
+    const teamCommand = prompt.match(/'[^']+' team(?= list)/)?.[0];
+    expect(teamCommand).toBeTruthy();
+    const teamCall = async (args: string) => JSON.parse((await shell(`${teamCommand} ${args}`)).stdout);
+    expect((await teamCall('list')).teams[0].id).toBe(team.id);
+    expect(await teamCall("show 'リサーチ'")).toMatchObject({ prompt: '出典を示す' });
+    const teamRun = await teamCall(`run 'リサーチ' --task '調べて' --assignments-json '${JSON.stringify([{agentId:agent.id,task:'独立調査'}])}'`);
+    expect(await teamCall(`status --id ${teamRun.id}`)).toMatchObject({ status: 'succeeded', members: [] });
+    expect(await teamCall(`wait --id ${teamRun.id}`)).toMatchObject({ result: 'CHILD_RESULT' });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(root, { recursive: true, force: true });

@@ -1,3 +1,8 @@
+import {
+  assertIndividualAgentSettings,
+  selectedAgentForContext,
+  resolveAgentBackend,
+} from './agent-selection.js';
 import { readFileSync, writeFileSync } from 'fs';
 import type { AgentBackend, Config, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
@@ -135,6 +140,9 @@ export class BackendResolver {
    * 指定チャンネルのバックエンド設定を解決
    */
   resolve(channelId?: string, requestDefault?: ChannelOverride): ResolvedBackend {
+    const selected = channelId ? selectedAgentForContext(channelId) : undefined;
+    if (selected && !(selected.team?.leadership === 'caller' && selected.id.startsWith('team:')))
+      return resolveAgentBackend(this, selected);
     const defaultBackend = requestDefault?.backend ?? this.defaultBackend;
     const defaultModel = requestDefault?.model ?? this.defaultModel;
     const defaultEffort =
@@ -188,6 +196,7 @@ export class BackendResolver {
    * チャンネルオーバーライドを設定し、.envに永続化
    */
   setChannelOverride(channelId: string, override: ChannelOverride): void {
+    assertIndividualAgentSettings(channelId);
     const effectiveBackend = override.backend ?? this.defaultBackend;
     if (override.effort && !supportsEffort(effectiveBackend, override.effort)) {
       throw new Error(`backend '${effectiveBackend}' does not support effort '${override.effort}'`);
@@ -210,6 +219,7 @@ export class BackendResolver {
 
   /** チャンネル固有設定をすべて削除し、起動時デフォルトへ戻す。 */
   clearChannelOverride(channelId: string): void {
+    assertIndividualAgentSettings(channelId);
     this.channelOverrides.delete(channelId);
     this.persistToEnv();
     console.log(`[backend-resolver] Cleared override for ${channelId}`);
@@ -249,6 +259,7 @@ export class BackendResolver {
     mutate: (override: ChannelOverride) => void,
     logMessage: string
   ): void {
+    assertIndividualAgentSettings(channelId);
     const override = this.channelOverrides.get(channelId) ?? {};
     mutate(override);
     if (Object.values(override).every((value) => !value)) this.channelOverrides.delete(channelId);
@@ -261,6 +272,7 @@ export class BackendResolver {
    * チャンネルオーバーライドを削除し、.envに永続化
    */
   deleteChannelOverride(channelId: string): boolean {
+    assertIndividualAgentSettings(channelId);
     const had = this.channelOverrides.delete(channelId);
     if (had) {
       this.persistToEnv();

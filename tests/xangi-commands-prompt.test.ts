@@ -39,7 +39,7 @@ describe('buildXangiCommands', () => {
 
   it('開発担当の作成方法をオンデマンドで確認させる', () => {
     expect(XANGI_COMMANDS_COMMON).toContain('xangi tool help agent');
-    expect(XANGI_COMMANDS_COMMON).toContain('Agent作成から結果確認まで担当する');
+    expect(XANGI_COMMANDS_COMMON).toContain('Workspaceの共有・分離は作業内容に応じて判断する');
   });
 
   it('指名された別xangiへの問い合わせを専用コマンドへ誘導する', () => {

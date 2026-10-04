@@ -1,3 +1,4 @@
+import { TeamSettings } from './TeamSettings';
 import { useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { getJson, getJsonWithTimeout, requestJson } from './api';
@@ -215,7 +216,7 @@ export function Settings() {
   useEffect(() => {
     const focusSection = () => {
       const id = window.location.hash.slice(1);
-      if (id !== 'agents' && id !== 'workspaces') return;
+      if (id !== 'agents' && id !== 'teams' && id !== 'workspaces') return;
       const section = document.getElementById(id);
       section?.scrollIntoView({ block: 'start' });
       section?.focus({ preventScroll: true });
@@ -511,6 +512,7 @@ export function Settings() {
           <nav className="settings-section-links" aria-label="設定項目">
             <a href="#workspaces">ワークスペース</a>
             <a href="#agents">エージェント</a>
+            <a href="#teams">チーム</a>
           </nav>
         </header>
 
@@ -707,6 +709,7 @@ export function Settings() {
             </section>
 
             <AgentSettings workspaces={workspaces} />
+            <TeamSettings />
 
             <section className="settings-card" aria-labelledby="settings-channel-title">
               <div className="settings-card-heading">

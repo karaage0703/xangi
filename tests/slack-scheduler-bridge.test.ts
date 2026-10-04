@@ -28,6 +28,37 @@ describe('registerSlackSchedulerBridge', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('routes parent completion and progress to the original Slack thread', async () => {
+    const scheduler = new Scheduler(tmpDir, { quiet: true });
+    const postMessage = vi.fn().mockResolvedValue({ ts: '1700000000.000100' });
+    const update = vi.fn().mockResolvedValue({});
+    const runner = {
+      runStream: vi.fn().mockResolvedValue({ result: 'done', sessionId: 'provider' }),
+    } as unknown as AgentRunner;
+    registerSlackSchedulerBridge({
+      scheduler,
+      client: { chat: { postMessage, update } } as unknown as WebClient,
+      config: { agent: { config: {} } } as Config,
+      agentRunner: runner,
+    });
+    await scheduler.getSender('slack')!('C123:1700.123', 'progress');
+    expect(postMessage).toHaveBeenLastCalledWith({
+      channel: 'C123',
+      thread_ts: '1700.123',
+      text: 'progress',
+    });
+    await scheduler.getAgentRunner('slack')!('child failed', 'C123:1700.123');
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ channel: 'C123', thread_ts: '1700.123' })
+    );
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'C123' }));
+    expect(runner.runStream).toHaveBeenCalledWith(
+      'child failed',
+      expect.anything(),
+      expect.objectContaining({ channelId: 'C123:1700.123' })
+    );
+  });
+
   it('registers a Slack agent runner for scheduler and trigger paths', async () => {
     const interactiveId = createSession('C123', { platform: 'slack' });
     const interactiveBefore = structuredClone(getSessionEntry(interactiveId));

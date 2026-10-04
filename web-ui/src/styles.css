@@ -829,6 +829,7 @@ button:disabled {
 
 .settings-section-links {
   display: flex;
+  align-items: baseline;
   flex-wrap: wrap;
   gap: 16px;
   margin-top: 16px;
@@ -6639,4 +6640,45 @@ video.media-preview {
 }
 .channel-backend-grid label > span {
   min-height: 24px;
+}
+
+/* Team editor uses the existing settings palette and form controls. */
+.team-editor {
+  display: grid;
+  gap: 16px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.team-member {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.team-member legend {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.team-member button {
+  justify-self: start;
+}
+.team-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.team-list-row strong {
+  overflow-wrap: anywhere;
+}
+.team-list-row p {
+  margin: 4px 0 0;
+  color: var(--ink-secondary);
 }

@@ -5,7 +5,7 @@ import {
   truncateSessionTitle,
 } from './session-title.js';
 
-const TITLE_TIMEOUT_MS = 10_000;
+const TITLE_TIMEOUT_MS = 60_000;
 const inFlight = new Set<string>();
 
 export const AI_SESSION_TITLE_PROMPT = `Generate a concise title for the user's message.

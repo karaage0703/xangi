@@ -15,7 +15,8 @@ export interface XangiCmdHelpEntry {
     | 'progress'
     | 'worker'
     | 'local'
-    | 'agent';
+    | 'agent'
+    | 'team';
   summary: string;
   usage: string;
   notes?: string[];
@@ -23,16 +24,34 @@ export interface XangiCmdHelpEntry {
 
 export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
   {
+    name: 'team',
+    topic: 'team',
+    summary: 'Teamの一覧・編成・指示確認、依頼と結果取得',
+    usage:
+      'xangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_AGENT_ID] [--offset N] [--limit N]',
+    notes: [
+      'tool経由は xangi tool team --action list|show|run|status|wait|logs。show/runの対象は --team NAME_OR_ID。名前は完全一致、同名の場合はIDで指定する。',
+      'showは共通指示、メンバーの名前・任意の担当・Agent設定を返す。agent listはTeam一覧ではない。',
+      '呼び出し元方式ではリーダーは現在の会話。--taskに共通前提、--assignments-jsonに全メンバーの [{"agentId":"ID","task":"独立した仕事"}] を渡す。全員をまとめて並列起動し、結果は呼び出し元が集約する。必須情報が不足するなら起動前に質問する。',
+      'runはチャンネルの担当を変更せず、そのTeamへ一度だけ依頼する。依頼時の編成を保持し、必要な背景は--taskに含める。',
+      'runのIDでstatus/waitを確認する。waitは最大25秒。未完了時にrunを再送しない。完了時は元の会話へ通知される。status/waitはこの会話の依頼のみ取得でき、メンバー各工程と最終結果を返す。',
+      'logsは依頼元の会話から、各メンバーのAgentログを集約する。ツール回数、記録された検索語・URL、エラー・明示的な再試行、元ファイルと行番号を返す。--memberで絞り込み、--offset/--limitでメンバーごとのイベントをページ送りする（既定20、最大100）。',
+      '子からの再委譲は不可。AgentとTeamを合わせて同時依頼は既定16件（AGENT_MAX_CONCURRENT_REQUESTSで1〜64に設定可能）。同じTeamへの重複依頼は拒否する。',
+      '各メンバーの登録Workspaceを使う。デフォルト担当も利用可能。共有・分離は作業内容に応じて判断し、必要な場合は専用worktreeを用意する。',
+    ],
+  },
+  {
     name: 'agent',
     topic: 'agent',
     summary: '開発担当の作成、依頼と結果取得',
     usage:
-      'xangi agent create --name NAME --workspace PATH [--role TEXT] [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent run AGENT_ID --task TEXT\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID',
+      'xangi agent create --name NAME --workspace PATH [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID --task TEXT\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]',
     notes: [
-      'createは既存の別ディレクトリをWorkspaceへ登録し、Agentを登録する。開発では先に対象リポのgit worktreeを作る。',
+      'createは既存ディレクトリをWorkspaceへ登録し、Agentを登録する。親と同じ場所や親配下も利用可能。編集が競合する場合はgit worktree等で分離する。',
       'runは受付後にIDを返す。waitは最大25秒待ち、未完了なら同じIDで繰り返す。新規runで再送しない。',
+      'logsは依頼元の会話のみ取得可能。ツール集計は全ログ、イベントは--offset/--limitでページ送り（既定20、最大100）。未記録の入力やシェル内部の検索は不明として扱い、繰り返し呼び出しを再試行と推定しない。Grokはprovider sessionのnative履歴も参照する。',
       '子には担当の指示・依頼文だけを渡す。必要な背景と成果物の条件を依頼文へ含める。',
-      '結果を受け取るまで親は依頼を完了扱いしない。子からの再委譲は不可。同時3件まで。',
+      '結果を受け取るまで親は依頼を完了扱いしない。子からの再委譲は不可。同時依頼は既定16件（AGENT_MAX_CONCURRENT_REQUESTSで1〜64に設定可能）。',
     ],
   },
   {
@@ -194,7 +213,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'settings',
     summary: '起動中のチャンネル設定または全体既定を確認・即時変更',
     usage:
-      'xangi tool runtime_settings --name <backend|llmmode|autoreply|notify|threadmode|replysuggestions|respondtobots> --action <show|set|reset> [--value <value>] [--backend <backend>] [--model <model>] [--effort <level>] [--scope <channel|global>] [--channel <id>] [--platform <platform>]',
+      'xangi tool runtime_settings --name <agent|backend|llmmode|autoreply|notify|threadmode|replysuggestions|respondtobots> --action <show|set|reset> [--value <value>] [--backend <backend>] [--model <model>] [--effort <level>] [--scope <channel|global>] [--channel <id>] [--platform <platform>]',
     notes: [
       'ユーザーが設定変更を明示依頼した場合だけ使う。',
       'Discordスレッドでは親チャンネルIDを--channelへ指定する。',

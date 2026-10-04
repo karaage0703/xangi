@@ -1,3 +1,16 @@
+import { checkAgentParents, parentDeliveryDue, parentWatchSettings } from './agent-parent-watch.js';
+import { reserveTeamContinuation } from './team-runner.js';
+import { executeAgentWork, registerAgentWork, prepareAgentWork } from './agent-work.js';
+import { validateTeamAssignments } from './teams.js';
+import { registerTeamRunner } from './team-runner.js';
+import {
+  agentWorkChannel,
+  registerAgentSelection,
+  removeRegisteredTeam,
+  removeRegisteredAgent,
+  resolveAgentBackend,
+  sessionAgent,
+} from './agent-selection.js';
 import { DocumentAttachments, AttachmentError, attachmentPaths } from './document-attachments.js';
 import { registerProjectAgents } from './project-agent-command.js';
 import { ProjectCatalog } from './project-catalog.js';
@@ -34,13 +47,13 @@ import {
   getActiveSessionId,
   updateSessionTitle,
   updateSessionProject,
-  clearClosedSessionAgentSelections,
   incrementMessageCount,
   createWebSession,
   clearResumedFromSessionId,
   setProviderSessionId,
   removeSession,
   closeSession,
+  closeSessions,
   getSessionLifecycle,
   WEB_CHAT_CONTEXT_PREFIX,
   subscribeSessionChanges,
@@ -266,6 +279,7 @@ function hasInternalPromptMetadata(text: string): boolean {
 }
 
 interface WebChatOptions {
+  platformTurnBusy?: (contextKey: string) => boolean;
   agentRunner: AgentRunner;
   /**
    * HTML UI and Web-only APIs are disabled when false. The shared HTTP
@@ -292,7 +306,7 @@ interface WebChatOptions {
   updateBackend?: (id: string) => Promise<BackendToolUpdateResult>;
 }
 
-export function startWebChat(options: WebChatOptions): void {
+export function startWebChat(options: WebChatOptions) {
   const { agentRunner } = options;
   const historyPrefetch = options.historyPrefetch ?? { enabled: false, count: 10 };
   const replySuggestions = options.replySuggestions ?? {
@@ -348,24 +362,45 @@ export function startWebChat(options: WebChatOptions): void {
   const webProjects = new ProjectCatalog(dataDir);
   const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
-  const notifyAgentRunParent = (completed: AgentRun) => {
-    const parent = completed.parentContextKey;
-    if (!parent || !options.scheduler) return;
-    // One completion turn can collect all parallel children. Do not repeatedly wake the parent.
-    if (
-      agentRuns
+  const completionDestination = (
+    run: AgentRun
+  ): { parent?: string; platform?: AgentRun['parentPlatform'] } => {
+    // Team member follow-ups report to the original caller, never wake the Team execution session.
+    if (run.teamTurnId && run.parentContextKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX)) {
+      const owner = agentRuns
         .list()
-        .some(
-          (run) =>
-            run.parentContextKey === parent && (run.status === 'queued' || run.status === 'running')
-        )
-    )
-      return;
+        .find((r) => `${WEB_CHAT_CONTEXT_PREFIX}${r.appSessionId}` === run.parentContextKey);
+      if (owner) return { parent: owner.parentContextKey, platform: owner.parentPlatform };
+    }
+    return {
+      parent: run.parentContextKey,
+      platform:
+        run.parentPlatform ??
+        (run.parentContextKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined),
+    };
+  };
+  const watchSettings = parentWatchSettings();
+  const completionDeliveries = new Set<string>();
+  const notifyAgentRunParent = (completed: AgentRun) => {
+    const destinationInfo = completionDestination(completed);
+    const parent = destinationInfo.parent;
+    if (!parent || !options.scheduler || completionDeliveries.has(parent)) return;
+    if (agentRunner.getTimeoutState?.(parent).active) return;
     const platform =
-      completed.parentPlatform ?? (parent.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined);
+      destinationInfo.platform ?? (parent.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined);
     if (!platform) return;
     const parentRunner = options.scheduler.getAgentRunner(platform);
     if (!parentRunner) {
+      for (const run of agentRuns
+        .list()
+        .filter(
+          (run) =>
+            completionDestination(run).parent === parent &&
+            parentDeliveryDue(run, Date.now(), watchSettings.checkMs)
+        )) {
+        agentRuns.markParentDeliveryAttempt(run.id);
+        agentRuns.setParentDeliveryError(run.id, `No completion runner for ${platform}`);
+      }
       console.warn(`[agent-run] No completion runner for ${platform}`);
       return;
     }
@@ -375,7 +410,11 @@ export function startWebChat(options: WebChatOptions): void {
         : parent;
     const pending = agentRuns
       .list()
-      .filter((run) => run.parentContextKey === parent && run.completedAt && !run.parentNotifiedAt);
+      .filter(
+        (run) =>
+          completionDestination(run).parent === parent &&
+          parentDeliveryDue(run, Date.now(), watchSettings.checkMs)
+      );
     if (!pending.length) return;
     const results = pending.map((run) => ({
       id: run.id,
@@ -384,22 +423,83 @@ export function startWebChat(options: WebChatOptions): void {
       usage: run.usage,
       result: run.result?.slice(0, 2000),
       error: run.error?.slice(0, 1000),
+      workThread: run.workThread?.url,
+      workDeliveryError: run.workDeliveryError,
     }));
     const prompt =
       `[子エージェントの実行完了]\n${JSON.stringify(results)}\n` +
       '全結果を確認して依頼に回答してください。必要な修正があれば同じ子へ再依頼できます。';
+    completionDeliveries.add(parent);
     void (async () => {
-      // The child can finish while the parent is still implementing another part.
-      // Wait in the host process, without spending parent model turns or racing its session.
-      while (agentRunner.getTimeoutState?.(parent).active) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
+      for (const run of pending) agentRuns.markParentDeliveryAttempt(run.id);
       await parentRunner(prompt, destination);
-      for (const run of pending) agentRuns.markParentNotified(run.id);
-    })().catch((error) => {
-      console.error(`[agent-run] Parent completion delivery failed for ${completed.id}:`, error);
-    });
+      for (const run of pending) {
+        const current = agentRuns.get(run.id);
+        if (current?.completedAt === run.completedAt && current?.workRevision === run.workRevision)
+          agentRuns.markParentNotified(run.id);
+      }
+    })()
+      .then(() => {
+        completionDeliveries.delete(parent);
+        const next = agentRuns
+          .list()
+          .find(
+            (run) =>
+              completionDestination(run).parent === parent &&
+              run.completedAt &&
+              !run.parentNotifiedAt
+          );
+        if (next) notifyAgentRunParent(next);
+      })
+      .catch((error) => {
+        completionDeliveries.delete(parent);
+        for (const run of pending) {
+          const current = agentRuns.get(run.id);
+          if (
+            current?.completedAt === run.completedAt &&
+            current?.workRevision === run.workRevision
+          )
+            agentRuns.setParentDeliveryError(
+              run.id,
+              error instanceof Error ? error.message : String(error)
+            );
+        }
+        console.error(`[agent-run] Parent completion delivery failed for ${completed.id}:`, error);
+      });
   };
+  let checkingParents = false;
+  const parentWatch = setInterval(() => {
+    if (checkingParents || !options.scheduler) return;
+    checkingParents = true;
+    void checkAgentParents({
+      store: agentRuns,
+      ...watchSettings,
+      destination: completionDestination,
+      notify: notifyAgentRunParent,
+      isDelivering: (parent) => completionDeliveries.has(parent),
+      send: async (platform, destination, text) => {
+        const sender = options.scheduler?.getSender(platform);
+        if (!sender) throw new Error(`No sender for ${platform}`);
+        await sender(
+          platform === 'web' && destination.startsWith(WEB_CHAT_CONTEXT_PREFIX)
+            ? destination.slice(WEB_CHAT_CONTEXT_PREFIX.length)
+            : destination,
+          text
+        );
+      },
+    })
+      .catch((error) => console.error('[agent-run] Parent watchdog failed:', error))
+      .finally(() => {
+        checkingParents = false;
+      });
+  }, watchSettings.checkMs);
+  parentWatch.unref();
+  registerAgentWork({
+    store: agentRuns,
+    runner: agentRunner,
+    notify: notifyAgentRunParent,
+    reserve: reserveTeamContinuation,
+  });
   const startAgentRun = async (body: Record<string, unknown>) => {
     if (!options.resolver) {
       throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
@@ -409,6 +509,11 @@ export function startWebChat(options: WebChatOptions): void {
       throw new AgentRunError('Projectが見つかりません', 404);
     const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
     const execution = webProjects.execution(undefined, agentId);
+    if (execution?.team?.leadership === 'caller')
+      execution.team.assignments = validateTeamAssignments(execution.team, body.teamAssignments);
+    // A dispatched Team already has assignments. Its caller instructions belong only
+    // to the conversation that plans the batch, never to the member execution prompt.
+    const instruction = execution?.team ? '' : String(execution?.prompt || body.instruction || '');
     const task = String(body.task || '');
     const backend = String(
       (agentId ? execution?.backend || options.resolver.resolve().backend : body.backend) ||
@@ -449,6 +554,7 @@ export function startWebChat(options: WebChatOptions): void {
     const appSessionId = createWebSession({
       projectId,
       selectedAgentId: agentId,
+      selectedAgentConfig: execution,
       title:
         String(body.title || '').trim() || `Agent Run: ${backend}${model ? ` / ${model}` : ''}`,
       workspaceId: workspace.id,
@@ -466,9 +572,17 @@ export function startWebChat(options: WebChatOptions): void {
       appSessionId,
       projectId,
       agentId,
+      teamId: execution?.team?.id,
       parentContextKey: body.parentContextKey as string | undefined,
       parentPlatform: body.parentPlatform as AgentRun['parentPlatform'],
     });
+    try {
+      run.workThread = await prepareAgentWork(run, agentRuns);
+    } catch (error) {
+      const failed = agentRuns.markFailed(run.id, error);
+      notifyAgentRunParent(failed);
+      return failed;
+    }
     invalidateSessionSnapshots();
 
     void (async () => {
@@ -488,17 +602,16 @@ export function startWebChat(options: WebChatOptions): void {
           workdir: workspace.path,
           skipPermissions: body.skipPermissions === true ? true : undefined,
         };
-        const result = await runWithBubbleEvents(
-          agentRunner,
-          `[プラットフォーム: Web]\n${execution?.prompt || body.instruction ? String(execution?.prompt || body.instruction) + '\n\n' : ''}${run.task}`,
-          {
-            threadId: threadIdFor('web', appSessionId),
-            turnId: `agent-run-${run.id}`,
-            platform: 'web',
-            userText: run.task,
-          },
-          {},
-          runOptions
+        const result = await executeAgentWork(
+          run,
+          agentRuns,
+          runOptions,
+          (prompt, callbacks, nextOptions) =>
+            agentRunner.runStream(
+              `[プラットフォーム: Web]\n${instruction ? instruction + '\n\n' : ''}${prompt}`,
+              callbacks,
+              nextOptions
+            )
         );
         setSession(contextKey, result.sessionId);
         setProviderSessionId(
@@ -511,9 +624,9 @@ export function startWebChat(options: WebChatOptions): void {
         );
         incrementMessageCount(appSessionId);
         if (result.failed) {
-          notifyAgentRunParent(agentRuns.markFailed(run.id, new Error(result.result)));
+          notifyAgentRunParent(agentRuns.get(run.id)!);
         } else {
-          notifyAgentRunParent(agentRuns.markSucceeded(run.id, result));
+          notifyAgentRunParent(agentRuns.get(run.id)!);
         }
       } catch (error) {
         notifyAgentRunParent(agentRuns.markFailed(run.id, error));
@@ -524,6 +637,15 @@ export function startWebChat(options: WebChatOptions): void {
 
     return run;
   };
+  registerTeamRunner({ registry: workspaceRegistry, runs: agentRuns, resolver: options.resolver });
+  registerAgentSelection(dataDir, {
+    catalog: webProjects,
+    registry: workspaceRegistry,
+    runner: agentRunner,
+    busy: (contextKey) =>
+      busySessions.has(contextKey.replace(/^web-chat:/, '')) ||
+      Boolean(options.platformTurnBusy?.(contextKey)),
+  });
   registerProjectAgents({
     catalog: webProjects,
     runs: agentRuns,
@@ -546,9 +668,10 @@ export function startWebChat(options: WebChatOptions): void {
 
   const resolveSessionWorkspace = async (appSessionId: string) => {
     const entry = getSessionEntry(appSessionId);
-    if (entry?.selectedAgentId) {
+    if (entry?.selectedAgentId && !entry.selectedAgentConfig) {
       return resolveWorkspace(
-        webProjects.execution(entry.projectId, entry.selectedAgentId)?.workspaceId
+        webProjects.execution(entry.projectId, entry.selectedAgentId, entry.selectedAgentConfig)
+          ?.workspaceId
       );
     }
     if (!entry?.workspaceId || !entry.workspacePath) return resolveWorkspace();
@@ -658,15 +781,24 @@ export function startWebChat(options: WebChatOptions): void {
   const resolveWebSessionBackend = (appSessionId: string) => {
     const entry = getSessionEntry(appSessionId);
     if (!entry || entry.platform !== 'web' || !options.resolver) return undefined;
-    const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
+    const project = webProjects.execution(
+      entry.projectId,
+      entry.selectedAgentId,
+      entry.selectedAgentConfig
+    );
     const projectDefault = projectBackendDefault(project);
     const contextKey = webContextKey(appSessionId);
-    const resolved = options.resolver.resolve(contextKey, projectDefault);
-    const source = options.resolver.getChannelOverride(contextKey)
-      ? 'session'
-      : projectDefault
-        ? 'project'
-        : 'default';
+    const agent = sessionAgent(appSessionId);
+    const resolved = agent
+      ? resolveAgentBackend(options.resolver, agent)
+      : options.resolver.resolve(contextKey, projectDefault);
+    const source = agent
+      ? 'agent'
+      : options.resolver.getChannelOverride(contextKey)
+        ? 'session'
+        : projectDefault
+          ? 'project'
+          : 'default';
     return { ...resolved, source };
   };
 
@@ -687,7 +819,11 @@ export function startWebChat(options: WebChatOptions): void {
       throw new Error(`Web session ${appSessionId} not found`);
     }
     const contextKey = webContextKey(appSessionId);
-    const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
+    const project = webProjects.execution(
+      entry.projectId,
+      entry.selectedAgentId,
+      entry.selectedAgentConfig
+    );
     const backendDefault = projectBackendDefault(project);
     const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
     let result: Awaited<ReturnType<AgentRunner['run']>>;
@@ -695,7 +831,7 @@ export function startWebChat(options: WebChatOptions): void {
       result = await agentRunner.run(
         `[プラットフォーム: Web]\n${prependWebProjectPrompt(project, prompt)}`,
         {
-          sessionId: getSession(contextKey),
+          sessionId: getSessionEntry(appSessionId)?.agent?.providerSessionId,
           channelId: contextKey,
           settingsChannelId: contextKey,
           appSessionId,
@@ -718,7 +854,7 @@ export function startWebChat(options: WebChatOptions): void {
       ctx?.onDelivery?.({
         platform: 'web',
         destinationId: appSessionId,
-        sessionId: getSession(contextKey),
+        sessionId: getSessionEntry(appSessionId)?.agent?.providerSessionId,
       });
       throw error;
     }
@@ -772,6 +908,7 @@ export function startWebChat(options: WebChatOptions): void {
       cursor?: string;
       q?: string;
       projectId?: string;
+      agentId?: string;
       lifecycle?: 'open' | 'closed';
       updatedSince?: string;
     } = {}
@@ -857,6 +994,7 @@ export function startWebChat(options: WebChatOptions): void {
         timeoutMs: timeoutState?.active ? timeoutState.timeoutMs : undefined,
         activity,
         projectId: s.projectId,
+        selectedAgentId: s.selectedAgentId,
         cwd: s.workspacePath ?? workdir,
         backend,
         modelExecution: execution,
@@ -912,6 +1050,7 @@ export function startWebChat(options: WebChatOptions): void {
           timeoutMs: undefined,
           activity: undefined,
           projectId: undefined,
+          selectedAgentId: undefined,
         },
       ];
     });
@@ -942,6 +1081,7 @@ export function startWebChat(options: WebChatOptions): void {
             return false;
           }
         }
+        if (query.agentId && candidate.selectedAgentId !== query.agentId) return false;
         if (query.projectId === '__none__' && candidate.projectId) return false;
         if (
           query.projectId &&
@@ -1125,7 +1265,7 @@ export function startWebChat(options: WebChatOptions): void {
     const url = rawUrl.split('?')[0];
 
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
@@ -1211,7 +1351,11 @@ export function startWebChat(options: WebChatOptions): void {
           replySuggestions,
           async (appSessionId, text) => {
             const entry = getSessionEntry(appSessionId)!;
-            const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
+            const project = webProjects.execution(
+              entry.projectId,
+              entry.selectedAgentId,
+              entry.selectedAgentConfig
+            );
             const workspace = await resolveSessionWorkspace(appSessionId);
             const defaults = projectBackendDefault(project);
             return {
@@ -1993,7 +2137,11 @@ export function startWebChat(options: WebChatOptions): void {
         const commandSessionId = body.appSessionId ? String(body.appSessionId) : undefined;
         const commandSession = commandSessionId ? getSessionEntry(commandSessionId) : undefined;
         const commandProject = commandSession
-          ? webProjects.execution(commandSession.projectId, commandSession.selectedAgentId)
+          ? webProjects.execution(
+              commandSession.projectId,
+              commandSession.selectedAgentId,
+              commandSession.selectedAgentConfig
+            )
           : undefined;
         let result = await executeWebCommand(input, {
           appSessionId: commandSessionId,
@@ -2235,8 +2383,79 @@ export function startWebChat(options: WebChatOptions): void {
       });
       return;
     }
+    if (url === '/api/teams' && req.method === 'GET') {
+      sendJson(
+        res,
+        200,
+        { teams: webProjects.teams(), agents: webProjects.teamAgents() },
+        { 'Cache-Control': 'no-store' }
+      );
+      return;
+    }
+    const teamMatch = url.match(/^\/api\/teams\/([^/]+)$/);
+    if (
+      (url === '/api/teams' && req.method === 'POST') ||
+      (teamMatch && ['PATCH', 'DELETE'].includes(req.method || ''))
+    ) {
+      await handleProjectMutation(res, async () => {
+        const id = teamMatch ? decodeURIComponent(teamMatch[1]) : undefined;
+        if (id && !webProjects.team(id)) throw new WebProjectError('Teamが見つかりません', 404);
+        if (req.method === 'DELETE') {
+          removeRegisteredTeam(id!, webProjects);
+          return { body: { ok: true } };
+        }
+        const team = webProjects.saveTeam(await readBody(req), id);
+        return { status: id ? 200 : 201, body: { team } };
+      });
+      return;
+    }
     if (url === '/api/agents' && req.method === 'GET') {
-      sendJson(res, 200, { agents: webProjects.agents() }, { 'Cache-Control': 'no-store' });
+      sendJson(
+        res,
+        200,
+        {
+          agents: webProjects
+            .agents()
+            .map((agent) => ({ ...agent, workChannel: agentWorkChannel(agent.id) || null })),
+        },
+        { 'Cache-Control': 'no-store' }
+      );
+      return;
+    }
+    const agentChannelMatch = url.match(/^\/api\/agents\/([^/]+)\/channel$/);
+    if (agentChannelMatch && req.method === 'PUT') {
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      await handleProjectMutation(res, async () => {
+        const id = decodeURIComponent(agentChannelMatch[1]);
+        if (!webProjects.agent(id)) throw new WebProjectError('エージェントが見つかりません', 404);
+        if (!options.config || !options.resolver)
+          throw new WebProjectError('runtime settings are not available', 503);
+        const body = await readBody(req);
+        const current = agentWorkChannel(id);
+        if (body.action !== 'set' && body.action !== 'reset')
+          throw new WebProjectError('操作が不正です', 400);
+        if (body.action === 'reset' && !current) return { body: { workChannel: null } };
+        const target = body.action === 'reset' ? current! : body;
+        await updateWebRuntimeSetting(
+          {
+            name: 'agent',
+            action: body.action,
+            value: id,
+            platform: target.platform,
+            channelId: target.channelId,
+          },
+          {
+            config: options.config,
+            resolver: options.resolver,
+            agentRunner,
+            modelDiscovery: options.discoverModels,
+          }
+        );
+        return { body: { workChannel: agentWorkChannel(id) || null } };
+      });
       return;
     }
     const agentMatch = url.match(/^\/api\/agents\/([^/]+)$/);
@@ -2249,16 +2468,7 @@ export function startWebChat(options: WebChatOptions): void {
         if (id && !webProjects.agent(id))
           throw new WebProjectError('エージェントが見つかりません', 404);
         if (req.method === 'DELETE') {
-          if (
-            listAllSessions(true).some(
-              (s) =>
-                s.selectedAgentId === id &&
-                (getSessionLifecycle(s.id) !== 'closed' || busySessions.has(s.id))
-            )
-          )
-            throw new WebProjectError('会話で使用中のエージェントです', 409);
-          webProjects.removeAgent(id!);
-          clearClosedSessionAgentSelections([id!]);
+          removeRegisteredAgent(id!, webProjects, (sessionId) => busySessions.has(sessionId));
           return { body: { ok: true } };
         }
         const body = await readBody(req);
@@ -2348,6 +2558,7 @@ export function startWebChat(options: WebChatOptions): void {
             cursor: searchParams.get('cursor') || undefined,
             q: searchParams.get('q') || '',
             projectId: searchParams.get('projectId') || undefined,
+            agentId: searchParams.get('agentId') || undefined,
             lifecycle:
               searchParams.get('lifecycle') === 'open' || searchParams.get('lifecycle') === 'closed'
                 ? (searchParams.get('lifecycle') as 'open' | 'closed')
@@ -2362,6 +2573,8 @@ export function startWebChat(options: WebChatOptions): void {
     // GET /api/sessions/stream — Monitor/Web Chat 共通の軽量更新通知。
     // 初期 snapshot を即返し、その後は turn の境界イベントだけを差分送信する。
     if (url === '/api/sessions/stream' && req.method === 'GET') {
+      const streamAgentId =
+        new URL(rawUrl, 'http://localhost').searchParams.get('agentId') || undefined;
       const streamProjectId =
         new URL(rawUrl, 'http://localhost').searchParams.get('projectId') || undefined;
       res.writeHead(200, {
@@ -2384,7 +2597,9 @@ export function startWebChat(options: WebChatOptions): void {
         }
       };
       const sendSnapshot = () => {
-        const payload = JSON.stringify(buildSessionsResponse({ projectId: streamProjectId }));
+        const payload = JSON.stringify(
+          buildSessionsResponse({ projectId: streamProjectId, agentId: streamAgentId })
+        );
         if (backpressured) {
           pendingSnapshot = payload;
           return;
@@ -2719,7 +2934,12 @@ export function startWebChat(options: WebChatOptions): void {
           selectedAgentId ? execution?.workspaceId : body.workspaceId
         );
         const snapshot = { workspaceId: workspace.id, workspacePath: workspace.path };
-        const newAppId = createWebSession({ projectId: project?.id, selectedAgentId, ...snapshot });
+        const newAppId = createWebSession({
+          projectId: project?.id,
+          selectedAgentId,
+          selectedAgentConfig: execution?.team ? execution : undefined,
+          ...snapshot,
+        });
         console.log(
           `[web-chat] Created new web session ${newAppId}${project ? ` in Project ${project.id}` : ''}`
         );
@@ -2898,6 +3118,51 @@ export function startWebChat(options: WebChatOptions): void {
       );
       invalidateSessionSnapshots();
       sendJson(res, 200, { ok: true, stopped });
+      return;
+    }
+
+    // Complete the caller's snapshot of waiting sessions without stopping new turns.
+    if (url === '/api/sessions/close-waiting' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string' || !id)) {
+        sendJson(res, 400, { error: 'ids must be an array of non-empty session IDs' });
+        return;
+      }
+      const results: Array<{ id: string; status: string }> = [];
+      const targets: Parameters<typeof closeSessions>[0][number][] = [];
+      // No awaits between rechecking activity and closing: a new turn cannot interleave.
+      for (const id of new Set(body.ids as string[])) {
+        const entry = getSessionEntry(id);
+        if (!entry) {
+          results.push({ id, status: 'not_found' });
+          continue;
+        }
+        if (getSessionLifecycle(id) === 'closed') {
+          results.push({ id, status: 'already_closed' });
+          continue;
+        }
+        const current = getActiveSessionId(entry.contextKey) === id;
+        const threadId = current ? sessionThreadId(entry) : null;
+        if (
+          entry.scope === 'scheduler' ||
+          busySessions.has(id) ||
+          (current &&
+            (options.platformTurnBusy?.(entry.contextKey) ||
+              (threadId && getActivity(threadId)?.active)))
+        ) {
+          results.push({ id, status: 'running' });
+          continue;
+        }
+        try {
+          if (current) agentRunner.destroy?.(entry.contextKey);
+          targets.push({ id, reason: entry.platform === 'web' ? 'web' : 'monitor' });
+          results.push({ id, status: 'closed' });
+        } catch {
+          results.push({ id, status: 'failed' });
+        }
+      }
+      closeSessions(targets);
+      sendJson(res, 200, { results });
       return;
     }
 
@@ -3281,7 +3546,11 @@ export function startWebChat(options: WebChatOptions): void {
           // 安全網: contextKey と active が紐付いていることを保証
           ensureSession(ctxKey, { platform: 'web' });
           const sessionId = getSession(ctxKey);
-          const project = webProjects.execution(entry.projectId, entry.selectedAgentId);
+          const project = webProjects.execution(
+            entry.projectId,
+            entry.selectedAgentId,
+            entry.selectedAgentConfig
+          );
           const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
           const backendDefault = projectBackendDefault(project);
           const resolvedBackend = options.resolver?.resolve(ctxKey, backendDefault);
@@ -3620,6 +3889,7 @@ export function startWebChat(options: WebChatOptions): void {
   });
 
   server.on('close', unsubscribeSessionChanges);
+  server.on('close', () => clearInterval(parentWatch));
 
   server.listen(port, host, () => {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。
@@ -3650,6 +3920,7 @@ export function startWebChat(options: WebChatOptions): void {
         // resolveAccessUrls 内で握り潰すが念のため
       });
   });
+  return server;
 }
 
 // 単体テストから参照される

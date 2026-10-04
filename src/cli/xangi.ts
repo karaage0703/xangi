@@ -130,7 +130,8 @@ Usage:
   xangi extension <start|stop|restart> --all
   xangi worker install --pair CODE [--workspace PATH]
   xangi worker <run|start|stop|restart|status|uninstall>
-  xangi agent <create|list|run|status|wait> [--agent ID --task TEXT] [--id RUN_ID]
+  xangi team <list|show|run|status|wait|logs>  Teamの確認・依頼・結果取得
+  xangi agent <create|list|delete|run|status|wait|logs> [--agent ID --task TEXT] [--id RUN_ID]
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -512,14 +513,16 @@ export async function run(argv = process.argv): Promise<void> {
     printUpdateHelp();
     return;
   }
-  if (argv[2] === 'agent') {
+  if (argv[2] === 'agent' || argv[2] === 'team') {
+    const command = argv[2];
     const action = argv[3] || 'list';
     if (['help', '--help', '-h'].includes(action)) {
-      console.log(await runToolCommand(['help', 'agent']));
+      console.log(await runToolCommand(['help', command]));
     } else {
       const args = argv.slice(4);
-      if (action === 'run' && args[0] && !args[0].startsWith('--')) args.unshift('--agent');
-      console.log(await runToolCommand(['agent', '--action', action, ...args]));
+      if (['run', 'delete', 'show'].includes(action) && args[0] && !args[0].startsWith('--'))
+        args.unshift(command === 'team' ? '--team' : '--agent');
+      console.log(await runToolCommand([command, '--action', action, ...args]));
     }
     return;
   }

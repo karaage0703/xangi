@@ -1,3 +1,4 @@
+import { migrateTeamState } from './team-migration.js';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
@@ -107,6 +108,8 @@ export interface SessionEntry {
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
   selectedAgentId?: string;
+  agentBindingKey?: string;
+  selectedAgentConfig?: import('./web-projects.js').WebProject;
   /** xangi間HTTP会話で、このセッションに対応する送信元instance。 */
   interAgentPeerId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
@@ -131,6 +134,8 @@ interface SessionSnapshotOptions {
   workspacePath?: string;
   projectId?: string;
   selectedAgentId?: string;
+  agentBindingKey?: string;
+  selectedAgentConfig?: import('./web-projects.js').WebProject;
 }
 
 let sessionsPath: string | null = null;
@@ -192,7 +197,7 @@ function loadSessionsFromFile(): void {
   try {
     if (existsSync(path)) {
       const raw = readFileSync(path, 'utf-8');
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw, migrateTeamState);
 
       // 新フォーマット検出
       if (parsed.activeByContext && parsed.sessions) {
@@ -450,6 +455,7 @@ export function createWebSession(
     workspacePath: opts.workspacePath ?? resumedFrom?.workspacePath,
     projectId: opts.projectId ?? resumedFrom?.projectId,
     selectedAgentId: opts.selectedAgentId ?? resumedFrom?.selectedAgentId,
+    selectedAgentConfig: opts.selectedAgentConfig ?? resumedFrom?.selectedAgentConfig,
     interAgentPeerId: opts.interAgentPeerId,
   });
 }
@@ -486,6 +492,8 @@ export function createSession(
     workspacePath: opts.workspacePath,
     projectId: opts.projectId,
     selectedAgentId: opts.selectedAgentId,
+    agentBindingKey: opts.agentBindingKey,
+    selectedAgentConfig: opts.selectedAgentConfig,
   });
 }
 
@@ -502,6 +510,9 @@ export function createSchedulerSession(
       title: opts.title,
       platform: opts.platform,
       scope: 'scheduler',
+      selectedAgentId: opts.selectedAgentId,
+      selectedAgentConfig: opts.selectedAgentConfig,
+      agentBindingKey: opts.agentBindingKey,
       workspaceId: opts.workspaceId,
       workspacePath: opts.workspacePath,
     },
@@ -577,6 +588,13 @@ export function setSession(
   providerSessionId: string,
   scope: SessionScope = 'interactive'
 ): void {
+  // Web contexts already identify their application session. A closed routing
+  // pointer must never create an unrelated, empty Discord session.
+  if (channelId.startsWith(WEB_CHAT_CONTEXT_PREFIX)) {
+    const appId = channelId.slice(WEB_CHAT_CONTEXT_PREFIX.length);
+    if (data.sessions[appId]?.platform === 'web') setProviderSessionId(appId, providerSessionId);
+    return;
+  }
   let appId = data.activeByContext[channelId];
   if (!appId || !data.sessions[appId]) {
     appId = createSession(channelId, { scope });
@@ -617,6 +635,7 @@ export function clearClosedSessionAgentSelections(agentIds: string[], projectId?
       agentIds.includes(entry.selectedAgentId)
     ) {
       delete entry.selectedAgentId;
+      delete entry.selectedAgentConfig;
       changed = true;
     }
   }
@@ -827,19 +846,31 @@ export function getSessionLifecycle(appSessionId: string): SessionLifecycle {
 
 /** Sessionを終了済みにし、次回投稿のrouting pointerから外す。履歴は削除しない。 */
 export function closeSession(appSessionId: string, reason: SessionCloseReason = 'other'): boolean {
-  const entry = data.sessions[appSessionId];
-  if (!entry) return false;
+  return closeSessions([{ id: appSessionId, reason }]).length > 0;
+}
+
+/** Close a batch with one persistence write and one subscriber notification. */
+export function closeSessions(
+  targets: ReadonlyArray<{ id: string; reason: SessionCloseReason }>
+): string[] {
+  const closed = new Set<string>();
   const now = new Date().toISOString();
-  entry.lifecycle = 'closed';
-  entry.closedAt = now;
-  entry.closeReason = reason;
-  entry.updatedAt = now;
+  for (const { id, reason } of targets) {
+    const entry = data.sessions[id];
+    if (!entry || closed.has(id)) continue;
+    entry.lifecycle = 'closed';
+    entry.closedAt = now;
+    entry.closeReason = reason;
+    entry.updatedAt = now;
+    closed.add(id);
+  }
+  if (closed.size === 0) return [];
   for (const [ctx, id] of Object.entries(data.activeByContext)) {
-    if (id === appSessionId) delete data.activeByContext[ctx];
+    if (closed.has(id)) delete data.activeByContext[ctx];
   }
   saveSessionsToFile();
   notifySessionChanges();
-  return true;
+  return [...closed];
 }
 
 /** contextの現在Sessionを終了する。 */
@@ -935,4 +966,23 @@ export function hasSessionGoneIdle(
   const last = Date.parse(lastActivityIso);
   if (!Number.isFinite(last)) return false;
   return now - last >= idleMs;
+}
+
+/** Drop a deleted Team snapshot while preserving a separately selected channel Agent. */
+export function clearClosedSessionTeamSelections(teamId: string): void {
+  let changed = false;
+  for (const entry of Object.values(data.sessions)) {
+    if (
+      getSessionLifecycle(entry.id) !== 'closed' ||
+      entry.selectedAgentConfig?.team?.id !== teamId
+    )
+      continue;
+    if (entry.selectedAgentId?.startsWith('team:')) delete entry.selectedAgentId;
+    delete entry.selectedAgentConfig;
+    changed = true;
+  }
+  if (changed) {
+    saveSessionsToFile();
+    notifySessionChanges();
+  }
 }

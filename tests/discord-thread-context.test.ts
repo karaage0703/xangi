@@ -726,6 +726,68 @@ describe('Discord thread run lock', () => {
     expect(runStream).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('本文非表示の経路でも準備完了時にタイトルを生成する (streaming=%s)', async (streaming) => {
+    saveSettings({
+      discordAutoReplyChannels: { '123': true },
+    });
+
+    const handlers = new Map<string, (message: Message) => Promise<void>>();
+    const client = {
+      user: { id: '999' },
+      on: vi.fn((event: string, handler: (message: Message) => Promise<void>) => {
+        handlers.set(event, handler);
+        return client;
+      }),
+      channels: { fetch: vi.fn() },
+    } as unknown as Client;
+    const runStream = vi.fn(async (_prompt, callbacks) => { callbacks.onBackendReady?.(); return {result:'ok',sessionId:'provider-1'}; });
+    const run = vi.fn().mockResolvedValue({result:'更新したタイトル',sessionId:''});
+    const agentRunner = {
+      runStream,
+      run,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { config: { skipPermissions: false, workdir: tempDir } },
+      sessionTitle: { mode: 'ai' },
+      discord: {
+        allowedUsers: ['*'],
+        replyInThread: true,
+        streaming,
+        showThinking: false,
+        showButtons: false,
+        sessionTitleAiOnce: false,
+      },
+    } as Config;
+
+    registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+    });
+
+    const message = createExistingThreadMessage({
+      messageId: 'existing-thread-title-1',
+      content: '内部セッションを作り直す発言',
+      threadId: 'thread-title-123',
+      parentChannelId: '123',
+      starterContent: 'スレッド開始メッセージ',
+      client,
+    });
+
+    const rename=vi.fn().mockResolvedValue(undefined);
+    (message.channel as any).setName=rename;
+    await handlers.get(Events.MessageCreate)!(message);
+
+    const appSessionId = getActiveSessionId('thread-title-123');
+    expect(appSessionId).toBeDefined();
+    await vi.waitFor(()=>expect(getSessionEntry(appSessionId!)?.title).toBe('更新したタイトル'));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledWith('更新したタイトル');
+    expect(runStream).toHaveBeenCalledTimes(1);
+  });
+
   it('既存スレッド内メッセージでは親チャンネル topic をプロンプトに含める', async () => {
     saveSettings({
       discordAutoReplyChannels: { '123': true },

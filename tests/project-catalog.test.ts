@@ -199,3 +199,22 @@ describe('shared projects and agents', () => {
     expect(reloaded.agent(a.id)?.localLlmMode).toBeUndefined();
   });
 });
+
+it('merges legacy Agent roles once and migrates named hierarchy members without dropping instructions',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'simplify-team-'));
+ try {
+  const c=new ProjectCatalog(dir);
+  const a=c.saveAgent({name:'Lead',prompt:'standing instructions'});
+  const b=c.saveAgent({name:'Member',prompt:'member instructions'});
+  const t=c.saveTeam({name:'Team',members:[{agentId:a.id},{agentId:b.id,role:'review'}]});
+  const file=join(dir,'project-catalog.json');const raw=JSON.parse(readFileSync(file,'utf8'));
+  raw.agents[0].role='specialty';raw.teams[0].members[0].role='specialty';raw.teams[0].leadership='fixed';raw.teams[0].members[1].reportsTo=a.id;
+  writeFileSync(file,JSON.stringify(raw));
+  const migrated=new ProjectCatalog(dir);
+  expect(migrated.agent(a.id)?.prompt).toBe('specialty\n\nstanding instructions');
+  expect(migrated.agent(a.id)).not.toHaveProperty('role');
+  expect(migrated.team(t.id)).toMatchObject({leadership:'caller',members:[{agentId:a.id,role:''},{agentId:b.id,role:'review'}]});
+  expect(migrated.team(t.id)?.members.some(m=>m.reportsTo)).toBe(false);
+  const saved=readFileSync(file,'utf8');new ProjectCatalog(dir);expect(readFileSync(file,'utf8')).toBe(saved);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});

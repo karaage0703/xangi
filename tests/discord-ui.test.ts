@@ -1,5 +1,8 @@
+import { startActivity, updateActivityTool, completeActivity, clearActivities } from '../src/activity-store.js';
 import { describe, expect, it } from 'vitest';
 import {
+  prepareDiscordCompletion,
+  discordToolHistoryByMessageId,
   createCompletedButtons,
   createDiscordHistoryCustomId,
   parseDiscordHistoryCustomId,
@@ -75,4 +78,21 @@ describe('createReplySuggestionButtons', () => {
       'xangi_reply_suggestion_123_2',
     ]);
   });
+});
+
+
+it('shares History visibility and binding across all Discord completion paths', () => {
+  const context = { threadId: 'web:shared-completion', turnId: 'turn-1', platform: 'web' as const };
+  startActivity(context);
+  updateActivityTool(context, 'exec', { cmd: 'echo checked' });
+  completeActivity(context, 'final');
+  const options = { historyContext: context, finalResponse: 'final', historyEnabled: true, showLeave: true };
+  const completion = prepareDiscordCompletion(options);
+  expect(completion.buttons.components.map((b) => b.data.label)).toEqual(['Close', 'History']);
+  completion.bind('shared-message');
+  expect(discordToolHistoryByMessageId.get('shared-message')).toHaveLength(1);
+  expect(prepareDiscordCompletion({ ...options, historyEnabled: false }).buttons.components).toHaveLength(1);
+  expect(prepareDiscordCompletion({ ...options, historyContext: undefined }).buttons.components).toHaveLength(1);
+  clearActivities();
+  discordToolHistoryByMessageId.delete('shared-message');
 });

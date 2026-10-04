@@ -49,7 +49,7 @@ export interface BubbleEventContext {
 const CANCEL_MESSAGE = 'Request cancelled by user';
 
 export async function runWithBubbleEvents(
-  runner: AgentRunner,
+  runner: Pick<AgentRunner, 'runStream'>,
   prompt: string,
   ctx: BubbleEventContext,
   callbacks: StreamCallbacks = {},

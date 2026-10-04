@@ -5,6 +5,8 @@ const agentCli =
   fileURLToPath(new URL('../../bin/xangi', import.meta.url)).replaceAll("'", "'\\''") +
   "' agent";
 
+const teamCli = agentCli.replace(/ agent$/, ' team');
+
 /** 全プラットフォーム共通の、実行時に必要な契約だけを保持する。 */
 export const XANGI_COMMANDS_COMMON = `## オンデマンドヘルプ
 
@@ -20,13 +22,17 @@ models / runtime_settings / system_restart / trigger を使う前に xangi tool 
 
 ## エージェントへの依頼
 
-別エージェントへ任せる依頼では xangi tool help agent を確認する。開発作業では親が対象リポの専用worktreeと必要な指示・スキルを用意し、Agent作成から結果確認まで担当する。
+別エージェントへ任せる依頼では xangi tool help agent を確認する。Workspaceの共有・分離は作業内容に応じて判断する。編集が競合する場合は専用worktreeを用意し、親が必要な指示・スキルの準備、Agent作成、結果確認を担当する。
 
 どの会話からもAgentを呼べる。以下の絶対パスを使う。
 - ${agentCli} list で登録済みエージェントを確認する。
 - ${agentCli} run <担当ID> --task "依頼内容と必要な背景" で依頼する。子へ渡るのは担当固有の指示と依頼文だけ。親の会話履歴やプロジェクトの指示は自動継承しない。
 - 実行IDを控え、別作業がなければターンを終了する。完了時に元の会話へ結果が届く。確認してから回答する。
 - 手動確認は ${agentCli} status --id <実行ID>、同期実行時だけ ${agentCli} wait --id <実行ID> を使う。
+
+## Team
+
+Teamは個別Agent一覧と別。xangi tool help team を確認し、${teamCli} list/show/run/status/waitを使う。呼び出し元が前提確認・独立分担を行い、一括並列依頼する。完了通知を待ち、結果を確認・集約する。
 
 ## 進捗カード
 

@@ -4,7 +4,7 @@ import { getBackendDisplayName } from './agent-runner.js';
 import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
-import { startSlackBot } from './slack.js';
+import { startSlackBot, isSlackConversationBusy } from './slack.js';
 import { listDiscordSettingsChannels, type SettingsChannelListers } from './settings-channels.js';
 import { initSettings, loadSettings } from './settings.js';
 import { Scheduler, type Platform } from './scheduler.js';
@@ -176,6 +176,7 @@ async function main() {
   if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled || remotePlatformEnabled) {
     startWebChat({
       agentRunner,
+      platformTurnBusy: (key) => discordTurnCoordinator.isBusy(key) || isSlackConversationBusy(key),
       historyPrefetch: config.historyPrefetch,
       replySuggestions: config.web,
       config,

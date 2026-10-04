@@ -1,3 +1,5 @@
+import { runTeamTurn, cancelTeam, teamTimeoutState, extendTeamTimeout } from './team-runner.js';
+import { sessionAgent, resolveAgentBackend } from './agent-selection.js';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { realpathSync } from 'fs';
@@ -240,6 +242,11 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    const team = !options?.internalTask && sessionAgent(options?.appSessionId)?.team;
+    if (team && (team.leadership !== 'caller' || team.assignments))
+      return runTeamTurn(this, team, prompt, {}, options!, () =>
+        this.applyUserPromptSubmitHooks(prompt, options)
+      );
     const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
       await this.prepareExecution(prompt, options);
     this.retainRunner(runner);
@@ -267,6 +274,11 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const team = !options?.internalTask && sessionAgent(options?.appSessionId)?.team;
+    if (team && (team.leadership !== 'caller' || team.assignments))
+      return runTeamTurn(this, team, prompt, callbacks, options!, () =>
+        this.applyUserPromptSubmitHooks(prompt, options)
+      );
     const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
       await this.prepareExecution(prompt, options);
     this.retainRunner(runner);
@@ -331,10 +343,17 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private async prepareExecution(prompt: string, options?: RunOptions) {
     const startedAt = Date.now();
     const channelId = options?.channelId;
-    const resolved = this.resolver.resolve(
-      options?.settingsChannelId ?? channelId,
-      this.getRequestDefault(options)
-    );
+    const agent = options?.internalTask ? undefined : sessionAgent(options?.appSessionId);
+    const resolved =
+      agent && !(agent.team?.leadership === 'caller' && agent.id.startsWith('team:'))
+        ? resolveAgentBackend(this.resolver, agent)
+        : this.resolver.resolve(
+            options?.settingsChannelId ?? channelId,
+            this.getRequestDefault(options)
+          );
+    const entry = options?.appSessionId ? getSessionEntry(options.appSessionId) : undefined;
+    if (agent && entry?.platform !== 'web' && agent.prompt)
+      prompt = `<agent-instructions>\n${agent.prompt}\n</agent-instructions>\n\n${prompt}`;
     const runner = this.getRunner(
       options?.runnerKey ?? channelId,
       resolved,
@@ -569,6 +588,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * キャンセル
    */
   cancel(channelId?: string): boolean {
+    if (channelId && cancelTeam(channelId, this)) return true;
     if (channelId) {
       const channelEntry = this.channelRunners.get(channelId);
       if (channelEntry?.runner.cancel) {
@@ -582,6 +602,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * 指定チャンネルのランナーを破棄
    */
   destroy(channelId: string): boolean {
+    if (cancelTeam(channelId, this)) return true;
     // チャンネル専用ランナーがあれば破棄
     const hadChannelRunner = this.channelRunners.has(channelId);
     this.destroyChannelRunner(channelId);
@@ -596,6 +617,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * 指定チャンネルのランナーがプールに存在するか
    */
   hasRunner(channelId: string): boolean {
+    if (teamTimeoutState(channelId, this)) return true;
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry) {
       return channelEntry.runner.hasRunner?.(channelId) ?? false;
@@ -607,6 +629,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * 指定チャンネルの現在のタイムアウト状態を取得（内部 runner にパススルー）
    */
   getTimeoutState(channelId: string): TimeoutState {
+    const team = teamTimeoutState(channelId, this);
+    if (team) return team;
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry?.runner.getTimeoutState) {
       return channelEntry.runner.getTimeoutState(channelId);
@@ -619,6 +643,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * `additionalMs` 省略時は残り時間を加算 (内部 runner 側で remainingMs を採用)。
    */
   extendTimeout(channelId: string, additionalMs?: number): ExtendTimeoutResult {
+    const team = extendTeamTimeout(channelId, this, additionalMs);
+    if (team) return team;
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry?.runner.extendTimeout) {
       return channelEntry.runner.extendTimeout(channelId, additionalMs);

@@ -1,3 +1,5 @@
+import { findAgentWork, submitAgentWork } from '../agent-work.js';
+import { registerDiscordAgentWork } from './agent-work.js';
 import {
   Events,
   Message,
@@ -12,7 +14,6 @@ import { formatAgentErrorForUser, shouldSendErrorFollowUp } from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
-import { getTurnHistory } from '../activity-store.js';
 import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from '../file-utils.js';
 import { recoverAttachmentOnce } from '../attachment-recovery.js';
@@ -59,7 +60,7 @@ import {
 } from '../transcript-logger.js';
 import {
   createProcessingButtons,
-  createCompletedButtons,
+  prepareDiscordCompletion,
   getDiscordTimeoutInfoFor,
   discordProcessingMessages,
   discordToolHistoryByMessageId,
@@ -72,7 +73,7 @@ import {
   sanitizeReplySuggestionOutput,
   stripReplySuggestionMarkup,
 } from '../reply-suggestions.js';
-import { appendToolHistory, addToolHistory, withoutFinalResponse } from '../tool-history.js';
+import { appendToolHistory, addToolHistory } from '../tool-history.js';
 import {
   fetchDiscordLinkContent,
   fetchReplyContent,
@@ -294,7 +295,6 @@ export async function processPrompt(
   // 以降のセッション / runner / timeout UI / Stop はこのキーに揃える。
   const conversationChannelId = target.conversationChannelId;
   const settingsChannelId = target.settingsChannelId;
-  const existingProviderSessionId = getSession(conversationChannelId);
   let resolvedSessionWorkspace: Awaited<ReturnType<typeof ensureSessionWithWorkspace>>;
   try {
     resolvedSessionWorkspace = await ensureSessionWithWorkspace({
@@ -308,6 +308,7 @@ export async function processPrompt(
     return null;
   }
   const { appSessionId, workspace } = resolvedSessionWorkspace;
+  const existingProviderSessionId = getSession(conversationChannelId);
   const sessionEntry = getSessionEntry(appSessionId);
   if (
     config.discord.sessionTitleAiOnce === true &&
@@ -613,6 +614,7 @@ export async function processPrompt(
           prompt,
           eventCtx,
           {
+            onBackendReady: sessionCallbacks.onBackendReady,
             onToolUse: sessionCallbacks.onToolUse,
             onTraceEvent: sessionCallbacks.onTraceEvent,
           },
@@ -693,16 +695,6 @@ export async function processPrompt(
     );
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
-    const turnHistory = withoutFinalResponse(
-      getTurnHistory(eventCtx.threadId, eventCtx.turnId).filter(
-        (entry) => !(entry.kind === 'tool' && entry.fileChanges)
-      ),
-      result
-    );
-    const showToolsButton =
-      toolHistoryMode === 'button' &&
-      (config.discord.showToolButton ?? true) &&
-      turnHistory.length > 0;
     // === セパレータで明示的に分割（content-digest等で複数投稿を1応答に含める用途）
     // LLMが前後に空白や余分な改行を入れることがあるため、正規表現で緩くマッチ
     const SEPARATOR_REGEX = /\n\s*===\s*\n/;
@@ -713,17 +705,14 @@ export async function processPrompt(
           .filter(Boolean)
       : [displayTextWithTools];
 
-    const completedButtons = showButtons
-      ? createCompletedButtons({
-          showTools: showToolsButton,
-          historyContext: {
-            threadId: eventCtx.threadId,
-            turnId: eventCtx.turnId,
-          },
-          showLeave: target.isThread,
-          showReplySuggestions: extracted.suggestions.length > 0,
-        })
-      : undefined;
+    const completion = prepareDiscordCompletion({
+      historyContext: { threadId: eventCtx.threadId, turnId: eventCtx.turnId },
+      finalResponse: result,
+      historyEnabled: toolHistoryMode === 'button' && (config.discord.showToolButton ?? true),
+      showLeave: target.isThread,
+      showReplySuggestions: extracted.suggestions.length > 0,
+    });
+    const completedButtons = showButtons ? completion.buttons : undefined;
     const finalReplyMessage = await sendDiscordCompletedResult({
       replyMessage: replyMessage!,
       outputChannel,
@@ -733,9 +722,7 @@ export async function processPrompt(
 
     discordToolHistoryByMessageId.delete(replyMessage!.id);
     discordReplySuggestionsByMessageId.delete(replyMessage!.id);
-    if (showToolsButton) {
-      discordToolHistoryByMessageId.set(finalReplyMessage.id, turnHistory);
-    }
+    if (showButtons) completion.bind(finalReplyMessage.id);
     if (showButtons && extracted.suggestions.length > 0) {
       discordReplySuggestionsByMessageId.set(finalReplyMessage.id, extracted.suggestions);
     }
@@ -842,6 +829,8 @@ export async function processPrompt(
             sessionId,
             channelId: conversationChannelId,
             appSessionId: followUpAppId,
+            settingsChannelId,
+            workdir: sessionWorkdir,
           });
           if (followUpResult.result) {
             setSession(conversationChannelId, followUpResult.sessionId);
@@ -953,6 +942,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
 
   // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
   // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
+  registerDiscordAgentWork(client, agentRunner, config.discord);
   const consecutiveBotResponses = new Map<string, { lastBotId: string; count: number }>();
 
   // Discord でユーザがメッセージを編集 → transcript jsonl にも反映する。
@@ -1072,7 +1062,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     const hasActiveThreadSession =
       parentChannelId !== null && !!getActiveSessionId(message.channel.id);
 
-    if (!isMentioned && !isDM && !isAutoReplyChannel && !hasActiveThreadSession) return;
+    const workRun = findAgentWork('discord', message.channel.id);
+    if (!isMentioned && !isDM && !isAutoReplyChannel && !hasActiveThreadSession && !workRun) return;
 
     if (
       !isFromAllowedBot &&
@@ -1080,6 +1071,26 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       !config.discord.allowedUsers?.includes(message.author.id)
     ) {
       console.log(`[xangi] Unauthorized user: ${message.author.id} (${message.author.tag})`);
+      return;
+    }
+
+    if (workRun) {
+      if (message.author.bot) return;
+      try {
+        if (message.attachments.size)
+          throw new Error(
+            '作業スレッドの追加指示はテキストで送ってください。添付ファイルには未対応です'
+          );
+        const response = submitAgentWork(
+          'discord',
+          message.channel.id,
+          message.id,
+          message.content
+        );
+        await message.reply({ content: response, allowedMentions: { parse: [] } });
+      } catch (error) {
+        await message.reply({ content: String(error), allowedMentions: { parse: [] } });
+      }
       return;
     }
 

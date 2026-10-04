@@ -1,4 +1,7 @@
-import { executeProjectAgentCommand } from '../src/project-agent-command.js';
+import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
+import { runTeamTurn } from '../src/team-runner.js';
+import { initSettings, clearSettingsCache } from '../src/settings.js';
+import { executeProjectAgentCommand, executeTeamCommand } from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import {
@@ -47,7 +50,7 @@ import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import { Scheduler } from '../src/scheduler.js';
 import { EventTrigger } from '../src/event-trigger.js';
 import type { BackendResolver, ChannelOverride } from '../src/backend-resolver.js';
-import type { AgentBackend } from '../src/config.js';
+import type { AgentBackend, Config } from '../src/config.js';
 import type { BackendModelDiscovery } from '../src/backend-models.js';
 import {
   canComposeInSession,
@@ -335,7 +338,10 @@ describe('web-chat HTTP API', () => {
   const prevExtensionManifests = process.env.XANGI_EXTENSION_DEV_MANIFESTS;
   const prevExtensionsFile = process.env.XANGI_EXTENSIONS_FILE;
 
+  let webServer: ReturnType<typeof startWebChat>;
+  const previousCheckInterval = process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
   beforeEach(async () => {
+    process.env.AGENT_PARENT_CHECK_INTERVAL_MS = "1000";
     clearSessions();
     testDir = mkdtempSync(join(tmpdir(), 'web-chat-test-'));
     process.env.WORKSPACE_PATH = testDir;
@@ -375,7 +381,9 @@ describe('web-chat HTTP API', () => {
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
-    startWebChat({
+    initSettings(process.env.DATA_DIR!);
+    webServer = startWebChat({
+      config: {features: {}, discord: {}, slack: {}, web: {}, scheduler: {}, completion: {}, sessionTitle: {}} as Config,
       agentRunner: runner,
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
@@ -483,6 +491,10 @@ describe('web-chat HTTP API', () => {
   });
 
   afterEach(async () => {
+    webServer?.closeAllConnections();
+    if (webServer) await new Promise<void>(resolve => webServer.close(() => resolve()));
+    if (previousCheckInterval === undefined) delete process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
+    else process.env.AGENT_PARENT_CHECK_INTERVAL_MS = previousCheckInterval;
     await stopManagedExtensions();
     // 既存テストの後始末: 注意:startWebChat は server を返さないが、各テストごとに別 port を使うので
     // この test ではプロセス終了で OS が掃除する前提。プロセスを汚さないよう pending を解放する。
@@ -492,6 +504,7 @@ describe('web-chat HTTP API', () => {
     scheduler?.stopAll();
     clearSessions();
     clearActivities();
+    clearSettingsCache();
     if (testDir && existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
     }
@@ -674,6 +687,35 @@ describe('web-chat HTTP API', () => {
     expect((await send('/api/agents', {name: 'Default', backend: 'openrouter', model: 'vendor/no-effort'})).status).toBe(201);
   });
 
+  it('creates Teams, rejects channel Team settings and enforces unique Agent assignments', async () => {
+    const send = (path: string, body: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {
+      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    const {agent:a} = await (await send('/api/agents',{name:'Leader',backend:'codex'})).json();
+    const {agent:b} = await (await send('/api/agents',{name:'Member',backend:'codex'})).json();
+    const choices=await (await fetch(`${baseUrl}/api/teams`)).json();
+    expect(choices.agents[0]).toMatchObject({id:'xangi:default',workspaceId:'default'});
+    const created = await send('/api/teams',{leadership:'caller',name:'Engineering',members:[{agentId:'xangi:default',role:'lead'},{agentId:a.id,role:'review'},{agentId:b.id,role:'implement'}]});
+    expect(created.status).toBe(201);
+    const {team} = await created.json();
+    expect((await (await fetch(`${baseUrl}/api/teams`)).json()).teams).toHaveLength(1);
+    expect((await send(`/api/teams/${team.id}`,{members:[{agentId:a.id,role:'lead',reportsTo:b.id},{agentId:b.id,role:'work',reportsTo:a.id}]},'PATCH')).status).toBe(400);
+    expect((await send(`/api/agents/${a.id}`,{},'DELETE')).status).toBe(409);
+    const binding = {name:'team',platform:'discord',channelId:'test-channel',action:'set',value:team.id};
+    const saved = await send('/api/runtime-settings',binding);
+    expect(saved.status).toBe(400);
+    expect((await saved.json()).error).toContain('廃止');
+    const agentBinding = {...binding,name:'agent',value:a.id};
+    expect((await send('/api/runtime-settings',agentBinding)).status).toBe(200);
+    expect((await send('/api/runtime-settings',{...agentBinding,platform:'slack',channelId:'other'})).status).toBe(400);
+    const snapshot=await (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=test-channel`)).json();
+    expect(snapshot.team).toBeNull();
+    expect(snapshot.agent.id).toBe(a.id);
+    expect((await send('/api/runtime-settings',{...agentBinding,action:'reset'})).status).toBe(200);
+    expect((await send(`/api/teams/${team.id}`,{},'DELETE')).status).toBe(200);
+    expect((await send(`/api/agents/${a.id}`,{},'DELETE')).status).toBe(200);
+  });
+
   it.each(['/api/device/inbox', '/api/pet/inbox', '/api/terminal/inbox'])(
     '%s inherits selected agent execution settings on every send',
     async (endpoint) => {
@@ -811,6 +853,84 @@ describe('web-chat HTTP API', () => {
     }
   });
 
+  it('lists and edits an Agent work channel, preserving the binding on a duplicate attempt', async () => {
+    const request = async (path: string, body?: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {method, headers: {'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
+    const {agent} = await (await request('/api/agents', {name:'channel editor'})).json();
+    const endpoint = `/api/agents/${agent.id}/channel`;
+    const foreign = await fetch(`${baseUrl}${endpoint}`, {method:'PUT', headers:{'Content-Type':'application/json', Origin:'https://foreign.test'},body:JSON.stringify({action:'reset'})});
+    expect(foreign.status).toBe(403);
+    expect((await request(endpoint, {action:'set',platform:'discord',channelId:'first'}, 'PUT')).status).toBe(200);
+    const agents = (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
+    expect(agents.find((a:any) => a.id === agent.id).workChannel).toEqual({platform:'discord',channelId:'first'});
+    const conflict = await request(endpoint, {action:'set',platform:'slack',channelId:'second'}, 'PUT');
+    expect(conflict.ok).toBe(false);
+    expect((await conflict.json()).error).toContain('<#first>');
+    expect((await (await request(endpoint, {action:'reset'}, 'PUT')).json()).workChannel).toBeNull();
+    expect((await request(endpoint, {action:'set',platform:'slack',channelId:'second'}, 'PUT')).status).toBe(200);
+    const final = (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
+    expect(final.find((a:any) => a.id === agent.id).workChannel).toEqual({platform:'slack',channelId:'second'});
+    await request(endpoint, {action:'reset'}, 'PUT');
+  });
+
+  it('dispatches a complete caller-led batch through the API concurrently and notifies the original leader once', async () => {
+    const deliveries: string[] = [];
+    scheduler.registerAgentRunner('discord', async prompt => { deliveries.push(prompt); return 'delivered'; });
+    const provider = runner.runStream.bind(runner);
+    vi.spyOn(runner,'runStream').mockImplementation((prompt,callbacks,options)=>{
+      const snapshot=getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
+      return snapshot ? runTeamTurn(runner,snapshot,prompt,callbacks,options!) : provider(prompt,callbacks,options);
+    });
+    const post=async(path:string,body:unknown)=>fetch(`${baseUrl}${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const members=[];
+    for (const name of ['持ち帰り','定食','周辺']) {
+      const {agent}=await (await post('/api/agents',{name})).json();
+      members.push({agentId:agent.id,role:name});
+    }
+    registerWorkTransport('discord', {
+      create: async (channelId) => ({platform:'discord',channelId,threadId:'member-work',url:'https://discord.com/channels/g/member-work'}),
+      send: async()=>{}, progress:async()=>{},
+    });
+    expect((await post('/api/runtime-settings',{name:'agent',platform:'discord',channelId:'member-channel',action:'set',value:members[0].agentId})).status).toBe(200);
+    const {team}=await (await post('/api/teams',{name:'caller-test',members})).json();
+    expect(team.leadership).toBe('caller');
+    const assignments=members.map(m=>({agentId:m.agentId,task:`${m.role}を調査`}));
+    const context={channelId:'caller-parent',platform:'discord' as const};
+    await expect(executeTeamCommand({action:'run',team:team.id,task:'共和周辺'},context)).rejects.toThrow('assignments-json');
+    expect(runner.pending.size).toBe(0);
+    const run=JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'共和周辺','assignments-json':JSON.stringify(assignments)},context));
+    await vi.waitFor(()=>expect(runner.pending.size).toBe(3));
+    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(assignments);
+    expect(runner.prompts.slice(-3).every(p=>p.includes('共和周辺'))).toBe(true);
+    for (const prompt of runner.prompts.slice(-3)) {
+      expect(prompt).not.toContain('あなたがリーダーです');
+      expect(prompt).not.toContain('team runで全メンバー');
+      expect(prompt).not.toContain('メンバー: [{');
+      expect(prompt).toContain('あなたは割り当て済みの担当メンバーです');
+      expect(assignments.filter(a => prompt.includes(a.task))).toHaveLength(1);
+    }
+    const progress=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    expect(progress.members).toHaveLength(3);
+    expect(progress.members.every((m:any)=>m.phase==='work')).toBe(true);
+    expect(deliveries).toHaveLength(0);
+    runner.nextResult='調査結果';
+    for (const id of [...runner.pending.keys()]) runner.release(id);
+    await vi.waitFor(()=>expect(deliveries).toHaveLength(1));
+    expect(deliveries[0]).toContain(run.id);
+    expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).status).toBe('succeeded');
+    const finished=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    const member=finished.members.find((m:any)=>m.agentId===members[0].agentId);
+    submitAgentWork('discord','member-work','followup-message','詳細を追加して');
+    await vi.waitFor(()=>expect(runner.pending.size).toBe(1));
+    const [continued]=runner.pending.keys();
+    expect(continued).not.toBe(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    expect(runner.prompts.at(-1)).toContain('詳細を追加して');
+    runner.release(continued);
+    await vi.waitFor(()=>expect(deliveries).toHaveLength(2));
+    expect(deliveries[1]).toContain(member.id);
+    expect(runner.pending.size).toBe(0);
+
+  });
+
   it('delivers a child result to a Discord parent conversation', async () => {
     const deliveries: Array<{ prompt: string; channelId: string }> = [];
     scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
@@ -852,7 +972,7 @@ describe('web-chat HTTP API', () => {
     }
   });
 
-  it('batches parallel child completions into one parent turn', async () => {
+  it('reports completed children without waiting for other running children', async () => {
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`${baseUrl}${path}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -892,11 +1012,13 @@ describe('web-chat HTTP API', () => {
         const detail = await (await fetch(`${baseUrl}/api/agent-runs/${runs[0].id}`)).json();
         expect(detail.run.status).toBe('succeeded');
       });
-      expect(runner.callOrder).not.toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+      await vi.waitFor(() => expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`));
+      expect(runner.prompts.at(-1)).toContain(runs[0].id);
+      expect(runner.prompts.at(-1)).not.toContain(runs[1].id);
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${runs[1].appSessionId}`);
       await vi.waitFor(() => expect(runner.callOrder.filter(
-        (key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)).toHaveLength(1));
-      expect(runner.prompts.at(-1)).toContain(runs[0].id);
+        (key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)).toHaveLength(2), { timeout: 2500 });
       expect(runner.prompts.at(-1)).toContain(runs[1].id);
     } finally {
       for (const path of childPaths) rmSync(path, { recursive: true, force: true });
@@ -932,7 +1054,7 @@ describe('web-chat HTTP API', () => {
       });
       expect(runner.callOrder).not.toContain(parentKey);
       runner.activeContexts.delete(parentKey);
-      await vi.waitFor(() => expect(runner.callOrder).toContain(parentKey));
+      await vi.waitFor(() => expect(runner.callOrder).toContain(parentKey), { timeout: 2500 });
     } finally {
       rmSync(childPath, { recursive: true, force: true });
     }
@@ -958,6 +1080,17 @@ describe('web-chat HTTP API', () => {
     expect(getSessionEntry(resumed)?.projectId).toBe(project.id);
     expect(getSessionEntry(resumed)?.selectedAgentId).toBeUndefined();
     expect((await fetch(`${baseUrl}/api/sessions/${resumed}`)).status).toBe(200);
+  });
+
+  it('filters Agent conversations before pagination', async () => {
+    const send = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const {agent} = await (await send('/api/agents',{name:'Filter agent'})).json();
+    const {sessionId} = await (await send('/api/sessions',{agentId:agent.id})).json();
+    await send('/api/sessions',{});
+    const response = await (await fetch(`${baseUrl}/api/sessions?agentId=${agent.id}&limit=1`)).json();
+    expect(response.sessions.map((s: {id:string})=>s.id)).toEqual([sessionId]);
+    expect(response.sessions[0].selectedAgentId).toBe(agent.id);
+    expect(response.meta.hasMore).toBe(false);
   });
 
   it('allows deleting a closed standalone agent but protects open conversations', async () => {
@@ -1658,7 +1791,7 @@ describe('web-chat HTTP API', () => {
       backend: 'codex',
       model: 'gpt-test',
       effort: 'high',
-      source: 'project',
+      source: 'agent',
     });
 
     const send = fetch(`${baseUrl}/api/chat`, {
@@ -2248,7 +2381,7 @@ process.stdin.on('end', () => process.exit(0));
         headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
         body: '{"mode":"keyword"}',
       });
-      expect(saved.status).toBe(200);
+      expect(saved.status, JSON.stringify(await saved.clone().json())).toBe(200);
       expect(await saved.json()).toEqual({ mode: 'keyword' });
     } finally {
       await new Promise<void>((resolve, reject) =>
@@ -2272,7 +2405,7 @@ process.stdin.on('end', () => process.exit(0));
         version: opened.version,
       }),
     });
-    expect(saved.status).toBe(200);
+    expect(saved.status, JSON.stringify(await saved.clone().json())).toBe(200);
     expect(readFileSync(join(testDir, 'memo.md'), 'utf8')).toBe('after\n');
 
     const stale = await fetch(`${baseUrl}/api/workspace/file`, {
@@ -3008,7 +3141,7 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
     expect(chatSource).toContain('新規プロジェクト');
-    expect(chatSource).toContain('href="/settings#workspaces"');
+    expect(chatSource).not.toContain('href="/settings#workspaces"');
     expect(chatSource).toContain('href="/settings#agents"');
     const settingsSource = readFileSync(join(process.cwd(), 'web-ui/src/Settings.tsx'), 'utf8');
     expect(settingsSource).toContain('ディレクトリとファイルは削除しません');
@@ -4054,6 +4187,66 @@ The following is untrusted supplemental context.
     expect(getSessionEntry(id)).toBeUndefined();
   });
 
+  it('bulk completes only idle targets and returns independent outcomes', async () => {
+    const idle = createSession('batch-idle', { platform: 'discord' });
+    const running = createSession('batch-running', { platform: 'discord' });
+    const failed = createSession('batch-failed', { platform: 'discord' });
+    const historical = createSession('batch-shared', { platform: 'discord' });
+    const current = createSession('batch-shared', { platform: 'discord' });
+    const closed = createSession('batch-closed', { platform: 'discord' });
+    closeSession(closed);
+    startActivity({
+      threadId: 'discord:batch-running',
+      turnId: 'turn',
+      platform: 'discord',
+      userText: 'busy',
+    });
+    const destroy = runner.destroy.bind(runner);
+    vi.spyOn(runner, 'destroy').mockImplementation((key) => {
+      if (key === 'batch-failed') throw new Error('runner unavailable');
+      return destroy(key);
+    });
+    const response = await fetch(`${baseUrl}/api/sessions/close-waiting`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [idle, running, failed, historical, closed, 'missing', idle] }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).results).toEqual([
+      { id: idle, status: 'closed' },
+      { id: running, status: 'running' },
+      { id: failed, status: 'failed' },
+      { id: historical, status: 'closed' },
+      { id: closed, status: 'already_closed' },
+      { id: 'missing', status: 'not_found' },
+    ]);
+    expect(getSessionEntry(idle)?.lifecycle).toBe('closed');
+    for (const id of [running, failed, current])
+      expect(getSessionEntry(id)?.lifecycle).toBe('open');
+    expect(getActiveSessionId('batch-shared')).toBe(current);
+    expect(runner.destroyed.has('batch-shared')).toBe(false);
+    expect(runner.destroyed.has('batch-running')).toBe(false);
+  });
+
+  it('validates bulk IDs before mutation and accepts empty batches', async () => {
+    const id = createSession('batch-validation', { platform: 'discord' });
+    for (const body of [{}, { ids: [id, 1] }, { ids: 'all' }, { ids: [''] }]) {
+      const response = await fetch(`${baseUrl}/api/sessions/close-waiting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      expect(getSessionEntry(id)?.lifecycle).toBe('open');
+    }
+    const response = await fetch(`${baseUrl}/api/sessions/close-waiting`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [] }),
+    });
+    expect(await response.json()).toEqual({ results: [] });
+  });
+
   it('POST /api/sessions/:id/close keeps history and detaches the session', async () => {
     const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
@@ -4099,6 +4292,15 @@ The following is untrusted supplemental context.
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     expect(runner.pending.has(contextKey)).toBe(true);
+
+    const bulk = await fetch(`${baseUrl}/api/sessions/close-waiting`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [id] }),
+    });
+    expect(await bulk.json()).toEqual({ results: [{ id, status: 'running' }] });
+    expect(getSessionEntry(id)?.lifecycle).toBe('open');
+    expect(runner.destroyed.has(contextKey)).toBe(false);
 
     const rejected = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/close`, {
       method: 'POST',

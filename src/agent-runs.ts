@@ -1,3 +1,6 @@
+import type { WorkThread } from './agent-work.js';
+import type { AgentWorkPresentation } from './agent-work-presentation.js';
+import { migrateTeamState } from './team-migration.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -16,8 +19,12 @@ export interface AgentRun {
   status: AgentRunStatus;
   task: string;
   taskHash: string;
+  workPresentation?: AgentWorkPresentation;
   projectId?: string;
   agentId?: string;
+  teamId?: string;
+  teamTurnId?: string;
+  teamPhase?: string;
   parentContextKey?: string;
   /** Platform of the parent conversation, used for completion delivery. */
   parentPlatform?: 'discord' | 'slack' | 'telegram' | 'web' | 'line';
@@ -34,6 +41,13 @@ export interface AgentRun {
   startedAt?: string;
   completedAt?: string;
   parentNotifiedAt?: string;
+  /** Only explicitly tracked runs may be recovered by the parent watchdog. */
+  parentDeliveryTracked?: boolean;
+  parentDeliveryAttempts?: number;
+  parentDeliveryAttemptAt?: string;
+  parentDeliveryError?: string;
+  parentDeliveryFallbackAttempted?: boolean;
+  parentProgressAt?: string;
   durationMs?: number;
   usage?: {
     inputTokens?: number;
@@ -43,6 +57,11 @@ export interface AgentRun {
   result?: string;
   error?: string;
   trajectoryPath?: string;
+  workThread?: WorkThread;
+  workRevision?: number;
+  workDeliveryError?: string;
+  pendingWorkInputs?: Array<{ id: string; text: string }>;
+  workInputIds?: string[];
 }
 
 interface State {
@@ -51,8 +70,12 @@ interface State {
 }
 
 export interface CreateAgentRunInput {
+  workPresentation?: AgentWorkPresentation;
   projectId?: string;
   agentId?: string;
+  teamId?: string;
+  teamTurnId?: string;
+  teamPhase?: string;
   parentContextKey?: string;
   parentPlatform?: AgentRun['parentPlatform'];
   task: string;
@@ -100,11 +123,16 @@ export class AgentRunStore {
       id: randomUUID(),
       status: 'queued',
       task,
+      workPresentation: input.workPresentation && structuredClone(input.workPresentation),
       taskHash: createHash('sha256').update(task).digest('hex'),
       projectId: input.projectId,
       agentId: input.agentId,
+      teamId: input.teamId,
+      teamTurnId: input.teamTurnId,
+      teamPhase: input.teamPhase,
       parentContextKey: input.parentContextKey,
       parentPlatform: input.parentPlatform,
+      parentDeliveryTracked: Boolean(input.parentContextKey),
       backend: input.backend,
       model: input.model,
       effort: input.effort,
@@ -123,9 +151,54 @@ export class AgentRunStore {
   markRunning(id: string): AgentRun {
     return this.update(id, (run) => {
       run.status = 'running';
+      run.parentDeliveryTracked = Boolean(run.parentContextKey);
+      run.workRevision = (run.workRevision || 0) + 1;
       run.startedAt = new Date().toISOString();
       delete run.error;
+      delete run.result;
+      delete run.usage;
+      delete run.durationMs;
+      delete run.workDeliveryError;
+      delete run.completedAt;
+      delete run.parentNotifiedAt;
+      delete run.parentDeliveryAttempts;
+      delete run.parentDeliveryAttemptAt;
+      delete run.parentDeliveryError;
+      delete run.parentDeliveryFallbackAttempted;
+      delete run.parentProgressAt;
     });
+  }
+
+  setWorkThread(id: string, thread: WorkThread) {
+    return this.update(id, (run) => {
+      run.workThread = thread;
+    });
+  }
+  setWorkDeliveryError(id: string, error: string) {
+    return this.update(id, (run) => {
+      run.workDeliveryError = error;
+    });
+  }
+  setWorkProviderSession(id: string, sessionId: string) {
+    return this.update(id, (run) => {
+      run.providerSessionId = sessionId;
+    });
+  }
+  enqueueWorkInput(id: string, input: { id: string; text: string }) {
+    return this.update(id, (run) => {
+      if (run.workInputIds?.includes(input.id)) return;
+      if ((run.pendingWorkInputs?.length || 0) >= 20)
+        throw new AgentRunError('追加指示が20件待機中です。完了を待ってください', 409);
+      (run.pendingWorkInputs ??= []).push(input);
+      (run.workInputIds ??= []).push(input.id);
+    });
+  }
+  takeWorkInputs(id: string) {
+    const inputs = this.get(id)?.pendingWorkInputs || [];
+    this.update(id, (run) => {
+      run.pendingWorkInputs = [];
+    });
+    return inputs;
   }
 
   markSucceeded(
@@ -151,6 +224,29 @@ export class AgentRunStore {
       run.durationMs = durationSince(run.startedAt, run.completedAt);
       run.error = error instanceof Error ? error.message : String(error);
       this.refreshTrajectoryPath(run);
+    });
+  }
+
+  markParentDeliveryAttempt(id: string) {
+    return this.update(id, (run) => {
+      run.parentDeliveryAttempts = (run.parentDeliveryAttempts || 0) + 1;
+      run.parentDeliveryAttemptAt = new Date().toISOString();
+      delete run.parentDeliveryError;
+    });
+  }
+  setParentDeliveryError(id: string, error: string) {
+    return this.update(id, (run) => {
+      run.parentDeliveryError = error;
+    });
+  }
+  markParentFallbackAttempted(id: string) {
+    return this.update(id, (run) => {
+      run.parentDeliveryFallbackAttempted = true;
+    });
+  }
+  markParentProgress(id: string) {
+    return this.update(id, (run) => {
+      run.parentProgressAt = new Date().toISOString();
     });
   }
 
@@ -183,7 +279,10 @@ export class AgentRunStore {
 
   private load(): State {
     if (!existsSync(this.filePath)) return { version: VERSION, runs: [] };
-    const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as Partial<State>;
+    const parsed = JSON.parse(
+      readFileSync(this.filePath, 'utf8'),
+      migrateTeamState
+    ) as Partial<State>;
     if (parsed.version !== VERSION || !Array.isArray(parsed.runs)) {
       throw new Error('Agent Run state is invalid');
     }
@@ -230,5 +329,5 @@ function durationSince(startedAt: string | undefined, completedAt: string): numb
 }
 
 function cloneRun(run: AgentRun): AgentRun {
-  return { ...run, usage: run.usage ? { ...run.usage } : undefined };
+  return structuredClone(run);
 }
