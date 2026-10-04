@@ -35,6 +35,22 @@ describe('containsPseudoToolCall', () => {
     expect(containsPseudoToolCall(input)).toBe(true);
   });
 
+  it('DeepSeek DSML の縦棒1本・2本と未完了タグを検出', () => {
+    for (const bars of ['｜', '｜｜']) {
+      const call = `<${bars}DSML${bars} calls>\n<${bars}DSML${bars} invoke name="exec">x</${bars}DSML${bars} invoke>\n</${bars}DSML${bars} calls>`;
+      expect(containsPseudoToolCall(call)).toBe(true);
+      expect(stripPseudoToolCalls(`前${call}後`)).toBe('前後');
+      expect(containsPseudoToolCall(`<${bars}DSML${bars} invoke name="exec">x`)).toBe(true);
+    }
+  });
+
+  it('DeepSeek の DSML ラベルなし tool_calls ブロックを検出', () => {
+    const call =
+      '<｜tool_calls>\n<｜invoke name="read">\n<｜parameter name="path">/etc/hostname</｜parameter>\n</｜invoke>\n</｜tool_calls>';
+    expect(containsPseudoToolCall(call)).toBe(true);
+    expect(stripPseudoToolCalls(call)).toBe('');
+  });
+
   it('開き tool_call が欠けた Step XML 断片も検出', () => {
     const input =
       '<function=exec>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>';
@@ -210,6 +226,46 @@ describe('StreamingDriftBuffer', () => {
     expect(released).toBe('');
     expect(dropped).toBe(true);
     expect(buf.flush()).toEqual({ release: '', droppedAny: true });
+  });
+
+  it('DeepSeek DSML が chunk に分かれても表示せず close 後に削除', () => {
+    const buf = new StreamingDriftBuffer();
+    const chunks = [
+      '<',
+      '｜DS',
+      'ML｜ calls>',
+      '<｜DSML｜ invoke name="exec">',
+      'x',
+      '</｜DSML｜ invoke>',
+      '</｜DSML｜ calls>',
+    ];
+    let released = '';
+    let dropped = false;
+    for (const chunk of chunks) {
+      const result = buf.feed(chunk);
+      released += result.release;
+      dropped ||= result.dropped;
+    }
+    expect(released).toBe('');
+    expect(dropped).toBe(true);
+  });
+
+  it('tool_calls 形式も chunk に分かれても表示しない', () => {
+    const buf = new StreamingDriftBuffer();
+    let released = '';
+    let dropped = false;
+    for (const chunk of [
+      '<｜tool',
+      '_calls>',
+      '<｜invoke name="read">x</｜invoke>',
+      '</｜tool_calls>',
+    ]) {
+      const result = buf.feed(chunk);
+      released += result.release;
+      dropped ||= result.dropped;
+    }
+    expect(released).toBe('');
+    expect(dropped).toBe(true);
   });
 
   it('bare call: 末尾は hold (直前の改行も hold 側に含める)', () => {
