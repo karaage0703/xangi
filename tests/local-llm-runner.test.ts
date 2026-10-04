@@ -315,7 +315,11 @@ describe('Local LLM agent step limit', () => {
             content: '',
             finishReason: 'tool_calls',
             toolCalls: [
-              { id: 'invalid-call', name: 'read', arguments: { path: join(workdir, 'missing.txt') } },
+              {
+                id: 'invalid-call',
+                name: 'read',
+                arguments: { path: join(workdir, 'missing.txt') },
+              },
             ],
           };
         }
@@ -744,6 +748,38 @@ describe('local-llm runner: cache-aware session compaction', () => {
     expect(session.messages).toEqual(original);
   });
 
+  it('does not persist a checkpoint containing DeepSeek tool-call markup', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'old '.repeat(100), transcriptEntryId: 'u1' },
+      { role: 'assistant' as const, content: 'answer '.repeat(100) },
+      { role: 'user' as const, content: 'latest', transcriptEntryId: 'u2' },
+    ];
+    const budget = {
+      ...loadContextBudget({ LOCAL_LLM_NUM_CTX: '1000' } as NodeJS.ProcessEnv),
+      compactionThresholdTokens: 10,
+      compactionKeepTokens: 20,
+      contextKeepLast: 1,
+      maxSessionMessages: 100,
+    };
+    for (const summary of [
+      '<｜DSML｜ calls>\n<｜DSML｜ invoke name="exec">x</｜DSML｜ invoke>\n</｜DSML｜ calls>',
+      '｜DSML｜ parameter name="command">ls',
+      '｜parameter name="path">/etc/hostname',
+      '<｜tool_calls><｜invoke name="read">x</｜invoke></｜tool_calls>',
+    ]) {
+      const session = makeSession(structuredClone(messages));
+      const persist = vi.fn(() => true);
+      const result = await compactSessionWithCheckpoint(session, budget, {
+        summarize: async () => summary,
+        persist,
+        now: 1000,
+      });
+      expect(result.status).toBe('failed');
+      expect(persist).not.toHaveBeenCalled();
+      expect(session.messages).toEqual(messages);
+    }
+  });
+
   it('keeps the original history when checkpoint persistence fails', async () => {
     const messages = [
       { role: 'user' as const, content: 'old '.repeat(100), transcriptEntryId: 'u1' },
@@ -777,7 +813,8 @@ describe('local-llm runner: cache-aware session compaction', () => {
     const compactedAt: number[] = [];
     for (let turn = 1; turn <= 60; turn++) {
       session.messages.push({
-        role: 'user', content: 'screen context '.repeat(75),
+        role: 'user',
+        content: 'screen context '.repeat(75),
         images: [{ base64: 'image', mimeType: 'image/jpeg' }],
         transcriptEntryId: `u${turn}`,
       });
@@ -807,13 +844,24 @@ describe('local-llm runner: cache-aware session compaction', () => {
 
   it('keeps an oversized latest turn intact without re-summarizing a checkpoint alone', async () => {
     const budget = loadContextBudget({ LOCAL_LLM_NUM_CTX: '40960' });
-    const latest = { role: 'user' as const, content: 'x'.repeat(50000), transcriptEntryId: 'latest' };
+    const latest = {
+      role: 'user' as const,
+      content: 'x'.repeat(50000),
+      transcriptEntryId: 'latest',
+    };
     const session = makeSession([
       { role: 'user', content: 'old conversation', transcriptEntryId: 'old' },
-      { role: 'assistant', content: 'old answer' }, latest,
+      { role: 'assistant', content: 'old answer' },
+      latest,
     ]);
     let summaries = 0;
-    const options = { summarize: async () => { summaries++; return 'Prior facts'; }, persist: () => true };
+    const options = {
+      summarize: async () => {
+        summaries++;
+        return 'Prior facts';
+      },
+      persist: () => true,
+    };
     expect((await compactSessionWithCheckpoint(session, budget, options)).status).toBe('compacted');
     expect(session.messages.at(-1)).toBe(latest);
     expect((await compactSessionWithCheckpoint(session, budget, options)).status).toBe('skipped');
@@ -1440,6 +1488,14 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
     const { result } = await runner.run('q', { sessionId: 's2', channelId: 'c2' });
     expect(result).toBe(FRIENDLY_FALLBACK_MESSAGE);
     expect(result.trim().length).toBeGreaterThan(0);
+  });
+
+  it('does not return DeepSeek DSML to the user in chat mode', async () => {
+    const runner = makeRunnerReturning(
+      '<｜DSML｜ calls><｜DSML｜ invoke name="exec">x</｜DSML｜ invoke></｜DSML｜ calls>'
+    );
+    const { result } = await runner.run('q', { sessionId: 'dsml', channelId: 'dsml' });
+    expect(result).toBe(FRIENDLY_FALLBACK_MESSAGE);
   });
 
   it('leaves clean content untouched', async () => {

@@ -74,7 +74,7 @@ Preserve only information needed to continue the conversation correctly. Use the
 - Next steps
 - Critical context
 
-Preserve exact file paths, function names, commands, identifiers, errors, and unresolved requests. Do not invent facts. Do not answer the user or call tools.`;
+Preserve exact file paths, function names, commands, identifiers, errors, and unresolved requests. Do not invent facts. Do not answer the user or call tools. You have no tools available for this request. Write only the checkpoint in plain text; do not generate tool calls or tool-call markup.`;
 
 /**
  * 1ターン内のagentic iteration上限。
@@ -490,6 +490,12 @@ export async function compactSessionWithCheckpoint(
   try {
     const summary = (await options.summarize(prepareMessagesForCompaction(plan.prefix))).trim();
     if (!summary) throw new Error('compaction returned an empty summary');
+    if (
+      containsPseudoToolCall(summary) ||
+      /^\s*｜+(?:DSML｜+\s*)?(?:tool_calls|calls|invoke|parameter)/m.test(summary)
+    ) {
+      throw new Error('compaction returned pseudo tool calls');
+    }
 
     const compactedMessages: LLMMessage[] = [
       { role: 'user', content: `${CONVERSATION_CHECKPOINT_PREFIX}${summary}` },
@@ -2513,6 +2519,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           );
         }
       }
+    } else {
+      parts.push(
+        'No tools are available for this request. Answer in plain text only. Do not generate tool calls or tool-call markup.'
+      );
     }
 
     return parts.join('\n\n');

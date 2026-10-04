@@ -15,6 +15,10 @@
  * (実応答が欠けてる/置き換えられてる可能性が高いため)。
  */
 const COMPLETE_STRICT_DRIFT_PATTERNS: RegExp[] = [
+  // DeepSeek の DSML が tools なしの応答本文に漏れた場合（縦棒の数に揺れがある）
+  /<｜+DSML｜+\s*calls>[\s\S]*?<\/｜+DSML｜+\s*calls>/g,
+  // 同じモデルが DSML ラベルなしで出す tool_calls ブロック
+  /<｜+tool_calls>[\s\S]*?<\/｜+tool_calls>/g,
   // Step/Qwen 系 chat template の XML tool call（OpenAI 互換サーバが
   // tool_choice='none' を無視したときに text content として漏れる）
   /<tool_call>\s*<function=[^>]+>[\s\S]*?<\/function>\s*<\/tool_call>/g,
@@ -34,6 +38,8 @@ const COMPLETE_STRICT_DRIFT_PATTERNS: RegExp[] = [
 // streaming 中にこれらを drop すると開きタグだけ失われるため、
 // StreamingDriftBuffer は COMPLETE_STRICT_DRIFT_PATTERNS だけを drop に使う。
 const INCOMPLETE_STRICT_DRIFT_PATTERNS: RegExp[] = [
+  /<｜+DSML｜+[\s\S]*$/,
+  /<｜+tool_calls>[\s\S]*$/,
   /<\|channel\|?>[\s\S]*$/,
   /<\|tool_call\|?>[\s\S]*$/,
   /<tool_call>[\s\S]*$/,
@@ -353,6 +359,8 @@ Use this information to make your next attempt. Do NOT copy or echo this JSON in
  * 分かる文字 (改行で文を完結している等) が来てから release する。
  */
 const PARTIAL_DRIFT_TAIL_PATTERNS: RegExp[] = [
+  /<｜+DSML(?:｜+[\s\S]*)?$/,
+  /<｜+tool_calls(?:>[\s\S]*)?$/,
   // open を検出したら close が来るまでブロック全体を hold する。
   // `[^>]*$` だけでは開きタグの `>` 到着直後に残りを release してしまう。
   /<tool_call(?:>[\s\S]*)?$/,
@@ -415,7 +423,15 @@ export class StreamingDriftBuffer {
 
     // marker 自体が chunk 境界で分割された場合も、末尾の接頭辞を hold する。
     // 例: "<tool" + "_call>" / "<" + "function=exec>"
-    const markerPrefixes = ['<tool_call', '<function=', '<|channel', '<|tool_call'];
+    const markerPrefixes = [
+      '<tool_call',
+      '<function=',
+      '<|channel',
+      '<|tool_call',
+      '<｜DSML',
+      '<｜｜DSML',
+      '<｜tool_calls',
+    ];
     for (const marker of markerPrefixes) {
       for (let length = 1; length < marker.length; length++) {
         const prefix = marker.slice(0, length);
