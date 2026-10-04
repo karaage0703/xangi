@@ -1,3 +1,9 @@
+import { channelIndividualAgent } from './agent-selection.js';
+import {
+  changeChannelAgent,
+  resolveAgentBackend,
+  listSelectableAgents,
+} from './agent-selection.js';
 import { getActiveSessionId, getSessionEntry } from './sessions.js';
 import { formatModelExecution, latestModelExecution } from './model-execution-display.js';
 import type { AgentRunner } from './agent-runner.js';
@@ -29,6 +35,8 @@ import {
 import { discoverBackendModels } from './backend-models.js';
 
 export type RuntimeSettingName =
+  | 'team'
+  | 'agent'
   | 'backend'
   | 'llmmode'
   | 'autoreply'
@@ -462,6 +470,8 @@ export async function executeRuntimeSettingsCommand(
   if (
     !name ||
     ![
+      'agent',
+      'team',
       'backend',
       'llmmode',
       'autoreply',
@@ -472,7 +482,7 @@ export async function executeRuntimeSettingsCommand(
     ].includes(name)
   ) {
     throw new ValidationError(
-      'runtime_settings: --name must be one of: backend, llmmode, autoreply, notify, threadmode, replysuggestions, respondtobots'
+      'runtime_settings: --name must be one of: agent, team, backend, llmmode, autoreply, notify, threadmode, replysuggestions, respondtobots'
     );
   }
 
@@ -483,6 +493,39 @@ export async function executeRuntimeSettingsCommand(
     throw new ValidationError('runtime settings are disabled by RUNTIME_SETTINGS_ENABLED=false');
   }
 
+  if (name === 'team')
+    throw new ValidationError(
+      'Teamのチャンネル設定は廃止しました。team runでチームを指定してください'
+    );
+  if (name === 'agent') {
+    if (request.action !== 'show' && dependencies.config?.features?.workspaceSwitching === false)
+      throw new ValidationError(
+        'workspace switching is disabled by WORKSPACE_SWITCHING_ENABLED=false'
+      );
+    if (request.action !== 'show' && dependencies.config?.features?.backendSwitching === false)
+      throw new ValidationError('backend switching is disabled by BACKEND_SWITCHING_ENABLED=false');
+    const platform = requirePlatform(request);
+    platformGuard(platform, name, ['discord', 'slack']);
+    const channel = requireChannel(request);
+    const action = requireAction(request, ['show', 'set', 'reset']);
+    if (action === 'set' && !request.value?.trim())
+      throw new ValidationError('Agent IDを指定してください');
+    if (action === 'set') {
+      const candidate = listSelectableAgents().find((agent) => agent.id === request.value!.trim());
+      if (!candidate) throw new ValidationError('エージェントが見つかりません');
+      for (const member of [candidate]) resolveAgentBackend(dependencies.resolver, member);
+    }
+    if (action !== 'show')
+      await changeChannelAgent(
+        platform,
+        channel,
+        action === 'set' ? request.value!.trim() : undefined
+      );
+    const agent = channelIndividualAgent(platform, channel);
+    return agent
+      ? `担当: ${agent.name}\n使用AI: ${JSON.stringify(resolveAgentBackend(dependencies.resolver, agent))}\n作業場所: ${agent.workspaceId || 'default'}`
+      : '担当なし。チャンネルの個別設定を使用します。';
+  }
   if (name === 'backend') {
     return executeBackend(
       request,

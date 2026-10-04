@@ -7,7 +7,7 @@ export interface SessionBackendSummary {
   backend: string;
   model?: string;
   effort?: string;
-  source: 'session' | 'project' | 'default';
+  source: 'session' | 'agent' | 'project' | 'default';
 }
 
 export function canComposeInSession(
@@ -61,6 +61,7 @@ export function backendLabel(backend?: SessionBackendSummary): string {
 
 export function backendSourceLabel(source?: SessionBackendSummary['source']): string {
   if (source === 'session') return '会話個別設定';
+  if (source === 'agent') return 'Agent設定';
   if (source === 'project') return 'Project設定';
   return 'xangiデフォルト';
 }

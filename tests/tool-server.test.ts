@@ -1,3 +1,6 @@
+import { registerProjectAgents } from '../src/project-agent-command.js';
+import { ProjectCatalog } from '../src/project-catalog.js';
+import { AgentRunStore } from '../src/agent-runs.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { startToolServer, stopToolServer } from '../src/tool-server.js';
 import type { BackendResolver } from '../src/backend-resolver.js';
@@ -191,6 +194,26 @@ describe('tool-server HTTP status codes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  it('discovers Team help and routes list/show through the live catalog', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'team-tool-'));
+    try {
+      const catalog = new ProjectCatalog(root);
+      const team = catalog.saveTeam({ name: 'リサーチ', members: [{ agentId: 'xangi:default', role: '調査' }] });
+      registerProjectAgents({ catalog, runs: AgentRunStore.fromDataDir(root), start: vi.fn() });
+      const call = async (command: string, flags: Record<string, string>) => {
+        const res = await fetch(`${serverUrl}/api/execute`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command, flags, context: {} }),
+        });
+        expect(res.status).toBe(200);
+        return (await res.json()).result;
+      };
+      expect(await call('help', { topic: 'team' })).toContain('xangi team run NAME_OR_ID');
+      expect(JSON.parse(await call('team', { action: 'list' })).teams[0].id).toBe(team.id);
+      expect(JSON.parse(await call('team', { action: 'show', team: 'リサーチ' })).members[0].role).toBe('調査');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('returns command-specific help without backend state', async () => {

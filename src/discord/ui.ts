@@ -1,6 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Message } from 'discord.js';
 import type { AgentRunner } from '../agent-runner.js';
 import type { TurnHistoryEntry } from '../activity-store.js';
+import { completionHistory } from '../completion-history.js';
 import { TIMEOUT_EXTEND_ENABLED } from '../constants.js';
 
 /** 残り時間を mm:ss でフォーマット */
@@ -196,4 +197,22 @@ export function registerDiscordTimeoutUi(agentRunner: AgentRunner): void {
     if (entry.intervalId) clearInterval(entry.intervalId);
     discordProcessingMessages.delete(p.channelId);
   });
+}
+
+/** Shared completion policy and per-message history binding for every Discord response. */
+export function prepareDiscordCompletion(options: {
+  historyContext?: DiscordHistoryContext;
+  finalResponse: string;
+  historyEnabled: boolean;
+  showLeave: boolean;
+  showReplySuggestions?: boolean;
+}) {
+  const history = completionHistory(options.historyContext, options.finalResponse);
+  const showHistory = options.historyEnabled && history.length > 0;
+  return {
+    buttons: createCompletedButtons({ ...options, showTools: showHistory }),
+    bind(messageId: string) {
+      if (showHistory) discordToolHistoryByMessageId.set(messageId, history);
+    },
+  };
 }

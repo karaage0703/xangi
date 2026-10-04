@@ -216,6 +216,8 @@ Programmatic API:
 
 Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running and leaves Monitor after the response completes; its conversation log remains available in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. For conversations originating in Discord or Slack, the platform label in the Chat pane header opens the original channel or thread in the browser. This link remains available after branching into Web. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
 
+The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
+
 For long, multi-step work, the agent updates a durable plan with the `progress_card` tool. Monitor list cards show the current step and completed-step count; selecting the Session shows every step with textual Pending / Current / Completed states plus an optional note. The card survives page reloads and xangi restarts, and xangi does not infer a percentage. For manual use, check the current contract with `xangi tool help progress_card` instead of guessing flags.
 
 During a scheduled run, progress is saved to that reservation Session without changing the normal conversation plan. If multiple Sessions execute simultaneously and the target is ambiguous, the update returns an error.
@@ -1850,7 +1852,7 @@ Unless set explicitly, `DATA_DIR` below is `<WORKSPACE_PATH>/.xangi`. Use the co
 | Data | Location | Contents |
 | --- | --- | --- |
 | Workspace registry | `DATA_DIR/workspaces.json` | Names, actual directory paths, the default workspace, and channel bindings |
-| Project and agent settings | `DATA_DIR/project-catalog.json` | Shared instructions and each agent's instructions, role, AI settings, and workspace ID. Both collections share one file |
+| Project and agent settings | `DATA_DIR/project-catalog.json` | Shared instructions and each agent's basic instructions, AI settings, and workspace ID. Both collections share one file |
 | Session index and associations | `DATA_DIR/sessions.json` | Conversation ID, platform, selected agent, project, workspace, and other metadata. It does not contain the conversation text |
 | Conversation transcripts | `DATA_DIR/logs/sessions/<appSessionId>.jsonl` | Requests, replies, and errors for each parent or child session. A child has its own Web session |
 | Local LLM history compaction | `DATA_DIR/logs/session-compactions/<appSessionId>.jsonl` | Recovery checkpoints when history is compacted; not shown in the normal chat view |
@@ -1926,7 +1928,7 @@ Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-d
 
 ## Shared projects and agents
 
-Projects group conversations and shared instructions. Agents independently define a name, role, instructions, workspace and AI settings. There is no project membership or project default agent. New conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Conversation-specific backend overrides retain precedence.
+Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. There is no project membership or project default agent. New conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
 
 Open Studio from the extensions list to choose makers and reviewers for each task. The chat toolbar no longer shows a Studio shortcut. Shared instructions and past conversations are provided explicitly (up to five, 30,000 characters each and 50,000 total source characters). Reference URLs in shared instructions are not automatically fetched.
 
@@ -1937,29 +1939,43 @@ Update the host and Studio together. For rollback, stop both services and restor
 The Agents section in Settings supports creating, editing and deleting agents and shows their names, roles and models. The Projects screen links directly to the Agents and Workspace sections in Settings. The new-conversation selector always offers every registered agent. Agents used by open or running conversations cannot be deleted; closed conversations do not block deletion.
 
 
+### Channel agents and precedence
+
+Projects and Agents are sibling entries in the Web sidebar. Choose an Agent to filter its conversations, or choose a new-conversation Agent before creating a chat.
+
+Discord/Slack support `/agent list`, `/agent show`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option, with live choices searchable by agent name or ID). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
+
+A selected Agent supplies the complete backend/model/reasoning/workspace bundle. Individual channel settings remain stored but inactive; clearing the Agent restores them. Missing values use instance or backend defaults, never a model belonging to another backend. Individual model/workspace mutations are rejected while an Agent is selected.
+
+Changing or clearing an Agent is rejected during processing and starts a new session on the next message, preserving messages and files. Discord threads use their parent channel's Agent; Slack threads use their channel's Agent. Per-thread Agent overrides are outside this version. External sessions snapshot Agent settings at creation, so edits apply to new sessions. Scheduled runs also use Agent instructions and workspace.
+
+`xangi agent delete <ID>` shares Web deletion rules. Channel bindings and open/running conversations block deletion and are identified in the error. After unbinding and closing conversations, deleting an Agent preserves conversation text and workspace files.
+
+Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action show --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
+
 ### Agent delegation
 
-The parent agent can register a worker after preparing a separate directory. For development, create a task-specific Git worktree and branch from the target repository, and make its `AGENTS.md` and required skills available there. The parent workspace itself is rejected.
+The parent agent can register a worker after choosing an existing workspace directory. When concurrent edits could conflict, prepare a task-specific Git worktree and branch as needed, and make its `AGENTS.md` and required skills available there. Shared and nested workspaces are allowed; the AI chooses whether separation suits the task.
 
 ```bash
 xangi agent create --name Developer --workspace /absolute/path/to/worktree --role "Implement and test code"
 ```
 
-`create` registers an existing workspace directory and saves the agent, without creating or joining a project. Use its Agent ID with `xangi agent run AGENT_ID --task "..."`. The parent prepares the Git worktree and skills. Place the child workspace outside the parent workspace; separate directories are not an OS-level filesystem sandbox.
+`create` registers an existing workspace directory and saves the agent, without creating or joining a project. Use its Agent ID with `xangi agent run AGENT_ID --task "..."`. The parent prepares the Git worktree and skills. Separate parent and child workspaces are optional; separate directories are not an OS-level filesystem sandbox.
 
 `xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; concurrent child results are delivered together. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
 
-`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. No child-to-child messaging or nested delegation; at most three active requests per parent.
+`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. No child-to-child messaging or nested delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
-Project forms contain a name and shared instructions. Agent forms contain a name, workspace, role, individual instructions and AI settings. There are no participant or project default agent settings.
+Project forms contain a name and shared instructions. Agent forms contain a name, workspace, basic instructions and AI settings. There are no participant or project default agent settings.
 
 A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Agent-bound Studio runs also use that workspace; only runs without an agent accept a caller-selected workspace.
 
 ### Agent execution settings
 
-Agents own their workspace for direct conversations and delegated tasks. Children never inherit the parent workspace. Existing agents without a workspace use default; select their workspace in the agent editor. Subsequent execution uses the updated workspace. Projects do not define workspaces.
+Agents own their workspace for direct conversations and delegated tasks. Children never inherit the parent workspace. Existing agents without a workspace use default; select their workspace in the agent editor. Web executions use the updated workspace; Discord/Slack apply it when starting a new session. Projects do not define workspaces.
 
-The local-llm backend exposes Agent (tools enabled)/Chat (conversation only) and Local LLM reasoning effort. Empty values use the instance defaults. Choose reasoning values supported by your model. These settings are separate from ordinary effort and flow through persistence to both direct conversations and delegation. Conversation-specific mode overrides retain precedence.
+The local-llm backend exposes Agent (tools enabled)/Chat (conversation only) and Local LLM reasoning effort. Empty values use the instance defaults. Choose reasoning values supported by your model. These settings are separate from ordinary effort and flow through persistence to both direct conversations and delegation. Selected Agents also take precedence over conversation-specific mode settings.
 
 
 ### Extension favorites
@@ -2021,3 +2037,49 @@ For Discord `/backend`, select `openrouter` as the backend and type `gemini` or 
 The agent editor filters reasoning effort using each model’s `reasoning.supported_efforts`, shows its published default, and excludes `none` when reasoning is mandatory. Missing metadata leaves only the inherited default; discovery failure does not enable all values. Changing models clears an incompatible selection. Saving an explicit effort validates it against current model metadata. Unspecified agent effort inherits `OPENROUTER_REASONING_EFFORT`; if that is also unset, no effort is sent and the provider default applies. The generic CLI `--effort` is separate and is not supported for OpenRouter.
 
 Discovery lists tools-capable models from the public API; listing does not guarantee current ZDR endpoint availability or verified xangi compatibility. Keep API keys out of chat. See [data collection](https://openrouter.ai/docs/guides/privacy/data-collection) and [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection).
+
+
+### Teams (member groups)
+
+Create Teams with members and shared instructions in Settings. The calling conversation always leads; fixed leaders, subleaders and reporting lines are no longer configurable.
+
+Agents have basic instructions describing expertise and standing behavior. Legacy Agent role text migrates into these instructions; identical copied Team assignments are cleared while distinct assignments are preserved. The optional Team-specific assignment is separate and is not copied from the Agent. Leave it blank for the caller to decide the current work.
+
+Teams are selected with `team run`, not assigned to channels. Discord `/team list` and `/team show id:` inspect registered Teams. Each Agent may be assigned to zero or one channel across Discord and Slack. Clear the existing assignment before moving it; busy assignments cannot change.
+
+The Agent list and editor show the current work channel. The editor can assign or clear a Discord/Slack channel. Clear the current binding before choosing another channel. These actions save immediately and separately from the Agent form. Busy operations are rejected without losing the binding. Duplicate assignment errors identify the current platform and channel ID (a channel reference on Discord). Unknown channel names fall back to IDs.
+
+Team members receive shared instructions, the submitted common context, and their own assignment. Leader orchestration instructions and parent conversation history are not forwarded automatically. The caller must include necessary context in `--task`.
+
+Standalone and Team requests to an assigned Agent create a dedicated work thread in that channel. Public text and tool names are updated at a throttled rate; results and thread URLs return to the caller. Unassigned Agents keep the independent-session behavior. A thread creation failure fails the request before execution. Later delivery failures preserve the result, record `workDeliveryError`, and are reported to the caller.
+
+Work thread titles use the first sentence of the assigned task, limited to 36 characters, without model names or run IDs. Intro posts show the assignee, optional team name, and sentence-by-sentence task bullets. Team history, orchestration instructions, and member IDs are omitted from presentation while execution prompts remain unchanged. Standalone requests have platform metadata removed. Assignment conditions are preserved. Discord parent posts direct readers to the thread when the formatted request is too long. While running, Stop and the existing timeout extension/countdown controls operate on the delegated Agent session. Extension availability and limits follow the backend settings. Completed results offer Close: it removes only the clicking user from the thread and marks the idle Agent session completed in Monitor. Running or queued follow-ups remain open with an explanatory response. History is preserved, and later follow-ups reopen the same session. Use Stop to cancel work.
+
+Slack work threads share processing and completion controls with normal responses. Stop, timeout extension and countdown updates target the child execution. Close completes idle child sessions while leaving running or queued work open. History remains usable after Close, and later instructions resume the same session. Discord and Slack share history extraction and final-response filtering.
+
+Normal responses, slash commands, and Agent work share completion controls and History binding. With History enabled, responses with intermediate commentary or tools show History. Standalone, Team, and follow-up work share event recording and use a unique turn reference per execution. Earlier buttons stay bound to their original turn, including after restart through persisted logs.
+
+Authorized users can post text instructions in the work thread. Inputs are persisted and processed on the same session after the current response finishes; this does not interrupt an active backend turn. Completed threads can continue, including after restart when the saved session still exists. Interrupted runs remain failed after restart; a new instruction resumes the work. Follow-ups to completed Team members report to the original caller without rerunning the Team. Bot and unauthorized inputs are ignored. Inputs are limited to 20000 characters each and 20 pending messages; attachments are not supported.
+
+Teams contain 1–64 members. Per-Team concurrency defaults to 16 and is configurable from 1 to 64, shared across conversations of that Team. Shared workspaces normally run concurrently; optional workspace serialization covers overlapping Team runs, not standalone Agents. Outstanding Agent/Team requests per parent also default to 16, configurable through `AGENT_MAX_CONCURRENT_REQUESTS` (1–64).
+
+Read `xangi tool help team`, then use `xangi team list` / `show NAME_OR_ID`. The caller gathers premises before sending one batch: `xangi team run NAME_OR_ID --task "shared background, evidence and assumptions" --assignments-json '[{"agentId":"ID","task":"independent task"}]'`. Ask required clarification before dispatch. Missing/duplicate members and empty tasks launch nobody. Validated members start concurrently within the configured limit.
+
+Use the accepted run ID with `xangi team status --id RUN_ID` / `wait --id RUN_ID` (up to 25 seconds). Do not resubmit. The original caller receives completion and synthesizes the reports. Agent Runs store progress, partial results and failures. Cancellation propagates to children and prevents queued starts. Results are scoped to the originating conversation; duplicate requests, nested delegation and deleting in-use groups are rejected.
+
+`xangi agent logs --id RUN_ID` inspects standalone Agent activity. `xangi team logs --id RUN_ID` aggregates the same reader for members without duplicating stored logs. Both are scoped to the originating conversation. Team supports `--member RUN_OR_AGENT_ID`. Reports include tool counts, recorded queries/URLs, errors, explicit retries and source file/line references. `--offset N --limit N` pages events per member (default 20, maximum 100); counts cover the full file. Missing or malformed logs produce warnings. Timing-only inputs, shell-internal actions and unrecorded retries remain unknown; search-result URLs are not treated as visited pages. Grok supplements timing traces with native provider-session history. Files larger than 32 MiB are skipped with a warning.
+
+`project-catalog.json` stores Teams, `channel-agents.json` stores channel Agents. APIs are `GET/POST /api/teams` and `PATCH/DELETE /api/teams/:id`. Legacy groups migrate to caller leadership, clearing reporting lines but preserving named Agents and assignment text; a redundant built-in root is removed. Saved conversation snapshots also upgrade on resume. Old party command/API aliases are not provided. Startup backs up retired Team assignments and ambiguous duplicate Agent assignments to `channel-assignments-before-single-agent.json`, then clears them. Unique Agent assignments and registered Teams are retained.
+
+The optional built-in `xangi:default` member is a separate worker using global AI settings and the default workspace, not the caller. Peer messaging, dependent-task scheduling and iterative improvement are not included.
+
+AI title generation runs alongside the conversation with a 60-second deadline that cancels only the title runner. Non-streaming display still forwards backend readiness to start naming. Failure preserves the existing title; use `/retitle` to regenerate it.
+
+
+### Child agent status checks and result delivery
+
+The host periodically checks running work and undelivered terminal results without LLM polling turns. Slack messages target the original channel and thread. Busy parents are checked again on the next tick. Delivery has at most three attempts including the initial attempt; after exhaustion, a direct result/error notice is attempted once without an LLM. Failed notices remain visible in logs and the run record. Attempt counts and progress timestamps survive restart.
+
+Set `AGENT_PARENT_CHECK_INTERVAL_MS` (default 30000) for checks/retries and `AGENT_PARENT_PROGRESS_INTERVAL_MS` (default 180000) for running-work notices in `.env`. Both accept integers from 1000 to 86400000 milliseconds and require restart. Notices are sent on check ticks, so timing is rounded up to a check interval. Reports describe running/queued state and elapsed time, without inventing a completion percentage.
+
+Recovery and progress notices require explicit delivery tracking recorded when a task is created or deliberately rerun. Legacy untracked records are never replayed automatically. Web result delivery updates the existing session and never creates an empty conversation to replace a closed or missing routing entry.

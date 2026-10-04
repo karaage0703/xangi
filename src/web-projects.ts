@@ -31,6 +31,7 @@ interface WebProjectBackendInput {
 }
 
 export interface WebProject {
+  team?: import('./teams.js').TeamSnapshot;
   id: string;
   name: string;
   prompt: string;
@@ -203,9 +204,10 @@ export function validateProjectCatalogRaw(raw: string): WebProjectStateIssue[] {
     for (const items of [state.projects, state.agents])
       parseProjects(JSON.stringify({ version: 1, projects: items }), (issue) => issues.push(issue));
     for (const agent of state.agents) {
-      if (typeof agent.role !== 'string') throw new Error('エージェント情報が不正です');
+      if (agent.role !== undefined && typeof agent.role !== 'string')
+        throw new Error('エージェント情報が不正です');
       normalizeAgentOptions(agent);
-      normalizePrompt(agent.role);
+      normalizePrompt(agent.role || '');
     }
   } catch (error) {
     issues.push({

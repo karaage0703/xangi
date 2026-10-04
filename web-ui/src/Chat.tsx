@@ -87,7 +87,7 @@ interface Session {
     backend: string;
     model?: string;
     effort?: string;
-    source: 'session' | 'project' | 'default';
+    source: 'session' | 'agent' | 'project' | 'default';
   };
   modelExecution?: ModelExecution;
   modelHistory?: ModelExecution[];
@@ -110,7 +110,7 @@ interface Session {
     backend: string;
     model?: string;
     effort?: string;
-    source: 'session' | 'project' | 'default';
+    source: 'session' | 'agent' | 'project' | 'default';
   };
   contextUsage?: {
     usedTokens: number;
@@ -1781,7 +1781,7 @@ function SessionProjectDialog({
             ))}
           </select>
         </label>
-        <small>会話個別の設定がなければ、移動先Projectのモデル設定を次の送信から使います。</small>
+        <small>担当と作業場所は保持し、移動先Projectの共通指示を適用します。</small>
       </div>
       <div className="session-project-dialog-actions">
         <button type="button" disabled={moving} onClick={onCancel}>
@@ -1804,6 +1804,8 @@ export function Chat() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [agents, setAgents] = useState<Project[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [activeAgentId, setActiveAgentId] = useState('');
+  const [agentViewOpen, setAgentViewOpen] = useState(false);
   const [catalogQuery, setCatalogQuery] = useState('');
   const catalogVisible = (item: Project) =>
     `${item.name} ${item.role || ''}`
@@ -1862,6 +1864,7 @@ export function Chat() {
       const params = new URLSearchParams({ limit: '100', offset: String(offset) });
       if (q.trim()) params.set('q', q.trim());
       if (activeProjectId) params.set('projectId', activeProjectId);
+      if (activeAgentId) params.set('agentId', activeAgentId);
       if (sessionFilter !== 'all') params.set('lifecycle', sessionFilter);
       setSearching(true);
       try {
@@ -1886,7 +1889,7 @@ export function Chat() {
         if (requestId === loadRequestRef.current) setSearching(false);
       }
     },
-    [activeProjectId, query, sessionFilter]
+    [activeProjectId, activeAgentId, query, sessionFilter]
   );
 
   useEffect(() => {
@@ -1946,6 +1949,7 @@ export function Chat() {
   useEffect(() => {
     const streamParams = new URLSearchParams();
     if (activeProjectId) streamParams.set('projectId', activeProjectId);
+    if (activeAgentId) streamParams.set('agentId', activeAgentId);
     const source = new EventSource(`/api/sessions/stream?${streamParams}`);
     source.addEventListener('sessions', (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as SessionsResponse;
@@ -2005,7 +2009,7 @@ export function Chat() {
     source.onopen = () => setNotice('');
     source.onerror = () => setNotice('更新ストリームを再接続しています');
     return () => source.close();
-  }, [activeProjectId, sessionFilter]);
+  }, [activeProjectId, activeAgentId, sessionFilter]);
 
   useEffect(() => {
     if (skipInitialSearchRef.current) {
@@ -2015,7 +2019,7 @@ export function Chat() {
     window.clearTimeout(searchTimerRef.current);
     searchTimerRef.current = window.setTimeout(() => void loadSessions(0, query, false), 180);
     return () => window.clearTimeout(searchTimerRef.current);
-  }, [activeProjectId, query, sessionFilter]);
+  }, [activeProjectId, activeAgentId, query, sessionFilter]);
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
@@ -2342,6 +2346,7 @@ export function Chat() {
           className="projects-link"
           aria-current={projectViewOpen ? 'page' : undefined}
           onClick={() => {
+            setAgentViewOpen(false);
             setProjectViewOpen(true);
             setProjectFormOpen(false);
             if (compactSidebar) setSidebarOpen(false);
@@ -2351,13 +2356,42 @@ export function Chat() {
           <span>Projects</span>
           <span aria-hidden="true">›</span>
         </button>
+        <button
+          type="button"
+          className="projects-link"
+          aria-current={agentViewOpen ? 'page' : undefined}
+          onClick={() => {
+            setAgentViewOpen(true);
+            setProjectViewOpen(false);
+            if (compactSidebar) setSidebarOpen(false);
+          }}
+        >
+          <span aria-hidden="true">◎</span>
+          <span>Agents</span>
+          <span aria-hidden="true">›</span>
+        </button>
+        {activeAgentId && (
+          <button
+            type="button"
+            className="project-context-chip"
+            onClick={() => {
+              setActiveAgentId('');
+              setSelectedAgentId('');
+            }}
+          >
+            {agents.find((a) => a.id === activeAgentId)?.name} の会話 ×
+          </button>
+        )}
         <div className="new-conversation-agent">
           <label>
             新規会話の担当
             <select
               aria-describedby="conversation-agent-help"
               value={selectedAgentId}
-              onChange={(e) => setSelectedAgentId(e.target.value)}
+              onChange={(e) => {
+                setSelectedAgentId(e.target.value);
+                if (activeAgentId) setActiveAgentId(e.target.value);
+              }}
             >
               <option value="">xangiの既定設定</option>
               {agents.map((a) => (
@@ -2367,7 +2401,16 @@ export function Chat() {
               ))}
             </select>
           </label>
-          <small id="conversation-agent-help">登録済みの全エージェントから選択します。</small>
+          <small id="conversation-agent-help">
+            {selectedAgentId
+              ? (() => {
+                  const a = agents.find((a) => a.id === selectedAgentId);
+                  return a
+                    ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
+                    : '';
+                })()
+              : '登録済みの全エージェントから選択します。'}
+          </small>
         </div>
         <div className="sidebar-actions">
           <input
@@ -2508,7 +2551,89 @@ export function Chat() {
         </nav>
       </aside>
       <section className="workspace">
-        {projectViewOpen ? (
+        {agentViewOpen ? (
+          <div className="project-view">
+            <header className="project-view-header">
+              <div>
+                <button
+                  type="button"
+                  className="project-view-back"
+                  onClick={() => setAgentViewOpen(false)}
+                >
+                  ← 会話
+                </button>
+                <h1>Agents</h1>
+              </div>
+              <a className="project-view-new" href="/settings#agents">
+                エージェント設定
+              </a>
+            </header>
+            <p>担当を選ぶと会話一覧を表示します。「新規」でその担当との会話を始められます。</p>
+            <CatalogFilter
+              editing={false}
+              agentMode
+              query={catalogQuery}
+              onChange={setCatalogQuery}
+            />
+            <nav className="project-view-list" aria-label="Agent一覧">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAgentId('');
+                  setActiveProjectId('');
+                  setSelectedAgentId('');
+                  setAgentViewOpen(false);
+                  setSidebarOpen(true);
+                }}
+              >
+                <span className="project-view-icon" aria-hidden="true">
+                  ◫
+                </span>
+                <span className="project-view-copy">
+                  <strong>すべての会話</strong>
+                </span>
+                <span aria-hidden="true">›</span>
+              </button>
+              {agents.filter(catalogVisible).map((agent) => (
+                <button
+                  type="button"
+                  key={agent.id}
+                  className={activeAgentId === agent.id ? 'selected' : ''}
+                  onClick={() => {
+                    setSelectedAgentId(agent.id);
+                    setActiveAgentId(agent.id);
+                    setActiveProjectId('');
+                    setAgentViewOpen(false);
+                    setSidebarOpen(true);
+                  }}
+                >
+                  <span className="project-view-icon" aria-hidden="true">
+                    ◎
+                  </span>
+                  <span className="project-view-copy">
+                    <strong>{agent.name}</strong>
+                    <small>
+                      {[
+                        agent.role,
+                        agent.backend || '全体既定',
+                        agent.model,
+                        agent.workspaceId || 'default',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </small>
+                  </span>
+                  <span aria-hidden="true">›</span>
+                </button>
+              ))}
+              {agents.length === 0 && (
+                <p className="project-empty">
+                  Agentはまだありません。エージェント設定で作成できます。
+                </p>
+              )}
+            </nav>
+          </div>
+        ) : projectViewOpen ? (
           <div className="project-view">
             <header className="project-view-header">
               <div>
@@ -2526,12 +2651,6 @@ export function Chat() {
               </div>
               {!projectFormOpen && (
                 <div className="project-view-header-actions">
-                  <a className="project-view-new" href="/settings#workspaces">
-                    ワークスペース設定
-                  </a>
-                  <a className="project-view-new" href="/settings#agents">
-                    エージェント設定
-                  </a>
                   <button type="button" className="project-view-new" onClick={openNewProjectForm}>
                     ＋ 新規プロジェクト
                   </button>
@@ -2637,6 +2756,7 @@ export function Chat() {
                         type="button"
                         className="project-view-main"
                         onClick={() => {
+                          setActiveAgentId('');
                           setActiveProjectId(project.id);
                           setProjectViewOpen(false);
                         }}
@@ -2662,6 +2782,7 @@ export function Chat() {
                         className="project-view-edit"
                         aria-label={`${project.name}の設定`}
                         onClick={() => {
+                          setActiveAgentId('');
                           setActiveProjectId(project.id);
                           openProjectEditor(project);
                         }}
@@ -2698,6 +2819,7 @@ export function Chat() {
                   className="project-context-chip"
                   title="Project設定を開く"
                   onClick={() => {
+                    setAgentViewOpen(false);
                     setProjectViewOpen(true);
                     setProjectFormOpen(false);
                   }}

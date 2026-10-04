@@ -126,13 +126,6 @@ it('creates a development agent in its own existing workspace without changing t
   expect(created.agent).toMatchObject({ name: 'Developer', workspaceId: created.workspace.id });
   expect(created.workspace.path).toBe(childPath);
   expect(catalog.get(project.id)).not.toHaveProperty('agentIds');
-  await expect(
-    executeProjectAgentCommand(
-      { action: 'create', name: 'Wrong', workspace: parentPath },
-      { channelId: parent },
-      { catalog, runs, start, workspaces }
-    )
-  ).rejects.toThrow('親Workspaceの外');
   await executeProjectAgentCommand(
     { action: 'run', agent: created.agent.id, task: 'implement' },
     { channelId: parent },
@@ -141,52 +134,40 @@ it('creates a development agent in its own existing workspace without changing t
   expect(start.mock.calls.at(-1)?.[0].workspaceId).toBe(created.workspace.id);
 });
 
-it('rejects creating a child in the Discord parent non-default workspace', async () => {
-  const { catalog, runs, start } = setup();
-  const defaultPath = join(root, 'default');
-  const parentPath = join(root, 'discord-parent');
-  const nestedPath = join(parentPath, 'nested-child');
-  mkdirSync(defaultPath);
-  mkdirSync(parentPath);
-  mkdirSync(nestedPath);
-  const workspaces = await WorkspaceRegistry.open({
-    dataDir: join(root, 'state'),
-    defaultWorkspacePath: defaultPath,
-  });
-  const parentWorkspace = await workspaces.register('discord-parent', parentPath);
-  const channelId = '123456789012345678';
-  await workspaces.bind('discord', channelId, parentWorkspace.id);
-  const agentsBefore = catalog.agents();
-  const projectsBefore = catalog.list();
-  const workspacesBefore = workspaces.list();
-
-  await expect(
-    executeProjectAgentCommand(
-      {
-        action: 'create',
-        name: 'Developer',
-        workspace: parentPath,
-      },
-      { channelId, platform: 'discord' },
-      { catalog, runs, start, workspaces }
-    )
-  ).rejects.toThrow('親Workspaceの外');
-  await expect(
-    executeProjectAgentCommand(
-      {
-        action: 'create',
-        name: 'Nested',
-        workspace: nestedPath,
-      },
-      { channelId, platform: 'discord' },
-      { catalog, runs, start, workspaces }
-    )
-  ).rejects.toThrow('親Workspaceの外');
-  expect(catalog.agents()).toEqual(agentsBefore);
-  expect(catalog.list()).toEqual(projectsBefore);
-  expect(workspaces.list()).toEqual(workspacesBefore);
-  expect(start).not.toHaveBeenCalled();
-});
+it.each(['discord', 'slack'] as const)(
+  'allows shared and nested workspaces for %s delegation',
+  async (platform) => {
+    const { catalog, runs, start } = setup();
+    const parentPath = join(root, 'parent');
+    const nestedPath = join(parentPath, 'nested');
+    mkdirSync(nestedPath, { recursive: true });
+    const workspaces = await WorkspaceRegistry.open({
+      dataDir: join(root, 'state'),
+      defaultWorkspacePath: parentPath,
+    });
+    const channelId = '123456789012345678';
+    for (const [name, workspace] of [
+      ['Shared', parentPath],
+      ['Nested', nestedPath],
+    ]) {
+      const created = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'create', name, workspace },
+          { channelId, platform },
+          { catalog, runs, start, workspaces }
+        )
+      );
+      await executeProjectAgentCommand(
+        { action: 'run', agent: created.agent.id, task: 'answer a question' },
+        { channelId, platform },
+        { catalog, runs, start, workspaces }
+      );
+      expect(created.workspace.path).toBe(workspace);
+      expect(start.mock.calls.at(-1)?.[0].workspaceId).toBe(created.workspace.id);
+    }
+    expect(start).toHaveBeenCalledTimes(2);
+  }
+);
 
 it('creates and calls an agent outside Web Chat without a project', async () => {
   const { catalog, runs, start } = setup();

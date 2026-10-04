@@ -146,6 +146,8 @@ describe('Web runtime settings', () => {
     );
 
     expect(webChannelRuntimeSettingsSnapshot('discord', '123', config, resolver)).toEqual({
+      agent: null,
+      team: null,
       backend: {
         value: 'claude-code',
         effective: { backend: 'claude-code', model: 'sonnet', effort: 'high' },

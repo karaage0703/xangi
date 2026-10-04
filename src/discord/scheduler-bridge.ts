@@ -1,3 +1,4 @@
+import { channelAgentSnapshot } from '../agent-selection.js';
 import type { Client, Message } from 'discord.js';
 import type { Config } from '../config.js';
 import type { AgentRunner } from '../agent-runner.js';
@@ -38,9 +39,8 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
   // スケジューラにDiscord送信関数を登録
   scheduler.registerSender('discord', async (channelId, msg) => {
     const channel = await client.channels.fetch(channelId);
-    if (channel && 'send' in channel) {
-      await (channel as { send: (content: string) => Promise<unknown> }).send(msg);
-    }
+    if (!channel || !('send' in channel)) throw new Error(`Channel not found: ${channelId}`);
+    await (channel as { send: (content: string) => Promise<unknown> }).send(msg);
   });
 
   // スケジューラにエージェント実行関数を登録
@@ -56,11 +56,17 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         channelId,
         channel as unknown as { isThread?: () => boolean; parentId?: string | null }
       );
-      const workspace = workspaceRegistry
-        ? await workspaceRegistry.resolve('discord', settingsChannelId)
+      const agentSnapshot = await channelAgentSnapshot(
+        'discord',
+        settingsChannelId,
+        workspaceRegistry
+      );
+      const workspace = agentSnapshot.workspacePath
+        ? { id: agentSnapshot.workspaceId, path: agentSnapshot.workspacePath }
         : undefined;
       const freshAppSessionId = createSchedulerRunId('discord');
       createSchedulerSession(freshAppSessionId, channelId, {
+        ...agentSnapshot,
         platform: 'discord',
         title: schedule?.label || prompt,
         workspaceId: workspace?.id,

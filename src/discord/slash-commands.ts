@@ -1,3 +1,5 @@
+import { closeAgentWork, findAgentWork } from '../agent-work.js';
+import { listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
@@ -50,7 +52,7 @@ import {
   type ScheduleType,
 } from '../scheduler.js';
 import {
-  createCompletedButtons,
+  prepareDiscordCompletion,
   createProcessingButtons,
   createReplySuggestionButtons,
   discordProcessingMessages,
@@ -59,13 +61,8 @@ import {
   getDiscordTimeoutInfoFor,
   parseDiscordHistoryCustomId,
 } from './ui.js';
-import {
-  addToolHistory,
-  appendToolHistory,
-  formatTurnHistoryDisclosure,
-  withoutFinalResponse,
-} from '../tool-history.js';
-import { getTurnHistory, readTurnHistory, type TurnHistoryEntry } from '../activity-store.js';
+import { addToolHistory, appendToolHistory, formatTurnHistoryDisclosure } from '../tool-history.js';
+import { readTurnHistory, type TurnHistoryEntry } from '../activity-store.js';
 import { waitBeforeFollowupDiscordSend } from './send-delay.js';
 import { resolveDiscordSettingsChannelId } from './thread-context.js';
 import {
@@ -274,6 +271,38 @@ export function buildSlashCommands(
       )
       .toJSON(),
     new SlashCommandBuilder()
+      .setName('agent')
+      .setDescription('チャンネルの担当エージェントを設定')
+      .addSubcommand((sub) => sub.setName('list').setDescription('登録済みの担当を表示'))
+      .addSubcommand((sub) => sub.setName('show').setDescription('現在の担当を表示'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('set')
+          .setDescription('担当を設定して新しいセッションに切り替え')
+          .addStringOption((opt) =>
+            opt
+              .setName('id')
+              .setDescription('担当エージェント（名前またはIDで検索）')
+              .setRequired(true)
+              .setAutocomplete(true)
+          )
+      )
+      .addSubcommand((sub) => sub.setName('reset').setDescription('担当を解除して個別設定に戻す'))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('team')
+      .setDescription('登録済みチームを確認')
+      .addSubcommand((sub) => sub.setName('list').setDescription('登録済みのチームを表示'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('show')
+          .setDescription('チームの内容を表示')
+          .addStringOption((opt) =>
+            opt.setName('id').setDescription('チームID').setRequired(true).setAutocomplete(true)
+          )
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName('backend')
       .setDescription('バックエンド/モデルの切り替え')
       .addSubcommand((sub) =>
@@ -468,9 +497,15 @@ export function buildSlashCommands(
   }
 
   const disabledCommands = new Set<string>(['skip']);
-  if (config.features?.workspaceSwitching === false) disabledCommands.add('workspace');
+  if (config.features?.workspaceSwitching === false) {
+    disabledCommands.add('workspace');
+    disabledCommands.add('agent');
+    disabledCommands.add('team');
+  }
   if (config.features?.runtimeSettings === false) {
     for (const name of [
+      'agent',
+      'team',
       'settings',
       'replysuggestions',
       'notify',
@@ -484,6 +519,8 @@ export function buildSlashCommands(
     }
   }
   if (config.features?.backendSwitching === false) {
+    disabledCommands.add('agent');
+    disabledCommands.add('team');
     disabledCommands.add('backend');
     disabledCommands.add('models');
   }
@@ -579,8 +616,29 @@ export async function getDiscordAutocompleteChoices(
   input: DiscordAutocompleteInput,
   skills: Skill[],
   resolver: BackendResolver,
-  discoverModels: typeof discoverBackendModels = discoverBackendModels
+  discoverModels: typeof discoverBackendModels = discoverBackendModels,
+  listAgents: typeof listSelectableAgents = listSelectableAgents,
+  listTeams: typeof listSelectableTeams = listSelectableTeams
 ): Promise<DiscordAutocompleteChoice[]> {
+  if (input.commandName === 'team' && input.focusedName === 'id') {
+    return filterAutocompleteChoices(
+      listTeams().map((team) => ({
+        name: `${team.name} (${team.id})`.slice(0, 100),
+        value: team.id,
+      })),
+      input.focusedValue
+    );
+  }
+  if (input.commandName === 'agent' && input.focusedName === 'id') {
+    return filterAutocompleteChoices(
+      listAgents().map((agent) => ({
+        name: `${agent.name} (${agent.id})`.slice(0, 100),
+        value: agent.id,
+      })),
+      input.focusedValue
+    );
+  }
+
   if (input.commandName === 'skill' && input.focusedName === 'name') {
     return filterAutocompleteChoices(
       skills.map((skill) => ({
@@ -696,13 +754,13 @@ export async function handleSkillCommand(
       prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
     }
 
-    const sessionId = getSession(channelId);
     const { appSessionId, workspace } = await ensureSessionWithWorkspace({
       registry: workspaceRegistry,
       platform: 'discord',
       contextKey: channelId,
       bindingKey: settingsChannelId,
     });
+    const sessionId = getSession(channelId);
     const eventCtx = {
       threadId: threadIdFor('discord', channelId),
       turnId: turnIdFor('discord', interaction.id),
@@ -811,22 +869,14 @@ export async function handleSkillCommand(
     const displayTextWithTools =
       toolHistoryMode === 'inline' ? appendToolHistory(displayText, toolHistory) : displayText;
     const chunks = splitDiscordMessage(displayTextWithTools, DISCORD_SAFE_LENGTH);
-    const turnHistory = withoutFinalResponse(
-      getTurnHistory(eventCtx.threadId, eventCtx.turnId),
-      runResult.result
-    );
-    const showHistory =
-      toolHistoryMode === 'button' &&
-      (config.discord.showToolButton ?? true) &&
-      turnHistory.length > 0;
-    const completedButtons = showButtons
-      ? createCompletedButtons({
-          showTools: showHistory,
-          historyContext: { threadId: eventCtx.threadId, turnId: eventCtx.turnId },
-          showLeave: interaction.channel?.isThread() ?? false,
-          showReplySuggestions: extracted.suggestions.length > 0,
-        })
-      : undefined;
+    const completion = prepareDiscordCompletion({
+      historyContext: { threadId: eventCtx.threadId, turnId: eventCtx.turnId },
+      finalResponse: runResult.result,
+      historyEnabled: toolHistoryMode === 'button' && (config.discord.showToolButton ?? true),
+      showLeave: interaction.channel?.isThread() ?? false,
+      showReplySuggestions: extracted.suggestions.length > 0,
+    });
+    const completedButtons = showButtons ? completion.buttons : undefined;
 
     let finalMessage = await interaction.editReply({
       content: chunks[0] || '✅',
@@ -840,9 +890,7 @@ export async function handleSkillCommand(
       });
     }
 
-    if (showHistory) {
-      discordToolHistoryByMessageId.set(finalMessage.id, turnHistory);
-    }
+    if (showButtons) completion.bind(finalMessage.id);
     if (showButtons && extracted.suggestions.length > 0) {
       discordReplySuggestionsByMessageId.set(finalMessage.id, extracted.suggestions);
     }
@@ -1044,9 +1092,11 @@ export function createInteractionHandler(
         return;
       }
 
+      const workRun = findAgentWork('discord', channelId);
+      const executionKey = workRun ? `web-chat:${workRun.appSessionId}` : channelId;
       if (interaction.customId === 'xangi_stop') {
-        const managedProcessStopped = await processManager.stopAndWait(channelId);
-        const stopped = managedProcessStopped || agentRunner.cancel?.(channelId) || false;
+        const managedProcessStopped = await processManager.stopAndWait(executionKey);
+        const stopped = managedProcessStopped || agentRunner.cancel?.(executionKey) || false;
         await interaction.deferUpdate().catch(() => {});
         if (!stopped) {
           await interaction.followUp({
@@ -1059,7 +1109,7 @@ export function createInteractionHandler(
 
       if (interaction.customId === 'xangi_extend') {
         // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
-        const result = agentRunner.extendTimeout?.(channelId) ?? {
+        const result = agentRunner.extendTimeout?.(executionKey) ?? {
           ok: false,
           reason: 'unsupported' as const,
         };
@@ -1168,12 +1218,21 @@ export function createInteractionHandler(
         }
         try {
           await removeUserFromDiscordThread(interaction.channel, interaction.user.id);
-          closeActiveSession(channelId, 'leave');
-          agentRunner.destroy?.(channelId);
+          const workClose = workRun ? closeAgentWork('discord', channelId) : undefined;
+          if (!workRun) {
+            closeActiveSession(channelId, 'leave');
+            agentRunner.destroy?.(channelId);
+          }
           discordToolHistoryByMessageId.delete(interaction.message.id);
           discordReplySuggestionsByMessageId.delete(interaction.message.id);
           await interaction
-            .editReply('🚪 セッションを終了して、このスレッドから退出しました')
+            .editReply(
+              workClose === 'busy'
+                ? '🚪 このスレッドから退出しました。処理中の作業は継続しています'
+                : workClose === 'missing'
+                  ? '🚪 このスレッドから退出しました。作業セッションが見つからず、完了状態は変更していません'
+                  : '🚪 セッションを終了して、このスレッドから退出しました'
+            )
             .catch(() => {});
         } catch (error) {
           console.error('[xangi] Failed to leave Discord thread:', error);
@@ -1194,6 +1253,8 @@ export function createInteractionHandler(
       config.features?.workspaceSwitching !== false;
     const runtimeCommandEnabled =
       ![
+        'agent',
+        'team',
         'settings',
         'replysuggestions',
         'notify',
@@ -1395,8 +1456,10 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'stop') {
-      const managedProcessStopped = await processManager.stopAndWait(channelId);
-      const stopped = managedProcessStopped || agentRunner.cancel?.(channelId) || false;
+      const workRun = findAgentWork('discord', channelId);
+      const executionKey = workRun ? `web-chat:${workRun.appSessionId}` : channelId;
+      const managedProcessStopped = await processManager.stopAndWait(executionKey);
+      const stopped = managedProcessStopped || agentRunner.cancel?.(executionKey) || false;
       if (stopped) {
         await interaction.reply('🛑 タスクを停止しました');
       } else {
@@ -1418,6 +1481,44 @@ export function createInteractionHandler(
       return;
     }
 
+    if (interaction.commandName === 'agent' || interaction.commandName === 'team') {
+      const isTeam = interaction.commandName === 'team';
+      try {
+        const action = interaction.options.getSubcommand();
+        const result =
+          action === 'list'
+            ? (isTeam ? listSelectableTeams() : listSelectableAgents())
+                .map((a) => `${a.name}: ${a.id}`)
+                .join('\n') ||
+              (isTeam ? '登録済みのチームはありません' : '登録済みのエージェントはありません')
+            : isTeam
+              ? (() => {
+                  if (action !== 'show') throw new Error('Teamのチャンネル設定は廃止しました');
+                  const team = listSelectableTeams().find(
+                    (t) => t.id === interaction.options.getString('id')
+                  );
+                  if (!team) throw new Error('チームが見つかりません');
+                  return `${team.name}\n${team.members.map((m) => m.agentId).join('\n')}`;
+                })()
+              : await executeRuntimeSettingsCommand(
+                  {
+                    name: isTeam ? 'team' : 'agent',
+                    action,
+                    value: interaction.options.getString('id') || undefined,
+                    platform: 'discord',
+                    channelId: settingsChannelId,
+                  },
+                  { config, resolver, agentRunner }
+                );
+        await interaction.reply({ content: result, ephemeral: true });
+      } catch (error) {
+        await interaction.reply({
+          content: error instanceof Error ? error.message : String(error),
+          ephemeral: true,
+        });
+      }
+      return;
+    }
     if (interaction.commandName === 'backend') {
       await interaction.deferReply();
       try {

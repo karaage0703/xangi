@@ -1,3 +1,4 @@
+import { assertIndividualAgentSettings } from './agent-selection.js';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -228,6 +229,7 @@ export class WorkspaceRegistry {
   }
 
   async bind(platform: string, channelId: string, workspaceId: string): Promise<WorkspaceEntry> {
+    assertIndividualAgentSettings(channelId);
     return this.mutate(async () => {
       const normalizedPlatform = normalizeNamespace(platform, 'platform');
       const normalizedChannel = normalizeNamespace(channelId, 'channel ID');
@@ -253,6 +255,7 @@ export class WorkspaceRegistry {
   }
 
   async resetBinding(platform: string, channelId: string): Promise<boolean> {
+    assertIndividualAgentSettings(channelId);
     return this.mutate(async () => {
       const normalizedPlatform = normalizeNamespace(platform, 'platform');
       const normalizedChannel = normalizeNamespace(channelId, 'channel ID');

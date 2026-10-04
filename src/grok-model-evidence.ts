@@ -63,7 +63,7 @@ export function parseGrokTurnEffort(text: string): string | undefined {
   return effort;
 }
 
-async function resolveGrokSessionFile(
+export async function resolveGrokSessionFile(
   query: GrokSessionQuery,
   filename: 'events.jsonl' | 'chat_history.jsonl'
 ): Promise<string | undefined> {

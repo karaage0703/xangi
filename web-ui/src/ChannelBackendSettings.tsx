@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { getJson, requestJson } from './api';
 
 export interface ChannelBackendSnapshot {
+  team?: { id: string; name: string; leadership?: string } | null;
+  agent?: { id: string; name: string; workspaceId: string } | null;
   backend: {
     value: string;
     model?: string;
@@ -37,6 +39,40 @@ export function ChannelBackendSettings({
   enabled: boolean;
 }) {
   const [current, setCurrent] = useState(snapshot);
+  const [agents, setAgents] = useState<
+    Array<{ id: string; name: string; backend?: string; model?: string; workspaceId?: string }>
+  >([]);
+  const [agentId, setAgentId] = useState(snapshot.agent?.id || '');
+  useEffect(() => {
+    requestJson<{ agents: typeof agents }>('/api/agents')
+      .then((r) => setAgents(r.agents))
+      .catch((e) => setNotice(String(e)));
+  }, []);
+  async function saveAgent() {
+    setSaving(true);
+    setNotice('');
+    try {
+      await requestJson('/api/runtime-settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'agent',
+          action: agentId ? 'set' : 'reset',
+          value: agentId,
+          platform,
+          channelId,
+        }),
+      });
+      const next = await requestJson<ChannelBackendSnapshot>(
+        `/api/runtime-settings/channel?platform=${encodeURIComponent(platform)}&channelId=${encodeURIComponent(channelId)}`
+      );
+      setCurrent(next);
+      setNotice('担当を保存しました。次の投稿から新しいセッションで開始します。');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
   const [backend, setBackend] = useState(snapshot.backend.value);
   const [model, setModel] = useState(snapshot.backend.model || '');
   const [effort, setEffort] = useState(snapshot.backend.effort || '');
@@ -127,7 +163,54 @@ export function ChannelBackendSettings({
   }
   return (
     <form onSubmit={(event) => void save(event)}>
-      <fieldset disabled={!enabled || saving} style={{ border: 0, padding: 0, margin: 0 }}>
+      <div className="settings-runtime-grid">
+        <label>
+          <span>担当エージェント</span>
+          <select
+            aria-label="エージェント"
+            value={agentId}
+            disabled={!enabled || saving}
+            onChange={(e) => setAgentId(e.target.value)}
+          >
+            <option value="">指定なし（チャンネルの個別設定）</option>
+            <optgroup label="エージェント">
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+        </label>
+        <div className="settings-channel-status">
+          <button type="button" disabled={!enabled || saving} onClick={() => void saveAgent()}>
+            {saving ? '保存中…' : '担当を保存'}
+          </button>
+        </div>
+      </div>
+      <p>
+        Agentを設定できるチャンネルは最大1つです。依頼はこのチャンネルの専用スレッドで確認・追加指示できます。
+      </p>
+      {agentId && (
+        <p>
+          {(() => {
+            const a = agents.find((a) => a.id === agentId);
+            return a
+              ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
+              : '';
+          })()}
+        </p>
+      )}
+      {current.agent && (
+        <p>
+          担当: {current.agent.name}
+          。個別設定は保持されています。変更するには担当を解除してください。
+        </p>
+      )}
+      <fieldset
+        disabled={!enabled || saving || Boolean(current.agent)}
+        style={{ border: 0, padding: 0, margin: 0 }}
+      >
         <div className="settings-runtime-grid channel-backend-grid">
           <label>
             <span>
@@ -248,8 +331,8 @@ export function ChannelBackendSettings({
             </button>
           )}
         </div>
-        <p role="status">{notice}</p>
       </fieldset>
+      <p role="status">{notice}</p>
     </form>
   );
 }

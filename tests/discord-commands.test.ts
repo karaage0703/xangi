@@ -495,17 +495,15 @@ describe('Discord Commands', () => {
             ? 'global'
             : name === 'effort'
               ? 'medium'
-            : originalGetString(name);
+              : originalGetString(name);
       let currentDefault = {
         backend: 'codex' as AgentBackend,
         model: 'gpt-old',
         effort: undefined as EffortLevel | undefined,
       };
-      const setDefault = vi.fn(
-        (backend: AgentBackend, model?: string, effort?: EffortLevel) => {
-          currentDefault = { backend, model: model ?? '', effort };
-        }
-      );
+      const setDefault = vi.fn((backend: AgentBackend, model?: string, effort?: EffortLevel) => {
+        currentDefault = { backend, model: model ?? '', effort };
+      });
       const switchDefaultBackend = vi.fn();
       const switchBackend = vi.fn();
       const handler = createInteractionHandler({
@@ -779,6 +777,53 @@ describe('Discord Commands', () => {
   });
 
   describe('/backend command choices', () => {
+    it('offers live agent choices by name or ID, capped at 25', async () => {
+      const config = { discord: {} } as Config;
+      const command = buildSlashCommands(config, []).find((cmd) => cmd.name === 'agent') as any;
+      expect(command.options.find((sub: any) => sub.name === 'set').options[0].autocomplete).toBe(
+        true
+      );
+      const agents = Array.from({ length: 30 }, (_, i) => ({ id: `agent-${i}`, name: `担当${i}` }));
+      const listAgents = vi.fn().mockImplementation(() => agents);
+      const choices = (query: string) =>
+        getDiscordAutocompleteChoices(
+          { commandName: 'agent', focusedName: 'id', focusedValue: query },
+          [],
+          {} as BackendResolver,
+          undefined,
+          listAgents
+        );
+      expect(await choices('')).toHaveLength(25);
+      expect(await choices('担当29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
+      expect(await choices('AGENT-29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
+      agents.splice(29, 1);
+      expect(await choices('agent-29')).toEqual([]);
+    });
+
+    it('offers live Team choices by name or ID, capped at 25', async () => {
+      const config = { discord: {} } as Config;
+      const command = buildSlashCommands(config, []).find((cmd) => cmd.name === 'team') as any;
+      expect(command.options.find((sub: any) => sub.name === 'show').options[0].autocomplete).toBe(
+        true
+      );
+      const agents = Array.from({ length: 30 }, (_, i) => ({ id: `agent-${i}`, name: `担当${i}` }));
+      const listAgents = vi.fn().mockImplementation(() => agents);
+      const choices = (query: string) =>
+        getDiscordAutocompleteChoices(
+          { commandName: 'team', focusedName: 'id', focusedValue: query },
+          [],
+          {} as BackendResolver,
+          undefined,
+          undefined,
+          listAgents
+        );
+      expect(await choices('')).toHaveLength(25);
+      expect(await choices('担当29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
+      expect(await choices('AGENT-29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
+      agents.splice(29, 1);
+      expect(await choices('agent-29')).toEqual([]);
+    });
+
     it('registers dynamic autocomplete for backend choices', () => {
       const config = {
         agent: {
@@ -824,10 +869,7 @@ describe('Discord Commands', () => {
       expect(modelOption.choices).toBeUndefined();
       expect(effortOption.autocomplete).toBe(true);
       expect(effortOption.choices).toBeUndefined();
-      expect(scopeOption.choices.map((choice: any) => choice.value)).toEqual([
-        'channel',
-        'global',
-      ]);
+      expect(scopeOption.choices.map((choice: any) => choice.value)).toEqual(['channel', 'global']);
     });
 
     it('returns only currently selectable backend candidates', async () => {

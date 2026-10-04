@@ -5,6 +5,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { CatalogFilter } from './CatalogFilter';
 
 interface Agent {
+  workChannel?: { platform: string; channelId: string } | null;
   role?: string;
   id: string;
   name: string;
@@ -40,6 +41,19 @@ interface ModelDiscoveryResponse {
 }
 
 export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[] }) {
+  const [channels, setChannels] = useState<
+    Array<{ platform: string; id: string; name: string; group?: string }>
+  >([]);
+  const [channelNotice, setChannelNotice] = useState('');
+  const [channelTarget, setChannelTarget] = useState('');
+  const [savingChannel, setSavingChannel] = useState(false);
+  const channelLabel = (binding: Agent['workChannel']) => {
+    if (!binding) return '未設定';
+    const channel = channels.find(
+      (c) => c.platform === binding.platform && c.id === binding.channelId
+    );
+    return `${binding.platform === 'discord' ? 'Discord' : 'Slack'} / ${channel ? [channel.group, '#' + channel.name.replace(/^#/, '')].filter(Boolean).join(' / ') : binding.channelId}`;
+  };
   const [agents, setAgents] = useState<Agent[]>([]);
   const [config, setConfig] = useState<{ allowedBackends: string[] }>({ allowedBackends: [] });
   const [loading, setLoading] = useState(true);
@@ -51,7 +65,6 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     `${agent.name} ${agent.role || ''}`
       .toLocaleLowerCase()
       .includes(catalogQuery.trim().toLocaleLowerCase());
-  const [agentRole, setAgentRole] = useState('');
   const [agentFormOpen, setAgentFormOpen] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string>();
   const [agentName, setAgentName] = useState('');
@@ -69,6 +82,20 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
   const [savingAgent, setSavingAgent] = useState(false);
 
   useEffect(() => {
+    for (const platform of ['discord', 'slack']) {
+      void requestJson<{
+        channels: Array<{ id: string; name: string; group?: string }>;
+        message?: string;
+      }>(`/api/runtime-settings/channels?platform=${platform}`)
+        .then((r) => {
+          setChannels((previous) => [
+            ...previous.filter((c) => c.platform !== platform),
+            ...r.channels.map((c) => ({ ...c, platform })),
+          ]);
+          if (r.message) setChannelNotice(r.message);
+        })
+        .catch((e) => setChannelNotice(String(e)));
+    }
     void Promise.all([
       requestJson<{ agents: Agent[] }>('/api/agents').then((result) => setAgents(result.agents)),
       requestJson<{ allowedBackends: string[] }>('/api/config').then(setConfig),
@@ -114,7 +141,6 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
   }, [agentBackend, agentFormOpen]);
   function openNewAgentForm() {
     setNotice('');
-    setAgentRole('');
     setEditingAgentId(undefined);
     setAgentName('');
     setAgentPrompt('');
@@ -131,7 +157,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     if (!agent) return;
     setNotice('');
     setEditingAgentId(agent.id);
-    setAgentRole(agent.role || '');
+    setChannelTarget('');
     setAgentName(agent.name);
     setAgentPrompt(agent.prompt);
     setAgentBackend(agent.backend || '');
@@ -143,6 +169,32 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     setAgentFormOpen(true);
   }
 
+  async function changeWorkChannel(action: 'set' | 'reset') {
+    if (!editingAgentId || savingChannel) return;
+    setSavingChannel(true);
+    setChannelNotice('');
+    try {
+      const target = channels.find((c) => `${c.platform}:${c.id}` === channelTarget);
+      const result = await requestJson<{ workChannel: Agent['workChannel'] }>(
+        `/api/agents/${encodeURIComponent(editingAgentId)}/channel`,
+        jsonInit('PUT', { action, platform: target?.platform, channelId: target?.id })
+      );
+      setAgents((previous) =>
+        previous.map((a) =>
+          a.id === editingAgentId ? { ...a, workChannel: result.workChannel } : a
+        )
+      );
+      setChannelTarget('');
+      setChannelNotice(
+        action === 'reset' ? 'チャンネルの紐づきを解除しました。' : 'チャンネルを設定しました。'
+      );
+    } catch (error) {
+      setChannelNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingChannel(false);
+    }
+  }
+  const currentBinding = agents.find((a) => a.id === editingAgentId)?.workChannel;
   const openRouterModel =
     agentBackend === 'openrouter'
       ? agentModelOptions.find((model) => model.id === agentModel)
@@ -174,7 +226,6 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
         localLlmReasoningEffort: ['local-llm', 'openrouter'].includes(agentBackend)
           ? agentReasoning || null
           : null,
-        role: agentRole,
       };
       const base = '/api/agents';
       const endpoint = editingAgentId ? `${base}/${encodeURIComponent(editingAgentId)}` : base;
@@ -235,6 +286,57 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
       />
       {agentFormOpen ? (
         <form className="project-form" onSubmit={(event) => void saveAgent(event)}>
+          {editingAgentId && (
+            <fieldset disabled={savingChannel || savingAgent}>
+              <legend>作業チャンネル</legend>
+              <p>現在の設定先: {channelLabel(currentBinding)}</p>
+              {currentBinding ? (
+                <>
+                  <p>別のチャンネルに変更する場合は、先に解除してください。</p>
+                  <button type="button" onClick={() => void changeWorkChannel('reset')}>
+                    チャンネルの紐づきを解除
+                  </button>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="agent-work-channel">
+                    <span>設定先チャンネル</span>
+                    <select
+                      id="agent-work-channel"
+                      aria-label="設定先チャンネル"
+                      value={channelTarget}
+                      onChange={(e) => setChannelTarget(e.target.value)}
+                    >
+                      <option value="">チャンネルを選択</option>
+                      {channels.map((c) => (
+                        <option
+                          key={`${c.platform}:${c.id}`}
+                          value={`${c.platform}:${c.id}`}
+                          disabled={agents.some(
+                            (a) =>
+                              a.id !== editingAgentId &&
+                              a.workChannel?.platform === c.platform &&
+                              a.workChannel.channelId === c.id
+                          )}
+                        >
+                          {channelLabel({ platform: c.platform, channelId: c.id })}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!channelTarget}
+                    onClick={() => void changeWorkChannel('set')}
+                  >
+                    チャンネルを設定
+                  </button>
+                </>
+              )}
+              <p className="muted">チャンネルの操作はすぐに保存されます。設定先は最大1つです。</p>
+              {channelNotice && <p role="status">{channelNotice}</p>}
+            </fieldset>
+          )}
           <label>
             <span>名前</span>
             <input
@@ -245,7 +347,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
             />
           </label>
           <label>
-            <span>個別指示</span>
+            <span>基本指示</span>
             <textarea
               value={agentPrompt}
               onChange={(event) => setAgentPrompt(event.target.value)}
@@ -270,10 +372,6 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
             </select>
           </label>
           <small>このエージェントは、会話でも委譲された作業でも、この場所で動きます。</small>
-          <label>
-            得意なことを一言
-            <input value={agentRole} onChange={(e) => setAgentRole(e.target.value)} />
-          </label>
           <fieldset className="project-model-settings">
             <legend>使用するAI</legend>
             <label>
@@ -479,6 +577,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                     {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
                       'xangiの既定設定'}
                   </small>
+                  <small>作業チャンネル: {channelLabel(agent.workChannel)}</small>
                 </span>
               </button>
               <button
@@ -491,7 +590,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
               </button>
             </div>
           ))}
-          {!agents.length && <p>新規エージェントから役割と使用モデルを登録してください。</p>}
+          {!agents.length && <p>新規エージェントから基本指示と使用モデルを登録してください。</p>}
         </nav>
       )}
       <ConfirmDialog

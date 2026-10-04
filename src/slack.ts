@@ -1,3 +1,12 @@
+import { completionHistory } from './completion-history.js';
+import { closeAgentWork, findAgentWork, submitAgentWork } from './agent-work.js';
+import { registerSlackAgentWork } from './slack-agent-work.js';
+import {
+  listSelectableAgents,
+  channelAgentSnapshot,
+  beginAgentChannelTurn,
+} from './agent-selection.js';
+import { ensureSessionWithWorkspace } from './session-workspace.js';
 import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import {
@@ -29,24 +38,18 @@ import {
 import { TIMEOUT_EXTEND_ENABLED } from './constants.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
-import { getTurnHistory, readTurnHistory, type TurnHistoryEntry } from './activity-store.js';
+import { readTurnHistory, type TurnHistoryEntry } from './activity-store.js';
 import { prefetchSlackHistory } from './slack-history-prefetch.js';
 import { StreamSession } from './stream-session.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
 import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
 import { requestProcessRestart } from './restart-process.js';
-import {
-  addToolHistory,
-  appendToolHistory,
-  formatTurnHistoryDisclosure,
-  withoutFinalResponse,
-} from './tool-history.js';
+import { addToolHistory, appendToolHistory, formatTurnHistoryDisclosure } from './tool-history.js';
 import {
   closeActiveSession,
   closeSession,
   createSchedulerSession,
-  ensureSession,
   getActiveSessionId,
   getProviderSessionId,
   getSessionEntry,
@@ -152,6 +155,15 @@ function slackRunKeyFromActionBody(body: {
   return slackConversationKey(channelId, threadTs && threadTs !== messageTs ? threadTs : undefined);
 }
 
+/** Buttons on delegated work address its Web execution, not the Slack thread session. */
+export function slackActionExecutionKey(
+  body: Parameters<typeof slackRunKeyFromActionBody>[0]
+): string | undefined {
+  const key = slackRunKeyFromActionBody(body);
+  const work = key ? findAgentWork('slack', key) : undefined;
+  return work ? `web-chat:${work.appSessionId}` : key;
+}
+
 export function closeSlackConversationFromAction(
   body: {
     channel?: { id?: string };
@@ -161,6 +173,8 @@ export function closeSlackConversationFromAction(
 ): boolean {
   const conversationKey = slackRunKeyFromActionBody(body);
   if (!conversationKey) return false;
+  if (findAgentWork('slack', conversationKey))
+    return closeAgentWork('slack', conversationKey) === 'closed';
   const isThreadReply =
     Boolean(body.message?.thread_ts) && body.message?.thread_ts !== body.message?.ts;
   const reason = isThreadReply ? 'leave' : 'new';
@@ -213,7 +227,22 @@ export async function handleSlackNewAction(
   const userId = body.user?.id;
   if (!isSlackUserAllowed(allowedUsers, userId)) return;
 
-  closeSlackConversationFromAction(body, agentRunner);
+  const key = slackRunKeyFromActionBody(body);
+  const work = key ? findAgentWork('slack', key) : undefined;
+  const closed = closeSlackConversationFromAction(body, agentRunner);
+  if (work) {
+    if (!closed) {
+      await actionClient.chat.postEphemeral({
+        channel: channelId,
+        user: userId!,
+        text: '作業は完了にしていません。実行中・追加指示待ちの作業は継続します。',
+      });
+      return;
+    }
+    // Keep History usable on completed work messages.
+    await addSlackCloseReaction(actionClient, channelId, slackThreadParentTsFromActionBody(body));
+    return;
+  }
   if (body.message) {
     slackToolHistoryByMessageKey.delete(slackMessageKey(channelId, body.message.ts || ''));
     slackReplySuggestionsByMessageKey.delete(slackMessageKey(channelId, body.message.ts || ''));
@@ -534,6 +563,8 @@ const slackProcessingMessages = new Map<string, SlackProcessingEntry>();
 const slackToolHistoryByMessageKey = new Map<string, TurnHistoryEntry[]>();
 const slackReplySuggestionsByMessageKey = new Map<string, string[]>();
 const busySlackConversations = new Set<string>();
+export const isSlackConversationBusy = (key: string): boolean =>
+  [...busySlackConversations].some((k) => k === key || k.startsWith(key + ':'));
 const processedSlackMessages = new Set<string>();
 
 const SLACK_BACKEND_COMMAND_USAGE =
@@ -894,111 +925,123 @@ export function registerSlackSchedulerBridge(deps: {
 }): void {
   const { scheduler, client, config, agentRunner } = deps;
 
-  scheduler.registerSender('slack', async (channelId, msg) => {
+  scheduler.registerSender('slack', async (destination, msg) => {
+    const [channelId, threadTs] = destination.split(':', 2);
     await client.chat.postMessage({
       channel: channelId,
       text: msg,
+      ...(threadTs && { thread_ts: threadTs }),
     });
   });
 
-  scheduler.registerAgentRunner('slack', async (prompt, channelId, schedule, runContext) => {
-    const startedAt = Date.now();
-    const initialText = '🤔 考え中...';
-    const thinking = await client.chat.postMessage({
-      channel: channelId,
-      text: initialText,
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: initialText } },
-        ...createSlackProcessingBlocks(),
-      ],
-    });
-    const messageTs = thinking.ts;
-    if (!messageTs) {
-      throw new Error('Failed to get Slack message timestamp');
-    }
-
-    slackProcessingMessages.set(channelId, {
-      channelId,
-      messageTs,
-      currentText: initialText,
-      startedAt: Date.now(),
-    });
-
-    const freshAppSessionId = createSchedulerRunId('slack');
-    createSchedulerSession(freshAppSessionId, channelId, {
-      platform: 'slack',
-      title: schedule?.label || prompt,
-    });
+  scheduler.registerAgentRunner('slack', async (prompt, destination, schedule, runContext) => {
+    const [channelId, threadTs] = destination.split(':', 2);
+    const releaseAgentTurn = beginAgentChannelTurn('slack', channelId);
     try {
-      const { result, attachments } = await runWithBubbleEvents(
-        agentRunner,
-        prompt,
-        {
-          threadId: `slack-schedule:${freshAppSessionId}`,
-          turnId: turnIdFor('slack', `sched-${freshAppSessionId}`),
-          threadLabel: 'scheduled task',
-          platform: 'slack',
-          userText: prompt,
-        },
-        {},
-        {
-          skipPermissions: config.agent.config.skipPermissions ?? false,
-          sessionId: undefined,
-          channelId,
-          appSessionId: freshAppSessionId,
-        }
-      );
-      incrementMessageCount(freshAppSessionId);
+      const agentSnapshot = await channelAgentSnapshot('slack', channelId);
+      const startedAt = Date.now();
+      const initialText = '🤔 考え中...';
+      const thinking = await client.chat.postMessage({
+        channel: channelId,
+        text: initialText,
+        ...(threadTs && { thread_ts: threadTs }),
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: initialText } },
+          ...createSlackProcessingBlocks(),
+        ],
+      });
+      const messageTs = thinking.ts;
+      if (!messageTs) {
+        throw new Error('Failed to get Slack message timestamp');
+      }
 
-      const { displayText } = buildAttachmentResult(result, attachments);
-      await sendSlackResult(
-        client,
+      slackProcessingMessages.set(destination, {
         channelId,
         messageTs,
-        undefined,
-        markdownToSlackMrkdwn(
-          appendScheduleRunCompletion(
-            displayText || '✅',
-            Date.now() - startedAt,
-            config.completion ?? DEFAULT_COMPLETION_DISPLAY
-          )
-        ),
-        []
-      );
-      runContext?.onDelivery?.({
-        platform: 'slack',
-        destinationId: channelId,
-        messageIds: [messageTs],
+        currentText: initialText,
+        startedAt: Date.now(),
       });
-      return result;
-    } catch (error) {
-      const errorDelivered = await client.chat
-        .update({
-          channel: channelId,
-          ts: messageTs,
-          text: appendScheduleRunCompletion(
-            formatAgentErrorForUser(error),
-            Date.now() - startedAt,
-            config.completion ?? DEFAULT_COMPLETION_DISPLAY,
-            'error'
+
+      const freshAppSessionId = createSchedulerRunId('slack');
+      createSchedulerSession(freshAppSessionId, destination, {
+        ...agentSnapshot,
+        platform: 'slack',
+        title: schedule?.label || prompt,
+      });
+      try {
+        const { result, attachments } = await runWithBubbleEvents(
+          agentRunner,
+          prompt,
+          {
+            threadId: `slack-schedule:${freshAppSessionId}`,
+            turnId: turnIdFor('slack', `sched-${freshAppSessionId}`),
+            threadLabel: 'scheduled task',
+            platform: 'slack',
+            userText: prompt,
+          },
+          {},
+          {
+            skipPermissions: config.agent.config.skipPermissions ?? false,
+            sessionId: undefined,
+            channelId: destination,
+            appSessionId: freshAppSessionId,
+            workdir: agentSnapshot.workspacePath,
+          }
+        );
+        incrementMessageCount(freshAppSessionId);
+
+        const { displayText } = buildAttachmentResult(result, attachments);
+        await sendSlackResult(
+          client,
+          channelId,
+          messageTs,
+          threadTs,
+          markdownToSlackMrkdwn(
+            appendScheduleRunCompletion(
+              displayText || '✅',
+              Date.now() - startedAt,
+              config.completion ?? DEFAULT_COMPLETION_DISPLAY
+            )
           ),
-          blocks: [],
-        })
-        .then(() => true)
-        .catch(() => false);
-      if (errorDelivered) {
+          []
+        );
         runContext?.onDelivery?.({
           platform: 'slack',
-          destinationId: channelId,
+          destinationId: destination,
           messageIds: [messageTs],
         });
+        return result;
+      } catch (error) {
+        const errorDelivered = await client.chat
+          .update({
+            channel: channelId,
+            ts: messageTs,
+            text: appendScheduleRunCompletion(
+              formatAgentErrorForUser(error),
+              Date.now() - startedAt,
+              config.completion ?? DEFAULT_COMPLETION_DISPLAY,
+              'error'
+            ),
+            blocks: [],
+          })
+          .then(() => true)
+          .catch(() => false);
+        if (errorDelivered) {
+          runContext?.onDelivery?.({
+            platform: 'slack',
+            destinationId: destination,
+            messageIds: [messageTs],
+          });
+        }
+        throw error;
+      } finally {
+        const entry = slackProcessingMessages.get(destination);
+        if (entry?.intervalId) clearInterval(entry.intervalId);
+        slackProcessingMessages.delete(destination);
+        closeSession(freshAppSessionId, 'other');
       }
-      throw error;
     } finally {
-      const entry = slackProcessingMessages.get(channelId);
-      if (entry?.intervalId) clearInterval(entry.intervalId);
-      slackProcessingMessages.delete(channelId);
-      closeSession(freshAppSessionId, 'other');
+      releaseAgentTurn();
     }
   });
 }
@@ -1017,6 +1060,10 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+  registerSlackAgentWork(
+    app.client,
+    createSlackWorkUi(agentRunner, config.slack.showThinking ?? true)
+  );
   if (options.settingsChannelListers) {
     options.settingsChannelListers.slack = createSlackSettingsChannelLister(config.slack.botToken);
   }
@@ -1044,47 +1091,13 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   // ボタンアクション: Stop
   app.action('xangi_stop', async ({ ack, body }) => {
     await ack();
-    const channelId = body.channel?.id;
-    if (!channelId) return;
-    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
-    const userId = body.user?.id;
-    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
-      return;
-    }
-    const managedProcessStopped = await processManager.stopAndWait(runKey);
-    const stopped = managedProcessStopped || agentRunner.cancel?.(runKey) || false;
-    if (!stopped) {
-      console.log(`[slack] No running task to stop for runKey ${runKey}`);
-    }
+    await handleSlackStopAction(body, agentRunner, config.slack.allowedUsers);
   });
 
   // ボタンアクション: タイムアウト延長 (残り時間を 2 倍にする)
   app.action('xangi_extend', async ({ ack, body, client: actionClient }) => {
     await ack();
-    const channelId = body.channel?.id;
-    if (!channelId) return;
-    const runKey = slackRunKeyFromActionBody(body) ?? channelId;
-    const userId = body.user?.id;
-    if (!isSlackUserAllowed(config.slack.allowedUsers, userId)) {
-      return;
-    }
-    // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
-    const result = agentRunner.extendTimeout?.(runKey) ?? {
-      ok: false,
-      reason: 'unsupported' as const,
-    };
-    if (!result.ok) {
-      const text =
-        result.reason === 'max_timeout_exceeded'
-          ? '⏱ 上限に達したため延長できません'
-          : result.reason === 'no_active_request'
-            ? '⏱ 処理中のリクエストがありません'
-            : '⏱ このバックエンドでは延長できません';
-      await actionClient.chat
-        .postEphemeral({ channel: channelId, user: userId || '', text })
-        .catch(() => {});
-    }
-    // 成功時はメッセージ自体は timeout-extended イベント listener で update される
+    await handleSlackExtendAction(body, actionClient, agentRunner, config.slack.allowedUsers);
   });
 
   // 表示専用ボタン (残り時間バッジ): クリック無視
@@ -1257,6 +1270,30 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       .catch(() => {});
   });
 
+  const handleWorkInput = async (event: {
+    channel: string;
+    thread_ts?: string;
+    ts: string;
+    text?: string;
+    user?: string;
+    files?: unknown[];
+  }) => {
+    const key = `${event.channel}:${event.thread_ts}`;
+    if (!event.thread_ts || !findAgentWork('slack', key)) return false;
+    if (!event.user || !isSlackUserAllowed(config.slack.allowedUsers, event.user)) return true;
+    if (!markSlackMessageProcessed(event.channel, event.ts)) return true;
+    let text: string;
+    try {
+      if (event.files?.length)
+        throw new Error('追加指示はテキストで送ってください。添付には未対応です');
+      text = submitAgentWork('slack', key, event.ts, event.text || '');
+    } catch (error) {
+      text = String(error);
+    }
+    await app.client.chat.postMessage({ channel: event.channel, thread_ts: event.thread_ts, text });
+    return true;
+  };
+
   // メンション時の処理
   app.event('app_mention', async ({ event, say, client }) => {
     const userId = event.user;
@@ -1268,6 +1305,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
+    if (await handleWorkInput(event)) return;
     const text = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
 
     const files = (event as unknown as Record<string, unknown>).files as
@@ -1358,6 +1396,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       channel_type?: string;
       files?: Array<{ url_private_download?: string; name?: string }>;
     };
+
+    if (await handleWorkInput(messageEvent)) return;
 
     console.log(
       `[slack] Message event: channel=${messageEvent.channel}, type=${messageEvent.channel_type}, autoReplyChannels=${config.slack.autoReplyChannels?.join(',')}`
@@ -1494,6 +1534,41 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
   });
 
+  app.command('/agent', async ({ command, ack, respond }) => {
+    await ack();
+    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
+    try {
+      const [action = 'show', id, ...extra] = command.text.trim().split(/\s+/).filter(Boolean);
+      if (
+        !['list', 'show', 'set', 'reset'].includes(action) ||
+        extra.length ||
+        (action !== 'set' && id)
+      )
+        throw new Error('/agent list | show | set <ID> | reset');
+      const result =
+        action === 'list'
+          ? listSelectableAgents()
+              .map((a) => `${a.name}: ${a.id}`)
+              .join('\n') || '登録済みのエージェントはありません'
+          : await executeRuntimeSettingsCommand(
+              {
+                name: 'agent',
+                action,
+                value: id,
+                platform: 'slack',
+                channelId: command.channel_id,
+              },
+              { config, resolver, agentRunner }
+            );
+      await respond({ text: result, response_type: 'ephemeral' });
+    } catch (error) {
+      await respond({
+        text: error instanceof Error ? error.message : String(error),
+        response_type: 'ephemeral',
+      });
+    }
+  });
+
   // /backend show|set|reset コマンド
   app.command('/backend', async ({ command, ack, respond }) => {
     await ack();
@@ -1527,38 +1602,6 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   console.log('[slack] ⚡️ Slack bot is running!');
 
   // runner の timeout-* イベントを Slack メッセージ更新に紐付け
-  const getSlackTimeoutInfo = (
-    runKey: string
-  ): { remainingMs: number; canExtend: boolean; extendEnabled: boolean } | undefined => {
-    return getSlackTimeoutInfoFor(agentRunner, runKey);
-  };
-
-  const refreshSlackProcessingBlocks = async (runKey: string): Promise<void> => {
-    const entry = slackProcessingMessages.get(runKey);
-    if (!entry) return;
-    const info = getSlackTimeoutInfo(runKey);
-    if (!info) return;
-    try {
-      await app.client.chat.update({
-        channel: entry.channelId,
-        ts: entry.messageTs,
-        text: entry.currentText,
-        blocks: [
-          {
-            type: 'section' as const,
-            text: { type: 'mrkdwn' as const, text: entry.currentText },
-          },
-          ...createSlackProcessingBlocks(info),
-        ],
-      });
-    } catch (e: unknown) {
-      console.warn(
-        '[slack] Failed to refresh processing blocks:',
-        e instanceof Error ? e.message : String(e)
-      );
-    }
-  };
-
   const runnerEmitter = agentRunner as unknown as {
     on?: (e: string, l: (p: unknown) => void) => void;
   };
@@ -1568,25 +1611,25 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       if (!p.channelId) return;
       const entry = slackProcessingMessages.get(p.channelId);
       if (!entry) return; // Slack 経由でなければ無視
-      void refreshSlackProcessingBlocks(p.channelId);
+      void refreshSlackProcessingBlocks(app.client, agentRunner, p.channelId);
       // 10 秒ごとに残り時間を chat.update。
       // Slack API レート (Tier 3 ≈ 50/min) を考慮、複数チャンネル並列起動時にも
       // 余裕を持たせるため。thinking/stream interval も毎秒 update するが
       // そちらは getSlackTimeoutInfoFor 経由で最新の timeout 情報を載せている。
       if (entry.intervalId) clearInterval(entry.intervalId);
       entry.intervalId = setInterval(() => {
-        const info = getSlackTimeoutInfo(p.channelId!);
+        const info = getSlackTimeoutInfoFor(agentRunner, p.channelId!);
         if (!info) {
           if (entry.intervalId) clearInterval(entry.intervalId);
           return;
         }
-        void refreshSlackProcessingBlocks(p.channelId!);
+        void refreshSlackProcessingBlocks(app.client, agentRunner, p.channelId!);
       }, 10_000);
     });
     runnerEmitter.on('timeout-extended', (payload: unknown) => {
       const p = payload as { channelId?: string };
       if (!p.channelId) return;
-      void refreshSlackProcessingBlocks(p.channelId);
+      void refreshSlackProcessingBlocks(app.client, agentRunner, p.channelId);
     });
     runnerEmitter.on('timeout-cleared', (payload: unknown) => {
       const p = payload as { channelId?: string };
@@ -1654,8 +1697,6 @@ export async function processMessage(
   let unregisterStreamFinalizer: (() => void) | undefined;
   // appSessionId は xangi 内部 (sessions.json) のセッション ID。
   // transcript-logger / 編集・削除同期で必要。
-  const appSessionId = ensureSession(conversationKey, { platform: 'slack' });
-  const tWorkdir = config.agent.config.workdir || process.cwd();
   let acquiredRunLock = false;
   try {
     if (busySlackConversations.has(runKey)) {
@@ -1669,9 +1710,18 @@ export async function processMessage(
     }
     busySlackConversations.add(runKey);
     acquiredRunLock = true;
+    const resolvedSession = await ensureSessionWithWorkspace({
+      platform: 'slack',
+      contextKey: conversationKey,
+      bindingKey: channelId,
+    });
+    const appSessionId = resolvedSession.appSessionId;
+    const tWorkdir =
+      resolvedSession.workspace?.path || config.agent.config.workdir || process.cwd();
+
     console.log(`[slack] Processing message: channel=${channelId}, runKey=${runKey}`);
 
-    const sessionId = getProviderSessionId(conversationKey) ?? sessions.get(conversationKey);
+    const sessionId = getProviderSessionId(conversationKey);
     if (!sessionId && config.historyPrefetch?.enabled) {
       const prefetchedHistory = await prefetchSlackHistory(
         client,
@@ -1919,13 +1969,11 @@ export async function processMessage(
     const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
     // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
     const renderedText = markdownToSlackMrkdwn(displayText || '✅');
-    const turnHistory = withoutFinalResponse(
-      getTurnHistory(eventCtx.threadId, eventCtx.turnId).filter(
-        (entry) => !(entry.kind === 'tool' && entry.fileChanges)
-      ),
-      result
-    );
-    const showToolsButton = turnHistory.length > 0;
+    const completion = prepareSlackCompletion({
+      historyPayload: { threadId: eventCtx.threadId, turnId: eventCtx.turnId, threadTs },
+      finalResponse: result,
+      threadTs,
+    });
     // 最終結果を更新（長い場合は分割送信）
     const finalMessage = await sendSlackResult(
       client,
@@ -1935,9 +1983,7 @@ export async function processMessage(
       renderedText
     );
     const finalMessageKey = slackMessageKey(channelId, finalMessage.messageTs);
-    if (showToolsButton) {
-      slackToolHistoryByMessageKey.set(finalMessageKey, turnHistory);
-    }
+    completion.bind(channelId, finalMessage.messageTs);
     if (extracted.suggestions.length > 0) {
       slackReplySuggestionsByMessageKey.set(finalMessageKey, extracted.suggestions);
     }
@@ -1977,14 +2023,7 @@ export async function processMessage(
                 text: finalMessage.text,
               },
             },
-            ...createSlackCompletedBlocks({
-              threadTs,
-              showTools: showToolsButton,
-              historyPayload: {
-                threadId: eventCtx.threadId,
-                turnId: eventCtx.turnId,
-                ...(threadTs && { threadTs }),
-              },
+            ...completion.blocks({
               showReplySuggestions: extracted.suggestions.length > 0,
               replySuggestionPayload: {
                 messageKey: finalMessageKey,
@@ -2113,4 +2152,149 @@ export function _resetSlackStateForTest(): void {
   slackReplySuggestionsByMessageKey.clear();
   busySlackConversations.clear();
   processedSlackMessages.clear();
+}
+
+/** Normal Slack responses and delegated work share history filtering and message binding. */
+export function prepareSlackCompletion(options: {
+  historyPayload?: { threadId: string; turnId: string; threadTs?: string };
+  finalResponse: string;
+  threadTs?: string;
+}) {
+  const history = completionHistory(options.historyPayload, options.finalResponse);
+  return {
+    blocks(
+      extra: Pick<
+        NonNullable<Parameters<typeof createSlackCompletedBlocks>[0]>,
+        'showReplySuggestions' | 'replySuggestionPayload'
+      > = {}
+    ) {
+      return createSlackCompletedBlocks({
+        threadTs: options.threadTs,
+        historyPayload: options.historyPayload,
+        showTools: history.length > 0,
+        ...extra,
+      });
+    },
+    bind(channel: string, ts: string) {
+      if (history.length) slackToolHistoryByMessageKey.set(slackMessageKey(channel, ts), history);
+    },
+  };
+}
+
+export function createSlackWorkUi(runner: AgentRunner, showButtons = true) {
+  return {
+    processing(key: string, text: string): KnownBlock[] {
+      return showButtons
+        ? [
+            { type: 'section', text: { type: 'plain_text', text } },
+            ...createSlackProcessingBlocks(getSlackTimeoutInfoFor(runner, key)),
+          ]
+        : [];
+    },
+    track(key: string, entry: SlackProcessingEntry) {
+      if (showButtons) slackProcessingMessages.set(key, { ...entry, startedAt: Date.now() });
+    },
+    update(key: string, text: string) {
+      const entry = slackProcessingMessages.get(key);
+      if (entry) entry.currentText = text;
+    },
+    untrack(key: string) {
+      const entry = slackProcessingMessages.get(key);
+      if (entry?.intervalId) clearInterval(entry.intervalId);
+      slackProcessingMessages.delete(key);
+    },
+    completion(
+      threadTs: string,
+      historyPayload: { threadId: string; turnId: string } | undefined,
+      finalResponse: string
+    ) {
+      const completion = prepareSlackCompletion({
+        threadTs,
+        historyPayload: historyPayload ? { ...historyPayload, threadTs } : undefined,
+        finalResponse,
+      });
+      return { blocks: showButtons ? completion.blocks() : [], bind: completion.bind };
+    },
+  };
+}
+
+export async function handleSlackStopAction(
+  body: Parameters<typeof slackRunKeyFromActionBody>[0] & { user?: { id?: string } },
+  agentRunner: AgentRunner,
+  allowedUsers?: string[]
+) {
+  const channelId = body.channel?.id;
+  if (!channelId) return;
+  const runKey = slackActionExecutionKey(body) ?? channelId;
+  const userId = body.user?.id;
+  if (!isSlackUserAllowed(allowedUsers, userId)) {
+    return;
+  }
+  const managedProcessStopped = await processManager.stopAndWait(runKey);
+  const stopped = managedProcessStopped || agentRunner.cancel?.(runKey) || false;
+  if (!stopped) {
+    console.log(`[slack] No running task to stop for runKey ${runKey}`);
+  }
+}
+
+export async function handleSlackExtendAction(
+  body: Parameters<typeof slackRunKeyFromActionBody>[0] & { user?: { id?: string } },
+  actionClient: WebClient,
+  agentRunner: AgentRunner,
+  allowedUsers?: string[]
+) {
+  const channelId = body.channel?.id;
+  if (!channelId) return;
+  const runKey = slackActionExecutionKey(body) ?? channelId;
+  const userId = body.user?.id;
+  if (!isSlackUserAllowed(allowedUsers, userId)) {
+    return;
+  }
+  // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
+  const result = agentRunner.extendTimeout?.(runKey) ?? {
+    ok: false,
+    reason: 'unsupported' as const,
+  };
+  if (!result.ok) {
+    const text =
+      result.reason === 'max_timeout_exceeded'
+        ? '⏱ 上限に達したため延長できません'
+        : result.reason === 'no_active_request'
+          ? '⏱ 処理中のリクエストがありません'
+          : '⏱ このバックエンドでは延長できません';
+    await actionClient.chat
+      .postEphemeral({ channel: channelId, user: userId || '', text })
+      .catch(() => {});
+  }
+  // 成功時はメッセージ自体は timeout-extended イベント listener で update される
+}
+
+export async function refreshSlackProcessingBlocks(
+  client: WebClient,
+  agentRunner: AgentRunner,
+  runKey: string
+): Promise<void> {
+  const entry = slackProcessingMessages.get(runKey);
+  if (!entry) return;
+  const info = getSlackTimeoutInfoFor(agentRunner, runKey);
+  if (!info) return;
+  try {
+    await client.chat.update({
+      channel: entry.channelId,
+      ts: entry.messageTs,
+      text: entry.currentText,
+      blocks: [
+        {
+          type: 'section' as const,
+          text: { type: 'mrkdwn' as const, text: entry.currentText },
+        },
+        ...createSlackProcessingBlocks(info),
+      ],
+    });
+  } catch (e: unknown) {
+    console.warn(
+      '[slack] Failed to refresh processing blocks:',
+      e instanceof Error ? e.message : String(e)
+    );
+  }
 }

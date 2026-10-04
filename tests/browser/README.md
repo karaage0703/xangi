@@ -16,3 +16,7 @@ uv run --with playwright python tests/browser/catalog_forms.py
 ```sh
 uv run --with playwright python tests/browser/settings_loading.py
 ```
+
+担当一覧・担当指定での新会話・チャンネル担当の保存/解除・処理中拒否は `uv run --with playwright python tests/browser/agent_selection.py` で1280/768/414/375/320pxを確認します。
+
+Team作成・3階層の報告先・編集/再読込・チャンネル割当/解除・削除・処理中拒否は `uv run --with playwright python tests/browser/team_settings.py` で1280/768/414/375/320pxを確認します。

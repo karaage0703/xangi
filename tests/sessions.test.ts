@@ -25,6 +25,7 @@ import {
   addSessionTokenUsage,
   addSessionProcessingTime,
   closeSession,
+  closeSessions,
   createSchedulerSession,
   updateSessionEstimatedCost,
   WEB_CHAT_CONTEXT_PREFIX,
@@ -260,6 +261,18 @@ describe('sessions', () => {
   });
 
   describe('setSession', () => {
+    it('updates a closed Web session without creating an empty routing session', () => {
+      initSessions(testDir);
+      const id = createWebSession();
+      closeSession(id);
+      const count = listAllSessions().length;
+      setSession(`web-chat:${id}`, 'resumed-provider');
+      expect(listAllSessions()).toHaveLength(count);
+      expect(getSessionEntry(id)?.agent?.providerSessionId).toBe('resumed-provider');
+      setSession('web-chat:missing-session', 'ignored-provider');
+      expect(listAllSessions()).toHaveLength(count);
+    });
+
     it('should save session and persist to file', () => {
       initSessions(testDir);
       setSession('channel-1', 'session-123');
@@ -310,6 +323,30 @@ describe('sessions', () => {
       const deleted = deleteSession('unknown');
       expect(deleted).toBe(false);
     });
+  });
+
+  it('closes a batch, preserves history and other routing, and notifies once', () => {
+    initSessions(testDir);
+    const ids = Array.from({ length: 100 }, (_, i) => createSession(`batch-${i}`));
+    const untouched = createSession('untouched');
+    let notifications = 0;
+    const unsubscribe = subscribeSessionChanges(() => {
+      notifications += 1;
+    });
+    try {
+      const targets = [...ids, ids[0], 'missing'].map((id) => ({ id, reason: 'monitor' as const }));
+      expect(closeSessions(targets)).toEqual(ids);
+      expect(notifications).toBe(1);
+      const saved = JSON.parse(readFileSync(join(testDir, 'sessions.json'), 'utf8'));
+      for (const id of ids) expect(saved.sessions[id].lifecycle).toBe('closed');
+      expect(Object.keys(saved.sessions)).toHaveLength(101);
+      expect(saved.activeByContext).toEqual({ untouched });
+      expect(closeSessions([])).toEqual([]);
+      expect(closeSessions([{ id: 'missing', reason: 'monitor' }])).toEqual([]);
+      expect(notifications).toBe(1);
+    } finally {
+      unsubscribe();
+    }
   });
 
   describe('closeSession', () => {

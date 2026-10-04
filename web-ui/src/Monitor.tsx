@@ -677,16 +677,23 @@ export function Monitor() {
     }
     setClosingAllWaiting(true);
     setActionError('');
-    let failed = 0;
     try {
-      for (const session of targets) {
-        const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
-          method: 'POST',
-        });
-        if (!response.ok) failed += 1;
-      }
+      const response = await fetch('/api/sessions/close-waiting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: targets.map((session) => session.id) }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = (await response.json()) as { results: Array<{ id: string; status: string }> };
+      const running = data.results.filter((result) => result.status === 'running').length;
+      const failed = data.results.filter(
+        (result) => result.status === 'failed' || result.status === 'not_found'
+      ).length;
       await loadSessions();
-      if (failed > 0) setActionError(`${targets.length}件中${failed}件を変更できませんでした`);
+      const notices = [];
+      if (running > 0) notices.push(`実行中の${running}件は完了せずに残しました`);
+      if (failed > 0) notices.push(`${targets.length}件中${failed}件を変更できませんでした`);
+      setActionError(notices.join('。'));
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     } finally {

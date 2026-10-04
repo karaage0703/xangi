@@ -1,4 +1,5 @@
-import { executeProjectAgentCommand } from './project-agent-command.js';
+import { getActiveSessionId, getSessionEntry } from './sessions.js';
+import { executeProjectAgentCommand, executeTeamCommand } from './project-agent-command.js';
 /**
  * xangi Tool Server — Claude Code向けHTTPエンドポイント
  *
@@ -120,7 +121,12 @@ async function executeCommand(
           backend: flags.backend,
           model: flags.use,
           effort: flags.effort,
-          channelId: flags.channel ?? context?.channelId,
+          channelId:
+            flags.channel ??
+            (context?.channelId
+              ? getSessionEntry(getActiveSessionId(context.channelId) || '')?.agentBindingKey
+              : undefined) ??
+            context?.channelId,
         },
         backendResolver,
         modelDiscovery
@@ -147,7 +153,12 @@ async function executeCommand(
         model: flags.model,
         effort: flags.effort,
         scope: flags.scope,
-        channelId: flags.channel ?? context?.channelId,
+        channelId:
+          flags.channel ??
+          (context?.channelId
+            ? getSessionEntry(getActiveSessionId(context.channelId) || '')?.agentBindingKey
+            : undefined) ??
+          context?.channelId,
         platform: flags.platform ?? context?.platform,
         contextKey: context?.channelId,
       },
@@ -162,6 +173,8 @@ async function executeCommand(
     return webStatusCommand();
   } else if (command === 'agent') {
     return executeProjectAgentCommand(flags, context);
+  } else if (command === 'team') {
+    return executeTeamCommand(flags, context);
   } else if (command === 'progress_card') {
     return executeProgressCardCommand(flags, context);
   } else if (command.startsWith('inter_chat_')) {

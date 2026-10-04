@@ -150,3 +150,27 @@ describe('startAiSessionTitle', () => {
     expect(runner.destroy).toHaveBeenCalledWith('session-title:app-timeout');
   });
 });
+
+it('allows a slow title beyond ten seconds without blocking the conversation', async()=>{
+ vi.useFakeTimers();
+ try {
+  const runner=runnerWithRun(vi.fn(()=>new Promise(resolve=>setTimeout(()=>resolve({result:'遅いタイトル',sessionId:''}),20_000))));
+  const onTitle=vi.fn();
+  expect(startAiSessionTitle({runner,appSessionId:'slow-default',userText:'検証',runOptions:{},onTitle})).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(runner.cancel).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(9_999);
+  expect(onTitle).toHaveBeenCalledWith('遅いタイトル');
+ } finally {vi.useRealTimers();}
+});
+it('bounds the default title wait at sixty seconds and cancels only its runner',async()=>{
+ vi.useFakeTimers();
+ try {
+  const runner=runnerWithRun(vi.fn(()=>new Promise(()=>{})));
+  const onTitle=vi.fn();
+  startAiSessionTitle({runner,appSessionId:'bounded-default',userText:'検証',runOptions:{},onTitle});
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(runner.cancel).toHaveBeenCalledWith('session-title:bounded-default');
+  expect(onTitle).not.toHaveBeenCalled();
+ } finally {vi.useRealTimers();}
+});
