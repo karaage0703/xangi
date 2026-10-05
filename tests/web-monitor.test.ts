@@ -42,6 +42,14 @@ describe('Monitor account usage', () => {
     expect(monitorSource).not.toContain('<details className="monitor-usage-provider"');
   });
 
+  it('renders sourceUpdatedAt and indicates snapshot mode in provider header', () => {
+    const monitorSource = readFileSync(join(process.cwd(), 'web-ui', 'src', 'Monitor.tsx'), 'utf8');
+    expect(monitorSource).toContain('monitor-usage-source-time');
+    expect(monitorSource).toContain(
+      "provider.sourceType === 'snapshot' ? 'スナップショット ' : ''"
+    );
+  });
+
   it('shows a status only when cached usage is stale', () => {
     expect(accountUsageStatusLabel()).toBeUndefined();
     expect(accountUsageStatusLabel(false)).toBeUndefined();

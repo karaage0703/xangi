@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { CopilotClient } from '@github/copilot-sdk';
 import { configuredBackendCommand } from './setup/backend-executable.js';
@@ -14,7 +14,9 @@ const TIMEOUT_MS = 5000;
 // claude CLI ships a larger Node bundle than codex, so allow more headroom for cold start
 // (a warm call round-trips get_usage in ~1.8s, but first-run JIT/module load can be slower).
 const CLAUDE_TIMEOUT_MS = 10_000;
+const AGY_USAGE_TIMEOUT_MS = 10_000;
 const CACHE_MS = 30_000;
+const ANTIGRAVITY_CACHE_MS = 60_000;
 
 export interface UsageWindow {
   label: string;
@@ -39,6 +41,8 @@ export interface AccountUsageResponse {
 export interface AccountUsageProvider {
   id: 'codex' | 'antigravity' | 'github-copilot' | 'claude-code';
   label: string;
+  sourceUpdatedAt?: string;
+  sourceType?: 'live' | 'snapshot';
   groups: AccountUsageGroup[];
 }
 
@@ -309,6 +313,119 @@ export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsa
   return windows.length ? [{ id: 'copilot', label: 'GitHub Copilot', windows }] : [];
 }
 
+interface AgyBucket {
+  id?: string;
+  name?: string;
+  description?: string;
+  window?: string;
+  remaining_fraction?: number;
+  reset_time?: string;
+}
+
+interface AgyGroup {
+  name?: string;
+  description?: string;
+  buckets?: AgyBucket[];
+}
+
+interface AgyUsagePayload {
+  status?: string;
+  command?: {
+    name?: string;
+    data?: {
+      groups?: AgyGroup[];
+    };
+  };
+}
+
+export function parseAgyUsageOutput(output: string): AccountUsageGroup[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error('Invalid JSON output from agy usage');
+  }
+
+  const payload = parsed as AgyUsagePayload;
+  if (payload.status !== 'SUCCESS') {
+    throw new Error(`agy usage command failed with status: ${payload.status}`);
+  }
+
+  const rawGroups = payload.command?.data?.groups;
+  if (!Array.isArray(rawGroups) || rawGroups.length === 0) {
+    throw new Error('agy usage output contains no groups');
+  }
+
+  const groups: AccountUsageGroup[] = [];
+
+  for (const group of rawGroups) {
+    if (!group || typeof group !== 'object' || !Array.isArray(group.buckets)) continue;
+    const groupName = typeof group.name === 'string' ? group.name : 'Unknown';
+
+    let groupId = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    let groupLabel = groupName;
+    if (/gemini/i.test(groupName)) {
+      groupId = 'gemini';
+      groupLabel = 'Geminiモデル';
+    } else if (/claude|gpt|3p|third/i.test(groupName)) {
+      groupId = 'third-party';
+      groupLabel = 'サードパーティモデル';
+    }
+
+    const windows: UsageWindow[] = [];
+    for (const bucket of group.buckets) {
+      if (
+        typeof bucket.remaining_fraction !== 'number' ||
+        !Number.isFinite(bucket.remaining_fraction)
+      ) {
+        continue;
+      }
+      const fraction = Math.min(1, Math.max(0, bucket.remaining_fraction));
+      const usedPercent = Number(Math.min(100, Math.max(0, (1 - fraction) * 100)).toFixed(6));
+
+      const bucketId = typeof bucket.id === 'string' ? bucket.id : '';
+      const windowStr = typeof bucket.window === 'string' ? bucket.window : bucketId;
+
+      let windowLabel = windowStr;
+      let windowDurationMins: number | undefined;
+
+      if (/(?:^|-)5h(?:-|$)/i.test(windowStr)) {
+        windowLabel = '5時間';
+        windowDurationMins = 300;
+      } else if (/(?:^|-)weekly(?:-|$)/i.test(windowStr)) {
+        windowLabel = '週次';
+        windowDurationMins = 10_080;
+      }
+
+      const resetMs = bucket.reset_time ? Date.parse(bucket.reset_time) : Number.NaN;
+      const resetsAt = Number.isFinite(resetMs) ? resetMs / 1000 : undefined;
+
+      windows.push({
+        label: windowLabel,
+        usedPercent,
+        windowDurationMins,
+        resetsAt,
+      });
+    }
+
+    if (windows.length > 0) {
+      windows.sort((a, b) => (a.windowDurationMins ?? 999_999) - (b.windowDurationMins ?? 999_999));
+      groups.push({
+        id: groupId,
+        label: groupLabel,
+        windows,
+      });
+    }
+  }
+
+  if (groups.length === 0) {
+    throw new Error('No valid quota windows parsed from agy usage output');
+  }
+
+  groups.sort((a, b) => (a.id === 'gemini' ? -1 : b.id === 'gemini' ? 1 : 0));
+  return groups;
+}
+
 export function parseAntigravityStatus(
   payload: unknown,
   now?: number
@@ -539,23 +656,144 @@ async function readCopilotUsage(): Promise<AccountUsageProvider> {
   const client = new CopilotClient();
   try {
     await client.start();
+    const fetchedAt = new Date().toISOString();
     const groups = parseCopilotQuota(await client.rpc.account.getQuota({}));
     if (!groups.length) throw new Error('Copilot SDK returned no account quota');
-    return { id: 'github-copilot', label: 'GitHub Copilot', groups };
+    return {
+      id: 'github-copilot',
+      label: 'GitHub Copilot',
+      sourceUpdatedAt: fetchedAt,
+      sourceType: 'live',
+      groups,
+    };
   } finally {
     await client.stop().catch(() => undefined);
   }
 }
 
-async function readAntigravityUsage(): Promise<AccountUsageProvider> {
+export type AgyUsageRunner = () => Promise<string>;
+
+export async function runAgyUsageProbe(timeoutMs = AGY_USAGE_TIMEOUT_MS): Promise<string> {
+  const env = getSafeEnv();
+  const configuredCommand = configuredBackendCommand('agy', env);
+  return new Promise((resolve, reject) => {
+    const child = spawn(configuredCommand, ['--print', '/usage', '--output-format', 'json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, 1000).unref();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`agy usage probe timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (code !== 0) {
+        reject(new Error(`agy usage probe exited with code ${code}: ${stderr.trim()}`));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+interface AntigravityUsageState {
+  cached?: AccountUsageProvider;
+  fetchedAt: number;
+  inFlight?: Promise<AccountUsageProvider>;
+}
+
+let antigravityState: AntigravityUsageState = { fetchedAt: 0 };
+
+export function resetAntigravityUsageState(): void {
+  antigravityState = { fetchedAt: 0 };
+}
+
+async function readAntigravitySnapshotUsage(): Promise<AccountUsageProvider> {
   const dataDir =
     process.env.DATA_DIR || resolve(process.env.WORKSPACE_PATH || process.cwd(), '.xangi');
-  const payload = JSON.parse(await readFile(join(dataDir, 'antigravity-status.json'), 'utf8'));
+  const statusPath = join(dataDir, 'antigravity-status.json');
+  let statusStat: { mtime: Date } | undefined;
+  try {
+    statusStat = await stat(statusPath);
+  } catch {
+    // file does not exist
+  }
+  const payload = JSON.parse(await readFile(statusPath, 'utf8'));
   const parsed = parseAntigravityStatus(payload, Date.now());
   const groups = parsed.groups;
   applyAntigravitySessionUsage(parsed);
   if (!groups.length) throw new Error('Antigravity status payload has no quota');
-  return { id: 'antigravity', label: 'Antigravity', groups };
+  return {
+    id: 'antigravity',
+    label: 'Antigravity',
+    sourceUpdatedAt: statusStat?.mtime.toISOString(),
+    sourceType: 'snapshot',
+    groups,
+  };
+}
+
+export async function readAntigravityUsage(
+  runner: AgyUsageRunner = runAgyUsageProbe,
+  now = Date.now()
+): Promise<AccountUsageProvider> {
+  if (antigravityState.cached && now - antigravityState.fetchedAt < ANTIGRAVITY_CACHE_MS) {
+    return antigravityState.cached;
+  }
+  if (antigravityState.inFlight) {
+    return antigravityState.inFlight;
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const output = await runner();
+      const groups = parseAgyUsageOutput(output);
+      const provider: AccountUsageProvider = {
+        id: 'antigravity',
+        label: 'Antigravity',
+        sourceUpdatedAt: new Date(now).toISOString(),
+        sourceType: 'live',
+        groups,
+      };
+      antigravityState.cached = provider;
+      antigravityState.fetchedAt = now;
+      return provider;
+    } catch {
+      return await readAntigravitySnapshotUsage();
+    } finally {
+      antigravityState.inFlight = undefined;
+    }
+  })();
+
+  antigravityState.inFlight = fetchPromise;
+  return fetchPromise;
 }
 
 export async function readClaudeUsage(
@@ -567,6 +805,7 @@ export async function readClaudeUsage(
       request_id: '1',
       request: { subtype: 'get_usage' },
     }) + '\n';
+  const fetchedAt = new Date().toISOString();
   const output = await runner(input, (value) =>
     jsonLines(value).some(
       (item) =>
@@ -576,7 +815,13 @@ export async function readClaudeUsage(
   );
   const groups = parseClaudeUsage(output);
   if (!groups.length) throw new Error('Claude Code returned no account rate limits');
-  return { id: 'claude-code', label: 'Claude Code', groups };
+  return {
+    id: 'claude-code',
+    label: 'Claude Code',
+    sourceUpdatedAt: fetchedAt,
+    sourceType: 'live',
+    groups,
+  };
 }
 
 export async function readAccountUsage(
@@ -590,12 +835,19 @@ export async function readAccountUsage(
   if (cached && Date.now() - Date.parse(cached.updatedAt) < CACHE_MS) return cached;
   const input = codexAppServerInput({ method: 'account/rateLimits/read', id: 3 });
   const codexReader = async (): Promise<AccountUsageProvider> => {
+    const fetchedAt = new Date().toISOString();
     const output = await runner(input, (value) =>
       jsonLines(value).some((item) => (item as { id?: number }).id === 3)
     );
     const groups = parseCodexRateLimits(output);
     if (!groups.length) throw new Error('Codex app-server returned no account rate limits');
-    return { id: 'codex', label: 'Codex', groups };
+    return {
+      id: 'codex',
+      label: 'Codex',
+      sourceUpdatedAt: fetchedAt,
+      sourceType: 'live',
+      groups,
+    };
   };
   const results = await Promise.allSettled([codexReader(), ...readers.map((reader) => reader())]);
   const providers = results.flatMap((result) =>

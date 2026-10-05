@@ -76,6 +76,8 @@ interface UsageGroup {
 interface UsageProvider {
   id: string;
   label: string;
+  sourceUpdatedAt?: string;
+  sourceType?: 'live' | 'snapshot';
   groups: UsageGroup[];
 }
 
@@ -902,7 +904,6 @@ export function Monitor() {
             <header className="monitor-usage-header">
               <div>
                 <h2>AI利用量</h2>
-                <p>アカウント枠は60秒ごと、コンテキストはturn完了時に更新</p>
               </div>
               <div className="monitor-usage-controls">
                 <div className="monitor-usage-mode-toggle" role="group" aria-label="利用量の表示">
@@ -945,6 +946,15 @@ export function Monitor() {
                 <article className="monitor-usage-provider" key={provider.id}>
                   <header className="monitor-usage-provider-header">
                     <strong>{provider.label}</strong>
+                    {provider.sourceUpdatedAt && (
+                      <span
+                        className={`monitor-usage-source-time ${provider.sourceType === 'snapshot' ? 'snapshot' : ''}`}
+                        title={`最終取得: ${new Date(provider.sourceUpdatedAt).toLocaleString()}${provider.sourceType === 'snapshot' ? '（ローカルスナップショット）' : ''}`}
+                      >
+                        {provider.sourceType === 'snapshot' ? 'スナップショット ' : ''}
+                        {formatAge(provider.sourceUpdatedAt, clock)}
+                      </span>
+                    )}
                     {accountUsageStatusLabel(accountUsage?.stale) && (
                       <span>{accountUsageStatusLabel(accountUsage?.stale)}</span>
                     )}

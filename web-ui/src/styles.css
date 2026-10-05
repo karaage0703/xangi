@@ -4357,12 +4357,25 @@ video.media-preview {
 }
 
 .monitor-usage-provider-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: 12px;
+  padding-right: 48px;
 }
 
 .monitor-usage-provider-header span {
   color: var(--ink-muted);
   font-size: 10px;
+}
+
+.monitor-usage-source-time.snapshot {
+  color: #b45309;
+}
+
+:root[data-theme='dark'] .monitor-usage-source-time.snapshot {
+  color: #f59e0b;
 }
 
 .monitor-usage-hide {
