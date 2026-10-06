@@ -8,10 +8,13 @@ import {
   parseCodexRolloutContextUsage,
   parseCopilotQuota,
   parseAntigravityStatus,
+  parseAgyUsageOutput,
   applyAntigravitySessionUsage,
   parseClaudeUsage,
   readCodexContextUsage,
   readClaudeUsage,
+  readAntigravityUsage,
+  resetAntigravityUsageState,
 } from '../src/usage-monitor.js';
 import { extractClaudeContextUsage } from '../src/claude-code.js';
 import {
@@ -32,16 +35,19 @@ function claudeOutput(response: unknown): string {
 describe('usage monitor parsers', () => {
   it('parses supported Copilot account quota snapshots', () => {
     expect(
-      parseCopilotQuota({
-        quotaSnapshots: {
-          chat: {
-            hasQuota: true,
-            remainingPercentage: 84.6,
-            resetDate: '2026-09-01T00:00:00.000Z',
+      parseCopilotQuota(
+        {
+          quotaSnapshots: {
+            chat: {
+              hasQuota: true,
+              remainingPercentage: 84.6,
+              resetDate: '2026-09-01T00:00:00.000Z',
+            },
+            premium_interactions: { hasQuota: false, remainingPercentage: 0 },
           },
-          premium_interactions: { hasQuota: false, remainingPercentage: 0 },
         },
-      }, Date.parse('2026-08-28T00:00:00.000Z'))
+        Date.parse('2026-08-28T00:00:00.000Z')
+      )
     ).toEqual([
       {
         id: 'copilot',
@@ -171,10 +177,7 @@ describe('usage monitor parsers', () => {
     expect(
       Object.fromEntries(
         groups.flatMap((group) =>
-          group.windows.map((window) => [
-            `${group.id}:${window.label}`,
-            window.windowDurationMins,
-          ])
+          group.windows.map((window) => [`${group.id}:${window.label}`, window.windowDurationMins])
         )
       )
     ).toEqual({
@@ -297,26 +300,29 @@ describe('usage monitor parsers', () => {
     ['a'.repeat(1000), 'a'.repeat(50)],
     ['a'.repeat(49) + '\uD83D\uDE00tail', 'a'.repeat(49)],
     ['a'.repeat(48) + '\uD83D\uDE00tail', 'a'.repeat(48) + '\uD83D\uDE00'],
-  ])('bounds provider titles without splitting surrogate pairs (case %#)', async (title, expected) => {
-    const dataDir = await mkdtemp(join(tmpdir(), 'xangi-provider-title-limit-'));
-    clearSessions();
-    initSessions(dataDir);
-    const appId = createSession('title-limit', {
-      platform: 'web',
-      backend: 'antigravity',
-      title: 'My title',
-    });
-    setProviderSessionId(appId, 'title-limit-conversation', 'antigravity');
-    applyAntigravitySessionUsage(
-      parseAntigravityStatus({
-        conversation_id: 'title-limit-conversation',
-        conversation_title: `  ${title}  `,
-      })
-    );
-    expect(getSessionEntry(appId)?.providerTitle).toBe(expected);
-    expect(getSessionEntry(appId)?.title).toBe('My title');
-    clearSessions();
-  });
+  ])(
+    'bounds provider titles without splitting surrogate pairs (case %#)',
+    async (title, expected) => {
+      const dataDir = await mkdtemp(join(tmpdir(), 'xangi-provider-title-limit-'));
+      clearSessions();
+      initSessions(dataDir);
+      const appId = createSession('title-limit', {
+        platform: 'web',
+        backend: 'antigravity',
+        title: 'My title',
+      });
+      setProviderSessionId(appId, 'title-limit-conversation', 'antigravity');
+      applyAntigravitySessionUsage(
+        parseAntigravityStatus({
+          conversation_id: 'title-limit-conversation',
+          conversation_title: `  ${title}  `,
+        })
+      );
+      expect(getSessionEntry(appId)?.providerTitle).toBe(expected);
+      expect(getSessionEntry(appId)?.title).toBe('My title');
+      clearSessions();
+    }
+  );
 
   it('persists Antigravity cost when a status update omits context', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-cost-'));
@@ -659,6 +665,8 @@ describe('usage monitor parsers', () => {
     ).resolves.toEqual({
       id: 'claude-code',
       label: 'Claude Code',
+      sourceType: 'live',
+      sourceUpdatedAt: expect.any(String),
       groups: [
         {
           id: 'claude',
@@ -685,5 +693,187 @@ describe('usage monitor parsers', () => {
         })
       )
     ).rejects.toThrow(/no account rate limits/);
+  });
+
+  it('parses live agy usage command JSON output into sorted groups', () => {
+    const sampleOutput = JSON.stringify({
+      status: 'SUCCESS',
+      command: {
+        name: 'usage',
+        data: {
+          groups: [
+            {
+              name: 'Gemini Models',
+              buckets: [
+                {
+                  id: 'gemini-weekly',
+                  window: 'weekly',
+                  remaining_fraction: 0.48,
+                  reset_time: '2026-10-07T03:00:37Z',
+                },
+                {
+                  id: 'gemini-5h',
+                  window: '5h',
+                  remaining_fraction: 0.8938,
+                  reset_time: '2026-10-05T22:42:29Z',
+                },
+              ],
+            },
+            {
+              name: 'Claude and GPT models',
+              buckets: [
+                {
+                  id: '3p-weekly',
+                  window: 'weekly',
+                  remaining_fraction: 1,
+                  reset_time: '2026-10-12T19:35:16Z',
+                },
+                {
+                  id: '3p-5h',
+                  window: '5h',
+                  remaining_fraction: 1,
+                  reset_time: '2026-10-06T00:35:16Z',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const groups = parseAgyUsageOutput(sampleOutput);
+    expect(groups).toEqual([
+      {
+        id: 'gemini',
+        label: 'Geminiモデル',
+        windows: [
+          {
+            label: '5時間',
+            usedPercent: 10.62,
+            windowDurationMins: 300,
+            resetsAt: Date.parse('2026-10-05T22:42:29Z') / 1000,
+          },
+          {
+            label: '週次',
+            usedPercent: 52,
+            windowDurationMins: 10_080,
+            resetsAt: Date.parse('2026-10-07T03:00:37Z') / 1000,
+          },
+        ],
+      },
+      {
+        id: 'third-party',
+        label: 'サードパーティモデル',
+        windows: [
+          {
+            label: '5時間',
+            usedPercent: 0,
+            windowDurationMins: 300,
+            resetsAt: Date.parse('2026-10-06T00:35:16Z') / 1000,
+          },
+          {
+            label: '週次',
+            usedPercent: 0,
+            windowDurationMins: 10_080,
+            resetsAt: Date.parse('2026-10-12T19:35:16Z') / 1000,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('rejects invalid agy usage output', () => {
+    expect(() => parseAgyUsageOutput('invalid json')).toThrow(/Invalid JSON/);
+    expect(() => parseAgyUsageOutput(JSON.stringify({ status: 'ERROR' }))).toThrow(/status: ERROR/);
+    expect(() =>
+      parseAgyUsageOutput(JSON.stringify({ status: 'SUCCESS', command: { data: { groups: [] } } }))
+    ).toThrow(/no groups/);
+  });
+
+  it('reads Antigravity usage with live probe, single-flighting, and caching', async () => {
+    resetAntigravityUsageState();
+    let runnerCallCount = 0;
+    const mockRunner = async () => {
+      runnerCallCount++;
+      return JSON.stringify({
+        status: 'SUCCESS',
+        command: {
+          data: {
+            groups: [
+              {
+                name: 'Gemini Models',
+                buckets: [
+                  {
+                    id: 'gemini-5h',
+                    window: '5h',
+                    remaining_fraction: 0.9,
+                    reset_time: '2026-10-05T22:42:29Z',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+    };
+
+    // 並行呼び出し（single-flightの検証）
+    const [res1, res2] = await Promise.all([
+      readAntigravityUsage(mockRunner, 1000),
+      readAntigravityUsage(mockRunner, 1000),
+    ]);
+
+    expect(runnerCallCount).toBe(1);
+    expect(res1.sourceType).toBe('live');
+    expect(res1.sourceUpdatedAt).toBeDefined();
+    expect(res2).toEqual(res1);
+
+    // キャッシュ期間内（60秒以内）の再呼び出し
+    const res3 = await readAntigravityUsage(mockRunner, 30_000);
+    expect(runnerCallCount).toBe(1);
+    expect(res3).toEqual(res1);
+
+    // キャッシュ期限切れ後の再呼び出し
+    const res4 = await readAntigravityUsage(mockRunner, 70_000);
+    expect(runnerCallCount).toBe(2);
+    expect(res4.sourceType).toBe('live');
+  });
+
+  it('falls back to snapshot when agy live runner fails', async () => {
+    resetAntigravityUsageState();
+    const failingRunner = async () => {
+      throw new Error('Command failed: agy not found');
+    };
+
+    const tempDir = await mkdtemp(join(tmpdir(), 'xangi-antigravity-test-'));
+    const previousDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tempDir;
+
+    try {
+      await writeFile(
+        join(tempDir, 'antigravity-status.json'),
+        JSON.stringify({
+          quota: {
+            'gemini-5h': {
+              remaining_fraction: 0.85,
+              reset_time: new Date(Date.now() + 3600 * 1000).toISOString(),
+            },
+          },
+        }),
+        'utf8'
+      );
+
+      const result = await readAntigravityUsage(failingRunner);
+      expect(result.id).toBe('antigravity');
+      expect(result.sourceType).toBe('snapshot');
+      expect(result.sourceUpdatedAt).toBeDefined();
+      expect(result.groups[0]?.windows[0]?.usedPercent).toBe(15);
+    } finally {
+      if (previousDataDir !== undefined) {
+        process.env.DATA_DIR = previousDataDir;
+      } else {
+        delete process.env.DATA_DIR;
+      }
+    }
   });
 });
