@@ -1,3 +1,4 @@
+import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
 import { runTeamTurn } from '../src/team-runner.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
@@ -3205,6 +3206,38 @@ process.stdin.on('end', () => process.exit(0));
     expect(list.meta.total).toBe(105);
     expect(list.meta.hasMore).toBe(true);
     expect(list.meta.nextOffset).toBe(100);
+  });
+
+  it('reads conversation origins only for the requested page, including filtered pages', async () => {
+    for (let i = 0; i < 12; i++) {
+      const id = createSession(`discord:origin-${i}`, {
+        platform: 'discord',
+        title: `origin page ${i}`,
+      });
+      logPrompt(testDir, id,
+        `[チャンネル: #channel-${i} (ID: ${i}) / thread: topic-${i} (ID: thread-${i})]\nhello`);
+    }
+    const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
+    try {
+      for (const query of ['limit=2', 'limit=2&offset=2', 'limit=2&q=origin%20page%201']) {
+        originSpy.mockClear();
+        const response = await fetch(`${baseUrl}/api/sessions?${query}`);
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.sessions).toHaveLength(2);
+        expect(originSpy).toHaveBeenCalledTimes(2);
+        for (const session of data.sessions) {
+          const index = session.title.split(' ').at(-1);
+          expect(session.origin).toEqual({
+            channelName: `channel-${index}`, channelId: index,
+            threadName: `topic-${index}`, threadId: `thread-${index}`,
+          });
+          expect(originSpy).toHaveBeenCalledWith(testDir, session.id);
+        }
+      }
+    } finally {
+      originSpy.mockRestore();
+    }
   });
 
   it('GET /api/sessions pages and searches the complete session catalog', async () => {

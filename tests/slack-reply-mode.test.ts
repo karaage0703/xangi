@@ -27,6 +27,7 @@ import {
   executeSlackBackendCommand,
   handleSlackNewAction,
   processMessage,
+  refreshSlackProcessingBlocks,
   processSlackSkillCommand,
   resolveSlackDeleteReactionTarget,
   resolveSlackHistoryActionContext,
@@ -982,6 +983,42 @@ describe('resolveSlackDeleteReactionTarget', () => {
 });
 
 describe('processMessage', () => {
+  it.each([true, false])('preserves the latest rendered text on timeout refresh (streaming=%s)', async (streaming) => {
+    const update = vi.fn().mockResolvedValue({});
+    const client = {
+      chat: { postMessage: vi.fn().mockResolvedValue({ ts: 'progress-ts' }), update },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      for (const step of ['first', 'second']) {
+        if (streaming) callbacks.onText?.(step, `**${step}**`);
+        callbacks.onToolUse?.('Bash', { command: `echo ${step}` });
+        const rendered = update.mock.calls.at(-1)![0];
+        expect(rendered.text).toContain(step);
+        await refreshSlackProcessingBlocks(client, agentRunner, runKey);
+        const refreshed = update.mock.calls.at(-1)![0];
+        expect(refreshed.text).toBe(rendered.text);
+        expect(refreshed.blocks[0].text.text).toBe(rendered.text);
+        expect(refreshed.ts).toBe('progress-ts');
+        await Promise.resolve();
+      }
+      return { result: '完了', sessionId: 'provider-1' };
+    });
+    const agentRunner = {
+      runStream,
+      getTimeoutState: () => ({ active: true, timeoutAt: Date.now() + 60000, maxTimeoutAt: Date.now() + 120000 }),
+    } as unknown as AgentRunner;
+    await processMessageWithoutMinimumDisplayDelay(
+      AUTO_REPLY_CHANNEL, runKey, THREAD_TS, '調査して', 'request-ts', client, agentRunner,
+      { agent: { config: { workdir: tempDir } }, slack: { streaming, showThinking: true, replySuggestions: false } } as Config
+    );
+    expect(runStream).toHaveBeenCalledOnce();
+    // processMessage handles runner errors, so also verify that the run completed normally.
+    expect(update.mock.calls.at(-1)![0].text).toBe('完了');
+  });
+
   it('routes /skill execution through the normal Slack turn pipeline', async () => {
     const update = vi.fn().mockResolvedValue({});
     const client = {

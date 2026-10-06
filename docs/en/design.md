@@ -82,6 +82,8 @@ Behavior:
 
 ### Slack Integration (slack.ts)
 
+- Each normal-response render saves the latest text in processing state. The 10-second timeout refresh reuses that text instead of reverting commentary or tool output to the initial zero-second status.
+
 Based on `@slack/bolt`.
 
 - Handles `app_mention` and DMs; per-thread session isolation (`contextKey = <channelId>:<threadTs>`)
@@ -97,6 +99,8 @@ Based on `@slack/bolt`.
 - For non-thread turns, xangi posts that separate completion notice after long runs to improve visibility
 
 ### Web Chat (web-chat.ts)
+
+- Session lists resolve Discord / Slack origins from transcripts only for the selected page, after filtering and sorting. Off-page transcripts are not opened just to populate origin display fields.
 
 - Message permalinks use `/chat/<appSessionId>#message-<messageId>` and are available for every transcript entry originating from Web, Discord, or Slack. The React app restores the target session, pages backward when needed, then scrolls to and highlights the message. When Discord or Slack input contains a permalink for the same instance, `session-reference.ts` verifies both IDs and adds only that message as an untrusted quoted block rather than instructions. The IDs are reference keys, not authentication credentials
 
