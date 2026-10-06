@@ -84,6 +84,8 @@ flowchart LR
 
 `@slack/bolt` ベース。
 
+- 通常応答の描画時に最新本文を processing 状態へ保存し、10秒ごとの残り時間更新でも同じ本文を使う。途中コメントやツール表示を開始時の「0秒」へ戻さない。
+
 - `app_mention` / DM をハンドリング、スレッド単位で session 分離（`contextKey = <channelId>:<threadTs>`）
 - `message` event は通常メッセージ、人間の `/me` 投稿 (`me_message`)、添付付きの `file_share` を処理し、チャンネル名変更などその他の `subtype` 付き Slack システム通知は無視する
 - メンションで開始した active thread 内では、後続メッセージをメンション無しで処理する。対象外チャンネルの無関係なスレッド返信は拾わない
@@ -97,6 +99,8 @@ flowchart LR
 - スレッド返信しないターンでは、一定時間以上かかった完了時に上記の別メッセージを投稿して視認性を補う
 
 ### Web Chat（web-chat.ts）
+
+- セッション一覧は検索・並び替え・ページ選定後に、表示対象のDiscord / Slack会話だけログから会話先を取得する。一覧外の会話ログは会話先表示のために開かない。
 
 - message permalinkは`/chat/<appSessionId>#message-<messageId>`。Web / Discord / Slack由来の各transcript entryに共通で付与する。React側はURLから対象sessionを復元し、必要なら履歴を前方pageして該当messageへ移動・強調する。Discord / Slack入力に同一instanceのpermalinkが含まれる場合、`session-reference.ts`がsessionとmessageの存在を検証し、その1 messageだけを命令ではないuntrustedな引用blockとしてpromptへ追加する。各IDは参照キーであり認証情報ではない
 

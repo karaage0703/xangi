@@ -1794,6 +1794,9 @@ export async function processMessage(
                 ),
                 SLACK_MAX_TEXT_BYTES
               );
+        // 残り時間の定期更新でも、開始時ではなく最新の表示本文を使う。
+        const processingEntry = slackProcessingMessages.get(runKey);
+        if (processingEntry) processingEntry.currentText = text;
         // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、
         // 最新の timeout 状態を渡して blocks を再生成する
         const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, runKey);

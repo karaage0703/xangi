@@ -940,10 +940,6 @@ export function startWebChat(options: WebChatOptions) {
       const transcriptUpdatedAt = existsSync(transcriptPath)
         ? statSync(transcriptPath).mtime.toISOString()
         : undefined;
-      const origin =
-        s.platform === 'discord' || s.platform === 'slack'
-          ? deriveSessionOrigin(workdir, s.id)
-          : undefined;
       const execution = latestModelExecution(s);
       // Historical sessions must not inherit today's project or CLI defaults.
       const backend = s.agent
@@ -1007,7 +1003,6 @@ export function startWebChat(options: WebChatOptions) {
         estimatedCost: s.estimatedCost,
         providerTitle: s.providerTitle,
         progressCard: s.progressCard,
-        origin,
       };
     });
 
@@ -1117,6 +1112,12 @@ export function startWebChat(options: WebChatOptions) {
     const sessions = pageCandidates.map((candidate) => ({
       ...candidate,
       title: resolveTitle(candidate),
+      // Origins are display-only: avoid opening every transcript before pagination.
+      origin:
+        managedIds.has(candidate.id) &&
+        (candidate.platform === 'discord' || candidate.platform === 'slack')
+          ? deriveSessionOrigin(workdir, candidate.id)
+          : undefined,
     }));
     const nextOffset = offset + sessions.length;
     const hasMore = pageStart + sessions.length < cursorFiltered.length;
