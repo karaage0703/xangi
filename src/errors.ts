@@ -57,7 +57,7 @@ export function classifyAgentError(error: unknown): AgentErrorKind {
   if (msg.includes('timed out')) return 'timeout';
   if (msg.includes('Process exited unexpectedly')) return 'crash';
   if (msg.includes('Circuit breaker')) return 'circuit-breaker';
-  if (/usage limit|hit your limit/i.test(msg)) return 'usage-limit';
+  if (/usage limit|hit your (?:session )?limit/i.test(msg)) return 'usage-limit';
   return 'unknown';
 }
 

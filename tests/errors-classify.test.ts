@@ -16,6 +16,7 @@ describe('classifyAgentError', () => {
     ['Circuit breaker OPEN. Rejecting all queued requests.', 'circuit-breaker'],
     ["Codex CLI exited with code 1: You've hit your usage limit. Upgrade to Pro", 'usage-limit'],
     ["Error: You've hit your limit · resets 1pm (Asia/Tokyo)", 'usage-limit'],
+    ["You've hit your session limit · resets 5am (Asia/Tokyo)", 'usage-limit'],
     [
       'declaring permissions: cortex tool write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /home/user/.gemini/antigravity-cli/brain/conv/',
       'antigravity-artifact-path',
@@ -43,7 +44,9 @@ describe('formatAgentErrorForUser', () => {
   });
 
   it('利用上限は専用メッセージ', () => {
-    const msg = formatAgentErrorForUser(new Error("You've hit your usage limit"));
+    const msg = formatAgentErrorForUser(
+      new Error("You've hit your session limit · resets 5am (Asia/Tokyo)")
+    );
     expect(msg).toContain('💳');
     expect(msg).toContain('利用上限');
   });
@@ -92,6 +95,7 @@ describe('shouldSendErrorFollowUp', () => {
     ['timed out after 300000ms', false],
     ['Circuit breaker OPEN', false],
     ["You've hit your usage limit", false],
+    ["You've hit your session limit · resets 5am (Asia/Tokyo)", false],
     ['Request cancelled by user', false],
     [
       'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/',
