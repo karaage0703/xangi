@@ -7,6 +7,18 @@ import {
 } from '../src/errors.js';
 import { consumeRestartNote, resetRestartNoteStateForTest } from '../src/restart-note.js';
 
+const claudeLimitErrors = [
+  "You've hit your session limit · resets 3:45pm",
+  "You've hit your weekly limit · resets Mon 12:00am",
+  "You've hit your Opus limit · resets 3:45pm",
+  "You've hit your Sonnet limit · resets 3:45pm",
+  "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+  "You've hit your individual spend limit · ask your admin for a higher limit",
+  "You've hit your org's monthly spend limit · visit claude.ai/admin-settings/usage to raise it",
+  "You've hit your team's shared budget · ask your admin to raise it at claude.ai/admin-settings/usage",
+  "You've hit your channel's monthly spend limit · an org owner or channel manager can raise it in the channel's Claude settings",
+];
+
 describe('classifyAgentError', () => {
   it.each([
     ['Request cancelled by user', 'cancelled'],
@@ -17,11 +29,13 @@ describe('classifyAgentError', () => {
     ["Codex CLI exited with code 1: You've hit your usage limit. Upgrade to Pro", 'usage-limit'],
     ["Error: You've hit your limit · resets 1pm (Asia/Tokyo)", 'usage-limit'],
     ["You've hit your session limit · resets 5am (Asia/Tokyo)", 'usage-limit'],
+    ...claudeLimitErrors.map((message) => [message, 'usage-limit']),
     [
       'declaring permissions: cortex tool write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /home/user/.gemini/antigravity-cli/brain/conv/',
       'antigravity-artifact-path',
     ],
     ['Something completely different', 'unknown'],
+    ["You've hit your session · unrelated limit", 'unknown'],
   ])('%s → %s', (message, expected) => {
     expect(classifyAgentError(new Error(message))).toBe(expected);
   });
@@ -96,6 +110,7 @@ describe('shouldSendErrorFollowUp', () => {
     ['Circuit breaker OPEN', false],
     ["You've hit your usage limit", false],
     ["You've hit your session limit · resets 5am (Asia/Tokyo)", false],
+    ...claudeLimitErrors.map((message) => [message, false]),
     ['Request cancelled by user', false],
     [
       'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/',
