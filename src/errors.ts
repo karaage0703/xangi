@@ -43,7 +43,7 @@ export type AgentErrorKind =
   | 'timeout' // リクエストタイムアウト（プロセス kill 済み）
   | 'crash' // AI プロセスの予期しない終了
   | 'circuit-breaker' // 連続クラッシュによる一時停止
-  | 'usage-limit' // バックエンドの利用上限到達（時間経過で回復）
+  | 'usage-limit' // バックエンドの利用枠・支出予算の上限到達
   | 'antigravity-artifact-path' // Agy が通常ファイルを内部 artifact と誤分類
   | 'unknown';
 
@@ -57,7 +57,7 @@ export function classifyAgentError(error: unknown): AgentErrorKind {
   if (msg.includes('timed out')) return 'timeout';
   if (msg.includes('Process exited unexpectedly')) return 'crash';
   if (msg.includes('Circuit breaker')) return 'circuit-breaker';
-  if (/usage limit|hit your limit/i.test(msg)) return 'usage-limit';
+  if (/usage limit|hit your [^·\r\n]*?(?:limit|budget)\b/i.test(msg)) return 'usage-limit';
   return 'unknown';
 }
 

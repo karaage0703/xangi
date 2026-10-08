@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  processPrompt,
   sendDiscordCompletedResult,
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
+import { clearSessions, initSessions, setSession } from '../src/sessions.js';
+import { initSettings } from '../src/settings.js';
 
 const originalSplitDelay = process.env.DISCORD_SPLIT_SEND_DELAY_MS;
 
@@ -22,6 +28,72 @@ describe('shouldProcessDiscordMessage', () => {
 
   it('does not process Discord system messages', () => {
     expect(shouldProcessDiscordMessage({ system: true })).toBe(false);
+  });
+});
+
+describe('processPrompt の利用上限エラー', () => {
+  it('Claude Code の session limit を案内し、自動フォローアップしない', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'xangi-session-limit-'));
+    clearSessions();
+    initSessions(testDir);
+    initSettings(testDir);
+    setSession('session-limit-test', 'existing-claude-session');
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const replyMessage = { id: 'reply', edit };
+    const sendInitial = vi.fn().mockResolvedValue(replyMessage);
+    const runStream = vi.fn().mockRejectedValue(
+      new Error("You've hit your session limit · resets 5am (Asia/Tokyo)")
+    );
+    const run = vi.fn();
+    const message = {
+      id: 'source',
+      content: '確認',
+      createdTimestamp: Date.now(),
+      channel: { name: 'test' },
+      author: { id: 'user', displayName: 'user' },
+      reactions: { cache: { find: () => undefined } },
+      client: { user: { id: 'bot' } },
+    };
+    const target = {
+      conversationChannelId: 'session-limit-test',
+      settingsChannelId: 'session-limit-test',
+      createdThreadName: null,
+      threadName: null,
+      parentChannelName: null,
+      isThread: false,
+      outputChannel: { send: vi.fn() },
+      sendInitial,
+    };
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await processPrompt(
+        message as never,
+        { runStream, run } as never,
+        '確認',
+        false,
+        'session-limit-test',
+        {
+          agent: { backend: 'claude-code', config: { workdir: testDir } },
+          discord: { streaming: false, showButtons: false, replySuggestions: false },
+        } as never,
+        target as never,
+        { id: 'user', name: 'user', messageId: 'source', react: false }
+      );
+
+      expect(result).toBeNull();
+      expect(runStream).toHaveBeenCalledTimes(1);
+      expect(run).not.toHaveBeenCalled();
+      expect(edit).toHaveBeenCalledWith({
+        content: expect.stringContaining('💳 バックエンドの利用上限に達しています'),
+        components: [],
+      });
+      expect(target.outputChannel.send).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+      clearSessions();
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 });
 
