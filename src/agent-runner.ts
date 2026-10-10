@@ -16,6 +16,8 @@ import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
 
 export interface RunOptions {
+  /** Best-effort suppression of conversation persistence. */
+  secret?: boolean;
   /** Select the persistent Codex transport for an incoming LINE conversation. */
   codexLineTransport?: 'exec' | 'app-server';
   skipPermissions?: boolean;

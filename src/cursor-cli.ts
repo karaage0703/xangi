@@ -1,3 +1,4 @@
+import { privacyConsole as console } from './privacy-console.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';

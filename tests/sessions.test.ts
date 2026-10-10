@@ -25,6 +25,7 @@ import {
   addSessionTokenUsage,
   addSessionProcessingTime,
   closeSession,
+  reopenSession,
   closeSessions,
   createSchedulerSession,
   updateSessionEstimatedCost,
@@ -47,6 +48,24 @@ describe('sessions', () => {
     if (testDir && existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
     }
+  });
+
+  it('persists reopening and notifies subscribers without losing provider history', () => {
+    initSessions(testDir);
+    const id = createSession('reopen-persist', { platform: 'discord' });
+    setProviderSessionId(id, 'provider-history');
+    closeSession(id);
+    let notifications = 0;
+    const unsubscribe = subscribeSessionChanges(() => notifications++);
+    expect(reopenSession(id)).toBe('opened');
+    expect(notifications).toBe(1);
+    unsubscribe();
+    const saved = JSON.parse(readFileSync(join(testDir, 'sessions.json'), 'utf8'));
+    expect(saved.sessions[id]).toMatchObject({
+      lifecycle: 'open',
+      agent: { providerSessionId: 'provider-history' },
+    });
+    expect(saved.activeByContext['reopen-persist']).toBe(id);
   });
 
   describe('initSessions', () => {

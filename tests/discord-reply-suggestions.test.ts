@@ -13,7 +13,7 @@ describe('Discord reply suggestions', () => {
   it('adds a machine-readable generation instruction', () => {
     const prompt = appendReplySuggestionInstruction('質問', 3);
     expect(prompt).toContain('<xangi_reply_suggestions>');
-    expect(prompt).toContain('3件');
+    expect(prompt).toContain('3 short replies');
   });
 
   it('extracts suggestions and removes the private block', () => {

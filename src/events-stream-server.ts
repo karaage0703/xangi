@@ -79,7 +79,9 @@ export function handleEventsStreamRequest(req: IncomingMessage, res: ServerRespo
     }
   };
 
-  const unsubscribe = subscribeEvents(writeEvent);
+  const unsubscribe = subscribeEvents(writeEvent, {
+    secretSessionId: threadFilter.startsWith('web:secret_') ? threadFilter.slice(4) : undefined,
+  });
 
   const keepalive = setInterval(() => {
     try {

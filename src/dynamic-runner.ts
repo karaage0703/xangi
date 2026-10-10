@@ -1,3 +1,8 @@
+import { withPrivateDiagnostics } from './privacy-console.js';
+import { setSecretTurnInput } from './transcript-logger.js';
+import { isSecretSession } from './secret.js';
+import { handleSecretCommand } from './secret-command.js';
+import { readSessionMessages } from './transcript-logger.js';
 import { runTeamTurn, cancelTeam, teamTimeoutState, extendTeamTimeout } from './team-runner.js';
 import { sessionAgent, resolveAgentBackend } from './agent-selection.js';
 import { EventEmitter } from 'events';
@@ -126,7 +131,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     resolved: ResolvedBackend,
     platform?: ChatPlatform,
     workdir?: string,
-    forceDedicated = false
+    forceDedicated = false,
+    secret = false
   ): AgentRunner {
     const runnerPlatform = platform ?? this.platform;
     const defaultWorkdir = canonicalizeWorkdir(this.config.agent.config.workdir ?? process.cwd());
@@ -148,7 +154,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolverKey === defaultKey &&
       platformKey === defaultPlatformKey &&
       requestedWorkdir === defaultWorkdir &&
-      !forceDedicated
+      !forceDedicated &&
+      !secret
     ) {
       // チャンネル用の別ランナーがあれば破棄
       this.destroyChannelRunner(channelId);
@@ -157,7 +164,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
 
     // 既存のチャンネルランナーがあり、キーが一致すればそれを使う
     const existing = this.channelRunners.get(channelId);
-    const channelRunnerKey = `${resolverKey}:${platformKey}:${requestedWorkdir}`;
+    const channelRunnerKey = `${resolverKey}:${platformKey}:${requestedWorkdir}:${secret}`;
     if (existing && existing.key === channelRunnerKey) {
       return existing.runner;
     }
@@ -166,7 +173,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     this.destroyChannelRunner(channelId);
 
     // 新しいランナーを作成
-    const runner = this.createRunnerFor(resolved, runnerPlatform, requestedWorkdir);
+    const runner = this.createRunnerFor(resolved, runnerPlatform, requestedWorkdir, secret);
     this.attachTimeoutBubble(runner);
     this.channelRunners.set(channelId, {
       runner,
@@ -189,11 +196,13 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private createRunnerFor(
     resolved: ResolvedBackend,
     platform?: ChatPlatform,
-    workdir?: string
+    workdir?: string,
+    secret = false
   ): AgentRunner {
     const agentConfig: AgentConfig = {
       ...this.config.agent.config,
       model: resolved.model,
+      ...(secret ? { persistent: false } : {}),
       workdir: workdir ?? this.config.agent.config.workdir,
     };
 
@@ -242,7 +251,15 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
-    const team = !options?.internalTask && sessionAgent(options?.appSessionId)?.team;
+    const control = handleSecretCommand(options);
+    if (control) {
+      if (options?.channelId) this.destroy(options.channelId);
+      return control;
+    }
+    const team =
+      !options?.internalTask &&
+      !isSecretSession(options?.appSessionId) &&
+      sessionAgent(options?.appSessionId)?.team;
     if (team && (team.leadership !== 'caller' || team.assignments))
       return runTeamTurn(this, team, prompt, {}, options!, () =>
         this.applyUserPromptSubmitHooks(prompt, options)
@@ -251,15 +268,19 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       await this.prepareExecution(prompt, options);
     this.retainRunner(runner);
     try {
-      const result = await runner.run(enrichedPrompt, runOptions);
+      const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
+        runner.run(enrichedPrompt, runOptions)
+      );
       this.recordResolvedBackend(runOptions, resolved, result);
       await this.finishModelExecution(runOptions, execution, result);
       return result;
     } catch (error) {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
-      throw error;
+      throw runOptions?.secret ? privateRunError(error) : error;
     } finally {
       this.releaseRunner(runner);
+      if (runOptions?.secret && runOptions.channelId)
+        this.destroyChannelRunner(runOptions.runnerKey ?? runOptions.channelId);
       if (runOptions?.appSessionId) {
         addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
       }
@@ -274,7 +295,16 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    const team = !options?.internalTask && sessionAgent(options?.appSessionId)?.team;
+    const control = handleSecretCommand(options);
+    if (control) {
+      if (options?.channelId) this.destroy(options.channelId);
+      callbacks.onComplete?.(control);
+      return control;
+    }
+    const team =
+      !options?.internalTask &&
+      !isSecretSession(options?.appSessionId) &&
+      sessionAgent(options?.appSessionId)?.team;
     if (team && (team.leadership !== 'caller' || team.assignments))
       return runTeamTurn(this, team, prompt, callbacks, options!, () =>
         this.applyUserPromptSubmitHooks(prompt, options)
@@ -316,14 +346,17 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
           this.persistModelExecution(runOptions, execution);
         callbacks.onEffort?.(effort);
       },
+      onError: (error) => callbacks.onError?.(runOptions?.secret ? privateRunError(error) : error),
       // Complete consumers only after the result and model snapshot have been persisted.
       onComplete: undefined,
     };
     try {
-      const result = await runner.runStream(
-        enrichedPrompt,
-        recorder?.callbacks(observedCallbacks) ?? observedCallbacks,
-        runOptions
+      const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
+        runner.runStream(
+          enrichedPrompt,
+          recorder?.callbacks(observedCallbacks) ?? observedCallbacks,
+          runOptions
+        )
       );
       this.recordResolvedBackend(runOptions, resolved, result);
       await this.finishModelExecution(runOptions, execution, result);
@@ -331,9 +364,11 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       return result;
     } catch (error) {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
-      throw error;
+      throw runOptions?.secret ? privateRunError(error) : error;
     } finally {
       this.releaseRunner(runner);
+      if (runOptions?.secret && runOptions.channelId)
+        this.destroyChannelRunner(runOptions.runnerKey ?? runOptions.channelId);
       if (runOptions?.appSessionId) {
         addSessionProcessingTime(runOptions.appSessionId, Date.now() - startedAt);
       }
@@ -342,8 +377,26 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
 
   private async prepareExecution(prompt: string, options?: RunOptions) {
     const startedAt = Date.now();
+    const secret = isSecretSession(options?.appSessionId);
+    if (secret) {
+      options = {
+        ...options,
+        channelId:
+          options?.channelId ??
+          getSessionEntry(options!.appSessionId!)?.contextKey ??
+          options!.appSessionId,
+        secret: true,
+        sessionId: undefined,
+        codexLineTransport: 'exec',
+      };
+      setSecretTurnInput(options.appSessionId!, options.userText ?? prompt);
+    }
     const channelId = options?.channelId;
     const agent = options?.internalTask ? undefined : sessionAgent(options?.appSessionId);
+    if (secret && agent?.team)
+      throw new Error(
+        'シークレットモードではチーム実行を利用できません。単体のAIを選んでください。'
+      );
     const resolved =
       agent && !(agent.team?.leadership === 'caller' && agent.id.startsWith('team:'))
         ? resolveAgentBackend(this.resolver, agent)
@@ -359,16 +412,32 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       resolved,
       options?.platform,
       options?.workdir,
-      options?.runnerKey !== undefined && options.runnerKey !== channelId
+      options?.runnerKey !== undefined && options.runnerKey !== channelId,
+      secret
     );
     const runOptions = this.injectResolvedFields(
       this.dropMismatchedProviderSession(options, resolved),
       resolved
     );
     this.recordResolvedSessionMode(runOptions, resolved);
-    const enrichedPrompt = runOptions?.internalTask
+    let enrichedPrompt = runOptions?.internalTask
       ? prompt
       : await this.applyUserPromptSubmitHooks(prompt, runOptions);
+    if (secret) {
+      // Only plain previous messages are replayed, never a recursively expanded prompt.
+      const previous = readSessionMessages(
+        options?.workdir ?? this.workdir,
+        options!.appSessionId!
+      ).slice(-20);
+      const history = previous.map((e) => ({
+        role: e.role,
+        content: String(typeof e.content === 'string' ? e.content : (e.content.result ?? '')).slice(
+          -32_000
+        ),
+      }));
+      while (JSON.stringify(history).length > 64_000 && history.length > 1) history.shift();
+      enrichedPrompt = `<secret-history>\n${JSON.stringify(history)}\n</secret-history>\n\n${enrichedPrompt}`;
+    }
     const configuredModel = normalizeModelId(resolved.model);
     const configuredEffort = runOptions?.effort ?? resolved.effort;
     const execution: ModelExecution = {
@@ -399,7 +468,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     execution: ModelExecution,
     result?: RunResult
   ): Promise<void> {
-    if (execution.backend === 'codex' && result?.sessionId) {
+    if (execution.backend === 'codex' && result?.sessionId && !options?.secret) {
       const evidence = await readCodexTurnEvidence({
         providerSessionId: result.sessionId,
         cwd: options?.workdir ?? this.workdir,
@@ -757,4 +826,13 @@ function canonicalizeWorkdir(workdir: string): string {
   } catch {
     return absolute;
   }
+}
+
+function privateRunError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/cancel|abort/i.test(message)) return new Error('Secret request cancelled');
+  if (/timeout|timed out/i.test(message)) return new Error('Secret request timed out');
+  return new Error(
+    'シークレット実行に失敗しました。詳細は保存しません。AIの設定・接続・CLIの対応バージョンを確認してください。'
+  );
 }

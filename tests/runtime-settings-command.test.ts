@@ -78,6 +78,20 @@ describe('runtime_settings', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it.each(['agent', 'backend', 'llmmode', 'autoreply', 'notify', 'threadmode', 'replysuggestions', 'respondtobots'] as const)(
+    'rejects the removed show action for %s without changing settings',
+    async (name) => {
+      const before = JSON.stringify(loadSettings());
+      await expect(executeRuntimeSettingsCommand(
+        { name, action: 'show', platform: 'discord', channelId: 'parent' },
+        { config, resolver }
+      )).rejects.toThrow('status, set, reset');
+      expect(JSON.stringify(loadSettings())).toBe(before);
+      expect(resolver.setChannelOverride).not.toHaveBeenCalled();
+      expect(resolver.setDefault).not.toHaveBeenCalled();
+    }
+  );
+
   it('reads exact thread evidence independently of parent settings and recovered snapshots', async () => {
     const parent = createSession('parent', { platform: 'discord' });
     const thread = createSession('thread', { platform: 'discord' });
@@ -99,7 +113,7 @@ describe('runtime_settings', () => {
     const result = await executeRuntimeSettingsCommand(
       {
         name: 'backend',
-        action: 'show',
+        action: 'status',
         channelId: 'parent',
         contextKey: 'thread',
         platform: 'discord',
@@ -110,7 +124,7 @@ describe('runtime_settings', () => {
     expect(result).toContain('effort=medium');
     expect(result).not.toContain('unrelated-parent-model');
     const unspecified = await executeRuntimeSettingsCommand(
-      { name: 'backend', action: 'show', channelId: 'parent', platform: 'discord' },
+      { name: 'backend', action: 'status', channelId: 'parent', platform: 'discord' },
       { config, resolver }
     );
     expect(unspecified).toContain('記録なし');
@@ -122,7 +136,7 @@ describe('runtime_settings', () => {
     overrides.set('C123', { backend: 'codex', model: 'gpt-5.6-sol', effort: 'medium' });
 
     const result = await executeRuntimeSettingsCommand(
-      { name: 'backend', action: 'show', channelId: 'C123', platform: 'discord' },
+      { name: 'backend', action: 'status', channelId: 'C123', platform: 'discord' },
       { config, resolver }
     );
 
@@ -191,7 +205,7 @@ describe('runtime_settings', () => {
     defaultEffort = 'high';
     await expect(
       executeRuntimeSettingsCommand(
-        { name: 'backend', action: 'show', scope: 'global' },
+        { name: 'backend', action: 'status', scope: 'global' },
         { resolver }
       )
     ).resolves.toContain('effort: high');
@@ -321,7 +335,7 @@ describe('runtime_settings', () => {
       platform: 'discord',
     };
     await expect(
-      executeRuntimeSettingsCommand({ ...threadRequest, action: 'show' }, { config, resolver })
+      executeRuntimeSettingsCommand({ ...threadRequest, action: 'status' }, { config, resolver })
     ).resolves.toContain('autoreply: on');
 
     await executeRuntimeSettingsCommand(
@@ -329,7 +343,7 @@ describe('runtime_settings', () => {
       { config, resolver }
     );
     await expect(
-      executeRuntimeSettingsCommand({ ...threadRequest, action: 'show' }, { config, resolver })
+      executeRuntimeSettingsCommand({ ...threadRequest, action: 'status' }, { config, resolver })
     ).resolves.toContain('autoreply: off');
 
     await expect(

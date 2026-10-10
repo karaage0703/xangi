@@ -148,7 +148,7 @@ interface MonitorActivityEvent {
 
 type MonitorFilter = 'chat' | 'web' | 'scheduler';
 export type MonitorTimeRange = '24h' | '7d' | '30d' | 'all';
-export type MonitorLane = 'running' | 'waiting' | 'completed';
+export type MonitorLane = 'working' | 'completed';
 export type UsageDisplayMode = 'used' | 'remaining';
 export const DEFAULT_USAGE_DISPLAY_MODE: UsageDisplayMode = 'used';
 
@@ -174,8 +174,7 @@ const TIME_RANGES: Array<{ value: MonitorTimeRange; label: string; durationMs?: 
 ];
 
 const LANES: Array<{ value: MonitorLane; label: string; description: string }> = [
-  { value: 'running', label: '実行中', description: '返答・tool実行中' },
-  { value: 'waiting', label: '入力待ち', description: '次の入力を待機・継続可能' },
+  { value: 'working', label: '作業中', description: '実行中・入力待ちの会話' },
   { value: 'completed', label: '完了', description: '選択期間内に完了・再開可能' },
 ];
 
@@ -323,8 +322,7 @@ export function matchesFilter(session: MonitorSession, filters: readonly Monitor
 
 export function monitorLane(session: MonitorSession): MonitorLane {
   if (session.lifecycle !== 'open') return 'completed';
-  if (isRunning(session)) return 'running';
-  return 'waiting';
+  return 'working';
 }
 
 function platformLabel(platform?: string): string {
@@ -357,7 +355,6 @@ function stateLabel(session: MonitorSession): string {
 function stateDescription(session: MonitorSession): string {
   if (monitorLane(session) === 'completed') return '履歴から再開・分岐できる';
   if (isRunning(session)) return '今このターンが動いている';
-  if (monitorLane(session) === 'waiting') return 'このセッションで会話を継続できる';
   return 'このセッションで会話を継続できる';
 }
 
@@ -366,9 +363,7 @@ export function sessionLine(session: MonitorSession): string {
   return (
     session.activity?.summary ||
     (currentStep ? `現在: ${currentStep.step}` : undefined) ||
-    (session.scope === 'scheduler' && monitorLane(session) === 'running'
-      ? 'スケジュールを実行中'
-      : undefined) ||
+    (session.scope === 'scheduler' && isRunning(session) ? 'スケジュールを実行中' : undefined) ||
     (monitorLane(session) === 'completed' ? '完了: 現在の処理なし' : '次の入力を待っています')
   );
 }
@@ -537,7 +532,14 @@ export function Monitor() {
   const [clock, setClock] = useState(Date.now());
   const [source, setSource] = useState('source --');
   const [closingId, setClosingId] = useState('');
-  const [sessionToClose, setSessionToClose] = useState<MonitorSession | null>(null);
+  const [undoAction, setUndoAction] = useState<{
+    session: MonitorSession;
+    title: string;
+    reopen: boolean;
+  } | null>(null);
+  const actionInFlight = useRef(false);
+  const undoButtonRef = useRef<HTMLButtonElement>(null);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
   const [closeAllWaitingOpen, setCloseAllWaitingOpen] = useState(false);
   const [closingAllWaiting, setClosingAllWaiting] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -646,37 +648,62 @@ export function Monitor() {
     }
   }, [applySnapshot, timeRange]);
 
-  const closeSelectedSession = useCallback(async () => {
-    const session = sessionToClose;
-    if (!session || closingId) return;
-    setClosingId(session.id);
-    setActionError('');
-    try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/close`, {
-        method: 'POST',
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await loadSessions();
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSessionToClose(null);
-      setClosingId('');
-    }
-  }, [closingId, loadSessions, sessionToClose]);
+  const changeSessionState = useCallback(
+    async (session: MonitorSession, reopen: boolean, undo = false) => {
+      if (actionInFlight.current) return;
+      actionInFlight.current = true;
+      setClosingId(session.id);
+      setActionError('');
+      try {
+        const response = await fetch(
+          `/api/sessions/${encodeURIComponent(session.id)}/${reopen ? 'reopen' : 'close'}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          }
+        );
+        if (!response.ok) {
+          const body = await response.json();
+          throw new Error(body.error || `HTTP ${response.status}`);
+        }
+        setUndoAction(
+          undo ? null : { session, title: session.title || session.id, reopen: !reopen }
+        );
+        await loadSessions();
+        window.requestAnimationFrame(() => {
+          if (!undo) undoButtonRef.current?.focus({ preventScroll: true });
+          else
+            document
+              .querySelector<HTMLButtonElement>(`[data-state-session="${CSS.escape(session.id)}"]`)
+              ?.focus();
+        });
+      } catch (cause) {
+        setActionError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        actionInFlight.current = false;
+        setClosingId('');
+      }
+    },
+    [loadSessions]
+  );
 
   const waitingSessions = useMemo(
-    () => sessions.filter((session) => monitorLane(session) === 'waiting'),
+    () => sessions.filter((session) => monitorLane(session) === 'working' && !isRunning(session)),
     [sessions]
   );
 
   const closeAllWaitingSessions = useCallback(async () => {
-    if (closingAllWaiting) return;
-    const targets = sessionsRef.current.filter((session) => monitorLane(session) === 'waiting');
+    if (actionInFlight.current) return;
+    const targets = sessionsRef.current.filter(
+      (session) => monitorLane(session) === 'working' && !isRunning(session)
+    );
     if (targets.length === 0) {
       setCloseAllWaitingOpen(false);
       return;
     }
+    actionInFlight.current = true;
+    setUndoAction(null);
     setClosingAllWaiting(true);
     setActionError('');
     try {
@@ -700,6 +727,7 @@ export function Monitor() {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setCloseAllWaitingOpen(false);
+      actionInFlight.current = false;
       setClosingAllWaiting(false);
     }
   }, [closingAllWaiting, loadSessions]);
@@ -811,8 +839,8 @@ export function Monitor() {
   );
 
   const selected = sessions.find((session) => session.id === selectedId);
-  const runningCount = sessionsByLane.running.length;
-  const waitingCount = sessionsByLane.waiting.length;
+  const runningCount = sessionsByLane.working.filter(isRunning).length;
+  const workingCount = sessionsByLane.working.length;
   const completedCount = sessionsByLane.completed.length;
   const usageProviders = displayUsageProviders(accountUsage?.providers || []);
   const visibleUsageProviders = usageProviders.filter(
@@ -891,7 +919,7 @@ export function Monitor() {
         <button
           type="button"
           className="monitor-bulk-close"
-          disabled={waitingSessions.length === 0 || closingAllWaiting}
+          disabled={waitingSessions.length === 0 || closingAllWaiting || Boolean(closingId)}
           onClick={() => setCloseAllWaitingOpen(true)}
         >
           入力待ちをすべて完了
@@ -1045,8 +1073,8 @@ export function Monitor() {
             <div className="monitor-metric-label">実行中</div>
           </div>
           <div className="monitor-metric">
-            <div className="monitor-metric-value">{waitingCount}</div>
-            <div className="monitor-metric-label">入力待ち</div>
+            <div className="monitor-metric-value">{workingCount}</div>
+            <div className="monitor-metric-label">作業中（実行中を含む）</div>
           </div>
           <div className="monitor-metric">
             <div className="monitor-metric-value">{completedCount}</div>
@@ -1056,13 +1084,13 @@ export function Monitor() {
 
         <section className="monitor-legend" aria-label="legend">
           <span>状態に応じてカードを自動分類</span>
-          <span>内部イベント保存: logs/monitor-activity</span>
+          <span>実行中は完了にできません</span>
           <span>カードをタップして詳細を表示</span>
         </section>
 
         {actionError && (
           <p className="monitor-action-error" role="alert">
-            完了への変更に失敗しました: {actionError}
+            状態の変更に失敗しました: {actionError}
           </p>
         )}
 
@@ -1080,14 +1108,20 @@ export function Monitor() {
                   <a className="monitor-detail-open" href={sessionPath(selected.id)}>
                     会話を開く
                   </a>
-                  {monitorLane(selected) !== 'completed' && (
+                  {selected.scope !== 'scheduler' && (
                     <button
                       type="button"
                       className="monitor-detail-session-close"
-                      disabled={closingId === selected.id}
-                      onClick={() => setSessionToClose(selected)}
+                      disabled={Boolean(closingId) || closingAllWaiting || isRunning(selected)}
+                      onClick={() =>
+                        void changeSessionState(selected, monitorLane(selected) === 'completed')
+                      }
                     >
-                      {closingId === selected.id ? '変更中…' : '完了にする'}
+                      {closingId === selected.id
+                        ? '変更中…'
+                        : monitorLane(selected) === 'completed'
+                          ? '↩ 作業中へ'
+                          : '✓ 完了'}
                     </button>
                   )}
                   <button
@@ -1225,6 +1259,27 @@ export function Monitor() {
           </section>
         )}
 
+        {undoAction && (
+          <div className="monitor-undo" role="status">
+            <span>
+              「{undoAction.title}」を{undoAction.reopen ? '完了' : '作業中'}にしました
+            </span>
+            <button
+              type="button"
+              ref={undoButtonRef}
+              disabled={Boolean(closingId) || closingAllWaiting}
+              onClick={() => {
+                const session = undoAction.session;
+                if (session) void changeSessionState(session, undoAction.reopen, true);
+              }}
+            >
+              元に戻す
+            </button>
+            <button type="button" aria-label="変更通知を閉じる" onClick={() => setUndoAction(null)}>
+              ×
+            </button>
+          </div>
+        )}
         <section className="monitor-board" aria-label="sessions">
           {LANES.map((lane) => {
             const laneSessions = sessionsByLane[lane.value];
@@ -1233,6 +1288,21 @@ export function Monitor() {
                 className={`monitor-column monitor-column-${lane.value}`}
                 aria-labelledby={`monitor-column-${lane.value}`}
                 key={lane.value}
+                data-drop-target={Boolean(
+                  draggedId &&
+                  sessions.some((item) => item.id === draggedId && monitorLane(item) !== lane.value)
+                )}
+                onDragOver={(event) => {
+                  if (draggedId) event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const session = sessions.find((item) => item.id === draggedId);
+                  setDraggedId(null);
+                  if (session && monitorLane(session) !== lane.value && !isRunning(session)) {
+                    void changeSessionState(session, lane.value === 'working');
+                  }
+                }}
               >
                 <header className="monitor-column-header">
                   <div className="monitor-column-title-row">
@@ -1276,6 +1346,22 @@ export function Monitor() {
                             .filter(Boolean)
                             .join(' ')}
                           key={session.id}
+                          draggable={
+                            !isRunning(session) &&
+                            session.scope !== 'scheduler' &&
+                            !closingId &&
+                            !closingAllWaiting
+                          }
+                          onDragStart={(event) => {
+                            if (!window.matchMedia('(pointer: fine)').matches) {
+                              event.preventDefault();
+                              return;
+                            }
+                            event.dataTransfer.setData('text/plain', session.id);
+                            event.dataTransfer.effectAllowed = 'move';
+                            setDraggedId(session.id);
+                          }}
+                          onDragEnd={() => setDraggedId(null)}
                         >
                           <button
                             type="button"
@@ -1364,6 +1450,28 @@ export function Monitor() {
                               )}
                             </span>
                           </button>
+                          {session.scope !== 'scheduler' && (
+                            <div className="monitor-card-actions">
+                              <button
+                                type="button"
+                                disabled={Boolean(closingId) || closingAllWaiting || running}
+                                title={running ? '実行が終わってから完了にできます' : undefined}
+                                data-state-session={session.id}
+                                aria-label={`${session.title || session.id}を${lane.value === 'completed' ? '作業中へ戻す' : '完了にする'}`}
+                                onClick={() =>
+                                  void changeSessionState(session, lane.value === 'completed')
+                                }
+                              >
+                                {closingId === session.id
+                                  ? '変更中…'
+                                  : lane.value === 'completed'
+                                    ? '↩ 作業中へ'
+                                    : running
+                                      ? '実行中'
+                                      : '✓ 完了'}
+                              </button>
+                            </div>
+                          )}
                         </article>
                       );
                     })
@@ -1375,23 +1483,6 @@ export function Monitor() {
           })}
         </section>
       </section>
-      <ConfirmDialog
-        open={Boolean(sessionToClose)}
-        title="セッションを完了"
-        description={
-          <>
-            「{sessionToClose?.title || 'このセッション'}
-            」を完了にします。会話履歴は残り、履歴から再開・分岐できます。
-          </>
-        }
-        confirmLabel="完了にする"
-        busyLabel="変更中…"
-        busy={Boolean(closingId)}
-        onCancel={() => {
-          if (!closingId) setSessionToClose(null);
-        }}
-        onConfirm={() => void closeSelectedSession()}
-      />
       <ConfirmDialog
         open={closeAllWaitingOpen}
         title="入力待ちをすべて完了"

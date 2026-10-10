@@ -60,6 +60,14 @@ describe('GitHubCopilotRunner', () => {
     process.stdout.emit('data', Buffer.from(`${JSON.stringify(value)}\n`));
   }
 
+  it('disables CLI logging and remote export for secret turns', async () => {
+    const { promise, process, args } = await start(new GitHubCopilotRunner({}), {}, { secret: true });
+    expect(args).toEqual(expect.arrayContaining(['--log-level', 'none', '--no-remote', '--no-remote-export']));
+    emitJson(process, { type: 'result', sessionId: 'private', exitCode: 0 });
+    process.emit('close', 0);
+    await promise;
+  });
+
   it('uses Copilot yolo mode when SKIP_PERMISSIONS is enabled', async () => {
     const { promise, process, args } = await start(
       new GitHubCopilotRunner({ skipPermissions: true })

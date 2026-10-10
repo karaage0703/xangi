@@ -1,3 +1,4 @@
+import { isSecretSession } from './secret.js';
 import {
   appendFileSync,
   closeSync,
@@ -57,6 +58,25 @@ export interface TranscriptCompactionCheckpoint {
   trigger: 'tokens' | 'messages' | 'chars';
 }
 
+const secretTranscripts = new Map<string, TranscriptEntry[]>();
+const secretInputs = new Map<string, string>();
+export function setSecretTurnInput(id: string, text: string): void {
+  if (secretTranscripts.has(id)) secretInputs.set(id, text);
+}
+export function openSecretTranscript(id: string): void {
+  if (!secretTranscripts.has(id)) secretTranscripts.set(id, []);
+}
+export function forgetSecretTranscript(id: string): void {
+  secretTranscripts.delete(id);
+  secretInputs.delete(id);
+}
+function boundSecretEntries(entries: TranscriptEntry[]): TranscriptEntry[] {
+  const recent = entries.slice(-100);
+  let size = recent.reduce((n, e) => n + JSON.stringify(e).length, 0);
+  while (size > 256_000 && recent.length > 1) size -= JSON.stringify(recent.shift()).length;
+  return recent;
+}
+
 let centralDataDir: string | null = null;
 let legacyStartupWorkdir: string | null = null;
 
@@ -71,6 +91,8 @@ export function initTranscriptStorage(dataDir: string, startupWorkdir: string): 
 }
 
 export function resetTranscriptStorageForTests(): void {
+  secretTranscripts.clear();
+  secretInputs.clear();
   centralDataDir = null;
   legacyStartupWorkdir = null;
 }
@@ -152,6 +174,7 @@ export function getSessionLogPathForRead(workdir: string, appSessionId: string):
 }
 
 export function deleteSessionTranscript(workdir: string, appSessionId: string): boolean {
+  if (isSecretSession(appSessionId)) return secretTranscripts.delete(appSessionId);
   const fileName = transcriptFileName(appSessionId);
   let deleted = false;
   for (const dir of getTranscriptDirectories(workdir)) {
@@ -175,6 +198,11 @@ function generateMessageId(): string {
 }
 
 function writeEntry(workdir: string, appSessionId: string, entry: TranscriptEntry): void {
+  if (isSecretSession(appSessionId)) {
+    const entries = secretTranscripts.get(appSessionId);
+    if (entries) secretTranscripts.set(appSessionId, boundSecretEntries([...entries, entry]));
+    return;
+  }
   try {
     const filePath = getSessionLogPathForWrite(workdir, appSessionId);
     const line = JSON.stringify(entry);
@@ -191,7 +219,7 @@ export function logPrompt(workdir: string, appSessionId: string, prompt: string)
   const entry: TranscriptEntry = {
     id: generateMessageId(),
     role: 'user',
-    content: prompt,
+    content: isSecretSession(appSessionId) ? (secretInputs.get(appSessionId) ?? prompt) : prompt,
     createdAt: new Date().toISOString(),
   };
   writeEntry(workdir, appSessionId, entry);
@@ -234,6 +262,7 @@ export function logCompactionCheckpoint(
   appSessionId: string,
   checkpoint: TranscriptCompactionCheckpoint
 ): boolean {
+  if (isSecretSession(appSessionId)) return false;
   try {
     if (
       !readSessionMessages(workdir, appSessionId).some(
@@ -258,6 +287,7 @@ export function readLatestCompactionCheckpoint(
   workdir: string,
   appSessionId: string
 ): TranscriptCompactionCheckpoint | null {
+  if (isSecretSession(appSessionId)) return null;
   try {
     const roots = centralDataDir ? [centralDataDir, legacyStartupWorkdir] : [workdir];
     for (const root of [...new Set(roots.filter(Boolean) as string[])]) {
@@ -287,6 +317,8 @@ export function readLatestCompactionCheckpoint(
  * セッションのメッセージ一覧を読み出す
  */
 export function readSessionMessages(workdir: string, appSessionId: string): TranscriptEntry[] {
+  if (isSecretSession(appSessionId))
+    return structuredClone(secretTranscripts.get(appSessionId) ?? []);
   try {
     const filePath = getSessionLogPathForRead(workdir, appSessionId);
     if (!existsSync(filePath)) return [];
@@ -312,6 +344,11 @@ export function readSessionMessagesTail(
 ): TranscriptEntry[] {
   if (limit <= 0) return [];
   const safeBefore = Math.max(0, Math.floor(before));
+  if (isSecretSession(appSessionId)) {
+    const entries = readSessionMessages(workdir, appSessionId);
+    const end = Math.max(0, entries.length - safeBefore);
+    return entries.slice(Math.max(0, end - limit), end);
+  }
   let fd: number | undefined;
   try {
     const filePath = getSessionLogPathForRead(workdir, appSessionId);
@@ -357,6 +394,16 @@ export function readSessionMessagesPage(
   cursor?: number
 ): TranscriptPage {
   if (limit <= 0) return { entries: [], hasMore: false, nextCursor: null };
+  if (isSecretSession(appSessionId)) {
+    const all = readSessionMessages(workdir, appSessionId);
+    const end = Math.min(all.length, Math.max(0, cursor ?? all.length));
+    const start = Math.max(0, end - limit);
+    return {
+      entries: all.slice(start, end),
+      hasMore: start > 0,
+      nextCursor: start > 0 ? start : null,
+    };
+  }
   let fd: number | undefined;
   try {
     const filePath = getSessionLogPathForRead(workdir, appSessionId);
@@ -417,6 +464,11 @@ function rewriteSessionFile(
   appSessionId: string,
   entries: TranscriptEntry[]
 ): void {
+  if (isSecretSession(appSessionId)) {
+    if (secretTranscripts.has(appSessionId))
+      secretTranscripts.set(appSessionId, boundSecretEntries(entries));
+    return;
+  }
   const filePath = getSessionLogPathForWrite(workdir, appSessionId);
   const lines = entries.map((e) => JSON.stringify(e)).join('\n');
   writeFileSync(filePath, entries.length > 0 ? lines + '\n' : '');

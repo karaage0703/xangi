@@ -16,6 +16,7 @@ import {
   resolveScheduleTimeZone,
 } from './scheduler.js';
 import { loadSettings, formatSettings } from './settings.js';
+import { parseSecretCommand } from './secret.js';
 import { loadSkills, type Skill } from './skills.js';
 import { executeModelsCommand, MODELS_COMMAND_USAGE } from './models-command.js';
 import { discoverBackendModels, type BackendModelDiscovery } from './backend-models.js';
@@ -44,6 +45,24 @@ export interface WebCommandOption {
 }
 
 export const WEB_COMMANDS: WebCommandDefinition[] = [
+  {
+    name: 'secret',
+    description: '極力ログを残さない会話を開始・終了・確認',
+    usage: '/secret [on|off|status]',
+    category: 'session',
+    options: [
+      {
+        name: 'mode',
+        description: '操作',
+        type: 'string',
+        choices: [
+          { name: 'on', value: 'on' },
+          { name: 'off', value: 'off' },
+          { name: 'status', value: 'status' },
+        ],
+      },
+    ],
+  },
   {
     name: 'new',
     description: '新しいセッションを開始',
@@ -109,11 +128,11 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
   {
     name: 'backend',
     description: 'バックエンド設定を表示・変更',
-    usage: '/backend show|set|reset ...',
+    usage: '/backend status|set|reset ...',
     category: 'settings',
     options: [
       {
-        name: 'show',
+        name: 'status',
         description: '現在のバックエンド設定を表示',
         type: 'subcommand',
       },
@@ -145,7 +164,7 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
   {
     name: 'llmmode',
     description: 'Local LLMモードを表示・変更',
-    usage: '/llmmode show|agent|chat|default',
+    usage: '/llmmode status|agent|chat|default',
     category: 'settings',
     options: [
       {
@@ -154,7 +173,7 @@ export const WEB_COMMANDS: WebCommandDefinition[] = [
         type: 'string',
         required: true,
         choices: [
-          { name: '現在の設定を表示', value: 'show' },
+          { name: '現在の設定を表示', value: 'status' },
           { name: 'agent（全機能）', value: 'agent' },
           { name: 'chat（純粋な会話）', value: 'chat' },
           { name: 'デフォルトへ戻す', value: 'default' },
@@ -391,9 +410,9 @@ function requireScheduler(ctx: WebCommandContext): Scheduler {
 async function handleBackend(args: string[], ctx: WebCommandContext): Promise<WebCommandResult> {
   const resolver = requireResolver(ctx);
   const channelId = requireSession(ctx);
-  const subcommand = args[0] || 'show';
+  const subcommand = args[0] || 'status';
 
-  if (subcommand === 'show') {
+  if (subcommand === 'status') {
     const resolved = resolver.resolve(channelId, ctx.backendDefault);
     const entry = ctx.appSessionId ? getSessionEntry(ctx.appSessionId) : undefined;
     const source = resolver.getChannelOverride(channelId)
@@ -425,7 +444,7 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
   }
 
   if (subcommand !== 'set') {
-    throw new Error('使い方: /backend show|set|reset');
+    throw new Error('使い方: /backend status|set|reset');
   }
 
   const backend = args[1] as AgentBackend | undefined;
@@ -484,8 +503,8 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
 function handleLlmMode(args: string[], ctx: WebCommandContext): WebCommandResult {
   const resolver = requireResolver(ctx);
   const channelId = requireSession(ctx);
-  const mode = args[0] || 'show';
-  if (mode === 'show') {
+  const mode = args[0] || 'status';
+  if (mode === 'status') {
     const resolved = resolver.resolve(channelId, ctx.backendDefault);
     const startupMode = process.env.LOCAL_LLM_MODE || 'agent';
     return {
@@ -498,7 +517,7 @@ function handleLlmMode(args: string[], ctx: WebCommandContext): WebCommandResult
     return { kind: 'message', message: 'Local LLMモードをデフォルトへ戻しました。' };
   }
   if (mode !== 'agent' && mode !== 'chat') {
-    throw new Error('使い方: /llmmode show|agent|chat|default');
+    throw new Error('使い方: /llmmode status|agent|chat|default');
   }
   resolver.setChannelLocalLlmMode(channelId, mode);
   return { kind: 'message', message: `Local LLMモードを \`${mode}\` に設定しました。` };
@@ -589,6 +608,9 @@ export async function executeWebCommand(
   }
 
   switch (commandName) {
+    case 'secret':
+      if (!parseSecretCommand(input)) throw new Error('使い方: /secret on|off|status');
+      return { kind: 'chat', message: input, displayMessage: input };
     case 'help':
       return { kind: 'message', message: commandHelp() };
     case 'new':
@@ -625,7 +647,7 @@ export async function executeWebCommand(
       return {
         kind: 'chat',
         displayMessage: input,
-        message: `スキル「${skill.name}」を実行してください。${args ? `引数: ${args}` : ''}`,
+        message: `Run the skill "${skill.name}". ${args ? `Arguments: ${args}` : ''}`,
       };
     }
     case 'backend':

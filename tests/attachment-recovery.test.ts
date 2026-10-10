@@ -59,8 +59,8 @@ describe('recoverAttachmentOnce', () => {
     );
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run.mock.calls[0][0]).toContain('添付許可パスの外');
-    expect(run.mock.calls[0][0]).toContain('1回限り');
+    expect(run.mock.calls[0][0]).toContain('outside the allowed attachment paths');
+    expect(run.mock.calls[0][0]).toContain('single recovery attempt');
     expect(run.mock.calls[0][1]).toMatchObject({
       channelId: 'channel-1',
       sessionId: 'session-1',

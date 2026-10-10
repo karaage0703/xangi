@@ -23,7 +23,13 @@ import { resolveAttachmentPath } from '../file-utils.js';
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
 async function shellExec(
   command: string,
-  options: { cwd?: string; timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv }
+  options: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+  }
 ): Promise<{ stdout: string; stderr: string }> {
   const cp = await import('child_process');
   const execAsync = promisify(cp.exec);
@@ -121,6 +127,7 @@ const execToolHandler: ToolHandler = {
       const { stdout, stderr } = await shellExec(command, {
         cwd,
         timeout: EXEC_TIMEOUT_MS,
+        signal: context.signal,
         maxBuffer: 1024 * 1024,
         env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
       });
@@ -514,7 +521,7 @@ const webFetchToolHandler: ToolHandler = {
     },
     required: ['url'],
   },
-  async execute(args: Record<string, unknown>): Promise<ToolResult> {
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const url = args.url as string;
     const method = (args.method as string) ?? 'GET';
     const body = args.body as string | undefined;
@@ -533,7 +540,9 @@ const webFetchToolHandler: ToolHandler = {
     try {
       const opts: RequestInit = {
         method,
-        signal: controller.signal,
+        signal: context.signal
+          ? AbortSignal.any([controller.signal, context.signal])
+          : controller.signal,
         headers: {
           'User-Agent': 'xangi/local-llm',
           Accept: 'text/html,application/json,text/plain,*/*',
@@ -649,7 +658,7 @@ function scoreSkillMatch(query: string, skill: Skill): number {
 const toolSearchToolHandler: ToolHandler = {
   name: 'tool_search',
   description:
-    'Search for and activate tools or skills by keyword. Tool matches become callable on the next turn. Skill matches are returned with their SKILL.md path — use the `read` tool to load the skill instructions.',
+    'Search for and activate tools or skills by keyword. Use exact tool names or English keywords for tools; use the original description language for skills. Tool matches become callable on the next turn. Skill matches are returned with their SKILL.md path — use the `read` tool to load the skill instructions.',
   parameters: {
     type: 'object',
     properties: {
@@ -868,13 +877,17 @@ export async function executeTool(
   args: Record<string, unknown>,
   context: ToolContext
 ): Promise<ToolResult> {
+  context.signal?.throwIfAborted();
   const allTools = getAllTools();
   const handler = allTools.find((t) => t.name === name);
   if (!handler) return { success: false, output: '', error: `Unknown tool: ${name}` };
 
   try {
-    return await handler.execute(args, context);
+    const result = await handler.execute(args, context);
+    context.signal?.throwIfAborted();
+    return result;
   } catch (err) {
+    context.signal?.throwIfAborted();
     return { success: false, output: '', error: `Tool error: ${String(err)}` };
   }
 }

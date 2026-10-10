@@ -19,8 +19,8 @@ function envPositiveMs(name: string, defaultMs: number): number {
 }
 
 // タイムアウト
-/** 初期タイムアウト (env TIMEOUT_MS、default 30 分)。AI の 1 ターンが長時間化する傾向に合わせた値 */
-export const DEFAULT_TIMEOUT_MS = envPositiveMs('TIMEOUT_MS', 1_800_000);
+/** 初期タイムアウト (env TIMEOUT_MS、default 60 分)。AI の 1 ターンが長時間化する傾向に合わせた値 */
+export const DEFAULT_TIMEOUT_MS = envPositiveMs('TIMEOUT_MS', 3_600_000);
 
 /**
  * 動的延長で到達できる絶対上限 (env TIMEOUT_MAX_MS、default 10 時間)。

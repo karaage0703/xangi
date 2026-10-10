@@ -35,6 +35,7 @@ describe('Codex live model evidence', () => {
     parser.handleEvent({ type: 'item.started' }, 'stream');
     await vi.advanceTimersByTimeAsync(0);
     expect(readCodexTurnModels).toHaveBeenCalledTimes(2);
+    parser.handleEvent({ type: 'turn.completed' }, 'stream');
     expect(parser.finalize()).toMatchObject({ model: 'astra', models: ['astra'] });
   });
   it.each(['complete', 'error'])('does not emit late evidence after %s', async (ending) => {
@@ -47,8 +48,10 @@ describe('Codex live model evidence', () => {
     const onModel = vi.fn();
     const parser = new TestRunner({ workdir: '/workspace' }).parser({ onModel });
     parser.handleEvent({ type: 'thread.started', thread_id: 'provider-id' }, 'stream');
-    if (ending === 'complete') parser.finalize();
-    else parser.exitErrorDetail?.();
+    if (ending === 'complete') {
+      parser.handleEvent({ type: 'turn.completed' }, 'stream');
+      parser.finalize();
+    } else parser.exitErrorDetail?.();
     resolveEvidence(['old-model']);
     await vi.advanceTimersByTimeAsync(0);
     expect(onModel).not.toHaveBeenCalled();

@@ -1,4 +1,5 @@
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
+import { handleSecretConversationCommand } from '../secret-conversation-command.js';
 import { listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
 import {
   SlashCommandBuilder,
@@ -156,13 +157,28 @@ export function buildSlashCommands(
   const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
     new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
     new SlashCommandBuilder()
+      .setName('secret')
+      .setDescription('極力ログを残さない会話を開始・終了・確認する')
+      .addStringOption((option) =>
+        option
+          .setName('mode')
+          .setDescription('シークレットモード')
+          .setRequired(true)
+          .addChoices(
+            { name: 'on (開始)', value: 'on' },
+            { name: 'off (終了)', value: 'off' },
+            { name: 'status (現在の設定を表示)', value: 'status' }
+          )
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName('retitle')
       .setDescription('現在のスレッドタイトルをAIで再生成する')
       .toJSON(),
     new SlashCommandBuilder()
       .setName('workspace')
       .setDescription('このチャンネルのワークスペースを設定する')
-      .addSubcommand((sub) => sub.setName('show').setDescription('現在の設定を表示する'))
+      .addSubcommand((sub) => sub.setName('status').setDescription('現在の設定を表示する'))
       .addSubcommand((sub) => sub.setName('list').setDescription('登録済み一覧を表示する'))
       .addSubcommand((sub) =>
         sub
@@ -213,7 +229,7 @@ export function buildSlashCommands(
           .setDescription('回答候補モード')
           .setRequired(true)
           .addChoices(
-            { name: 'show (現在の設定を表示)', value: 'show' },
+            { name: 'status (現在の設定を表示)', value: 'status' },
             { name: 'on (全プラットフォームで生成)', value: 'on' },
             { name: 'off (生成せずトークンを使わない)', value: 'off' },
             { name: 'default (起動時設定に戻す)', value: 'default' }
@@ -229,7 +245,7 @@ export function buildSlashCommands(
           .setDescription('通知モード')
           .setRequired(true)
           .addChoices(
-            { name: 'show (現在の設定を表示)', value: 'show' },
+            { name: 'status (現在の設定を表示)', value: 'status' },
             { name: 'default (起動時設定に戻す)', value: 'default' },
             { name: 'off (通知しない)', value: 'off' },
             { name: 'message (完了メッセージのみ)', value: 'message' },
@@ -274,7 +290,7 @@ export function buildSlashCommands(
       .setName('agent')
       .setDescription('チャンネルの担当エージェントを設定')
       .addSubcommand((sub) => sub.setName('list').setDescription('登録済みの担当を表示'))
-      .addSubcommand((sub) => sub.setName('show').setDescription('現在の担当を表示'))
+      .addSubcommand((sub) => sub.setName('status').setDescription('現在の担当を表示'))
       .addSubcommand((sub) =>
         sub
           .setName('set')
@@ -307,7 +323,7 @@ export function buildSlashCommands(
       .setDescription('バックエンド/モデルの切り替え')
       .addSubcommand((sub) =>
         sub
-          .setName('show')
+          .setName('status')
           .setDescription('現在のバックエンド設定を表示')
           .addStringOption((opt) =>
             opt
@@ -378,7 +394,7 @@ export function buildSlashCommands(
             .setDescription('メンションなし応答モード')
             .setRequired(true)
             .addChoices(
-              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'status (現在の設定を表示)', value: 'status' },
               { name: 'on (メンションなしで応答)', value: 'on' },
               { name: 'off (メンションなし応答を無効)', value: 'off' },
               { name: 'default (チャンネル設定を削除)', value: 'default' }
@@ -412,7 +428,7 @@ export function buildSlashCommands(
             .setDescription('スレッドモード')
             .setRequired(true)
             .addChoices(
-              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'status (現在の設定を表示)', value: 'status' },
               { name: 'on (発言ごとにスレッド返信)', value: 'on' },
               { name: 'off (チャンネル直下に返信)', value: 'off' },
               { name: 'default (チャンネル設定を削除)', value: 'default' }
@@ -427,7 +443,7 @@ export function buildSlashCommands(
     commands.push(
       new SlashCommandBuilder()
         .setName('llmmode')
-        .setDescription('このチャンネルの Local LLM 動作モードを切替 (agent/chat/default/show)')
+        .setDescription('このチャンネルの Local LLM 動作モードを切替 (agent/chat/default/status)')
         .addStringOption((option) =>
           option
             .setName('mode')
@@ -437,7 +453,7 @@ export function buildSlashCommands(
               { name: 'agent (全機能ON、複雑タスク向け)', value: 'agent' },
               { name: 'chat (全機能OFF、純粋会話)', value: 'chat' },
               { name: 'default (チャンネル override 削除、起動時値に戻す)', value: 'default' },
-              { name: 'show (現在の設定を表示)', value: 'show' }
+              { name: 'status (現在の設定を表示)', value: 'status' }
             )
         )
         .toJSON()
@@ -455,7 +471,7 @@ export function buildSlashCommands(
             .setDescription('reasoning effort')
             .setRequired(true)
             .addChoices(
-              { name: 'show (現在の設定を表示)', value: 'show' },
+              { name: 'status (現在の設定を表示)', value: 'status' },
               { name: 'default (チャンネル設定を削除)', value: 'default' },
               ...LOCAL_LLM_REASONING_EFFORTS.map((effort) => ({
                 name: effort,
@@ -749,7 +765,7 @@ export async function handleSkillCommand(
   await interaction.deferReply();
 
   try {
-    let prompt = `[プラットフォーム: Discord]\n[チャンネルID: ${channelId}]\nスキル「${skillName}」を実行してください。${args ? `引数: ${args}` : ''}`;
+    let prompt = `[プラットフォーム: Discord]\n[チャンネルID: ${channelId}]\nRun the skill "${skillName}". ${args ? `Arguments: ${args}` : ''}`;
     if (replySuggestionsEnabled) {
       prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
     }
@@ -1313,7 +1329,7 @@ export function createInteractionHandler(
         await executeRuntimeSettingsCommand(
           {
             name,
-            action: value === 'default' ? 'reset' : value === 'show' ? 'show' : 'set',
+            action: value === 'default' ? 'reset' : value === 'status' ? 'status' : 'set',
             value,
             channelId: targetChannelId,
             parentChannelId,
@@ -1331,7 +1347,7 @@ export function createInteractionHandler(
     if (interaction.commandName === 'workspace') {
       const subcommand = interaction.options.getSubcommand();
       try {
-        if (subcommand === 'show') {
+        if (subcommand === 'status') {
           const selected = await workspaceRegistry.resolve('discord', settingsChannelId);
           const activeId = getActiveSessionId(channelId);
           const active = activeId ? getSessionEntry(activeId) : undefined;
@@ -1395,6 +1411,28 @@ export function createInteractionHandler(
       } catch (error) {
         await interaction.reply({ content: formatAgentErrorForUser(error), ephemeral: true });
       }
+      return;
+    }
+
+    if (interaction.commandName === 'secret') {
+      if (processManager.isRunning(channelId)) {
+        await interaction.reply({
+          content: '処理の完了後、または /stop の後に切り替えてください。',
+          ephemeral: true,
+        });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const mode = interaction.options.getString('mode') || 'status';
+      const result = await handleSecretConversationCommand({
+        registry: workspaceRegistry,
+        platform: 'discord',
+        contextKey: channelId,
+        bindingKey: settingsChannelId,
+        userText: `/secret ${mode}`,
+      });
+      if (mode !== 'status') agentRunner.destroy?.(channelId);
+      await interaction.editReply(result!.result);
       return;
     }
 
@@ -1476,7 +1514,7 @@ export function createInteractionHandler(
 
     if (interaction.commandName === 'notify') {
       const mode = interaction.options.getString('mode', true) as
-        DiscordCompletionNotifyMode | 'default' | 'show';
+        DiscordCompletionNotifyMode | 'default' | 'status';
       await replyWithRuntimeSetting('notify', mode);
       return;
     }
@@ -1545,7 +1583,7 @@ export function createInteractionHandler(
           },
           { config, resolver, modelDiscovery: discoverModels, agentRunner }
         );
-        if (sub !== 'show' && scope === 'channel') agentRunner.switchBackend?.(settingsChannelId);
+        if (sub !== 'status' && scope === 'channel') agentRunner.switchBackend?.(settingsChannelId);
         await interaction.editReply(result);
       } catch (error) {
         await interaction.editReply(formatAgentErrorForUser(error));
@@ -1565,7 +1603,8 @@ export function createInteractionHandler(
 
     if (interaction.commandName === 'autoreply') {
       if (await rejectDisabledCommand(config.discord.allowAutoreplyCommand)) return;
-      const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
+      const mode = interaction.options.getString('mode', true) as
+        'status' | 'on' | 'off' | 'default';
       await replyWithRuntimeSetting(
         'autoreply',
         mode,
@@ -1576,7 +1615,8 @@ export function createInteractionHandler(
     }
 
     if (interaction.commandName === 'replysuggestions') {
-      const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
+      const mode = interaction.options.getString('mode', true) as
+        'status' | 'on' | 'off' | 'default';
       await replyWithRuntimeSetting('replysuggestions', mode);
       return;
     }
@@ -1601,7 +1641,8 @@ export function createInteractionHandler(
     if (interaction.commandName === 'threadmode') {
       if (await rejectDisabledCommand(config.discord.allowThreadModeCommand)) return;
 
-      const mode = interaction.options.getString('mode', true) as 'show' | 'on' | 'off' | 'default';
+      const mode = interaction.options.getString('mode', true) as
+        'status' | 'on' | 'off' | 'default';
       await replyWithRuntimeSetting('threadmode', mode);
       return;
     }
@@ -1609,7 +1650,7 @@ export function createInteractionHandler(
     if (interaction.commandName === 'llmmode') {
       if (await rejectDisabledCommand(config.discord.allowLlmModeCommand)) return;
       const mode = interaction.options.getString('mode', true) as
-        'agent' | 'chat' | 'default' | 'show';
+        'agent' | 'chat' | 'default' | 'status';
       await replyWithRuntimeSetting('llmmode', mode);
       return;
     }
@@ -1617,7 +1658,7 @@ export function createInteractionHandler(
     if (interaction.commandName === 'llmeffort') {
       if (await rejectDisabledCommand(config.discord.allowLlmEffortCommand)) return;
       const level = interaction.options.getString('level', true) as
-        LocalLlmReasoningEffort | 'default' | 'show';
+        LocalLlmReasoningEffort | 'default' | 'status';
       const override = resolver.getChannelOverride(settingsChannelId);
       const startupDefaultRaw = process.env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
       const startupDefault = LOCAL_LLM_REASONING_EFFORTS.includes(
@@ -1626,7 +1667,7 @@ export function createInteractionHandler(
         ? (startupDefaultRaw as LocalLlmReasoningEffort)
         : undefined;
 
-      if (level === 'show') {
+      if (level === 'status') {
         const current = override?.localLlmReasoningEffort ?? startupDefault;
         const source = override?.localLlmReasoningEffort
           ? 'チャンネル設定'

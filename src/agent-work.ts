@@ -123,7 +123,7 @@ export function submitAgentWork(
           options,
           (prompt, callbacks, next) =>
             deps.runner.runStream(
-              `${session.selectedAgentConfig?.prompt || ''}\n\n${!next.sessionId ? `[元の依頼]\n${current.task}\n\n` : ''}${prompt}`,
+              `${session.selectedAgentConfig?.prompt || ''}\n\n${!next.sessionId ? `[Original request]\n${current.task}\n\n` : ''}${prompt}`,
               callbacks,
               next
             ),
@@ -233,7 +233,7 @@ async function executeWork(
     while (true) {
       const inputs = store.takeWorkInputs(run.id);
       if (inputs.length)
-        prompt += '\n\n[ユーザーからの追加指示]\n' + inputs.map((i) => i.text).join('\n\n');
+        prompt += '\n\n[Additional user instructions]\n' + inputs.map((i) => i.text).join('\n\n');
       if (!prompt.trim()) break;
       if (thread && transport)
         await transport

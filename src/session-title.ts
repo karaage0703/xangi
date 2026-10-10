@@ -26,9 +26,9 @@ const WEB_PROJECT_CONTEXT_BLOCK = /<web-project-context\b[^>]*>[\s\S]*?<\/web-pr
 const DISCORD_CONTEXT_BLOCK = /^\s*---\n(?:🧵 スレッド元|💬 返信元) \([^\n]*\):\n[\s\S]*?\n---\n?/;
 const CHANNEL_RULE_CONTEXT = /\n{2,}\[チャンネルルール（必ず従うこと）\]\n[\s\S]*$/;
 const PREFETCH_FOLLOWUP =
-  /初期文脈確認だけを目的に history コマンドを再実行しないでください。さらに古い履歴や追加件数が必要な場合だけ実行してください。\s*/g;
+  /(?:初期文脈確認だけを目的に history コマンドを再実行しないでください。さらに古い履歴や追加件数が必要な場合だけ実行してください。|Do not run a history command again solely for initial context\. Run it only if older or additional messages are needed\.)\s*/g;
 const REPLY_SUGGESTION_CONTEXT =
-  /\s*\[system-context\]\s*通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を\d+件生成してください。[\s\S]*?<\/xangi_reply_suggestions>(?=\s*(?:\[USER PROMPT HOOK CONTEXT:|$))/;
+  /\s*\[system-context\]\s*(?:通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を\d+件生成してください。|After your normal answer, generate \d+ short replies the user might send next\.)[\s\S]*?<\/xangi_reply_suggestions>(?=\s*(?:\[USER PROMPT HOOK CONTEXT:|$))/;
 const USER_PROMPT_HOOK_CONTEXT =
   /^\[USER PROMPT HOOK CONTEXT: ([A-Za-z0-9._-]+)(?: \(truncated\))?\]\r?\n[\s\S]*?^\[END USER PROMPT HOOK CONTEXT: \1\](?:\r?\n)?/gm;
 

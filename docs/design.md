@@ -68,6 +68,8 @@ flowchart LR
 - `tool-history.ts` — ツール履歴の整形・蓄積（`TOOL_HISTORY_MAX_LINES` で表示行数を制限）
 - `message-utils.ts` — Discord メッセージリンク展開・返信元引用・スレッド元引用・チャンネルメンション展開
 
+- エラー時は途中テキスト・ツール履歴とエラー表示を残してターンを終了する。報告目的のagentRunner.runは呼ばず、調停器のbusy解除を妨げる追加ターンを作らない。
+
 挙動:
 
 - per-channel / per-thread セッション分離（`contextKey = discord:<channelId>`。スレッド返信モードで新規スレッドを作成できた場合は `discord:<threadId>`）
@@ -90,7 +92,7 @@ flowchart LR
 - `message` event は通常メッセージ、人間の `/me` 投稿 (`me_message`)、添付付きの `file_share` を処理し、チャンネル名変更などその他の `subtype` 付き Slack システム通知は無視する
 - メンションで開始した active thread 内では、後続メッセージをメンション無しで処理する。対象外チャンネルの無関係なスレッド返信は拾わない
 - Slack API 投稿先は `channelId`、runner / timeout / Stop / processing 管理は `runKey = contextKey` で分離し、同じSlackチャンネル内の別スレッドを別実行単位として扱う
-- backend設定解決は親`channelId`、runner実行は`runKey`を使う。`/backend set/show/reset`は`CHANNEL_OVERRIDES`と起動中resolverを同時更新し、同チャンネル配下の既存スレッドsession / runnerを破棄するため、再起動なしで次のメッセージから切り替わる
+- backend設定解決は親`channelId`、runner実行は`runKey`を使う。`/backend set/status/reset`は`CHANNEL_OVERRIDES`と起動中resolverを同時更新し、同チャンネル配下の既存スレッドsession / runnerを破棄するため、再起動なしで次のメッセージから切り替わる
 - 同一 `runKey` の実行中は二重起動を抑止し、Slack の `app_mention` と `message` の重複配送は message ts de-dupe と bot mention skip で一本化する
 - 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は途中コメントとツールを時系列で `History` ボタンから押した本人だけへ元スレッド内で表示する。ボタンにターン参照を保持するため、プロセス再起動後も永続ログから復元できる
 - スラッシュコマンドとリアクション対応
@@ -125,7 +127,7 @@ flowchart LR
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
-- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを実行中・入力待ち・完了の3列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は入力待ち・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、入力待ちカードの状態ラベルと色付きドットで示す。詳細から会話を開くほか、履歴を残したまま`POST /api/sessions/:id/close`でSessionを完了にできる。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
+- `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを作業中・完了の2列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は作業中・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、作業中カードの状態ラベルと色付きドットで示す。カードと詳細から`POST /api/sessions/:id/close`で完了、`POST /api/sessions/:id/reopen`で同じSessionを作業中へ戻せる。個別切替はUndoとPCドラッグに対応し、実行中は完了を拒否する。reopenはAIを起動せず、履歴・provider文脈を保持してactiveByContextを復元し、保存後に変更を通知する。同じcontextに別のアクティブSessionがある場合とscheduler履歴は409で拒否する。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
 
 Monitorの「入力待ちをすべて完了」は、対象IDを `POST /api/sessions/close-waiting` に一括送信し、保存と変更通知を1回にまとめます。実行開始済みのSessionは除外し、変更できなかった件数を画面に表示します。履歴は保持されます。
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
@@ -244,6 +246,8 @@ interface AgentRunner {
 でもあり、`timeout-started` / `timeout-extended` / `timeout-cleared` を emit して
 上位 (web-chat の SSE / Discord bot / Slack bot) が UI 更新に利用する。単発HTTP adapterはこのtimeout eventを持たない。
 
+Codex CLIのrun/runStreamはturn.startedで完了状態をリセットし、turn.completed受信とprocess exit 0を成功条件にする。完了イベント欠落はIncompleteAgentTurnErrorとして共通表示へ渡し、成功応答保存・自動resume retry・エラー後follow-upを抑止する。turn.failedはexit 0でも失敗にする。
+
 ### Activity Store（activity-store.ts）
 
 `runWithBubbleEvents` の共通ライフサイクルから、現在ターンの軽量スナップショットを更新する。
@@ -258,6 +262,8 @@ interface AgentRunner {
 - `GET /api/sessions` と Even Terminal 互換 `GET /api/sessions?provider=...` が同じ activity を参照する
 
 ### タイムアウトコントローラー（timeout-controller.ts）
+
+依頼全体の期限は`TIMEOUT_MS`（既定60分）、Local LLMの待機期限は`LOCAL_LLM_TIMEOUT_MS`（既定30分）で分離する。非ストリーミングは本文受信完了まで、ストリーミングは最初の受信と受信間隔を監視し、データ受信で待機期限だけを更新する。全体期限は延ばさない。
 
 各 Runner が抱えるチャンネル別タイムアウト状態を一箇所に集約するヘルパー：
 
@@ -521,11 +527,11 @@ buildSystemPrompt(flags) と llmTools = callFlags.tools ? getAllTools() : []
 
 **`/llmmode` slash コマンド（index.ts）:**
 
-`/llmmode <agent|chat|default|show>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`show` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
+`/llmmode <agent|chat|default|status>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`status` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
 
 **`/llmeffort` slash コマンド:**
 
-`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|show>` は、親チャンネル単位の`localLlmReasoningEffort`をin-memoryと`.env`へ保存する。Local LLM runnerは各chat / streamリクエストへこの値を注入し、`LLMClient`がOpenAI互換bodyのトップレベル`reasoning_effort`へ変換する。`default`はチャンネルoverrideを削除する。
+`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|status>` は、親チャンネル単位の`localLlmReasoningEffort`をin-memoryと`.env`へ保存する。Local LLM runnerは各chat / streamリクエストへこの値を注入し、`LLMClient`がOpenAI互換bodyのトップレベル`reasoning_effort`へ変換する。`default`はチャンネルoverrideを削除する。
 
 **Tool 遅延ロード（tool_search、Codex / Claude Code 流）:**
 
@@ -775,9 +781,9 @@ AI CLI（Claude Code等）
 
 **セキュリティ:**
 
-- `TRIGGER_ENABLED`（デフォルト false）の明示 opt-in
+- `TRIGGER_ENABLED`は未設定・空なら有効、`true`でも有効。`false`または不正な値は無効。実行処理とプロンプトは`trigger-config.ts`の同じ判定を使用
 - HTTP 経由は `XANGI_TRIGGER_TOKEN` の Bearer 認証必須。トークン未設定時は有効化されていても全拒否（tool-server は 0.0.0.0 bind のため、無認証受け付けはネットワーク越しの任意プロンプト注入になる）。トークン比較は定数時間比較
-- `xangi tool trigger`（`/api/execute` 経由）はローカルコマンドの既存の信頼境界に従いトークン検証を省略するが、opt-in は同様に要求
+- `xangi tool trigger`（`/api/execute` 経由）はローカルコマンドの既存の信頼境界に従いトークン検証を省略するが、機能が無効なら同様に拒否
 - 暴走防止: source 単位のレート制限（`TRIGGER_MIN_INTERVAL_MS`、デフォルト 10 秒、超過 `429`）と同時実行ガード（同一 source 実行中は `409`）。メッセージ長上限 4000 文字
 
 ### GitHub App認証（github-auth.ts）
@@ -1231,7 +1237,7 @@ Studio側と本体を対応版の組み合わせで更新してください。�
 
 WebのサイドバーではProjectsとAgentsが並列に並びます。Agentsで担当を選ぶと、その担当との会話を絞り込みます。「新規会話の担当」を選択して新しい会話を作成できます。
 
-Discord/Slackでは `/agent list`、`/agent show`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションにIDを指定します。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
+Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションにIDを指定します。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
 
 Agent指定時は、その担当のバックエンド・モデル・推論設定・ワークスペースをまとめて使用します。チャンネルの個別設定は保存したまま適用せず、解除すると元に戻ります。未指定値は全体既定または選択バックエンドの既定値を使用し、異なるバックエンドのモデル名は引き継ぎません。担当指定中に個別のモデル・作業場所を変更する操作は拒否します。
 
@@ -1239,7 +1245,7 @@ Agent指定時は、その担当のバックエンド・モデル・推論設定
 
 `xangi agent delete <ID>` はWebと同じ削除ルールを使用します。チャンネルに設定中、未完了または実行中の会話から参照されている担当は削除できず、参照先を表示します。解除・会話完了後に削除しても会話本文と作業ファイルは残ります。
 
-チャンネルの担当は `DATA_DIR/channel-agents.json` に保存します。Agentの管理はWeb Chatと同じcatalogを使用するため、Web ChatのHTTPサーバーが有効な構成で利用します。CLIからの設定確認は `xangi tool runtime_settings --name agent --action show --platform discord --channel CHANNEL_ID`、設定は `--action set --value AGENT_ID`、解除は `--action reset` です。実行中のAIから自身の担当を変更すると処理中として拒否されるため、Slash CommandかWeb設定画面を使用してください。
+チャンネルの担当は `DATA_DIR/channel-agents.json` に保存します。Agentの管理はWeb Chatと同じcatalogを使用するため、Web ChatのHTTPサーバーが有効な構成で利用します。CLIからの設定確認は `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`、設定は `--action set --value AGENT_ID`、解除は `--action reset` です。実行中のAIから自身の担当を変更すると処理中として拒否されるため、Slash CommandかWeb設定画面を使用してください。
 
 ### エージェントへの委譲
 
@@ -1329,3 +1335,9 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 `.env` の `AGENT_PARENT_CHECK_INTERVAL_MS` は確認・再試行間隔（既定30000ミリ秒）、`AGENT_PARENT_PROGRESS_INTERVAL_MS` は実行中の経過報告間隔（既定180000ミリ秒）です。どちらも1000〜86400000の整数で、変更後は再起動が必要です。経過報告は確認タイミングで送るため、実際の間隔は確認間隔に丸められます。進捗率は推測せず実行中／実行待ちと経過時間を報告します。
 
 再通知・経過報告は、新規依頼または明示的に再実行した際に通知追跡を有効にした実行だけを対象にします。追跡情報のない旧記録は、未通知印がなくても自動通知しません。Webの結果返却は既存セッションを更新し、終了済み・存在しない会話のルーティング補完で空の会話を生成しません。
+
+## シークレット会話の保存境界
+
+`secret_` IDは終了後も保存禁止と判定できる識別子。`sessions.ts` は通常セッションだけをシリアライズし、`transcript-logger.ts` は生存中のシークレット履歴だけをメモリに保持する。終了後の遅延callbackは履歴を復活させない。外部履歴の再取り込みを防ぐ会話先IDだけは保持する。
+
+`DynamicRunnerManager` は全backend共通で非resume・専用runner・メモリ内履歴再送を適用する。AIへの記録禁止指示は追加せず、ユーザー設定のhook・auto memoryは変更しない。非対応CLIへ保存ありでfallbackしない。diagnostic抑止はAsyncLocalStorageで並行する通常会話から分離する。monitor、trajectory、AI title、tool HTTP serverも個別に保存境界を確認する。全体event購読者には配信せず、明示的なWeb会話IDに限定した応答transportのみ配信する。詳細と残存範囲はusageのシークレットモードを参照。

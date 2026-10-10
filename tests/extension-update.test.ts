@@ -132,11 +132,11 @@ describe('repository-managed extension updates', () => {
     expect(request.prompt).toContain(
       `setup document: ${join(dirname(setup.linked.manifestPath), 'XANGI_SETUP.md')}`
     );
-    expect(request.prompt).toContain('更新後のextensionとworkspaceの統合状態');
-    expect(request.prompt).toContain('同梱スキルとworkspace側の同名スキル');
+    expect(request.prompt).toContain('integration between the updated extension and workspace');
+    expect(request.prompt).toContain('bundled repository skills with same-named workspace skills');
     expect(request.prompt).toContain('AGENTS.md');
-    expect(request.prompt).toContain('明示承認するまで');
-    expect(request.prompt).toContain('表記や整形だけの差分は提案しません');
+    expect(request.prompt).toContain('until the user explicitly approves them separately in this conversation');
+    expect(request.prompt).toContain('Do not propose wording-only or formatting-only changes');
   });
 
   it('keeps the workspace review optional when no setup document is declared', async () => {
@@ -150,7 +150,7 @@ describe('repository-managed extension updates', () => {
     });
 
     expect(request.prompt).toContain('setup document: not declared');
-    expect(request.prompt).toContain('利用者向けsetup文書や同梱スキルがある場合だけ');
+    expect(request.prompt).toContain('only if user-facing setup documents or bundled skills exist');
   });
 
   it('prepares, relinks, starts, and doctors a pinned update in the host process', async () => {

@@ -7,6 +7,7 @@
  * terminal mode can connect to xangi without spawning claude/codex directly.
  */
 
+import { SECRET_NOTICE, isSecretSession, parseSecretCommand } from './secret.js';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { AgentRunner } from './agent-runner.js';
 import { getAllAgentBackends, type AgentBackend } from './config.js';
@@ -14,6 +15,8 @@ import type { LocalLlmMode } from './backend-resolver.js';
 import {
   WEB_CHAT_CONTEXT_PREFIX,
   createWebSession,
+  closeSession,
+  subscribeSessionChanges,
   ensureSession,
   getSession,
   getSessionEntry,
@@ -69,6 +72,15 @@ interface TerminalSessionState {
 
 const sessions = new Map<string, TerminalSessionState>();
 const busy = new Set<string>();
+subscribeSessionChanges(() => {
+  for (const [id, state] of sessions) {
+    if (isSecretSession(id) && !getSessionEntry(id)) {
+      state.messages = [];
+      for (const client of state.clients) client.end();
+      sessions.delete(id);
+    }
+  }
+});
 
 function terminalLog(message: string): void {
   console.log(`[even-terminal] ${message}`);
@@ -95,6 +107,14 @@ function normalizeProvider(value: unknown): 'claude' | 'codex' {
 }
 
 function getTerminalSession(sessionId: string): TerminalSessionState {
+  if (isSecretSession(sessionId) && !getSessionEntry(sessionId)) {
+    const stale = sessions.get(sessionId);
+    if (stale) {
+      stale.messages = [];
+      for (const client of stale.clients) client.end();
+      sessions.delete(sessionId);
+    }
+  }
   let s = sessions.get(sessionId);
   if (!s) {
     s = {
@@ -131,6 +151,7 @@ async function waitForTerminalAssistantHistory(
 }
 
 function pushMessage(sessionId: string, msg: Record<string, unknown>): number {
+  if (isSecretSession(sessionId) && !getSessionEntry(sessionId)) return 0;
   const s = getTerminalSession(sessionId);
   const id = s.nextId++;
   const entry: BufferedMessage = { id, ...msg };
@@ -152,6 +173,7 @@ function setStatus(
   status: TerminalSessionState['status'],
   provider?: 'claude' | 'codex'
 ): void {
+  if (isSecretSession(sessionId) && !getSessionEntry(sessionId)) return;
   const s = getTerminalSession(sessionId);
   s.status = status;
   if (provider) s.provider = provider;
@@ -347,7 +369,10 @@ async function handlePrompt(
   let appSessionId = requestedAppSessionId;
   const createdNewSession = !appSessionId;
   if (!appSessionId) {
-    appSessionId = createWebSession({ title: 'Even Terminal' });
+    appSessionId = createWebSession({
+      title: body.secret === true ? 'シークレット' : 'Even Terminal',
+      secret: body.secret === true,
+    });
   }
 
   const entry = getSessionEntry(appSessionId);
@@ -366,6 +391,31 @@ async function handlePrompt(
     return;
   }
 
+  const privacyCommand = parseSecretCommand(text);
+  if (privacyCommand) {
+    if (
+      privacyCommand !== 'status' &&
+      (privacyCommand === 'on') !== isSecretSession(appSessionId)
+    ) {
+      if (isSecretSession(appSessionId)) {
+        closeSession(appSessionId);
+        sessions.delete(appSessionId);
+      }
+      appSessionId = createWebSession({
+        title: privacyCommand === 'on' ? 'シークレット' : 'Even Terminal',
+        secret: privacyCommand === 'on',
+      });
+    }
+    const notice = isSecretSession(appSessionId) ? SECRET_NOTICE : 'シークレットモードはOFFです。';
+    pushMessage(appSessionId, { type: 'result', success: true, text: notice });
+    sendJson(res, 202, {
+      ok: true,
+      sessionId: appSessionId,
+      provider,
+      secret: isSecretSession(appSessionId),
+    });
+    return;
+  }
   const ctxKey = webContextKey(appSessionId);
   ensureSession(ctxKey, { platform: 'web' });
   const sessionId = getSession(ctxKey);
@@ -392,11 +442,14 @@ async function handlePrompt(
     startedTurn = true;
     busy.add(appSessionId);
     setStatus(appSessionId, 'busy', provider);
-    unsubscribe = subscribeEvents((event) => {
-      if (event.thread_id !== threadId) return;
-      const msg = eventToTerminalMessage(event);
-      if (msg) pushMessage(appSessionId, msg);
-    });
+    unsubscribe = subscribeEvents(
+      (event) => {
+        if (event.thread_id !== threadId) return;
+        const msg = eventToTerminalMessage(event);
+        if (msg) pushMessage(appSessionId, msg);
+      },
+      { secretSessionId: isSecretSession(appSessionId) ? appSessionId : undefined }
+    );
   };
 
   if (startsReservedEmptySession) startTurn();

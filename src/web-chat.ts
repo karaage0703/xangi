@@ -1,3 +1,4 @@
+import { SECRET_NOTICE, parseSecretCommand, isSecretSession } from './secret.js';
 import { checkAgentParents, parentDeliveryDue, parentWatchSettings } from './agent-parent-watch.js';
 import { reserveTeamContinuation } from './team-runner.js';
 import { executeAgentWork, registerAgentWork, prepareAgentWork } from './agent-work.js';
@@ -54,6 +55,7 @@ import {
   removeSession,
   closeSession,
   closeSessions,
+  reopenSession,
   getSessionLifecycle,
   WEB_CHAT_CONTEXT_PREFIX,
   subscribeSessionChanges,
@@ -428,7 +430,7 @@ export function startWebChat(options: WebChatOptions) {
     }));
     const prompt =
       `[子エージェントの実行完了]\n${JSON.stringify(results)}\n` +
-      '全結果を確認して依頼に回答してください。必要な修正があれば同じ子へ再依頼できます。';
+      'Review all results and answer the request. If fixes are needed, you may send a follow-up to the same child agent.';
     completionDeliveries.add(parent);
     void (async () => {
       for (const run of pending) agentRuns.markParentDeliveryAttempt(run.id);
@@ -2825,6 +2827,7 @@ export function startWebChat(options: WebChatOptions) {
               : displayedUser.attachments,
         };
       });
+      if (isSecretSession(appSessionId)) res.setHeader('Cache-Control', 'no-store');
       const isCurrentSession = Boolean(entry && getActiveSessionId(entry.contextKey) === entry.id);
       const activityThreadId =
         entry && isCurrentSession
@@ -2928,6 +2931,8 @@ export function startWebChat(options: WebChatOptions) {
     if (url === '/api/sessions' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        if (body.secret !== undefined && typeof body.secret !== 'boolean')
+          throw new WebProjectError('secret must be a boolean', 400);
         const project = resolveProject(body.projectId);
         const selectedAgentId = body.agentId ? String(body.agentId) : undefined;
         const execution = webProjects.execution(project?.id, selectedAgentId);
@@ -2936,6 +2941,8 @@ export function startWebChat(options: WebChatOptions) {
         );
         const snapshot = { workspaceId: workspace.id, workspacePath: workspace.path };
         const newAppId = createWebSession({
+          secret: body.secret === true,
+          title: body.secret === true ? 'シークレット' : undefined,
           projectId: project?.id,
           selectedAgentId,
           selectedAgentConfig: execution?.team ? execution : undefined,
@@ -3167,6 +3174,24 @@ export function startWebChat(options: WebChatOptions) {
       return;
     }
 
+    // Reopen in place; unlike /resume this never forks or invokes a model.
+    const reopenSessionMatch = url.match(/^\/api\/sessions\/([^/]+)\/reopen$/);
+    if (reopenSessionMatch && req.method === 'POST') {
+      const result = reopenSession(decodeURIComponent(reopenSessionMatch[1]));
+      if (result !== 'opened') {
+        const errors = {
+          not_found: 'session not found',
+          conflict: '同じ会話先で別のセッションが作業中です。先にそのセッションを完了してください',
+          unsupported: 'スケジュール実行の履歴は作業中へ戻せません',
+        };
+        sendJson(res, result === 'not_found' ? 404 : 409, { error: errors[result] });
+        return;
+      }
+      invalidateSessionSnapshots();
+      sendJson(res, 200, { ok: true, lifecycle: 'open' });
+      return;
+    }
+
     // POST /api/sessions/:id/close — 履歴を残してSessionを終了
     const closeSessionMatch = url.match(/^\/api\/sessions\/([^/]+)\/close$/);
     if (closeSessionMatch && req.method === 'POST') {
@@ -3178,14 +3203,22 @@ export function startWebChat(options: WebChatOptions) {
       }
       const body = await readBody(req);
       const force = body.force === true;
-      if (busySessions.has(targetId) && !force) {
+      const current = getActiveSessionId(entry.contextKey) === targetId;
+      const threadId = current ? sessionThreadId(entry) : null;
+      const running =
+        busySessions.has(targetId) ||
+        (entry.scope === 'scheduler' && getSessionLifecycle(targetId) === 'open') ||
+        (current &&
+          (options.platformTurnBusy?.(entry.contextKey) ||
+            (threadId && getActivity(threadId)?.active)));
+      if (running && !force) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({ error: '実行中のSessionです。中断して完了するには確認が必要です' })
         );
         return;
       }
-      agentRunner.destroy?.(entry.contextKey);
+      if (current) agentRunner.destroy?.(entry.contextKey);
       closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
       busySessions.delete(targetId);
       invalidateSessionSnapshots();
@@ -3506,7 +3539,9 @@ export function startWebChat(options: WebChatOptions) {
         let appSessionId: string = (body.appSessionId || '').toString().trim();
         if (!appSessionId) {
           // 後方互換: 最後に更新された web セッションを使う、なければ新規作成
-          const latestWeb = listAllSessions().find((s) => s.platform === 'web');
+          const latestWeb = listAllSessions().find(
+            (s) => s.platform === 'web' && !isSecretSession(s.id)
+          );
           if (latestWeb?.id) {
             appSessionId = latestWeb.id;
           } else {
@@ -3532,6 +3567,37 @@ export function startWebChat(options: WebChatOptions) {
         }
         if (getSessionLifecycle(appSessionId) === 'closed') {
           sendJson(res, 409, { error: 'Session is closed' });
+          return;
+        }
+
+        const privacyCommand = parseSecretCommand(message);
+        if (privacyCommand && !busySessions.has(appSessionId)) {
+          let targetId = appSessionId;
+          if (
+            privacyCommand !== 'status' &&
+            (privacyCommand === 'on') !== isSecretSession(appSessionId)
+          ) {
+            if (isSecretSession(appSessionId)) closeSession(appSessionId);
+            targetId = createWebSession({
+              secret: privacyCommand === 'on',
+              title: privacyCommand === 'on' ? 'シークレット' : '',
+              workspaceId: entry.workspaceId,
+              workspacePath: entry.workspacePath,
+              projectId: entry.projectId,
+              selectedAgentId: entry.selectedAgentId,
+              selectedAgentConfig: entry.selectedAgentConfig,
+            });
+          }
+          const result = isSecretSession(targetId)
+            ? SECRET_NOTICE
+            : 'シークレットモードはOFFです。';
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
+          res.write(
+            `event: secret\ndata: ${JSON.stringify({ appSessionId: targetId, secret: isSecretSession(targetId) })}\n\n`
+          );
+          res.write(`event: done\ndata: ${JSON.stringify({ result, appSessionId: targetId })}\n\n`);
+          res.end();
+          invalidateSessionSnapshots();
           return;
         }
 
@@ -3571,7 +3637,10 @@ export function startWebChat(options: WebChatOptions) {
           const hasExplicitResumeHistory = Boolean(resumeSourceId);
           const shouldPrefetchFirstTurn =
             providerBackendChanged || (historyPrefetch.enabled && !sessionId);
-          if (hasExplicitResumeHistory || shouldPrefetchFirstTurn) {
+          if (
+            !isSecretSession(appSessionId) &&
+            (hasExplicitResumeHistory || shouldPrefetchFirstTurn)
+          ) {
             const pastMessages = readSessionMessages(workdir, resumeSourceId || appSessionId);
             const sourcePlatform = resumeSourceId
               ? getSessionEntry(resumeSourceId)?.platform
@@ -3612,7 +3681,8 @@ export function startWebChat(options: WebChatOptions) {
             );
           }
 
-          console.log(`[web-chat] Message (session ${appSessionId}): ${message.slice(0, 100)}`);
+          if (!isSecretSession(appSessionId))
+            console.log(`[web-chat] Message (session ${appSessionId}): ${message.slice(0, 100)}`);
 
           const threadId = threadIdFor('web', appSessionId);
           const turnId = turnIdFor('web', `${Date.now()}`);

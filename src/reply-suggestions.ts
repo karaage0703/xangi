@@ -184,7 +184,7 @@ function removeBlocks(output: string, blocks: ReplySuggestionBlock[]): string {
 
 export function appendReplySuggestionInstruction(prompt: string, count = 3): string {
   const example = Array.from({ length: count }, (_, index) => `候補${index + 1}`);
-  return `${prompt}\n\n[system-context]\n通常の回答に続けて、ユーザーが次に送りそうな短い返信候補を${count}件生成してください。出力の末尾に次の形式を厳密に付け、通常の回答本文では候補に言及しないでください。候補はユーザー視点の自然な日本語にしてください。\n${START}${JSON.stringify(example)}${END}`;
+  return `${prompt}\n\n[system-context]\nAfter your normal answer, generate ${count} short replies the user might send next. Append exactly the following format at the end; do not mention the suggestions in the answer body. Write natural Japanese from the user's perspective.\n${START}${JSON.stringify(example)}${END}`;
 }
 
 export function extractReplySuggestions(

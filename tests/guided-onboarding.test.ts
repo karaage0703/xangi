@@ -235,18 +235,18 @@ describe('guided setup backend preflight', () => {
       workspaceCandidates: [],
     });
     expect(prompt).not.toContain('statusline');
-    expect(prompt).toContain('質問、説明、確認、要約はすべて日本語');
-    expect(prompt).toContain('既知のworkspaceは見つかりませんでした');
+    expect(prompt).toContain('Ask questions, explain, confirm, and summarize in Japanese');
+    expect(prompt).toContain('no known workspace was found');
     expect(prompt).toContain('/Users/tester/ai-assistant-workspace');
-    expect(prompt.indexOf('main最新commitをGitなしで取得する推奨テンプレート')).toBeLessThan(
-      prompt.indexOf('別の絶対pathにある既存workspace')
+    expect(prompt.indexOf('fetched without Git from the latest main commit')).toBeLessThan(
+      prompt.indexOf('an existing workspace at another absolute path')
     );
   });
 
   it('keeps detailed instructions out of the visible agent prompt', async () => {
     const prepared = await prepareOnboardingLaunch('secret detailed setup --apply instructions');
     roots.push(prepared.instructionPath.replace(/\/instructions\.md$/, ''));
-    expect(prepared.visiblePrompt).toContain('日本語で一問ずつ');
+    expect(prepared.visiblePrompt).toContain('in Japanese, one question at a time');
     expect(prepared.visiblePrompt).not.toContain('setup --apply');
     expect(await readFile(prepared.instructionPath, 'utf8')).toContain('setup --apply');
     const mode = (await import('node:fs/promises')).stat(prepared.instructionPath);
@@ -284,29 +284,29 @@ describe('guided setup backend preflight', () => {
     );
     expect(launch).toHaveBeenCalledTimes(1);
     const prompt = launch.mock.calls[0]![1];
-    expect(prompt).toContain('質問、説明、確認、要約はすべて日本語');
+    expect(prompt).toContain('Ask questions, explain, confirm, and summarize in Japanese');
     expect(prompt).toContain('ai-assistant-workspace');
     expect(prompt).toContain('BOOTSTRAP.md');
     expect(prompt).toContain('setup --apply --backend claude-code');
     expect(prompt).toContain('--web-chat-access local');
-    expect(prompt).toContain('Tailscale経由');
+    expect(prompt).toContain('- Tailscale: keep Web Chat on loopback');
     expect(prompt).toContain('tailscale serve --bg --tcp=18888');
     expect(prompt).toContain('setup --access tailscale');
     expect(prompt).toContain('setup --access lan');
-    expect(prompt).toContain('他のServe/Funnel設定は変更しない');
-    expect(prompt).toContain('Web Chat自体には認証がなく');
+    expect(prompt).toContain('Do not use Funnel or change other forwarding destinations or Serve/Funnel settings');
+    expect(prompt).toContain('Web Chat itself has no authentication');
     expect(prompt).toContain('Discord');
-    expect(prompt).not.toContain('Notion同期');
+    expect(prompt).not.toContain('Notion sync');
     expect(prompt).toContain('setup --complete');
     expect(prompt).toContain('/Applications/Xangi/current/README.md');
     expect(prompt).toContain('/Applications/Xangi/current/docs/usage.md');
     expect(prompt).toContain('/Applications/Xangi/current/docs/discord-setup.md');
-    expect(prompt).toContain('workspace内にxangiのオンボーディング手順を探してはいけません');
+    expect(prompt).toContain('Do not search the workspace for xangi onboarding instructions');
     expect(prompt).toContain("`'/Applications/Xangi/xangi' install`");
     expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart enable`");
     expect(prompt).toContain("`'/Applications/Xangi/xangi' service autostart disable`");
-    expect(prompt).toContain('利用者が明確に希望した場合だけ');
-    const tailscaleChoiceIndex = prompt.indexOf('Tailscale経由');
+    expect(prompt).toContain('Only if the user explicitly wants this');
+    const tailscaleChoiceIndex = prompt.indexOf('- Tailscale: keep Web Chat on loopback');
     expect(prompt.indexOf('--web-chat-access local')).toBeLessThan(tailscaleChoiceIndex);
     expect(prompt.indexOf("`'/Applications/Xangi/xangi' install`")).toBeLessThan(
       tailscaleChoiceIndex
@@ -372,7 +372,7 @@ describe('guided setup backend preflight', () => {
     });
     expect(prompt).toContain('tailscale serve --bg --tcp=19991');
     expect(prompt).not.toContain('tailscale serve --tcp=19991 off');
-    expect(prompt).toContain('TCP 19991から127.0.0.1:19991への転送を確認');
+    expect(prompt).toContain('verify forwarding from TCP 19991 to 127.0.0.1:19991');
   });
 });
 
@@ -401,7 +401,7 @@ describe('guided setup deterministic apply and completion', () => {
       webChatAccess: 'local',
     });
     expect(await readFile(join(workspacePath, 'BOOTSTRAP.md'), 'utf8')).toContain(
-      'すべて日本語で一度に一つずつ質問'
+      'Ask one question at a time in Japanese'
     );
     expect(
       JSON.parse(await readFile(join(layout.configDir, 'onboarding.json'), 'utf8'))

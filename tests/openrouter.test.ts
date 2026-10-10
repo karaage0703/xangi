@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LLMClient } from '../src/local-llm/llm-client.js';
+import { withPrivateDiagnostics } from '../src/privacy-console.js';
 import { createAgentRunner } from '../src/agent-runner.js';
 import { discoverBackendModels } from '../src/backend-models.js';
 import { ProjectCatalog } from '../src/project-catalog.js';
@@ -94,6 +95,19 @@ describe('OpenRouter privacy and multi-agent routing', () => {
     await expect(client('').chat(message)).rejects.toThrow('APIキー');
     await expect(drain(client('').chatStream(message))).rejects.toThrow('APIキー');
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('forces ZDR and no-training for secret requests without changing ordinary requests', async () => {
+    vi.stubEnv('OPENROUTER_ZDR', 'false'); vi.stubEnv('OPENROUTER_NO_TRAINING', 'false');
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply('vendor/model'));
+    await withPrivateDiagnostics(true, () => client().chat(message));
+    expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).provider).toEqual(OPENROUTER_PROVIDER_POLICY);
+    spy.mockResolvedValue(reply('vendor/model'));
+    await client().chat(message);
+    expect(JSON.parse(String(spy.mock.calls[1][1]?.body)).provider).toMatchObject({ zdr: false, data_collection: 'allow' });
+    spy.mockResolvedValue(new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+    await withPrivateDiagnostics(true, () => drain(client().chatStream(message)));
+    expect(JSON.parse(String(spy.mock.calls[2][1]?.body)).provider).toEqual(OPENROUTER_PROVIDER_POLICY);
   });
 
   it('keeps strict policy in both chat and stream and never relaxes it on failure', async () => {

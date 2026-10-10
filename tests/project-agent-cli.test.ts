@@ -94,8 +94,8 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
     expect(catalog.agent(created.agent.id)).toBeUndefined();
     expect(prompt).toContain(`${command} run`);
     expect(prompt).toContain(`${command} status`);
-    expect(prompt).toContain('完了時に元の会話へ結果が届く');
-    expect(prompt).toContain(`同期実行時だけ ${command} wait`);
+    expect(prompt).toContain('Results return to the original conversation on completion');
+    expect(prompt).toContain(`Use ${command} wait --id <RUN_ID> only for synchronous execution`);
     expect(catalog.execution(undefined, agent.id)!.prompt).not.toContain(command);
     const team = catalog.saveTeam({ leadership: 'caller', name: 'リサーチ', prompt: '出典を示す', members: [{ agentId: agent.id, role: '調査' }] });
     const teamCommand = prompt.match(/'[^']+' team(?= list)/)?.[0];

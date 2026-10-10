@@ -15,6 +15,7 @@
  *   モジュールが import されても問題ないようにするため。
  */
 
+import { isSecretTurn } from './secret.js';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
 import { join } from 'path';
@@ -143,6 +144,7 @@ export type EventSubscriber = (payload: PublishedEvent) => void;
 interface EventSubscription {
   callback: EventSubscriber;
   whenDisabled: boolean;
+  secretSessionId?: string;
 }
 
 const subscribers = new Set<EventSubscription>();
@@ -155,11 +157,12 @@ const subscribers = new Set<EventSubscription>();
  */
 export function subscribeEvents(
   cb: EventSubscriber,
-  options: { whenDisabled?: boolean } = {}
+  options: { whenDisabled?: boolean; secretSessionId?: string } = {}
 ): () => void {
   const subscription = {
     callback: cb,
     whenDisabled: options.whenDisabled === true,
+    secretSessionId: options.secretSessionId,
   };
   subscribers.add(subscription);
   return () => {
@@ -187,6 +190,7 @@ function baseFields(opts: CommonOpts): BaseBody {
 }
 
 function publish(body: EventBody): void {
+  const secret = isSecretTurn(body.thread_id, body.turn_id);
   const cfg = resolveConfig();
   if (subscribers.size === 0) return;
   const payload: PublishedEvent = {
@@ -195,6 +199,7 @@ function publish(body: EventBody): void {
     host_hint: cfg.hostHint,
   };
   for (const subscription of subscribers) {
+    if (secret && body.thread_id !== `web:${subscription.secretSessionId}`) continue;
     if (!cfg.enabled && !subscription.whenDisabled) continue;
     try {
       subscription.callback(payload);

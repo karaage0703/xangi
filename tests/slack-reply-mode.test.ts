@@ -461,7 +461,7 @@ describe('Slack /backend command', () => {
 
     await expect(
       executeSlackBackendCommand({
-        text: 'show',
+        text: 'status',
         channelId: AUTO_REPLY_CHANNEL,
         resolver,
         agentRunner: {} as AgentRunner,
@@ -1058,8 +1058,8 @@ describe('processMessage', () => {
       config
     );
 
-    expect(runStream.mock.calls[0]?.[0]).toContain('スキル「xs-test」を実行してください');
-    expect(runStream.mock.calls[0]?.[0]).toContain('引数: 対象');
+    expect(runStream.mock.calls[0]?.[0]).toContain('Run the skill "xs-test"');
+    expect(runStream.mock.calls[0]?.[0]).toContain('Arguments: 対象');
     expect(runStream.mock.calls[0]?.[0]).toContain('<xangi_reply_suggestions>');
     expect(update.mock.calls.at(-1)?.[0].text).toBe('完了');
     expect(update.mock.calls.at(-1)?.[0].text).not.toContain('xangi_reply_suggestions');

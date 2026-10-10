@@ -61,12 +61,13 @@ export function buildRescuePrompt(options: {
   config?: SetupConfig;
 }): string {
   const targetDir = options.checkoutDir ?? options.documentationRoot;
-  const workspace = options.config?.workspacePath ?? '(設定を読み取れないため調査してください)';
+  const workspace =
+    options.config?.workspacePath ?? '(configuration could not be read; investigate)';
   const logs = join(options.layout.stateDir, 'logs');
   const targetFlag = options.checkoutDir ? ` --dir ${shellQuote(options.checkoutDir)}` : '';
-  return `あなたはxangiの復旧担当AIエージェントです。利用者はxangiのエラーを直すために、このセッションを明示的に起動しました。質問と報告は日本語で行ってください。
+  return `You are the AI agent responsible for repairing xangi. The user explicitly started this session to fix xangi errors. Ask questions and report in Japanese.
 
-対象情報:
+Target information:
 - installation: ${options.installationKind}
 - xangi source/application: ${targetDir}
 - official documentation: ${options.documentationRoot}
@@ -76,22 +77,22 @@ export function buildRescuePrompt(options: {
 - logs: ${logs}
 - configured workspace: ${workspace}
 
-次の順で復旧してください:
-1. 最初の応答では診断toolやファイル読み取りを始めず、利用者へ「何が起きていますか？」と尋ねて返答を待つ。可能なら、期待した動作、実際の症状、発生時刻、直前の変更を一つの簡潔な質問で確認する。
-2. 利用者の回答を受けたら、把握した症状を短く復唱し、その利用者向け経路を最優先に調べる。doctorの別項目や無関係な警告を主症状と取り違えない。
-3. 対象情報、xangiの実装、公式document、設定、service状態、doctor結果、直近ログを調査して真因を特定する。
-4. 必要なファイルや設定を修正する。個別の既知エラーだけを前提にせず、実際の状態を根拠に判断する。
-5. \`${options.launcherCommand} service start${targetFlag}\`または必要ならrestartを実行する。
-6. \`${options.launcherCommand} doctor${targetFlag}\`を実行し、復旧したことを確認する。失敗した場合は調査と修正を続ける。
-7. 最後に原因、変更内容、検証結果、残課題を短く報告する。
+Follow this recovery sequence:
+1. In the first response, do not start diagnostic tools or read files. Ask what is happening and wait for the user. If possible, ask about expected behavior, actual symptoms, occurrence time, and preceding changes in one concise question.
+2. After the user answers, briefly restate the symptoms and prioritize investigating that user-facing path. Do not confuse unrelated doctor checks or warnings with the main symptom.
+3. Investigate target information, xangi implementation, official documentation, configuration, service state, doctor results, and recent logs to identify the root cause.
+4. Fix the necessary files or settings. Base decisions on actual state, not assumptions about a particular known error.
+5. Run \`${options.launcherCommand} service start${targetFlag}\`, or restart if needed.
+6. Run \`${options.launcherCommand} doctor${targetFlag}\` to verify recovery. If it fails, continue investigating and fixing.
+7. Finally, briefly report the cause, changes, verification results, and remaining issues.
 
-安全上の制約:
-- token、password、secretの値を表示・会話へ転記・外部送信しない。設定の有無だけを扱う。
-- workspace内の利用者データを削除しない。
-- xangiと無関係なファイルやserviceを変更しない。
-- packageやsoftwareの追加install、OS全体への変更、外部公開、Git pushは必要性を説明して利用者の明示承認を得る。
-- 破壊的操作は対象と影響を示して利用者の明示承認を得る。
-- xangiの設定・service・関連ファイルに限定した通常の修正は、途中確認で止まらず実行して検証まで進める。`;
+Safety constraints:
+- Do not display, copy into the conversation, or externally transmit token, password, or secret values. Check only whether they are configured.
+- Do not delete user data in the workspace.
+- Do not change files or services unrelated to xangi.
+- Explain the need and obtain explicit user approval before installing additional packages or software, making OS-wide changes, publishing externally, or pushing to Git.
+- Before destructive actions, identify targets and impact and obtain explicit user approval.
+- For routine fixes limited to xangi configuration, services, and related files, proceed through implementation and verification without stopping for intermediate confirmation.`;
 }
 
 export async function prepareRescueLaunch(initialPrompt: string): Promise<{
@@ -105,7 +106,7 @@ export async function prepareRescueLaunch(initialPrompt: string): Promise<{
   await writeFile(instructionPath, initialPrompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await chmod(instructionPath, 0o600);
   return {
-    visiblePrompt: `xangiの復旧を始めます。最初の応答ではtoolやファイル読み取りをせず、利用者へ「何が起きていますか？」と尋ねて返答を待ってください。可能なら期待した動作、実際の症状、発生時刻、直前の変更を一つの簡潔な質問で確認してください。利用者が回答した後に ${instructionPath} を読み、その指示に従って調査・修正・検証してください。`,
+    visiblePrompt: `Begin xangi recovery. In the first response, do not use tools or read files. Ask the user in Japanese what is happening and wait for their response. If possible, ask about expected behavior, actual symptoms, occurrence time, and preceding changes in one concise question. After the user answers, read ${instructionPath} and follow its instructions to investigate, fix, and verify.`,
     instructionPath,
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };

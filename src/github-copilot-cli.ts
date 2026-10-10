@@ -1,3 +1,4 @@
+import { privacyConsole as console } from './privacy-console.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { buildSystemPrompt } from './base-runner.js';
@@ -73,6 +74,7 @@ export class GitHubCopilotRunner extends CliRunnerBase {
       '--no-remote-export',
     ];
 
+    if (options?.secret) args.push('--log-level', 'none', '--no-remote');
     const skip = options?.skipPermissions ?? this.skipPermissions;
     if (skip) {
       // Non-interactive xangi sessions cannot answer approval prompts. Match the

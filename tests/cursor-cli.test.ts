@@ -129,9 +129,9 @@ describe('CursorRunner', () => {
     const { args } = await getSpawnArgs(runner, 'run');
     const prompt = args[args.indexOf('-p') + 1];
 
-    expect(prompt).toContain('## Web固有ルール');
-    expect(prompt).not.toContain('## Discord固有ルール');
-    expect(prompt).not.toContain('## Slack固有ルール');
+    expect(prompt).toContain('## Web rules');
+    expect(prompt).not.toContain('## Discord rules');
+    expect(prompt).not.toContain('## Slack rules');
   });
 
   it('omits fixed xangi instructions when resuming a provider session', async () => {
@@ -140,7 +140,7 @@ describe('CursorRunner', () => {
     const prompt = args[args.indexOf('-p') + 1];
 
     expect(prompt).toContain('hello');
-    expect(prompt).not.toContain('## Discord固有ルール');
+    expect(prompt).not.toContain('## Discord rules');
   });
 
   it('uses auto model by default to avoid Cursor CLI global model drift', async () => {

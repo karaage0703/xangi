@@ -1,3 +1,4 @@
+import { isSecretSession } from './secret.js';
 import { Bot, webhookCallback, type Api, type Context } from 'grammy';
 import { Agent as HttpsAgent } from 'node:https';
 import type { Config } from './config.js';
@@ -614,8 +615,8 @@ export function telegramMediaDownloadContext(
   const failed = Math.max(0, total - succeeded);
   const reasons = [...new Set(errors)].join(' / ');
   return (
-    `[Telegram添付処理: ${total}件中${succeeded}件を取得、${failed}件が失敗しました。` +
-    `取得できた添付だけを対象に回答してください。${reasons ? ` 失敗理由: ${reasons}` : ''}]`
+    `[Telegram添付処理: ${succeeded} of ${total} attachments retrieved; ${failed} failed. ` +
+    `Answer based only on the retrieved attachments.${reasons ? ` Failure reasons: ${reasons}` : ''}]`
   );
 }
 
@@ -1508,6 +1509,7 @@ export async function startTelegramBot(opts: {
           '・話しかけるとAIエージェントが応答します。\n' +
           (mediaEnabled ? '・画像や動画には、キャプションで指示を添えられます。\n' : '') +
           '・/new, /reset, /clear : 新しい会話セッションを開始します。\n' +
+          '・/secret on|off|status : 極力ログを残さない会話を開始・終了・確認します。\n' +
           '・/stop : 現在実行中のタスクを停止します。\n' +
           '・/models [backend] : 利用可能なモデル一覧を表示します。\n' +
           '・/help : この案内を表示します。',
@@ -1634,7 +1636,11 @@ export async function startTelegramBot(opts: {
       if (activeId) {
         const entry = getSessionEntry(activeId);
         const idleResetMs = (tcfg.idleResetHours ?? 4) * 60 * 60 * 1000;
-        if (entry && hasSessionGoneIdle(entry.updatedAt, idleResetMs)) {
+        if (
+          entry &&
+          !isSecretSession(activeId) &&
+          hasSessionGoneIdle(entry.updatedAt, idleResetMs)
+        ) {
           draftRegistry.stopContext(contextKey, 'idle reset');
           resetTelegramSession(contextKey, activeId, agentRunner);
           currentGen = getGeneration(contextKey);
@@ -1679,7 +1685,7 @@ export async function startTelegramBot(opts: {
 
     // グループではプロンプトに発言者・トリガー種別のコンテキストを付与する
     const promptBody = buildPromptWithContext(
-      cleanText || '添付ファイルを確認してください。',
+      cleanText || 'Inspect the attached files。',
       chatType,
       { ...from, first_name: from.first_name ?? '' },
       chatTitle,

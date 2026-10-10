@@ -232,13 +232,13 @@ describe('Discord Commands', () => {
       allowAutoreplyCommand: boolean,
       autoReplyChannels: Record<string, boolean>,
       channelId: string,
-      mode: 'show' | 'on' | 'off' | 'default'
+      mode: 'status' | 'on' | 'off' | 'default'
     ): { allowed: boolean; status?: string; channels?: Record<string, boolean> } {
       if (!allowAutoreplyCommand) {
         return { allowed: false };
       }
       const channels = { ...autoReplyChannels };
-      if (mode === 'show') {
+      if (mode === 'status') {
         return { allowed: true, status: channels[channelId] ? 'ON' : 'OFF', channels };
       }
       if (mode === 'default') {
@@ -305,7 +305,7 @@ describe('Discord Commands', () => {
 
       expect(autoreply).toBeTruthy();
       expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
-        'show',
+        'status',
         'on',
         'off',
         'default',
@@ -549,7 +549,7 @@ describe('Discord Commands', () => {
       );
       const command = commands.find((item) => item.name === 'llmeffort') as any;
       expect(command.options[0].choices.map((choice: any) => choice.value)).toEqual([
-        'show',
+        'status',
         'default',
         'none',
         'minimal',
@@ -666,7 +666,7 @@ describe('Discord Commands', () => {
       );
       await Promise.resolve();
 
-      expect(runStream.mock.calls[0]?.[0]).toContain('スキル「xs-test」を実行してください');
+      expect(runStream.mock.calls[0]?.[0]).toContain('Run the skill "xs-test"');
       expect(runStream.mock.calls[0]?.[0]).toContain('<xangi_reply_suggestions>');
       expect(
         editReply.mock.calls.some(([payload]) => String(payload.content).includes('途中表示'))
@@ -699,7 +699,7 @@ describe('Discord Commands', () => {
   });
 
   describe('/workspace command registration', () => {
-    it('registers show/list/use/set/reset subcommands', () => {
+    it('registers status/list/use/set/reset subcommands', () => {
       const config = {
         agent: { allowedBackends: ['claude-code'] },
         discord: {},
@@ -710,7 +710,7 @@ describe('Discord Commands', () => {
 
       expect(workspace).toBeTruthy();
       expect(workspace.options.map((option: any) => option.name)).toEqual([
-        'show',
+        'status',
         'list',
         'use',
         'set',
@@ -755,7 +755,7 @@ describe('Discord Commands', () => {
   });
 
   describe('/replysuggestions command registration', () => {
-    it('registers the global on/off/show/default choices', () => {
+    it('registers the global on/off/status/default choices', () => {
       const config = {
         agent: { allowedBackends: ['claude-code'] },
         discord: {},
@@ -768,7 +768,7 @@ describe('Discord Commands', () => {
       const modeOption = command.options.find((opt: any) => opt.name === 'mode');
 
       expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
-        'show',
+        'status',
         'on',
         'off',
         'default',
@@ -1061,7 +1061,7 @@ describe('Discord Commands', () => {
 
       expect(threadmode).toBeTruthy();
       expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
-        'show',
+        'status',
         'on',
         'off',
         'default',

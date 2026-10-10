@@ -101,6 +101,7 @@ export class ExtensionAgentRunner implements AgentRunner {
         },
         body: JSON.stringify({
           schemaVersion: 1,
+          ...(options?.secret ? { secret: true } : {}),
           prompt,
           userText: options?.userText,
           platform: options?.platform,

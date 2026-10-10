@@ -1,3 +1,4 @@
+import { isSecretThread } from './secret.js';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import type { AgentTraceEvent } from './agent-runner.js';
@@ -76,12 +77,14 @@ export class TurnLatencyRecorder {
   private agentCompletedAt?: number;
   private traceEvents: TimedAgentTraceEvent[] = [];
   private written = false;
+  private readonly secret: boolean;
 
   constructor(
     private readonly context: TurnLatencyContext,
     private readonly clock: Clock = Date.now
   ) {
     this.processStartedAt = this.clock();
+    this.secret = isSecretThread(context.threadId);
   }
 
   markInitialReply(): void {
@@ -238,6 +241,7 @@ export class TurnLatencyRecorder {
   }
 
   private append(record: TurnLatencyRecord): void {
+    if (this.secret || isSecretThread(record.thread_id)) return;
     try {
       const workdir = this.context.workdir || process.env.WORKSPACE_PATH || process.cwd();
       const dir = join(workdir, 'logs', 'turn-latency');

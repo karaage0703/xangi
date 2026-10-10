@@ -367,8 +367,8 @@ describe('Telegram media download notices', () => {
 
     expect(notice).toContain('添付ファイル 2 件中 1 件を取得できませんでした。');
     expect(notice).toContain('取得できた 1 件のみで処理を続けます。');
-    expect(context).toContain('2件中1件を取得、1件が失敗');
-    expect(context).toContain('取得できた添付だけを対象に回答してください。');
+    expect(context).toContain('1 of 2 attachments retrieved; 1 failed');
+    expect(context).toContain('Answer based only on the retrieved attachments.');
   });
 });
 

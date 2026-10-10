@@ -30,6 +30,8 @@ type WorkspaceOptions = {
   contextKey: string;
   bindingKey: string;
   scope?: SessionScope;
+  /** Privacy for a newly created session; existing sessions retain their mode. */
+  secret?: boolean;
 };
 export async function ensureSessionWithWorkspace(
   options: WorkspaceOptions
@@ -48,12 +50,13 @@ async function resolveSessionWithWorkspace(
   const registry = options.registry ?? agentWorkspaceRegistry();
   if (!registry) {
     return {
-      appSessionId: ensureSession(contextKey, { platform, scope }),
+      appSessionId: ensureSession(contextKey, { platform, scope, secret: options.secret }),
     };
   }
 
   let activeId = getActiveSessionId(contextKey);
   let activeEntry = activeId ? getSessionEntry(activeId) : undefined;
+  const secret = activeEntry?.secret ?? options.secret ?? false;
   const agent = channelAgent(platform, bindingKey);
   if (
     activeId &&
@@ -87,6 +90,7 @@ async function resolveSessionWithWorkspace(
     return ensureSessionWithWorkspace(options);
   const appSessionId = ensureSession(contextKey, {
     platform,
+    secret,
     scope,
     selectedAgentId: agent?.id,
     selectedAgentConfig: agent

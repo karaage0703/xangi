@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { IncompleteAgentTurnError } from '../src/errors.js';
 import { CodexRunner } from '../src/codex-cli.js';
 
 vi.mock('../src/transcript-logger.js', () => ({
@@ -60,6 +61,7 @@ describe('CodexRunner buildArgs', () => {
     prompt: string,
     options?: {
       sessionId?: string;
+      secret?: boolean;
       skipPermissions?: boolean;
       effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     }
@@ -87,6 +89,13 @@ describe('CodexRunner buildArgs', () => {
 
     return { command, args };
   }
+
+  it('uses ephemeral exec without resuming a saved conversation', async () => {
+    const { args } = await getSpawnArgs(new CodexRunner({}), 'private', { secret: true, sessionId: 'old' });
+    expect(args).toContain('--ephemeral');
+    expect(args).not.toContain('resume');
+    expect(args).not.toContain('old');
+  });
 
   it('should include basic args', async () => {
     const runner = new CodexRunner({});
@@ -199,8 +208,8 @@ describe('CodexRunner buildArgs', () => {
     expect(args.join('\n')).not.toContain('developer_instructions=');
     expect(lastArg).toContain('test prompt');
     expect(lastArg).toContain('<system-context>');
-    expect(lastArg).toContain('Discord操作');
-    expect(lastArg).not.toContain('Slack操作');
+    expect(lastArg).toContain('Discord operations');
+    expect(lastArg).not.toContain('Slack operations');
   });
 
   it('should omit fixed xangi instructions from a resumed session prompt', async () => {
@@ -210,7 +219,7 @@ describe('CodexRunner buildArgs', () => {
     expect(args.join('\n')).not.toContain('developer_instructions=');
     expect(args.at(-1)).toContain('test prompt');
     expect(args.at(-1)).not.toContain('<system-context>');
-    expect(args.at(-1)).not.toContain('Discord操作');
+    expect(args.at(-1)).not.toContain('Discord operations');
   });
 
   it('should place prompt after resume and sessionId', async () => {
@@ -260,12 +269,23 @@ describe('CodexRunner エラー本文の救出', () => {
   /**
    * stdout に流すイベントを emit してから code で close する。
    */
-  async function emitEventsThenClose(events: object[], code: number) {
+  async function emitEventsThenClose(events: object[], code: number, complete = true) {
     const { getMockProcess } = await import('child_process');
     await new Promise((resolve) => setTimeout(resolve, 50));
     const mockProcess = (getMockProcess as () => any)();
     for (const ev of events) {
       mockProcess.stdout.emit('data', Buffer.from(JSON.stringify(ev) + '\n'));
+    }
+    // Successful CLI fixtures include the protocol's terminal event.
+    if (
+      code === 0 &&
+      complete &&
+      !events.some((event) => 'type' in event && event.type === 'turn.completed')
+    ) {
+      mockProcess.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify({ type: 'turn.completed' }) + '\n')
+      );
     }
     mockProcess.emit('close', code);
   }
@@ -322,6 +342,10 @@ describe('CodexRunner エラー本文の救出', () => {
         JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'ok' } }) +
           '\n'
       )
+    );
+    secondProcess.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ type: 'turn.completed' }) + '\n')
     );
     secondProcess.emit('close', 0);
 
@@ -437,7 +461,7 @@ describe('CodexRunner エラー本文の救出', () => {
     });
   });
 
-  it('runStream: exit 0 なら error イベントが無くても正常完了', async () => {
+  it('runStream: turn.completed と exit 0 で正常完了', async () => {
     const runner = new CodexRunner({});
     const promise = runner.runStream('hi', {});
 
@@ -450,18 +474,116 @@ describe('CodexRunner エラー本文の救出', () => {
     expect(result.result).toBe('done');
   });
 
+  it.each(['run', 'runStream'] as const)(
+    '%s rejects a progress message plus unfinished tool on exit 0',
+    async (method) => {
+      const runner = new CodexRunner({});
+      const onComplete = vi.fn();
+      const onError = vi.fn();
+      const { spawn } = await import('child_process');
+      const promise =
+        method === 'run'
+          ? runner.run('task', { sessionId: 'existing', appSessionId: 'test-app' })
+          : runner.runStream(
+              'task',
+              { onComplete, onError },
+              { sessionId: 'existing', appSessionId: 'test-app' }
+            );
+      const assertion = expect(promise).rejects.toBeInstanceOf(IncompleteAgentTurnError);
+      await emitEventsThenClose(
+        [
+          { type: 'thread.started', thread_id: 'existing' },
+          { type: 'turn.started' },
+          { type: 'item.completed', item: { type: 'agent_message', text: '検証を続けます' } },
+          {
+            type: 'item.started',
+            item: { id: 'tool-pending', type: 'command_execution', command: 'build' },
+          },
+        ],
+        0,
+        false
+      );
+      await assertion;
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(onComplete).not.toHaveBeenCalled();
+      const error = await promise.catch((e) => e);
+      expect(error.sessionId).toBe('existing');
+      const { logResponse } = await import('../src/transcript-logger.js');
+      expect(logResponse).not.toHaveBeenCalled();
+      if (method === 'runStream') expect(onError).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each(['run', 'runStream'] as const)(
+    '%s does not let an earlier turn completion hide a new unfinished turn',
+    async (method) => {
+      const runner = new CodexRunner({});
+      const promise = method === 'run' ? runner.run('task') : runner.runStream('task', {});
+      const assertion = expect(promise).rejects.toBeInstanceOf(IncompleteAgentTurnError);
+      await emitEventsThenClose([{ type: 'turn.completed' }, { type: 'turn.started' }], 0, false);
+      await assertion;
+    }
+  );
+
+  it.each(['run', 'runStream'] as const)(
+    '%s rejects turn.failed even when exit code is zero',
+    async (method) => {
+      const runner = new CodexRunner({});
+      const promise = method === 'run' ? runner.run('task') : runner.runStream('task', {});
+      const assertion = expect(promise).rejects.toThrow('usage limit');
+      await emitEventsThenClose(
+        [{ type: 'turn.failed', error: { message: 'usage limit reached' } }],
+        0,
+        false
+      );
+      await assertion;
+    }
+  );
+
+  it('does not retry incomplete output whose thread ID resembles a resume failure', async () => {
+    const runner = new CodexRunner({});
+    const { spawn } = await import('child_process');
+    const promise = runner.runStream('task', {}, { sessionId: 'existing' });
+    const assertion = expect(promise).rejects.toBeInstanceOf(IncompleteAgentTurnError);
+    await emitEventsThenClose(
+      [{ type: 'thread.started', thread_id: 'no rollout found' }],
+      0,
+      false
+    );
+    await assertion;
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('emits only completed native file changes, including events without tool calls', async () => {
     const runner = new CodexRunner({});
     const onFileChanges = vi.fn();
-    const promise = runner.runStream('hi', {onFileChanges});
-    await emitEventsThenClose([
-      {type:'item.started',item:{type:'file_change',status:'in_progress',changes:[{path:'a',kind:'add'}]}},
-      {type:'item.completed',item:{type:'file_change',status:'failed',changes:[{path:'bad',kind:'add'}]}},
-      {type:'item.completed',item:{type:'file_change',status:'completed',changes:[{path:'a',kind:'add'}]}},
-    ], 0);
+    const promise = runner.runStream('hi', { onFileChanges });
+    await emitEventsThenClose(
+      [
+        {
+          type: 'item.started',
+          item: {
+            type: 'file_change',
+            status: 'in_progress',
+            changes: [{ path: 'a', kind: 'add' }],
+          },
+        },
+        {
+          type: 'item.completed',
+          item: { type: 'file_change', status: 'failed', changes: [{ path: 'bad', kind: 'add' }] },
+        },
+        {
+          type: 'item.completed',
+          item: { type: 'file_change', status: 'completed', changes: [{ path: 'a', kind: 'add' }] },
+        },
+      ],
+      0
+    );
     await promise;
     expect(onFileChanges).toHaveBeenCalledTimes(1);
-    expect(onFileChanges).toHaveBeenCalledWith([{path:'a',operation:'added',diff:undefined}]);
+    expect(onFileChanges).toHaveBeenCalledWith([
+      { path: 'a', operation: 'added', diff: undefined },
+    ]);
   });
 
   it('runStream: Codex tool call event を onToolUse に流す', async () => {

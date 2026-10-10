@@ -249,7 +249,7 @@ describe('Monitor kanban lanes', () => {
     expect(slackSource).toContain('title: schedule?.label || prompt');
   });
 
-  it('puts active sessions in running even when the last activity was an error', () => {
+  it('puts active sessions in working even when the last activity was an error', () => {
     expect(
       monitorLane(
         session({
@@ -257,10 +257,10 @@ describe('Monitor kanban lanes', () => {
           activity: { state: 'error', summary: 'retrying', active: true },
         })
       )
-    ).toBe('running');
+    ).toBe('working');
   });
 
-  it('keeps an open scheduler run in running before its first activity event arrives', () => {
+  it('keeps an open scheduler run in working before its first activity event arrives', () => {
     const scheduled = session({
       id: 'scheduler-run-discord-1',
       platform: 'discord',
@@ -268,7 +268,7 @@ describe('Monitor kanban lanes', () => {
       lifecycle: 'open',
       isActive: false,
     });
-    expect(monitorLane(scheduled)).toBe('running');
+    expect(monitorLane(scheduled)).toBe('working');
     expect(sessionLine(scheduled)).toBe('スケジュールを実行中');
   });
 
@@ -288,9 +288,9 @@ describe('Monitor kanban lanes', () => {
     expect(sessionMatchesActivityThread('discord:channel-1', scheduled)).toBe(false);
   });
 
-  it.each(['error', 'aborted'])('keeps inactive %s sessions in waiting', (state) => {
+  it.each(['error', 'aborted'])('keeps inactive %s sessions in working', (state) => {
     expect(monitorLane(session({ activity: { state, summary: state, active: false } }))).toBe(
-      'waiting'
+      'working'
     );
   });
 
@@ -302,7 +302,7 @@ describe('Monitor kanban lanes', () => {
           activity: { state: 'complete', summary: 'done', active: false },
         })
       )
-    ).toBe('waiting');
+    ).toBe('working');
     expect(
       monitorLane(
         session({
@@ -336,7 +336,7 @@ describe('Monitor kanban lanes', () => {
     ).toBe('completed');
   });
 
-  it('moves a closed session to running when a turn starts', () => {
+  it('moves a closed session to working when a turn starts', () => {
     const updated = activityFromEvent(
       session({
         lifecycle: 'closed',
@@ -358,7 +358,7 @@ describe('Monitor kanban lanes', () => {
       closedAt: undefined,
       closeReason: undefined,
     });
-    expect(monitorLane(updated)).toBe('running');
+    expect(monitorLane(updated)).toBe('working');
   });
 
   it('opens a closed session when an active activity snapshot arrives', () => {
@@ -383,7 +383,7 @@ describe('Monitor kanban lanes', () => {
       closedAt: undefined,
       closeReason: undefined,
     });
-    expect(monitorLane(updated)).toBe('running');
+    expect(monitorLane(updated)).toBe('working');
   });
 
   it('does not reopen a closed session for an inactive completion event', () => {

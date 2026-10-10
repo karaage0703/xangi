@@ -42,6 +42,18 @@ Detailed usage guide for xangi.
 
 Channels enabled with `/autoreply` will respond without requiring a mention. The setting is persisted in `settings.json`.
 
+### Continuing after an error
+
+Discord does not automatically invoke the agent again after displaying an error. It preserves streamed text and tool history, ends the turn, and accepts the next instruction. This prevents a reporting prompt from restarting edits or other tools. Existing file changes and external sends are not rolled back; inspect the results before asking to continue.
+
+`TIMEOUT_MS` limits the whole turn (default 3600000 ms, 60 minutes). Independent `LOCAL_LLM_TIMEOUT_MS` limits model communication (default 1800000 ms, 30 minutes): total time through body completion for non-streaming requests, or the initial response wait and gaps between received data for streaming. Received data resets only the streaming timer. Tool selection uses non-streaming requests; ordinary text has a streaming path. Timeout and user cancellation are reported separately.
+
+Existing `TIMEOUT_MS` overrides continue to control the whole turn but no longer control model communication. Set `LOCAL_LLM_TIMEOUT_MS` explicitly if you previously used the shared setting to tune model waits. Stream activity does not extend the whole-turn deadline.
+
+### Incomplete Codex CLI turns
+
+A zero process exit code is insufficient for success: the Codex CLI must also emit `turn.completed`. Progress messages and completed individual tools do not confirm that the entire turn finished. Missing completion events produce a warning without automatic retries or error follow-ups. Check existing file changes and external sends before continuing, since side effects may already have occurred. xangi does not rewrite conversation history or silently switch sessions to recover.
+
 ## Platform-specific message handling
 
 Message queuing, conversation boundaries, and media handling vary by platform.
@@ -181,15 +193,15 @@ Buttons are displayed on response messages.
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
-Reply suggestions are disabled by default. When enabled, Discord and Slack completed messages show only one `返信候補` button. Opening it reveals suggestions and number buttons only to that user; selecting one continues the same session. Web Chat provides the same collapsed control below each response. Discord's `/replysuggestions mode:on|off|show|default` switches the feature globally. OFF skips prompt injection, so no extra suggestion tokens or generation latency are incurred. Set the platform-specific `*_REPLY_SUGGESTIONS=true` variables to enable the feature at startup, and use `*_REPLY_SUGGESTIONS_COUNT` to change the default count of 3.
+Reply suggestions are disabled by default. When enabled, Discord and Slack completed messages show only one `返信候補` button. Opening it reveals suggestions and number buttons only to that user; selecting one continues the same session. Web Chat provides the same collapsed control below each response. Discord's `/replysuggestions mode:on|off|status|default` switches the feature globally. OFF skips prompt injection, so no extra suggestion tokens or generation latency are incurred. Set the platform-specific `*_REPLY_SUGGESTIONS=true` variables to enable the feature at startup, and use `*_REPLY_SUGGESTIONS_COUNT` to change the default count of 3.
 
 ### Dynamic Timeout Extension
 
 Long-running tasks (code generation, deep research, etc.) can be extended via
-the `延長` button before the initial timeout (`TIMEOUT_MS`, default 30 minutes)
+the `延長` button before the initial timeout (`TIMEOUT_MS`, default 60 minutes)
 fires. The button **doubles the remaining time** at the moment of the click.
 
-- Initial timeout: `TIMEOUT_MS` (default 30 minutes)
+- Initial timeout: `TIMEOUT_MS` (default 60 minutes)
 - Extension behavior: adds the current remaining time to the deadline → remaining time becomes **2x**
   - e.g. 3 min remaining → click → 6 min remaining
   - e.g. 30 sec remaining → click → 1 min remaining (last-resort recovery)
@@ -211,10 +223,12 @@ Programmatic API:
 
 - `GET /api/sessions/:id/timeout` — current state `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`; when omitted, adds the current remaining time (doubling it)
-- `POST /api/sessions/:id/close` — Mark the Session Closed, detach its next-input routing pointer, and destroy its runner while preserving conversation history. To reduce accidental actions, the Web UI exposes it from Monitor details
+- `POST /api/sessions/:id/close` — Mark the Session Closed, detach its next-input routing pointer, and destroy its runner while preserving conversation history. The Web UI exposes it from Monitor cards and details; running Sessions require explicit confirmation
 - Monitor can show completed Sessions from the last 24 hours, 7 days, 30 days, or all history. This defaults to 24 hours and is independent of the `Chat`, `Web`, and `Schedule` toggles
 
-Monitor groups Sessions into `Running`, `Waiting for input`, and `Completed` without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running and leaves Monitor after the response completes; its conversation log remains available in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. For conversations originating in Discord or Slack, the platform label in the Chat pane header opens the original channel or thread in the browser. This link remains available after branching into Web. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
+Monitor groups Sessions into `Working` and `Completed` without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running and leaves Monitor after the response completes; its conversation log remains available in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Working and are identified by their status label and colored dot. A completed Session can still continue in its original Discord conversation or branch into a new Web conversation that inherits its history. For conversations originating in Discord or Slack, the platform label in the Chat pane header opens the original channel or thread in the browser. This link remains available after branching into Web. Existing Sessions without an explicit lifecycle are treated as completed until they receive the next input. In Discord threads, `Close` combines completing the Session with removing the requesting user from the thread.
+
+Monitor combines running and input-waiting conversations in Working, with a separate activity label on each card. Complete / Back to working buttons and desktop drag-and-drop switch the same Session between columns; Undo reverses the latest individual change. Mobile uses large tap controls. Running Sessions cannot be completed. Reopening (`POST /api/sessions/:id/reopen`) preserves the Session and history without starting a model turn. It rejects missing Sessions (404), scheduler runs (409), and another active Session in the same context (409), rather than replacing that conversation. Scheduler history has no manual status controls.
 
 The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
 
@@ -503,6 +517,7 @@ The persistent system prompt does not embed every command example. When the AI n
 | `xangi tool discord_search --channel <ID> --keyword "text"`                      | Search messages                                                                                                             |
 | `xangi tool discord_edit --channel <ID> --message-id <ID> --content "text"`      | Edit a message                                                                                                              |
 | `xangi tool discord_delete --channel <ID> --message-id <ID>`                     | Delete a message                                                                                                            |
+| `xangi tool discord_thread_rename --name "title" [--channel <ID>]` | Rename a thread to the specified title; defaults to the current thread. Non-thread channels are rejected. |
 | `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | Remove a user from a thread = drop it from that user's sidebar (defaults to the current thread when `--channel` is omitted) |
 | `xangi tool media_send --channel <ID> --file /path/to/file`                      | Send a file                                                                                                                 |
 | `xangi tool slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Send a Slack message                                                                                                        |
@@ -570,10 +585,10 @@ You can start an agent turn from an external event (build finished, CI result, n
 
 ### Enabling
 
-Add the following to `.env` (disabled by default):
+Triggers are enabled by default for registered Discord, Slack, Telegram, Web, and LINE runners. An unset or empty `TRIGGER_ENABLED` enables them; `false` disables them. Invalid values also disable them. Configure a token in `.env` for HTTP access:
 
 ```bash
-TRIGGER_ENABLED=true
+# TRIGGER_ENABLED=false                  # Disable both local and HTTP triggers
 XANGI_TRIGGER_TOKEN=<long random string>   # e.g. openssl rand -hex 32
 # TRIGGER_MIN_INTERVAL_MS=10000            # minimum interval per source (default: 10s)
 ```
@@ -609,14 +624,14 @@ curl "$XANGI_TOOL_SERVER/api/trigger/<triggerId>" \
 
 ### Firing via xangi tool
 
-Local scripts can also fire a trigger via `xangi tool` (no token needed; `TRIGGER_ENABLED=true` is still required):
+Local scripts can also fire a trigger via `xangi tool` (no token needed; unavailable with `TRIGGER_ENABLED=false`):
 
 ```bash
 xangi tool trigger --channel <channel ID> --message "Build finished. Report the result." --source build
 xangi tool trigger_status --id <triggerId>
 ```
 
-When `TRIGGER_ENABLED=true`, the system prompt injects only the safety contract: persist the exit status and log, then fire the trigger on both success and failure. Detailed arguments come from `xangi tool help trigger`, while each workspace remains the source of truth for its launch and verification method.
+Only when triggers are enabled, system prompts on all supported platforms instruct the agent to persist exit status and logs, notify on both success and failure, and verify delivery. When disabled, prompts omit trigger guidance and recommend scheduled checks instead. Detailed arguments come from `xangi tool help trigger`, while each workspace remains the source of truth for its launch and verification method.
 
 ### Abuse protection
 
@@ -658,12 +673,12 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | `/settings`                                      | Show current settings                                                                                                 |
 | `/models [backend]`                              | List available models (all allowed backends when omitted)                                                             |
 | `/restart`                                       | Restart the bot only when `.env` has `XANGI_SELF_LIFECYCLE=restart-only`                                              |
-| `/autoreply <on\|off\|default\|show>`            | Configure mention-free auto-reply for this channel (no restart needed, persisted to `settings.json`)                  |
-| `/notify <off\|message\|mention\|default\|show>` | Configure completion notifications for this channel (no restart needed, persisted to `settings.json`)                 |
+| `/autoreply <on\|off\|default\|status>`            | Configure mention-free auto-reply for this channel (no restart needed, persisted to `settings.json`)                  |
+| `/notify <off\|message\|mention\|default\|status>` | Configure completion notifications for this channel (no restart needed, persisted to `settings.json`)                 |
 | `/respondtobots`                                 | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env)                                              |
-| `/threadmode <on\|off\|default\|show>`           | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
-| `/llmmode <agent\|chat\|default\|show>`         | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
-| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|show>` | Switch this channel's Local LLM `reasoning_effort` (persisted to `.env`) |
+| `/threadmode <on\|off\|default\|status>`           | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
+| `/llmmode <agent\|chat\|default\|status>`         | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
+| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|status>` | Switch this channel's Local LLM `reasoning_effort` (persisted to `.env`) |
 
 ### Backend Dynamic Switching
 
@@ -671,7 +686,7 @@ You can switch the backend, model, and effort level per channel.
 
 | Command                                          | Description                               |
 | ------------------------------------------------ | ----------------------------------------- |
-| `/backend show`                                  | Show the current backend and model        |
+| `/backend status`                                  | Show the current backend and model        |
 | `/backend set claude-code`                       | Switch to Claude Code                     |
 | `/backend set cursor`                            | Switch to Cursor CLI                      |
 | `/backend set grok`                              | Switch to Grok CLI                        |
@@ -682,13 +697,13 @@ You can switch the backend, model, and effort level per channel.
 | `/backend set antigravity --effort high`         | Run Antigravity with high effort          |
 | `/backend set github-copilot --effort high`      | Run GitHub Copilot CLI with high effort   |
 | `/backend reset`                                 | Reset to the default (.env settings)      |
-| `/backend show scope:global`                     | Show the process-wide backend/model/effort default |
+| `/backend status scope:global`                     | Show the process-wide backend/model/effort default |
 | `/backend set codex model:gpt-5.6-sol effort:medium scope:global` | Change the process-wide default for subsequent turns |
 | `/backend reset scope:global`                    | Clear the explicit process-wide model and effort |
 
 Switching always starts a new session (conversation history is not carried over).
 It is available on both Discord and Slack. For Slack, register `/backend` in the app settings
-with the Usage Hint `show|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset`.
+with the Usage Hint `status|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset`.
 The setting is persisted in `CHANNEL_OVERRIDES` by channel ID and applies to threads in that
 channel from the next message without restarting xangi.
 `scope:global` (`--scope global` on Slack) updates `AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT` and the live default runner together. An effort is saved only when the selected model supports it. Active turns finish on their previous runner; subsequent turns use the new default. Explicit channel overrides remain unchanged.
@@ -708,7 +723,9 @@ xangi tool models --backend codex
 xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
 
-For natural-language setting changes, the agent uses `runtime_settings` rather than executing an arbitrary slash-command string. It accepts structured and validated `show` / `set` / `reset` actions for `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`, then writes through the same persistence path as the native commands. In a Discord thread, pass the parent channel ID via `--channel`.
+Use `status` to inspect current state or settings. The former settings action `show` is not accepted. `list` still lists registered entries, and `/team show id:` still displays a named Team definition.
+
+For natural-language setting changes, the agent uses `runtime_settings` rather than executing an arbitrary slash-command string. It accepts structured and validated `status` / `set` / `reset` actions for `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`, then writes through the same persistence path as the native commands. In a Discord thread, pass the parent channel ID via `--channel`.
 
 ```bash
 xangi tool runtime_settings --name autoreply --action set --value on
@@ -742,7 +759,7 @@ Discord and Slack can select a working directory per channel. Threads inherit th
 
 | Command                                 | Description                                            |
 | --------------------------------------- | ------------------------------------------------------ |
-| `/workspace show`                       | Show the channel binding and current session workspace |
+| `/workspace status`                       | Show the channel binding and current session workspace |
 | `/workspace list`                       | List registered workspaces                             |
 | `/workspace set <name> <absolute-path>` | Register an absolute path and bind it to the channel   |
 | `/workspace use <name>`                 | Bind an existing workspace to the channel              |
@@ -771,11 +788,11 @@ The AI can edit the `.env` file to change settings:
 → AI saves the equivalent `/autoreply` setting to `settings.json`
 ```
 
-Use `/autoreply mode:on|off|default|show` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF normally, or to the parent channel value inside a thread.
+Use `/autoreply mode:on|off|default|status` to inspect or configure mention-free auto-reply for this channel while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel setting and falls back to OFF normally, or to the parent channel value inside a thread.
 When run inside a thread, it targets that thread instead of the parent channel. A thread without its own setting inherits the parent channel value, so you can keep a channel OFF while turning a single thread ON, or the other way around.
 To disable this command, set `ALLOW_AUTOREPLY_COMMAND=false` in `.env` (default: enabled).
 
-Use `/threadmode mode:on|off|default|show` to inspect or toggle this channel's Discord per-message thread reply mode while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel override and falls back to the global `DISCORD_REPLY_IN_THREAD` default.
+Use `/threadmode mode:on|off|default|status` to inspect or toggle this channel's Discord per-message thread reply mode while the bot is running (no restart needed, persisted to `settings.json`). `default` removes the channel override and falls back to the global `DISCORD_REPLY_IN_THREAD` default.
 For messages received inside an existing Discord thread, xangi automatically injects the thread starter message as `🧵 スレッド元`. This keeps the original parent-channel starter message available even when thread-local history does not include it.
 Thread prompts always include both the parent channel name/ID and thread name/ID, allowing the agent to distinguish and target either destination without another lookup.
 Inside Discord threads, `/notify`, `/threadmode`, and channel topic injection target the parent channel settings. `/autoreply` is configured per thread and falls back to the parent channel value only when the thread has no setting of its own.
@@ -1070,6 +1087,10 @@ The adapter token is not a platform credential, but it authorizes callers to inj
 
 xangi's Local LLM backend uses the OpenAI-compatible API (`/v1/chat/completions`). It supports Ollama, vLLM, and other OpenAI-compatible servers (LM Studio, llama.cpp, etc.).
 
+### Stopping a running task
+
+Stop actions on each platform apply to the shared Local LLM runner. After cancellation, it starts no further tools or LLM requests and signals supported operations already in progress to stop. Some tools may need to finish; stopping descendant processes or work on external servers is not guaranteed. Completed changes and sends are not undone.
+
 ### Local Execution (Ollama)
 
 ```bash
@@ -1130,7 +1151,7 @@ curl -s http://localhost:8001/v1/models | jq '.data[] | {id, max_model_len}'
 
 # From Discord
 /models local-llm  # Shows the server-side model list (supports Ollama and vLLM)
-/backend show  # Shows detailed Local LLM settings for the current channel
+/backend status  # Shows detailed Local LLM settings for the current channel
 ```
 
 ### Logs
@@ -1441,6 +1462,8 @@ This section groups the key settings by purpose. See [`.env.example`](../../.env
 | `SESSION_TITLE_MODE` | `prefix`: first-message prefix; `ai`: concise AI-generated title | `ai`     |
 | `DISCORD_SESSION_TITLE_AI_ONCE` | Allow an AI title only for the first turn of a Discord thread created by xangi; `false` restores per-session AI naming | `true` |
 
+Quotation marks and brackets in AI-generated titles are preserved. For example, `"fetch failed" error` keeps its opening quotation mark.
+
 In `ai` mode, xangi uses the same backend and model selected for the first turn. Title generation starts as an isolated internal task after the main backend reports readiness, or after the first response text for backends without that signal. The main response never waits for it. With a single-concurrency Local LLM, the main request claims the slot first and title generation follows it. Failure, empty output, or a 10-second timeout preserves the prefix title. Web and Slack update the session name shown in Web Chat. Discord creates the thread immediately with the prefix and renames it after the AI title is ready.
 
 By default, AI updates are limited to the first turn of a thread created by xangi. Existing threads, manually renamed threads, and new internal sessions created after `/new` keep the Discord thread name unchanged. When an internal session is created inside an existing thread, its internal title inherits the current Discord thread name. Set `DISCORD_SESSION_TITLE_AI_ONCE=false` to restore AI naming for every session.
@@ -1512,7 +1535,8 @@ Shared completion-display settings:
 | `WORKSPACE_PATH`                | Working directory (local execution)                                                                                            | process startup directory |
 | `XANGI_WORKSPACE`               | Host-side workspace path (Docker execution)                                                                                    | `./workspace`             |
 | `SKIP_PERMISSIONS`              | Skip permissions by default (avoids deadlocks for non-interactive chat platforms)                                              | `true`                    |
-| `TIMEOUT_MS`                    | Initial request timeout (milliseconds)                                                                                         | `1800000`                 |
+| `TIMEOUT_MS`                    | Initial request timeout (milliseconds)                                                                                         | `3600000`                 |
+| `LOCAL_LLM_TIMEOUT_MS` | Local LLM request deadline; receive-idle timeout while streaming (ms) | `1800000` |
 | `XANGI_TOOL_SERVER_PORT`        | Fixed port for the internal tool server. When unset, the previous port is reused (auto-assign if busy)                         | reuse last port           |
 | `XANGI_REMOTE_WORKERS_CONFIG`   | Absolute path to the registered remote-worker JSON file; enabled only with a worker port                                      | unset                     |
 | `XANGI_REMOTE_WORKER_HOST`      | Dedicated remote-worker WebSocket bind host; explicitly use `0.0.0.0` for Tailnet access                                     | `127.0.0.1`               |
@@ -1599,7 +1623,7 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`; returns 409 on conflict
 
-The same server exposes a read-only monitor at `http://localhost:<WEB_CHAT_PORT>/monitor`. It automatically groups Sessions into Running, Waiting for input (can continue), and Completed columns, with All / Chat / Web filters. Errors and aborted turns remain in Waiting and use the card's status label and colored dot. When a Session has a progress card, its list card shows the current step and completed-step count, while its details show every step with textual Pending / Current / Completed labels plus the optional note. The AI usage area includes every provider whose quota was retrieved from an official structured source, even when that provider has no current Session. Supported sources are Codex app-server, the GitHub Copilot SDK, Antigravity statusline JSON, and the Claude Code CLI. Account windows refresh every 60 seconds and provider cards can be collapsed or hidden with the preference saved in the browser. Selecting a card first opens its details. Backend, model, effort, and the last confirmed context usage are shown in the detail panel; unavailable values are not estimated. State, Discord or Slack destination, completed turn count, update time, and event history remain visible. Channel, thread, session, and other internal IDs stay collapsed until requested. The Open conversation action then navigates to `/chat/<appSessionId>`. Completed Sessions remain visible for 24 hours and can be resumed or branched from history. Claude Code context comes from its CLI result event, and its account usage comes from the CLI's standard stream-json control request (`get_usage`). No TUI scraping or statusline setup is required, and calling it does not invoke a model (so it does not consume quota). The CLI marks this response shape Experimental, so a format change may cause the Claude Code window to stop appearing. Account windows are unavailable, and therefore not shown, when using an API key, Bedrock, or Vertex. After the initial fetch, `GET /api/sessions/stream` carries turn start, progress-card, completion, and context-update snapshots instead of polling the Session list.
+The same server exposes a session monitor with status controls at `http://localhost:<WEB_CHAT_PORT>/monitor`. It automatically groups Sessions into Working and Completed columns, with All / Chat / Web filters. Errors and aborted turns remain in Working and use the card's status label and colored dot. When a Session has a progress card, its list card shows the current step and completed-step count, while its details show every step with textual Pending / Current / Completed labels plus the optional note. The AI usage area includes every provider whose quota was retrieved from an official structured source, even when that provider has no current Session. Supported sources are Codex app-server, the GitHub Copilot SDK, Antigravity statusline JSON, and the Claude Code CLI. Account windows refresh every 60 seconds and provider cards can be collapsed or hidden with the preference saved in the browser. Selecting a card first opens its details. Backend, model, effort, and the last confirmed context usage are shown in the detail panel; unavailable values are not estimated. State, Discord or Slack destination, completed turn count, update time, and event history remain visible. Channel, thread, session, and other internal IDs stay collapsed until requested. The Open conversation action then navigates to `/chat/<appSessionId>`. Completed Sessions remain visible for 24 hours and can be resumed or branched from history. Claude Code context comes from its CLI result event, and its account usage comes from the CLI's standard stream-json control request (`get_usage`). No TUI scraping or statusline setup is required, and calling it does not invoke a model (so it does not consume quota). The CLI marks this response shape Experimental, so a format change may cause the Claude Code window to stop appearing. Account windows are unavailable, and therefore not shown, when using an API key, Bedrock, or Vertex. After the initial fetch, `GET /api/sessions/stream` carries turn start, progress-card, completion, and context-update snapshots instead of polling the Session list.
 
 The same server exposes schedule management at `http://localhost:<WEB_CHAT_PORT>/schedules`. `GET /api/schedules` returns every platform's schedules and scheduler state, while `POST /api/schedules` creates Web, Discord, Slack, or Telegram jobs. Web jobs may include an optional `projectId` and create a fresh Web conversation when they run. `PATCH /api/schedules/:id` changes the job contents or enabled state, and `DELETE /api/schedules/:id` removes a schedule.
 
@@ -1766,7 +1790,7 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS injection                                                               | `true`                                                           |
 | `LOCAL_LLM_MODEL`                       | Model name                                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | API key (if required by vLLM, etc.)                                                    | -                                                                |
-| `LOCAL_LLM_THINKING`                    | Enable thinking model reasoning                                                        | `true`                                                           |
+| `LOCAL_LLM_THINKING`                    | Enable thinking model reasoning                                                        | `false`                                                           |
 | `LOCAL_LLM_REASONING_EFFORT`            | Default OpenAI-compatible `reasoning_effort` (overridden per channel)                   | unset (provider default)                                         |
 | `LOCAL_LLM_MAX_TOKENS`                  | Maximum tokens (per-request `max_tokens`)                                              | `8192`                                                           |
 | `LOCAL_LLM_NUM_CTX`                     | Context window size (Ollama; also used as the basis for context budget calculation)    | Model default                                                    |
@@ -1790,6 +1814,9 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--yolo` for the same n
 | `LOCAL_LLM_READ_MAX_BYTES`              | read tool file size limit (bytes)                                                      | `524288` (512KB)                                                 |
 | `LOCAL_LLM_READ_JSON_MAX_BYTES`         | read tool JSON file size limit (bytes)                                                 | `5120` (5KB)                                                     |
 | `LOCAL_LLM_WRITE_MAX_BYTES`             | write tool content size limit (bytes)                                                  | `524288` (512KB)                                                 |
+
+For hybrid Qwen3 models on local OpenAI-compatible servers (vLLM/SGLang), `LOCAL_LLM_THINKING` is sent as `chat_template_kwargs.enable_thinking` for both streaming and non-streaming requests. Explicit `reasoning_effort` takes priority: `none` disables thinking, other values enable it. Channel/per-call effort overrides the environment default. This extension applies to model names beginning with `qwen3` (optionally after a namespace), excluding names containing `thinking`; arbitrary aliases require server-side configuration. OpenRouter, Ollama and other model families retain their existing behavior. Thinking consumes the same output token budget as the answer; test with an adequate budget before enabling it.
+
 
 ### Slack
 
@@ -1908,7 +1935,7 @@ Remote workers support `xangi worker install --pair`, `restart`, and `status` on
 
 ### Execution model and history
 
-`runtime_settings backend --action show` and Web Chat `/backend show` distinguish the settings for the next run from the current conversation's most recent execution evidence. The latest execution shows effort state for every backend: a provider-confirmed effective value when available, an unconfirmed value explicitly supplied by xangi, or delegated/unknown when neither is available. A configured name or alias alone does not confirm the model or effort actually used.
+`runtime_settings backend --action status` and Web Chat `/backend status` distinguish the settings for the next run from the current conversation's most recent execution evidence. The latest execution shows effort state for every backend: a provider-confirmed effective value when available, an unconfirmed value explicitly supplied by xangi, or delegated/unknown when neither is available. A configured name or alias alone does not confirm the model or effort actually used.
 
 Every backend records configured and provider-reported model and effort values, evidence sources, start/update times, and completion or failure for each turn. Provider-reported values are confirmed; configuration-only values remain unconfirmed; unavailable values remain unknown. Multiple models reported during one run are retained.
 
@@ -1943,7 +1970,7 @@ The Agents section in Settings supports creating, editing and deleting agents an
 
 Projects and Agents are sibling entries in the Web sidebar. Choose an Agent to filter its conversations, or choose a new-conversation Agent before creating a chat.
 
-Discord/Slack support `/agent list`, `/agent show`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option, with live choices searchable by agent name or ID). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
+Discord/Slack support `/agent list`, `/agent status`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option, with live choices searchable by agent name or ID). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
 
 A selected Agent supplies the complete backend/model/reasoning/workspace bundle. Individual channel settings remain stored but inactive; clearing the Agent restores them. Missing values use instance or backend defaults, never a model belonging to another backend. Individual model/workspace mutations are rejected while an Agent is selected.
 
@@ -1951,7 +1978,7 @@ Changing or clearing an Agent is rejected during processing and starts a new ses
 
 `xangi agent delete <ID>` shares Web deletion rules. Channel bindings and open/running conversations block deletion and are identified in the error. After unbinding and closing conversations, deleting an Agent preserves conversation text and workspace files.
 
-Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action show --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
+Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
 
 ### Agent delegation
 
@@ -2083,3 +2110,48 @@ The host periodically checks running work and undelivered terminal results witho
 Set `AGENT_PARENT_CHECK_INTERVAL_MS` (default 30000) for checks/retries and `AGENT_PARENT_PROGRESS_INTERVAL_MS` (default 180000) for running-work notices in `.env`. Both accept integers from 1000 to 86400000 milliseconds and require restart. Notices are sent on check ticks, so timing is rounded up to a check interval. Reports describe running/queued state and elapsed time, without inventing a completion percentage.
 
 Recovery and progress notices require explicit delivery tracking recorded when a task is created or deliberately rerun. Legacy untracked records are never replayed automatically. Web result delivery updates the existing session and never creates an empty conversation to replace a closed or missing routing entry.
+
+### Incomplete Local LLM tool calls
+
+If a Local LLM tool generation hits the output limit or omits required arguments, no tools from that response execute. The runner asks for smaller, complete writes or edits with at most two regeneration attempts, then reports failure if recovery fails. Earlier successful changes remain. The `incomplete_generation` event records finish reason, output token count, and missing argument names.
+
+## Secret mode (best-effort reduced logging)
+
+Discord and Slack start directly in secret mode without first creating an empty ordinary session. Status/off controls do not create sessions when none is active. This also applies to commands and supported Japanese requests sent as ordinary messages; existing ordinary history is preserved. Discord controls apply to the receiving conversation without creating a new thread. Slack message-based status/off controls also target the receiving conversation, while Slack slash controls target their dedicated thread.
+
+Discord continues to honor thread mode while secret. Threads automatically created from a secret channel conversation inherit secret mode before processing the first message and use the fixed name `シークレット` instead of message text. The parent and each thread are independent conversations: ending secret applies only to the conversation where the command runs; existing threads are unchanged. With thread mode off, or if thread creation fails, replies stay in the original secret conversation.
+
+The Discord slash command requires `mode`, like `/threadmode`. Select `on` (start), `off` (end), or `status` (show current state).
+
+Use `/secret on`, `/secret status`, and `/secret off` in the same Discord, Telegram or LINE conversation. Wait for confirmation before sending private content; never combine the control command and private text. Explicit conversation resets such as `/new` end the mode. Web has a **シークレット** (Secret) button and the same text shortcuts. Complete or delete the conversation to discard it; merely closing a browser tab/pane does not end the server session.
+
+On Discord, Slack, Telegram and LINE, ending secret mode does not create an empty normal session. A normal session is created when the next ordinary message arrives.
+
+`POST /api/sessions` accepts the boolean `secret: true`. Keep using the returned session ID. `/api/chat` control commands return the new `appSessionId` in a `secret` SSE event. Even Terminal `/api/prompt` supports the commands and `secret: true` on creation. Device/pet inbox supports `secret: true` on creation or an explicit private `appSessionId`; replies use the returned thread-specific events URL.
+
+Session records, transcripts, compaction checkpoints, tool trajectories, monitor history and latency logs are not written to disk. AI title generation and global event broadcasts are suppressed; direct reply streams and explicitly session-scoped device streams still work. Conversation state stays in process memory and is discarded on completion, deletion or server restart. After restart, the next external-platform conversation is ordinary again. Replay is limited to the latest 20 messages / approximately 64,000 characters; display history to 100 messages / approximately 256,000 characters. Each turn uses a fresh backend execution and replays plain messages, not the complete native reasoning/tool history.
+
+External history prefetch remains disabled for a conversation that has used secret, including after restart, to avoid re-importing private Discord/Slack messages into ordinary logs. Only the conversation routing identifier for this boundary is persisted in `sessions.json`, not the private session ID or content. LINE/Telegram idle reset does not automatically leave secret.
+
+- Codex: `exec --ephemeral`, no resume; LINE app-server uses exec instead.
+- Claude Code: nonpersistent `-p --no-session-persistence`, auto memory and hooks settings are left unchanged.
+- Cursor, Grok, Antigravity, GitHub Copilot, OpenCode: common xangi suppression and fresh executions. CLI/SDK storage is not guaranteed to stop.
+- Local LLM: xangi transcript/tool/checkpoint suppression; server logging is unchanged.
+- OpenRouter: xangi suppression plus forced no-training and ZDR routing (details below).
+- Extension backends: common suppression plus a `secret: true` request hint; the extension decides whether to honor it.
+
+Teams are unavailable in this mode because child task persistence is independent; select a single AI. Existing logs, platform posts, provider/CLI/SDK records, attachments and generated files, OS swap/crash dumps and external tool writes can remain. Operational metadata without message text may remain. No additional instruction forbids AI recordkeeping. Memory, diaries, FACTs, external search indexes and other files may be written according to user instructions, AGENTS.md, skills and AI auto-memory settings. Users control whether these records are allowed. Workspace UserPromptSubmit/Stop hooks keep their normal configuration and applicability; secret mode does not disable them or suppress their own writes or external calls. Claude Code auto memory and hook settings are not overridden. This is not a filesystem sandbox. Unsupported native CLI privacy flags fail rather than silently falling back to saved execution. This is not anonymity or guaranteed zero retention.
+
+References: [Codex CLI](https://developers.openai.com/codex/cli/reference), [Claude Code CLI](https://code.claude.com/docs/en/cli-reference), [Claude Code settings](https://code.claude.com/docs/en/settings-reference).
+
+Backend-specific suppression: Copilot uses `--log-level none`, `--no-remote`, and `--no-remote-export`; Antigravity sends `--log-file` to the OS null device; OpenCode sets process-local inline configuration `share: disabled`. These do not disable their session databases or all artifacts. Cursor/Grok have no per-conversation non-persistence switch in the CLI help and official references checked on 2026-10-09; account privacy/ZDR settings remain user-managed. Local LLM server logging remains server-managed. OpenRouter secret requests force `provider.data_collection: deny` and `provider.zdr: true`, even when ordinary settings relax them; unavailable routes fail instead of falling back to retention-enabled routes.
+
+Slack `/secret on` creates a dedicated thread. Reply inside that thread only; channel-level messages are not private. `/secret off/status` refers to the thread started by the same user in that channel. Register `/secret` in the Slack App configuration. Discord registers `/secret` with on/off/status choices; Web includes it in the command palette; Telegram/LINE accept it as a text command.
+
+### Slack ordinary messages and Japanese requests
+
+A normal message such as `@xangi /secret on` works without Slack slash-command registration. Use an actual bot mention. Continue at the destination of the bot's confirmation: inside its reply thread when thread replies are enabled, otherwise in the channel conversation. This also works when sent inside an existing thread.
+
+Only explicitly handled commands support this path: `/secret on|off|status`, `/new` (also `!new` / `new`), `/stop` (also `!stop` / `stop`), and `!delete [ts]` (bare `delete` without arguments also works). `/delete`, `/models`, `/settings`, `/backend`, `/agent`, `/skill`, and `/restart` require registered Slack slash commands. Mention-prefixed forms of these are ordinary AI input, not the dedicated command. Authorization and bot-response rules still apply.
+
+Standalone Japanese requests also control secret mode: `シークレットにして` or `シークレットモードを開始してください` starts it; `シークレットを終了して` or `シークレットモードを解除してください` ends it; `今シークレット？` or `シークレットの状態を教えて` checks it. Mention the bot on Slack. The same parser applies to Discord, Telegram, LINE, Web, Web chat API and Even Terminal. xangi executes these deterministically without an AI decision. Quoted examples, negations, explanations and requests mixed with other content do not switch the mode. Wait for confirmation before sending content separately; the initial control request may be recorded before the mode starts. Arbitrary paraphrases are not supported.

@@ -24,6 +24,7 @@
  *   → xangi をグローバル IP で公開する人だけ token 設定が必要。
  */
 
+import { isSecretSession } from './secret.js';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { AgentRunner, RunOptions } from './agent-runner.js';
 import type { Config } from './config.js';
@@ -221,8 +222,16 @@ export async function handlePetInboxRequest(
   // - 未指定: 最新の web セッションを再利用、無ければ新規作成
   let appSessionId = String(body.appSessionId ?? '').trim();
   if (!appSessionId) {
-    const latestWeb = listAllSessions().find((s) => s.platform === 'web');
-    appSessionId = latestWeb?.id || createWebSession({ title: `${label} inbox` });
+    const latestWeb =
+      body.secret === true
+        ? undefined
+        : listAllSessions().find((s) => s.platform === 'web' && !isSecretSession(s.id));
+    appSessionId =
+      latestWeb?.id ||
+      createWebSession({
+        title: body.secret === true ? 'シークレット' : `${label} inbox`,
+        secret: body.secret === true,
+      });
   }
   const entry = getSessionEntry(appSessionId);
   if (!entry) {
@@ -288,7 +297,8 @@ export async function handlePetInboxRequest(
     events_url: `/api/events/stream?thread_id=${encodeURIComponent(threadId)}`,
   });
 
-  console.log(`[inbox:${label}] Message (session ${appSessionId}): ${text.slice(0, 100)}`);
+  if (!isSecretSession(appSessionId))
+    console.log(`[inbox:${label}] Message (session ${appSessionId}): ${text.slice(0, 100)}`);
   void (async () => {
     try {
       await runWithBubbleEvents(

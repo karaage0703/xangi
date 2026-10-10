@@ -1,3 +1,4 @@
+import { isSecretSession } from '../secret.js';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -108,6 +109,7 @@ export interface RunnerEventPayload {
     | 'session_retry'
     | 'idempotent_cache_store'
     | 'terminal_response_reused'
+    | 'incomplete_generation'
     | 'stop_hook_block';
   details?: Record<string, unknown>;
 }
@@ -178,7 +180,7 @@ export class ToolTrajectoryLogger {
     common: TrajectoryCommon,
     payload: Record<string, unknown>
   ): void {
-    if (!this.enabled) return;
+    if (!this.enabled || isSecretSession(common.appSessionId)) return;
     try {
       const dir = join(this.workdir, TRAJECTORY_DIR);
       if (!existsSync(dir)) {

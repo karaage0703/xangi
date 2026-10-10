@@ -1,4 +1,11 @@
 import { migrateTeamState } from './team-migration.js';
+import {
+  SECRET_PREFIX,
+  isSecretSession,
+  registerSecretContext,
+  forgetSecretContext,
+} from './secret.js';
+import { forgetSecretTranscript, openSecretTranscript } from './transcript-logger.js';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
@@ -78,6 +85,8 @@ export interface SessionProgressCard {
 
 export interface SessionEntry {
   id: string; // appSessionId
+  secret?: boolean;
+  skipHistoryPrefetch?: boolean;
   title: string;
   providerTitle?: string;
   platform: string; // 'discord' | 'slack' | 'web'
@@ -125,6 +134,8 @@ export interface SessionEntry {
 }
 
 interface SessionsFile {
+  /** Routing identifiers only: never re-import private platform messages after restart. */
+  historyPrefetchBlockedContexts?: string[];
   activeByContext: Record<string, string>;
   sessions: Record<string, SessionEntry>;
 }
@@ -157,6 +168,10 @@ function notifySessionChanges(): void {
  * sessions.json のパスを初期化
  */
 export function initSessions(dataDir: string): void {
+  for (const id of Object.keys(data.sessions)) {
+    forgetSecretTranscript(id);
+    forgetSecretContext(id);
+  }
   sessionsPath = join(dataDir, 'sessions.json');
   currentBootId = randomUUID();
   loadSessionsFromFile();
@@ -271,7 +286,16 @@ function saveSessionsToFile(): void {
   const path = getSessionsPath();
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    const persistent = {
+      ...data,
+      sessions: Object.fromEntries(
+        Object.entries(data.sessions).filter(([id]) => !isSecretSession(id))
+      ),
+      activeByContext: Object.fromEntries(
+        Object.entries(data.activeByContext).filter(([, id]) => !isSecretSession(id))
+      ),
+    };
+    writeFileSync(path, JSON.stringify(persistent, null, 2) + '\n', 'utf-8');
   } catch (err) {
     console.error('[xangi] Failed to save sessions:', err);
   }
@@ -397,6 +421,11 @@ function registerSession(
   options: { activate?: boolean; notify?: boolean } = {}
 ): string {
   const now = new Date().toISOString();
+  if (isSecretSession(appId) && entry.platform !== 'web') {
+    const blocked = (data.historyPrefetchBlockedContexts ??= []);
+    if (!blocked.includes(contextKey)) blocked.push(contextKey);
+  }
+  if (isSecretSession(appId)) openSecretTranscript(appId);
   data.sessions[appId] = {
     ...entry,
     id: appId,
@@ -407,8 +436,14 @@ function registerSession(
     messageCount: 0,
     archived: false,
     lifecycle: 'open',
-    title: sanitizeSessionTitle(entry.title),
+    title: isSecretSession(appId) ? 'シークレット' : sanitizeSessionTitle(entry.title),
+    secret: isSecretSession(appId) || undefined,
+    skipHistoryPrefetch:
+      isSecretSession(appId) ||
+      data.historyPrefetchBlockedContexts?.includes(contextKey) ||
+      undefined,
   };
+  registerSecretContext(entry.platform, contextKey, appId);
   if (options.activate !== false) data.activeByContext[contextKey] = appId;
   saveSessionsToFile();
   if (options.notify) notifySessionChanges();
@@ -432,9 +467,10 @@ export function createWebSession(
     backend?: string;
     resumedFromSessionId?: string;
     interAgentPeerId?: string;
+    secret?: boolean;
   } & SessionSnapshotOptions = {}
 ): string {
-  const appId = generateAppSessionId();
+  const appId = `${opts.secret || isSecretSession(opts.resumedFromSessionId) ? SECRET_PREFIX : ''}${generateAppSessionId()}`;
   const ctxKey = `${WEB_CHAT_CONTEXT_PREFIX}${appId}`;
   const resumedFrom = opts.resumedFromSessionId
     ? data.sessions[opts.resumedFromSessionId]
@@ -480,9 +516,10 @@ export function createSession(
     scope?: SessionScope;
     title?: string;
     backend?: string;
+    secret?: boolean;
   } & SessionSnapshotOptions = {}
 ): string {
-  const appId = generateAppSessionId();
+  const appId = `${opts.secret ? SECRET_PREFIX : ''}${generateAppSessionId()}`;
   return registerSession(appId, contextKey, {
     title: opts.title || '',
     platform: opts.platform || 'discord',
@@ -606,6 +643,7 @@ export function setSession(
  * セッションのタイトルを更新
  */
 export function updateSessionTitle(appSessionId: string, title: string): void {
+  if (isSecretSession(appSessionId)) return;
   const entry = data.sessions[appSessionId];
   if (!entry) return;
   entry.title = sanitizeSessionTitle(title);
@@ -801,6 +839,10 @@ export function incrementMessageCount(appSessionId: string): void {
  * セッションをアーカイブ
  */
 export function archiveSession(appSessionId: string): void {
+  if (isSecretSession(appSessionId)) {
+    closeSession(appSessionId, 'archive');
+    return;
+  }
   const entry = data.sessions[appSessionId];
   if (!entry) return;
   entry.archived = true;
@@ -830,6 +872,20 @@ export function activateSession(contextKey: string, appSessionId: string): void 
     entry.updatedAt = new Date().toISOString();
   }
   saveSessionsToFile();
+}
+
+/** Reopen the same conversation without starting a turn or replacing another conversation. */
+export function reopenSession(
+  appSessionId: string
+): 'opened' | 'not_found' | 'conflict' | 'unsupported' {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return 'not_found';
+  if (entry.scope === 'scheduler') return 'unsupported';
+  const current = data.activeByContext[entry.contextKey];
+  if (current && current !== appSessionId) return 'conflict';
+  activateSession(entry.contextKey, appSessionId);
+  notifySessionChanges();
+  return 'opened';
 }
 
 /**
@@ -868,6 +924,13 @@ export function closeSessions(
   for (const [ctx, id] of Object.entries(data.activeByContext)) {
     if (closed.has(id)) delete data.activeByContext[ctx];
   }
+  for (const id of closed) {
+    if (isSecretSession(id)) {
+      forgetSecretTranscript(id);
+      forgetSecretContext(id);
+      delete data.sessions[id];
+    }
+  }
   saveSessionsToFile();
   notifySessionChanges();
   return [...closed];
@@ -886,6 +949,8 @@ export function closeActiveSession(
  * セッションを完全削除（sessions.jsonから消す）
  */
 export function removeSession(appSessionId: string): void {
+  forgetSecretTranscript(appSessionId);
+  forgetSecretContext(appSessionId);
   delete data.sessions[appSessionId];
   for (const [ctx, id] of Object.entries(data.activeByContext)) {
     if (id === appSessionId) {
@@ -893,6 +958,7 @@ export function removeSession(appSessionId: string): void {
     }
   }
   saveSessionsToFile();
+  notifySessionChanges();
 }
 
 /**
@@ -900,6 +966,7 @@ export function removeSession(appSessionId: string): void {
  */
 export function deleteSession(channelId: string): boolean {
   const appId = data.activeByContext[channelId];
+  if (isSecretSession(appId)) return closeSession(appId!);
   if (appId) {
     delete data.activeByContext[channelId];
     saveSessionsToFile();
@@ -913,7 +980,12 @@ export function deleteSession(channelId: string): boolean {
  */
 export function ensureSession(
   contextKey: string,
-  opts?: { platform?: string; scope?: SessionScope; backend?: string } & SessionSnapshotOptions
+  opts?: {
+    platform?: string;
+    scope?: SessionScope;
+    backend?: string;
+    secret?: boolean;
+  } & SessionSnapshotOptions
 ): string {
   const existing = data.activeByContext[contextKey];
   if (existing && data.sessions[existing]) {
@@ -950,6 +1022,10 @@ export function getSessionCount(): number {
  * 全セッションをクリア（テスト用）
  */
 export function clearSessions(): void {
+  for (const id of Object.keys(data.sessions)) {
+    forgetSecretTranscript(id);
+    forgetSecretContext(id);
+  }
   data = { activeByContext: {}, sessions: {} };
   sessionsPath = null;
 }

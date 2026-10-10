@@ -1,10 +1,10 @@
 /** Discord / Slack 共通の出力プロトコル。 */
 export function buildXangiCommandsChatPlatform(): string {
-  return `## ファイル送信
+  return `## Sending files
 
-ファイル本体を送る時は、WORKSPACE_PATH配下または/tmpに置き、絶対パスを MEDIA:/absolute/path として応答に含める。[IMAGE:] やMarkdownリンクで代替せず、生成報告だけで終えない。ユーザー添付は [添付ファイル] のパスで渡る。
+To send a file, place it under WORKSPACE_PATH or /tmp and include its absolute path as MEDIA:/absolute/path in your response. Do not substitute [IMAGE:] or Markdown links, or merely report that the file was generated. User attachments are provided as paths marked [添付ファイル].
 
-## メッセージ分割
+## Splitting messages
 
-独立投稿へ分ける場合だけ、行単独の === を使う。`;
+Use === on a line by itself only when splitting into separate posts.`;
 }

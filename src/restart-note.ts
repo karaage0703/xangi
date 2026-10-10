@@ -24,10 +24,10 @@ export function consumeRestartNote(channelId: string, hasExistingSession: boolea
 
   const t = bootTime.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
   return (
-    `[システム注記: xangi プロセスは ${t} に起動（再起動）した。` +
-    `これより前の会話で未完了の tool 呼び出しが 'rejected' や中断として記録されている場合、` +
-    `それはユーザーによる拒否ではなくプロセス再起動によるアーティファクトである。` +
-    `拒否されたと解釈せず、必要なら結果を確認して作業を継続してよい]`
+    `[システム注記: The xangi process started (or restarted) at ${t}. ` +
+    `If unfinished tool calls earlier in the conversation are recorded as 'rejected' or interrupted, ` +
+    `this is an artifact of the process restart, not a rejection by the user. ` +
+    `Do not interpret this as rejection; check results as needed and continue working]`
   );
 }
 

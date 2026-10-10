@@ -42,6 +42,18 @@ xangiの詳細な使い方ガイドです。
 
 `/autoreply` で有効化したチャンネルではメンション不要で応答します。設定は `settings.json` に保存されます。
 
+### エラー後の再開
+
+Discordでは、エラーを表示した後にAIを自動で呼び直しません。途中のテキストとツール履歴を残して処理を終了し、次の指示を受け付けます。報告用の指示から編集などが再開されるのを防ぐためです。途中までのファイル変更や外部送信は元に戻りません。結果を確認してから続行を指示してください。
+
+依頼全体の上限は `TIMEOUT_MS`（既定3600000ミリ秒＝60分）、Local LLM通信は独立した `LOCAL_LLM_TIMEOUT_MS`（既定1800000ミリ秒＝30分）です。後者は非ストリーミングでは本文受信完了までの総時間、ストリーミングでは最初の応答と受信データ間の待ち時間に適用し、受信のたびにリセットします。ツール選択は非ストリーミング、通常の返答にはストリーミング経路があります。タイムアウトと手動停止を区別して表示します。
+
+既存の `TIMEOUT_MS` 指定は依頼全体に引き続き適用しますが、Local LLM通信の上限には流用しません。以前この設定でLLM通信も調整していた場合は `LOCAL_LLM_TIMEOUT_MS` を明示してください。データが届いていても依頼全体の上限は延びません。
+
+### Codex CLIの途中終了
+
+Codex CLIは、プロセスの終了コードが0でも、`turn.completed`を受信していなければ正常完了として扱いません。途中の説明やツール単体の完了は、会話ターン全体の完了とは別です。完了通知がない場合は警告を表示し、自動再試行やエラー後の自動フォローアップを行いません。ファイル変更や外部送信が済んでいる可能性があるため、続行前に実際の結果を確認してください。会話履歴を自動で書き換えたり、別セッションへ勝手に切り替えたりはしません。
+
 ## プラットフォーム別のメッセージ処理
 
 プラットフォームごとに、処理中の追加メッセージ、会話の区切り、媒体の扱いが異なります。
@@ -180,14 +192,14 @@ INJECT_TIMESTAMP=false
 
 `DISCORD_SHOW_BUTTONS=false` でボタンを非表示にできます。
 
-返信候補は既定OFFです。ONにすると、Discord / Slackの完了後メッセージには `返信候補` ボタンを1つだけ表示します。押すと候補と数字ボタンが本人だけに表示され、選択すると同じセッションへ送信されます。Web Chatも回答下の `返信候補` から候補を展開して送信できます。Discordの `/replysuggestions mode:on|off|show|default` で全プラットフォームを一括切替できます。OFF時は候補生成指示をAIプロンプトへ追加しないため、追加トークンや生成待ち時間は発生しません。各プラットフォームの `*_REPLY_SUGGESTIONS=true` で起動時にON、`*_REPLY_SUGGESTIONS_COUNT=1..5` で件数を変更できます（既定3件）。
+返信候補は既定OFFです。ONにすると、Discord / Slackの完了後メッセージには `返信候補` ボタンを1つだけ表示します。押すと候補と数字ボタンが本人だけに表示され、選択すると同じセッションへ送信されます。Web Chatも回答下の `返信候補` から候補を展開して送信できます。Discordの `/replysuggestions mode:on|off|status|default` で全プラットフォームを一括切替できます。OFF時は候補生成指示をAIプロンプトへ追加しないため、追加トークンや生成待ち時間は発生しません。各プラットフォームの `*_REPLY_SUGGESTIONS=true` で起動時にON、`*_REPLY_SUGGESTIONS_COUNT=1..5` で件数を変更できます（既定3件）。
 
 ### タイムアウト動的延長
 
-長時間タスク（コード生成、調査タスク等）が初期タイムアウト（`TIMEOUT_MS`、デフォルト 30 分）に
+長時間タスク（コード生成、調査タスク等）が初期タイムアウト（`TIMEOUT_MS`、デフォルト 60 分）に
 ぶつかる前に、`延長` ボタンで残り時間を 2 倍にして引き伸ばせます。
 
-- 初期タイムアウト: `TIMEOUT_MS` (デフォルト 30 分)
+- 初期タイムアウト: `TIMEOUT_MS` (デフォルト 60 分)
 - 延長動作: 押下時点の残り時間を加算 → 結果として残り時間が **2 倍**
   - 例: 残り 3 分の状態で押すと残り 6 分に
   - 例: 残り 30 秒の状態で押すと残り 1 分に（緊急対応）
@@ -213,10 +225,13 @@ API（プログラマブル操作）:
 
 - `GET /api/sessions/:id/timeout` — 現在のタイムアウト状態 `{active, timeoutAt, maxTimeoutAt, remainingMs, timeoutMs}`
 - `POST /api/sessions/:id/timeout/extend` — `{additionalMs?: number}`で延長。省略時は現在の残り時間を加算（残り時間を2倍）
-- `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。誤操作を避けるため、Web UIではMonitor詳細から実行する
+- `POST /api/sessions/:id/close` — SessionをClosedにして次回投稿の紐付けとrunnerを外す。会話ログは削除しない。Web UIではMonitorのカードまたは詳細から実行する。実行中のSessionは確認なしには閉じない
+- `POST /api/sessions/:id/reopen` — 同じSessionを作業中へ戻す。AI実行や分岐は行わない。同じ会話先に別Sessionが作業中の場合とスケジュール実行履歴は409、存在しないIDは404
 - Monitorの完了Sessionは24時間・7日・30日・すべてから期間を選べる。既定は24時間で、`Chat`・`Web`・`Schedule`の表示切り替えとは独立する
 
-MonitorはSessionを`実行中`・`入力待ち`・`完了`の3列に分け、内部のOpen / Closedは表示しません。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後はMonitorから消えます。検索結果などの会話ログはChatに残ります。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、入力待ちカードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。Discord / Slack由来の会話では、Chatペイン上部のプラットフォーム名から元のチャンネルまたはスレッドをブラウザで開けます。Webへ履歴を引き継いだ後もこのリンクは維持されます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
+MonitorはSessionを`作業中`・`完了`の2列に分け、内部のOpen / Closedは表示しません。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後はMonitorから消えます。検索結果などの会話ログはChatに残ります。完了は既定で直近24時間を表示します。エラーと中断は独立列にせず、作業中カードの状態ラベルと色付きドットで示します。完了後も履歴画面から元のDiscordで続けるか、履歴を引き継いだ新しいWeb会話へ分岐できます。Discord / Slack由来の会話では、Chatペイン上部のプラットフォーム名から元のチャンネルまたはスレッドをブラウザで開けます。Webへ履歴を引き継いだ後もこのリンクは維持されます。状態未確定の既存Sessionは一旦完了として扱い、次の入力を受けると入力待ちまたは実行中へ戻ります。Discordスレッドでは`Close`がSessionの完了と本人のスレッド退出をまとめて行います。
+
+Monitorでは実行中と入力待ちを「作業中」にまとめ、カード内の状態ラベルで区別します。各カードの「✓ 完了」「↩ 作業中へ」で確認ダイアログなしに切り替え、直前の変更は「元に戻す」で取り消せます。PCではカードを列間でドラッグしても切り替えられます。スマホではタップ操作を使えます。実行中のカードは完了にできません。「作業中へ」は同じSessionを開き直すだけで、AIを実行しません。同じ会話先に別の作業中Sessionがある場合は置き換えずエラーを表示します。スケジュール実行履歴は手動切替の対象外です。
 
 Monitorの「入力待ちをすべて完了」は、対象IDを `POST /api/sessions/close-waiting` に一括送信し、保存と変更通知を1回にまとめます。実行開始済みのSessionは除外し、変更できなかった件数を画面に表示します。履歴は保持されます。
 
@@ -502,6 +517,7 @@ AIが `xangi tool` CLIツール経由でDiscord / Slack操作を実行します�
 | `xangi tool discord_search --channel <ID> --keyword "text"`                      | メッセージ検索                                                                                             |
 | `xangi tool discord_edit --channel <ID> --message-id <ID> --content "text"`      | メッセージ編集                                                                                             |
 | `xangi tool discord_delete --channel <ID> --message-id <ID>`                     | メッセージ削除                                                                                             |
+| `xangi tool discord_thread_rename --name "title" [--channel <ID>]` | スレッド名を指定して変更（省略時は現在のスレッド）。通常チャンネルは対象外。 |
 | `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | スレッドから指定ユーザーを退出させる＝そのユーザーのサイドバーから消す（`--channel` 省略で現在のスレッド） |
 | `xangi tool media_send --channel <ID> --file /path/to/file`                      | ファイル送信                                                                                               |
 | `xangi tool web_history [--session <id>] [--count N]`                            | Web Chat 現ペイン履歴取得（`XANGI_CHANNEL_ID=web-chat:<id>` 自動解決）                                     |
@@ -572,10 +588,10 @@ xangi toolはxangiプロセス内のtool-server（HTTP API）に中継します�
 
 ### 有効化
 
-`.env` に以下を設定します（デフォルトは無効）:
+Discord / Slack / Telegram / Web / LINE の実行経路が登録されたインスタンスで既定で有効です。`TRIGGER_ENABLED` が未設定・空なら有効、`false` なら無効です。不正な値も無効として扱います。HTTP経由で使う場合は `.env` に認証トークンを設定します:
 
 ```bash
-TRIGGER_ENABLED=true
+# TRIGGER_ENABLED=false                  # ローカル・HTTP両方を無効にする場合
 XANGI_TRIGGER_TOKEN=<ランダムな長い文字列>   # 例: openssl rand -hex 32
 # TRIGGER_MIN_INTERVAL_MS=10000             # 同一 source の最短発火間隔（デフォルト 10 秒）
 ```
@@ -611,14 +627,14 @@ curl "$XANGI_TOOL_SERVER/api/trigger/<triggerId>" \
 
 ### xangi tool で発火する
 
-ローカルのスクリプトからは `xangi tool` でも発火できます（トークン不要、`TRIGGER_ENABLED=true` は必要）:
+ローカルのスクリプトからは `xangi tool` でも発火できます（トークン不要、`TRIGGER_ENABLED=false` では利用不可）:
 
 ```bash
 xangi tool trigger --channel <チャンネルID> --message "ビルドが終わった。結果を報告して" --source build
 xangi tool trigger_status --id <triggerId>
 ```
 
-`TRIGGER_ENABLED=true` の場合、AIのシステムプロンプトには成功・失敗の両方で終了状態とログを保存してからtriggerする、という安全契約だけを注入します。詳細な引数は `xangi tool help trigger`、具体的な起動・確認方法は各ワークスペースの指示を正本にします。
+トリガーが有効な場合だけ、全対応プラットフォームのシステムプロンプトに成功・失敗の両方で終了状態とログを保存して通知し、配信状態を確認する指示を注入します。無効時はtriggerの案内を含めず、継続確認にはスケジュールを案内します。詳細な引数は `xangi tool help trigger`、具体的な起動・確認方法は各ワークスペースの指示を正本にします。
 
 ### 活用例
 
@@ -674,12 +690,12 @@ docker build -t myapp . && \
 | `/settings`                                      | 現在の設定を表示                                                                                     |
 | `/models [backend]`                              | 利用可能なモデル一覧を表示（省略時は許可された全バックエンド）                                       |
 | `/restart`                                       | ボットを再起動（`.env` の `XANGI_SELF_LIFECYCLE` が `restart-only` の場合のみ）                      |
-| `/autoreply <on\|off\|default\|show>`            | このチャンネルのメンションなし応答を切替（再起動不要、`settings.json` に永続化）                     |
-| `/notify <off\|message\|mention\|default\|show>` | このチャンネルの完了通知を切替（再起動不要、`settings.json` に永続化）                               |
+| `/autoreply <on\|off\|default\|status>`            | このチャンネルのメンションなし応答を切替（再起動不要、`settings.json` に永続化）                     |
+| `/notify <off\|message\|mention\|default\|status>` | このチャンネルの完了通知を切替（再起動不要、`settings.json` に永続化）                               |
 | `/respondtobots`                                 | bot メッセージへの応答を ON/OFF トグル（反応対象は `RESPOND_TO_BOTS` 環境変数で事前指定）            |
-| `/threadmode <on\|off\|default\|show>`           | このチャンネルの Discord 発言ごとスレッド返信モードを切替（再起動不要、`settings.json` に永続化）    |
-| `/llmmode <agent\|chat\|default\|show>`         | このチャンネルの Local LLM 動作モードを per-channel で切替（`.env` の `CHANNEL_OVERRIDES` に永続化） |
-| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|show>` | このチャンネルの Local LLM `reasoning_effort` を切替（`.env` に永続化） |
+| `/threadmode <on\|off\|default\|status>`           | このチャンネルの Discord 発言ごとスレッド返信モードを切替（再起動不要、`settings.json` に永続化）    |
+| `/llmmode <agent\|chat\|default\|status>`         | このチャンネルの Local LLM 動作モードを per-channel で切替（`.env` の `CHANNEL_OVERRIDES` に永続化） |
+| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|status>` | このチャンネルの Local LLM `reasoning_effort` を切替（`.env` に永続化） |
 
 ### バックエンド動的切り替え
 
@@ -687,7 +703,7 @@ docker build -t myapp . && \
 
 | コマンド                                                    | 説明                                   |
 | ----------------------------------------------------------- | -------------------------------------- |
-| `/backend show`                                             | 現在のバックエンド・モデルを表示       |
+| `/backend status`                                             | 現在のバックエンド・モデルを表示       |
 | `/backend set claude-code`                                  | Claude Codeに切り替え                  |
 | `/backend set cursor`                                       | Cursor CLIに切り替え                   |
 | `/backend set grok`                                         | Grok CLIに切り替え                     |
@@ -700,13 +716,13 @@ docker build -t myapp . && \
 | `/backend set grok --effort max`                            | Grokをmax effortで実行                 |
 | `/backend set antigravity --effort high`                    | Antigravityをhigh effortで実行         |
 | `/backend reset`                                            | デフォルト（.env設定）に戻す           |
-| `/backend show scope:global`                                | 全体の既定backend・modelを表示         |
+| `/backend status scope:global`                                | 全体の既定backend・modelを表示         |
 | `/backend set codex model:gpt-5.6-sol effort:medium scope:global` | 全体の既定を次のturnから変更      |
 | `/backend reset scope:global`                               | 全体の明示model・effort指定を解除       |
 
 切り替え時は自動的に新しいセッションが開始されます（会話履歴は引き継がれません）。
 Discord と Slack の両方で利用できます。Slack では App 設定に `/backend` を登録し、
-Usage Hint を `show|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset` にしてください。
+Usage Hint を `status|set <backend> [--model <model>] [--effort <effort>] [--scope channel|global]|reset` にしてください。
 設定はチャンネルID単位で `CHANNEL_OVERRIDES` へ永続化され、同じチャンネル内のスレッドにも再起動なしで次のメッセージから反映されます。
 `scope:global`（Slackでは`--scope global`）は`AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT`と稼働中の既定ランナーを同時更新します。effortは選択モデルが対応する値だけ保存できます。実行中turnは旧ランナーで完了し、次のturnから全体へ反映されます。明示的なチャンネルoverrideは維持されます。
 
@@ -725,7 +741,9 @@ xangi tool models --backend codex
 xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
 
-AIへの自然言語指示から設定を変える場合は、任意のスラッシュコマンド文字列を実行せず、許可された設定だけを扱う `runtime_settings` を使用します。`backend`、`llmmode`、`autoreply`、`notify`、`threadmode`、`replysuggestions`、`respondtobots` の `show` / `set` / `reset` を構造化引数で検証し、ネイティブコマンドと同じ保存経路へ反映します。Discordスレッドでは親チャンネルIDを `--channel` に指定します。
+現在の状態・設定を確認する操作は `status` に統一しています。設定確認の旧 `show` は受け付けません。登録項目の一覧は `list`、名前を指定したチームの詳細表示は `/team show id:` を使います。
+
+AIへの自然言語指示から設定を変える場合は、任意のスラッシュコマンド文字列を実行せず、許可された設定だけを扱う `runtime_settings` を使用します。`backend`、`llmmode`、`autoreply`、`notify`、`threadmode`、`replysuggestions`、`respondtobots` の `status` / `set` / `reset` を構造化引数で検証し、ネイティブコマンドと同じ保存経路へ反映します。Discordスレッドでは親チャンネルIDを `--channel` に指定します。
 
 ```bash
 xangi tool runtime_settings --name autoreply --action set --value on
@@ -759,7 +777,7 @@ DiscordとSlackではチャンネルごとに作業ディレクトリを選べ�
 
 | コマンド                                | 説明                                         |
 | --------------------------------------- | -------------------------------------------- |
-| `/workspace show`                       | チャンネル設定と現在のセッション設定を表示   |
+| `/workspace status`                       | チャンネル設定と現在のセッション設定を表示   |
 | `/workspace list`                       | 登録済みワークスペースを表示                 |
 | `/workspace set <name> <absolute-path>` | 絶対パスを登録し、チャンネルへ設定         |
 | `/workspace use <name>`                 | 登録済みワークスペースをチャンネルへ設定     |
@@ -786,11 +804,11 @@ AIは `.env` ファイルを編集して設定を変更できます：
 → AIが `/autoreply` 相当の設定を `settings.json` に保存
 ```
 
-`/autoreply mode:on|off|default|show` で、このチャンネルのメンションなし応答を稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、通常はデフォルトの OFF、スレッド内では親チャンネルの値に戻します。
+`/autoreply mode:on|off|default|status` で、このチャンネルのメンションなし応答を稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、通常はデフォルトの OFF、スレッド内では親チャンネルの値に戻します。
 スレッド内で実行した場合は、親チャンネルではなくそのスレッドを対象にします。スレッドに設定がなければ親チャンネルの値を継承するため、チャンネル全体は OFF のまま特定のスレッドだけ ON にしたり、その逆にしたりできます。
 このコマンドを無効にするには `.env` に `ALLOW_AUTOREPLY_COMMAND=false` を設定してください（デフォルト: 有効）。
 
-`/threadmode mode:on|off|default|show` で、このチャンネルの Discord 発言ごとスレッド返信モードを稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、全体デフォルトの `DISCORD_REPLY_IN_THREAD` に戻します。
+`/threadmode mode:on|off|default|status` で、このチャンネルの Discord 発言ごとスレッド返信モードを稼働中に確認・切替できます（再起動不要、`settings.json` に永続化）。`default` はチャンネル設定を削除し、全体デフォルトの `DISCORD_REPLY_IN_THREAD` に戻します。
 既存スレッド内で受けた発言では、スレッドの元メッセージを `🧵 スレッド元` としてプロンプトに自動追加します。これにより、親チャンネル側の starter message がスレッド履歴に出ない場合でも、最初の話題を文脈として扱えます。
 スレッド内のpromptには、親チャンネル名/IDとスレッド名/IDを常に併記します。AIは追加検索なしで、親チャンネルと現在のスレッドを区別して操作できます。
 Discord スレッド内では、`/notify` / `/threadmode` とチャンネル topic 注入は親チャンネル設定を対象にします。`/autoreply` はスレッド単位で設定でき、スレッドに設定がない場合のみ親チャンネルの値を継承します。
@@ -1085,6 +1103,10 @@ WEB_CHAT_HOST=127.0.0.1
 
 xangiのLocal LLMバックエンドはOpenAI互換API（`/v1/chat/completions`）を使用します。OllamaとvLLM、その他のOpenAI互換サーバー（LM Studio、llama.cpp等）に対応しています。
 
+### 実行中の停止
+
+各プラットフォームの停止操作は、共通のLocal LLM処理に適用されます。停止後は追加のツール実行やLLMへの要求を開始せず、対応する実行中の処理にも停止を伝えます。一部のツールは終了まで待つ場合があり、子孫プロセスや外部サーバー側の処理の停止は保証しません。実行済みの変更や送信は取り消しません。
+
 ### ローカル実行（Ollama）
 
 ```bash
@@ -1145,7 +1167,7 @@ curl -s http://localhost:8001/v1/models | jq '.data[] | {id, max_model_len}'
 
 # Discord 上で
 /models local-llm  # サーバー側のモデル一覧を表示 (Ollama + vLLM 両対応)
-/backend show  # 現在のチャンネルの Local LLM 詳細設定を表示
+/backend status  # 現在のチャンネルの Local LLM 詳細設定を表示
 ```
 
 ### ログ
@@ -1451,6 +1473,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 
 ### セッションタイトル
 
+AIが生成したタイトル内の引用符やカッコは、そのまま保持します。例えば `「fetch failed」エラーの原因` の先頭の `「` を削除しません。
+
 | 変数                 | 説明                                                   | デフォルト |
 | -------------------- | ------------------------------------------------------ | ---------- |
 | `SESSION_TITLE_MODE` | `prefix`: 冒頭切り出し、`ai`: AIによる短いタイトル生成 | `ai`       |
@@ -1533,7 +1557,8 @@ AIエージェント（CLI spawn / Local LLM exec）に渡す環境変数は `sr
 | `WORKSPACE_PATH`                | 作業ディレクトリ（ローカル実行時）                                                                                      | 起動時のカレントディレクトリ |
 | `XANGI_WORKSPACE`               | ワークスペースのホスト側パス（Docker実行時）                                                                            | `./workspace`                |
 | `SKIP_PERMISSIONS`              | デフォルトで許可スキップ（非対話実行で待ち状態を防ぐため既定有効。明示的に `false` で無効化）                           | `true`                       |
-| `TIMEOUT_MS`                    | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `1800000`                    |
+| `TIMEOUT_MS`                    | リクエストの初期タイムアウト（ミリ秒）                                                                                  | `3600000`                    |
+| `LOCAL_LLM_TIMEOUT_MS` | Local LLM応答待ち上限。streaming時はデータ受信間隔の上限（ms） | `1800000` |
 | `XANGI_TOOL_SERVER_PORT`        | 内部ツールサーバーの固定ポート。未設定時は前回ポートを再利用（使用中なら自動割り当て）                                  | 前回ポート再利用             |
 | `XANGI_REMOTE_WORKERS_CONFIG`   | remote worker登録JSONの絶対path。portと同時設定した場合だけ有効                                                        | 未設定                       |
 | `XANGI_REMOTE_WORKER_HOST`      | worker専用WebSocketのbind先。Tailnetから接続する場合は`0.0.0.0`を明示                                                 | `127.0.0.1`                  |
@@ -1618,7 +1643,7 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`。競合時は409
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` は読み取り専用のセッション監視ページ。Sessionを「実行中」「入力待ち（継続可能）」「完了」の3列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は入力待ちカードの状態ラベルと色付きドットで区別する。Sessionに進捗カードがあれば、一覧カードへ現在工程と完了工程数、詳細へ未着手・現在・完了の全工程と補足を文字ラベル付きで表示する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Antigravity、Claude Codeで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗カード・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDK、Antigravityは公式statusline JSONを使用する。Claude CodeのcontextはCLIのresult event、アカウント枠はCLI標準のstream-json制御要求（`get_usage`）を使用する。TUI解析・statusline設定は不要で、モデル呼び出し（枠の消費）も発生しない。この応答形式はCLI側でExperimental扱いのため、形式変更時はClaude Code枠が表示されなくなることがある。APIキー・Bedrock・Vertex経由ではアカウント枠が存在しないため表示されない。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` はセッションの監視・状態切替ページ。Sessionを「作業中」「完了」の2列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は作業中カードの状態ラベルと色付きドットで区別する。Sessionに進捗カードがあれば、一覧カードへ現在工程と完了工程数、詳細へ未着手・現在・完了の全工程と補足を文字ラベル付きで表示する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Antigravity、Claude Codeで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗カード・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDK、Antigravityは公式statusline JSONを使用する。Claude CodeのcontextはCLIのresult event、アカウント枠はCLI標準のstream-json制御要求（`get_usage`）を使用する。TUI解析・statusline設定は不要で、モデル呼び出し（枠の消費）も発生しない。この応答形式はCLI側でExperimental扱いのため、形式変更時はClaude Code枠が表示されなくなることがある。APIキー・Bedrock・Vertex経由ではアカウント枠が存在しないため表示されない。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
 
@@ -1791,7 +1816,7 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_XANGI_COMMANDS`              | XANGI_COMMANDS注入                                                           | `true`                                                           |
 | `LOCAL_LLM_MODEL`                       | 使用するモデル名                                                             | -                                                                |
 | `LOCAL_LLM_API_KEY`                     | APIキー（vLLM等で必要な場合）                                                | -                                                                |
-| `LOCAL_LLM_THINKING`                    | Thinkingモデルの推論を有効にするか                                           | `true`                                                           |
+| `LOCAL_LLM_THINKING`                    | Thinkingモデルの推論を有効にするか                                           | `false`                                                           |
 | `LOCAL_LLM_REASONING_EFFORT`            | OpenAI互換APIへ送る既定`reasoning_effort`（チャンネル設定が優先）             | 未指定（provider既定）                                           |
 | `LOCAL_LLM_MAX_TOKENS`                  | 最大トークン数（API 呼び出しの max_tokens）                                  | `8192`                                                           |
 | `LOCAL_LLM_AGENT_STEPS`                 | 1ターンのagentic iteration上限。未指定/`0`ならモデル終了またはtimeoutまで継続 | 無制限                                                           |
@@ -1816,6 +1841,9 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_READ_MAX_BYTES`              | readツールのファイルサイズ上限（バイト）                                     | `524288`（512KB）                                                |
 | `LOCAL_LLM_READ_JSON_MAX_BYTES`         | readツールでJSONを読むときの上限（バイト）                                   | `5120`（5KB）                                                    |
 | `LOCAL_LLM_WRITE_MAX_BYTES`             | writeツールのコンテンツサイズ上限（バイト）                                  | `524288`（512KB）                                                |
+
+ローカルのOpenAI互換サーバ（vLLM/SGLang）のハイブリッドQwen3モデルには、`LOCAL_LLM_THINKING`を`chat_template_kwargs.enable_thinking`として送ります。ストリーミング・非ストリーミング共通です。明示した`reasoning_effort`が優先され、`none`なら思考OFF、それ以外ならONになります。チャンネル・呼び出し単位のeffortは環境変数の既定値より優先します。モデル名が`qwen3`で始まる場合（名前空間付きも可）が対象で、`thinking`を含む名前は除外します。任意の別名ではサーバ側の設定が必要です。OpenRouter・Ollama・他モデル系統の挙動は変更しません。思考と回答は同じ出力トークン枠を使うため、ONにする場合は十分な枠で動作を検証してください。
+
 
 ### Slack
 
@@ -1934,7 +1962,7 @@ Remote workerはmacOSとLinux/WSL2で`xangi worker install --pair`・`restart`�
 
 ### 実行モデルの確認と履歴
 
-`runtime_settings backend --action show` と Web Chat の `/backend show` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。直近の実行には全バックエンド共通でeffort状態も表示します。providerが実効値を報告した場合はその値を、xangiが明示指定しただけの場合は未確認の設定値を、どちらも無い場合はバックエンド委任・実効値不明と表示します。設定名やエイリアスだけでは実際のモデルやeffortを確認したことにはなりません。
+`runtime_settings backend --action status` と Web Chat の `/backend status` は、次の実行に使う設定と、その会話の直近の実行記録を分けて表示します。直近の実行には全バックエンド共通でeffort状態も表示します。providerが実効値を報告した場合はその値を、xangiが明示指定しただけの場合は未確認の設定値を、どちらも無い場合はバックエンド委任・実効値不明と表示します。設定名やエイリアスだけでは実際のモデルやeffortを確認したことにはなりません。
 
 全バックエンドの実行ごとに、当時の指定モデルとeffort、確認できたモデル名とeffort、確認元、開始・更新時刻、完了・失敗状態を保存します。プロバイダーから取得できた値は「確認済み」、設定しか取得できなければ「設定値・実行未確認」、取得できなければ「不明」です。同じ実行中に複数モデルが報告された場合もすべて表示します。
 
@@ -1969,7 +1997,7 @@ Studio側と本体を対応版の組み合わせで更新してください。�
 
 WebのサイドバーではProjectsとAgentsが並列に並びます。Agentsで担当を選ぶと、その担当との会話を絞り込みます。「新規会話の担当」を選択して新しい会話を作成できます。
 
-Discord/Slackでは `/agent list`、`/agent show`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションを選ぶと登録済みエージェントの候補が表示され、名前またはIDで絞り込めます。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
+Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションを選ぶと登録済みエージェントの候補が表示され、名前またはIDで絞り込めます。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
 
 Agent指定時は、その担当のバックエンド・モデル・推論設定・ワークスペースをまとめて使用します。チャンネルの個別設定は保存したまま適用せず、解除すると元に戻ります。未指定値は全体既定または選択バックエンドの既定値を使用し、異なるバックエンドのモデル名は引き継ぎません。担当指定中に個別のモデル・作業場所を変更する操作は拒否します。
 
@@ -1977,7 +2005,7 @@ Agent指定時は、その担当のバックエンド・モデル・推論設定
 
 `xangi agent delete <ID>` はWebと同じ削除ルールを使用します。チャンネルに設定中、未完了または実行中の会話から参照されている担当は削除できず、参照先を表示します。解除・会話完了後に削除しても会話本文と作業ファイルは残ります。
 
-チャンネルの担当は `DATA_DIR/channel-agents.json` に保存します。Agentの管理はWeb Chatと同じcatalogを使用するため、Web ChatのHTTPサーバーが有効な構成で利用します。CLIからの設定確認は `xangi tool runtime_settings --name agent --action show --platform discord --channel CHANNEL_ID`、設定は `--action set --value AGENT_ID`、解除は `--action reset` です。実行中のAIから自身の担当を変更すると処理中として拒否されるため、Slash CommandかWeb設定画面を使用してください。
+チャンネルの担当は `DATA_DIR/channel-agents.json` に保存します。Agentの管理はWeb Chatと同じcatalogを使用するため、Web ChatのHTTPサーバーが有効な構成で利用します。CLIからの設定確認は `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`、設定は `--action set --value AGENT_ID`、解除は `--action reset` です。実行中のAIから自身の担当を変更すると処理中として拒否されるため、Slash CommandかWeb設定画面を使用してください。
 
 ### エージェントへの依頼
 
@@ -2113,3 +2141,85 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 `.env` の `AGENT_PARENT_CHECK_INTERVAL_MS` は確認・再試行間隔（既定30000ミリ秒）、`AGENT_PARENT_PROGRESS_INTERVAL_MS` は実行中の経過報告間隔（既定180000ミリ秒）です。どちらも1000〜86400000の整数で、変更後は再起動が必要です。経過報告は確認タイミングで送るため、実際の間隔は確認間隔に丸められます。進捗率は推測せず実行中／実行待ちと経過時間を報告します。
 
 再通知・経過報告は、新規依頼または明示的に再実行した際に通知追跡を有効にした実行だけを対象にします。追跡情報のない旧記録は、未通知印がなくても自動通知しません。Webの結果返却は既存セッションを更新し、終了済み・存在しない会話のルーティング補完で空の会話を生成しません。
+
+### Local LLMの不完全なツール呼び出し
+
+Local LLMのツール生成が出力上限に達した場合、または必須引数が欠けた場合、その応答内のツールは一切実行しません。小さい範囲の書き込み・編集に分けるよう最大2回再生成を促し、回復しなければ失敗として停止します。既に成功した過去の変更は保持されます。`incomplete_generation`ログに終了理由・出力トークン数・不足引数を記録します。
+
+## シークレットモード（極力ログを残さない会話）
+
+Discordのスラッシュコマンドでは、`/threadmode` と同じく `mode` が必須です。`on (開始)`・`off (終了)`・`status (現在の設定を表示)` から選択します。
+
+会話を通常の履歴として保存したくないときに使います。完全な無記録・匿名化・AI提供元のゼロ保持を保証する機能ではありません。
+
+- Discord / Telegram / LINE: 同じ会話先で `/secret on` を送信し、開始メッセージを確認してから内容を送ってください。`/secret status` で確認、`/secret off` で終了します。`/new` など明示的な会話リセットも終了操作です。切り替えコマンドと機密内容を一緒に送らないでください。
+- Slack: `/secret on` で専用スレッドを作成します。開始確認後、そのスレッドへ返信してください。チャンネル本体への投稿には適用しません。`/secret off/status` は同じ利用者がそのチャンネルで開始したスレッドが対象です。Slack App側にコマンドの登録が必要です（[Slack設定](slack-setup.md)）。
+- Web: サイドバーの「シークレット」で新規会話を作成します。会話上部の表示でモードを確認できます。`/secret on/off/status` も使用できます。「完了」または「削除」でメモリ内の会話を破棄します。ペイン・ブラウザタブを閉じるだけではサーバー側の会話は終了しません。
+
+Discord / Slack / Telegram / LINEで終了した後は、次の通常メッセージを受け取った時点で通常セッションを作成します。終了操作だけでは空の通常セッションを作成しません。
+
+Discord・Slackでは開始時も通常セッションを経由せず、直接シークレットを作成します。会話がない状態での状態確認・終了操作ではセッションを作りません。通常メッセージとして送るコマンド・対応する日本語の依頼も同様です。既存の通常会話の履歴は保持します。Discordの切り替え・確認は送信先の会話に適用し、操作だけで新しいスレッドは作りません。Slackの通常メッセージによる状態確認・終了も送信先の会話が対象で、スラッシュコマンドは専用スレッドを対象とします。
+
+Discordではシークレット中もスレッドモードの設定に従います。チャンネル本体でシークレットを開始してから投稿すると、自動作成したスレッドにもシークレット状態を引き継ぎます。スレッド名は本文から作らず「シークレット」にします。親チャンネルと各スレッドは独立した会話で、終了操作は実行した会話先だけに適用します。既存スレッドのモードは変更しません。スレッドモードがOFFの場合やスレッド作成に失敗した場合は、元のシークレット会話で応答します。
+
+- Web API: `POST /api/sessions` のJSONに `"secret": true` を指定します。以後は返された `sessionId` を指定してください。`POST /api/chat` の切り替えコマンドは `secret` SSEイベントで新しい `appSessionId` を返します。
+- Even Terminal: `/api/prompt` の `/secret on/off/status`、または新規作成時の `"secret": true` に対応します。返された新しい `sessionId` を使用します。
+- device / pet inbox: `"secret": true` で新規作成、または既存のシークレット `appSessionId` を指定します。応答は返された会話専用のevents URLで受け取れます。
+
+### Slackの通常投稿・自然文で操作する
+
+Slack Appへのスラッシュ登録を使わず、通常のメッセージとして `@xangi /secret on` を送ることもできます。`@xangi` はBotへの実際のメンションです。メンションを取り除いた本文がコマンドとして処理されます。Botが開始確認を返した会話先で次の内容を送ってください。スレッド返信設定が有効ならそのスレッド、無効ならチャンネルの会話が対象です。既存スレッドへ送る場合も同様です。
+
+**すべてのスラッシュコマンドがメンション経由で使えるわけではありません。** Slackの通常投稿で明示的に処理するものは次のとおりです。
+
+- `@xangi /secret on|off|status`: シークレット切り替え・確認。
+- `@xangi /new`: その会話をリセット。`!new`、`new` も対応。
+- `@xangi /stop`: その会話の処理を停止。`!stop`、`stop` も対応。
+- `@xangi !delete [ts]`: Bot投稿の削除。通常投稿では `/delete` ではなく `!delete`（引数なしなら `delete` も可）。
+
+`/models`、`/settings`、`/backend`、`/agent`、`/skill`、`/restart`、`/delete` はSlackに登録したスラッシュコマンドを使用します。メンション後にこれらを書いても、専用処理にはならず通常のAI入力です。通常投稿で有効なコマンドも、権限・Botの応答条件を満たす必要があります。
+
+シークレット操作は自然文でも指定できます。Slackでは、例えば次のようにメンション付きで単独の依頼を送ります。
+
+- `@xangi シークレットにして` / `@xangi シークレットモードを開始してください`
+- `@xangi シークレットを終了して` / `@xangi シークレットモードを解除してください`
+- `@xangi 今シークレット？` / `@xangi シークレットの状態を教えて`
+
+Discord・Telegram・LINE・Web・Web APIのchat・Even Terminalでも同じ自然文を認識します。AIの判断や返事ではなく、xangi本体が定型の依頼を検出して実行します。引用・否定・説明文・機密本文を混ぜたメッセージでは切り替えません。開始確認を待ってから別メッセージで内容を送ってください。操作依頼自体は開始前の通常モードで受信され、記録される場合があります。自然文はあらゆる言い換えに対応するものではなく、上記の表現または `/secret` を使ってください。
+
+### 保存を抑止する範囲
+
+xangiの会話JSONL・圧縮チェックポイント・セッション本文/タイトル/利用量・ツール実行ログ・監視履歴・ターン計測をディスクへ保存しません。AIによるタイトル生成、全体向けイベント配信も抑止します。応答表示用の接続（WebのSSE、会話IDを指定した端末SSE）は通常どおり利用できます。
+
+会話はサーバープロセスのメモリ内にだけ保持し、終了・サーバー再起動で失われます。再起動後、外部チャットの次の会話は通常モードです。継続用履歴は直近20件・最大約64,000文字、画面用履歴は最大100件・約256,000文字に制限します。AIの思考過程・ツール結果全体は再送せず、各ターンで新しいバックエンド実行を使うため、通常のresumeと完全には同じ動作になりません。
+
+終了後にDiscord/Slackからシークレット発言が再取得されないよう、その会話先の**自動履歴先読みを以後も停止**します。このための会話先IDだけは `sessions.json` に保持します（本文・シークレットセッションIDは含めません）。通常のxangi会話ログによる継続には影響しません。LINE/Telegramのアイドルリセットはシークレット中には行いません。
+
+### AIバックエンド
+
+| バックエンド | シークレット時の対応 |
+| --- | --- |
+| Codex | `exec --ephemeral`。保存済みセッションをresumeせず、LINEのapp-server設定時もexecを使用 |
+| Claude Code | 非常駐の `-p --no-session-persistence`。auto memory・hooksの設定は変更しない |
+| Cursor | xangi非保存＋毎ターン新規実行。確認したCLIに会話単位の非保存スイッチなし。サービスのPrivacy Modeはアカウント側設定で、xangiから変更しない |
+| Grok | xangi非保存＋毎ターン新規実行。確認したCLIに会話単位の非保存スイッチなし。CLIの会話履歴、サービス側の保持は残り得る。Grok CLIの `/privacy`・ZDRは利用者/アカウント側設定 |
+| Antigravity | xangi非保存＋毎ターン新規実行、`--log-file` をOSの破棄先に指定。CLIログ以外の会話・artifactは残り得る |
+| GitHub Copilot | xangi非保存＋毎ターン新規実行、`--log-level none`、`--no-remote`、`--no-remote-export`。CLIのセッション履歴は残り得る |
+| OpenCode | xangi非保存＋毎ターン新規実行、起動プロセス限定のinline configで `share: disabled`。ローカルDB・CLIログは残り得る |
+| Local LLM | xangiの会話・ツール・圧縮ログを抑止。Ollama/vLLM等の接続先サーバーに共通の非保存指定はないため、サーバーの設定は変更しない |
+| OpenRouter | xangi非保存。リクエストごとに `provider.data_collection: deny` と `provider.zdr: true` を強制し、通常設定で緩めていても適用。対応経路がなければ失敗し、保持ありへ切り替えない |
+| 拡張AIバックエンド | 共通抑止に加えリクエストへ `secret: true` を付与。拡張側が尊重するかはその実装次第 |
+
+チーム実行は独立した子タスクに記録が残るため、このモードでは単体AIを選んでください。
+
+### 残る可能性のあるもの
+
+Discord等の投稿、AI提供元/CLI/SDK/管理者hookの記録、既存ログ、添付・生成ファイル、OSのswap・クラッシュダンプ、外部ツールが保存したデータは対象外です。プロセス稼働状況など本文を含まない運用情報も残る場合があります。既存ログは削除しません。
+
+AIへ記録禁止の追加指示は送りません。日記・memory・FACT・外部検索インデックス等への自動記録やファイル書き込みは、利用者の指示・AGENTS.md・スキル・AI側のauto memory等の設定に従って行われ、内容が残る場合があります。記録の許可・停止は利用者が管理してください。
+
+ワークスペースの `UserPromptSubmit`（入力補足）・`Stop`（終了判定）フックも通常と同じ設定・適用条件で動作します。シークレットを理由に無効化せず、フック自身が行う保存・外部送信は抑止しません。Claude Codeのauto memory・hooksも設定を上書きしません。ファイル書き込みを隔離するsandboxではなく、明示的なファイル作成や外部操作の結果も残ります。CLIの非保存オプションに非対応の場合は実行エラーにし、保存ありの通常実行へ自動で切り替えません。
+
+参考: [Codex CLI](https://developers.openai.com/codex/cli/reference)、[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[Claude Code settings](https://code.claude.com/docs/en/settings-reference)。
+
+AI別の確認資料: [Cursor CLI設定](https://cursor.com/docs/cli/reference/configuration)、[Grok CLI](https://docs.x.ai/build/cli/reference)、[Grok ZDR](https://docs.x.ai/developers/faq/security)、[Antigravity CLI](https://www.antigravity.google/docs/cli/reference/)、[Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)、[OpenCode設定](https://opencode.ai/docs/config/)、[OpenRouter ZDR](https://openrouter.ai/docs/guides/features/zdr)。2026-10-09時点のCLI help/公式資料を確認。未確認の非保存フラグは付与しません。

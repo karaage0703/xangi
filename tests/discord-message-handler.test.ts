@@ -7,6 +7,7 @@ import {
   sendDiscordCompletedResult,
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
+import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
 import { clearSessions, initSessions, setSession } from '../src/sessions.js';
 import { initSettings } from '../src/settings.js';
@@ -31,8 +32,17 @@ describe('shouldProcessDiscordMessage', () => {
   });
 });
 
-describe('processPrompt の利用上限エラー', () => {
-  it('Claude Code の session limit を案内し、自動フォローアップしない', async () => {
+describe('processPrompt error completion', () => {
+  it.each([
+    [
+      "You've hit your session limit · resets 5am (Asia/Tokyo)",
+      '💳 バックエンドの利用上限に達しています',
+    ],
+    ['LLM request timed out after 300000ms', '⏱️ タイムアウトしました'],
+    ['This operation was aborted', '❌ エラーが発生しました'],
+    ['Process exited unexpectedly with code 1', '💥 AIプロセスが予期せず終了しました'],
+    ['Some random error', '❌ エラーが発生しました'],
+  ])('ends %s without follow-up and accepts the next turn', async (errorMessage, display) => {
     const testDir = mkdtempSync(join(tmpdir(), 'xangi-session-limit-'));
     clearSessions();
     initSessions(testDir);
@@ -41,9 +51,7 @@ describe('processPrompt の利用上限エラー', () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const replyMessage = { id: 'reply', edit };
     const sendInitial = vi.fn().mockResolvedValue(replyMessage);
-    const runStream = vi.fn().mockRejectedValue(
-      new Error("You've hit your session limit · resets 5am (Asia/Tokyo)")
-    );
+    const runStream = vi.fn().mockRejectedValue(new Error(errorMessage));
     const run = vi.fn();
     const message = {
       id: 'source',
@@ -67,28 +75,36 @@ describe('processPrompt の利用上限エラー', () => {
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
-      const result = await processPrompt(
-        message as never,
-        { runStream, run } as never,
-        '確認',
-        false,
-        'session-limit-test',
-        {
-          agent: { backend: 'claude-code', config: { workdir: testDir } },
-          discord: { streaming: false, showButtons: false, replySuggestions: false },
-        } as never,
-        target as never,
-        { id: 'user', name: 'user', messageId: 'source', react: false }
-      );
+      const coordinator = new DiscordTurnCoordinator();
+      const turn = () =>
+        processPrompt(
+          message as never,
+          { runStream, run } as never,
+          '確認',
+          false,
+          'session-limit-test',
+          {
+            agent: { backend: 'claude-code', config: { workdir: testDir } },
+            discord: { streaming: false, showButtons: false, replySuggestions: false },
+          } as never,
+          target as never,
+          { id: 'user', name: 'user', messageId: 'source', react: false }
+        );
 
-      expect(result).toBeNull();
+      const first = await coordinator.tryRun('session-limit-test', turn);
+      expect(first).toEqual({ accepted: true, result: null });
+      expect(coordinator.isBusy('session-limit-test')).toBe(false);
       expect(runStream).toHaveBeenCalledTimes(1);
       expect(run).not.toHaveBeenCalled();
       expect(edit).toHaveBeenCalledWith({
-        content: expect.stringContaining('💳 バックエンドの利用上限に達しています'),
+        content: expect.stringContaining(display),
         components: [],
       });
       expect(target.outputChannel.send).not.toHaveBeenCalled();
+      const next = await coordinator.tryRun('session-limit-test', turn);
+      expect(next.accepted).toBe(true);
+      expect(runStream).toHaveBeenCalledTimes(2);
+      expect(run).not.toHaveBeenCalled();
     } finally {
       errorLog.mockRestore();
       clearSessions();

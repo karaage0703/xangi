@@ -126,9 +126,10 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `/delete`   | 直前または指定したbotメッセージを削除（Usage Hint: `[message-ts-or-link]`） |
 | `/skill`    | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`）                   |
 | `/settings` | 現在の設定を表示                                                            |
+| `/secret` | Secret mode: `[on|off|status]` |
 | `/models`   | 利用可能なモデル一覧を表示（Usage Hint: `[backend]`）                       |
-| `/agent` | 担当の一覧・設定・解除（Usage Hint: `list\|show\|set <ID>\|reset`） |
-| `/backend`  | チャンネル／全体のバックエンドを即時切替（Usage Hint: `show\|set <backend> [--model <model>] [--effort <effort>] [--scope channel\|global]\|reset`）  |
+| `/agent` | 担当の一覧・設定・解除（Usage Hint: `list\|status\|set <ID>\|reset`） |
+| `/backend`  | チャンネル／全体のバックエンドを即時切替（Usage Hint: `status\|set <backend> [--model <model>] [--effort <effort>] [--scope channel\|global]\|reset`）  |
 | `/restart`  | xangiのgraceful restartを要求                                               |
 
 ⚠️ Socket Mode では Request URL は不要です。

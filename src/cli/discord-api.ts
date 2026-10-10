@@ -6,6 +6,7 @@
  */
 
 import { ValidationError } from '../errors.js';
+import { getActiveSessionId, updateSessionTitle } from '../sessions.js';
 
 const API_BASE = 'https://discord.com/api/v10';
 const MAX_MESSAGE_LENGTH = 2000;
@@ -414,6 +415,43 @@ async function discordDelete(
   return '🗑️ メッセージを削除しました';
 }
 
+async function discordThreadRename(
+  flags: Record<string, string>,
+  context: DiscordCommandContext | undefined,
+  tracker: DiscordRateLimitTracker
+): Promise<string> {
+  const channelId = resolveChannelId(flags, context, 'discord_thread_rename');
+  const name = flags['name']?.trim();
+  if (!name || [...name].length > 100) {
+    throw new ValidationError('discord_thread_rename: name must be 1–100 characters.');
+  }
+  const thread = (await discordFetch(
+    `/channels/${channelId}`,
+    undefined,
+    tracker
+  )) as DiscordChannel;
+  if (![10, 11, 12].includes(thread.type)) {
+    throw new ValidationError('discord_thread_rename: target must be a Discord thread.');
+  }
+  const updated = (await discordFetch(
+    `/channels/${channelId}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+    tracker
+  )) as DiscordChannel;
+  if (updated.id !== channelId || updated.name !== name) {
+    throw new Error('discord_thread_rename: Discord returned an unexpected thread name or ID.');
+  }
+  const appSessionId = getActiveSessionId(channelId);
+  if (appSessionId) {
+    try {
+      updateSessionTitle(appSessionId, updated.name);
+    } catch {
+      return `✅ スレッド名を「${updated.name}」に変更しました (ID:${channelId})。⚠️ セッション一覧のタイトル同期に失敗しました。`;
+    }
+  }
+  return `✅ スレッド名を「${updated.name}」に変更しました (ID:${channelId})`;
+}
+
 async function discordThreadLeave(
   flags: Record<string, string>,
   context: DiscordCommandContext | undefined,
@@ -537,6 +575,9 @@ export async function discordApi(
       break;
     case 'discord_delete':
       result = await discordDelete(flags, tracker);
+      break;
+    case 'discord_thread_rename':
+      result = await discordThreadRename(flags, context, tracker);
       break;
     case 'discord_thread_leave':
       result = await discordThreadLeave(flags, context, tracker);

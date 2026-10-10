@@ -404,7 +404,7 @@ exit 0
       webChatAccess: 'tailscale',
     });
     expect(readFileSync(join(workspace, 'BOOTSTRAP.md'), 'utf8')).toContain(
-      'すべて日本語で一度に一つずつ質問'
+      'Ask one question at a time in Japanese'
     );
 
     unlinkSync(join(workspace, 'BOOTSTRAP.md'));
