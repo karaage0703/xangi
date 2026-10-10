@@ -94,7 +94,7 @@ describe('Web slash command adapter', () => {
     expect(result).toEqual({
       kind: 'chat',
       displayMessage: '/skill demo "two words"',
-      message: 'スキル「demo」を実行してください。引数: two words',
+      message: 'Run the skill "demo". Arguments: two words',
     });
     await expect(executeWebCommand('/skill missing', { workdir })).rejects.toThrow(
       'スキル `missing` は見つかりません'
@@ -261,7 +261,7 @@ describe('Web slash command adapter', () => {
     };
 
     await expect(executeWebCommand('/llmmode lite', context)).rejects.toThrow(
-      '使い方: /llmmode show|agent|chat|default'
+      '使い方: /llmmode status|agent|chat|default'
     );
   });
 
@@ -274,7 +274,7 @@ describe('Web slash command adapter', () => {
       backendDefaultSource: 'Project「実装」',
     };
 
-    const shown = await executeWebCommand('/backend show', context);
+    const shown = await executeWebCommand('/backend status', context);
     expect(shown.kind).toBe('message');
     if (shown.kind === 'message') {
       expect(shown.message).toContain('Codex');

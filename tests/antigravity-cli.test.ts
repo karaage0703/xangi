@@ -76,6 +76,11 @@ describe('AntigravityRunner', () => {
     return (getMockProcesses as () => any[])();
   }
 
+  it('sends secret diagnostic logs to the null device', async () => {
+    const { args } = await getSpawnArgs(new AntigravityRunner({}), 'run', { secret: true });
+    expect(args).toEqual(expect.arrayContaining(['--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null']));
+  });
+
   async function waitForProcess(count = 1): Promise<any> {
     for (let i = 0; i < 25; i += 1) {
       const processes = await getProcesses();
@@ -319,7 +324,7 @@ describe('AntigravityRunner', () => {
 
     expect(command).toBe('agy');
     expect(args).toContain('--dangerously-skip-permissions');
-    expect(args[args.indexOf('--print-timeout') + 1]).toBe('1770s');
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('3570s');
     expect(args).toContain('-p');
     expect(args[args.indexOf('--output-format') + 1]).toBe('json');
   });

@@ -1,3 +1,4 @@
+import { privacyConsole as console } from './privacy-console.js';
 import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
 

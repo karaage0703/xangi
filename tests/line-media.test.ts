@@ -61,23 +61,23 @@ describe('スタンプのテキスト化', () => {
   it('No.7 キーワードを先頭3個だけ使う', () => {
     expect(
       stickerToText({ keywords: ['OK', 'okie', 'super', 'great', 'alright'] })
-    ).toBe('ユーザーがスタンプを送った。意味: OK, okie, super');
+    ).toBe('The user sent a sticker. Meaning: OK, okie, super');
   });
 
   it('No.8 メッセージスタンプは入力文字を主に置く', () => {
     expect(stickerToText({ keywords: ['happy'], text: 'ありがとう' })).toBe(
-      'ユーザーがスタンプを送った。「ありがとう」（意味: happy）'
+      'The user sent a sticker. 「ありがとう」（Meaning: happy）'
     );
   });
 
   it('No.8b キーワードが3個未満でもそのまま使う', () => {
     expect(stickerToText({ keywords: ['happy'] })).toBe(
-      'ユーザーがスタンプを送った。意味: happy'
+      'The user sent a sticker. Meaning: happy'
     );
   });
 
   it('No.9 キーワードのないスタンプでも種別は伝わる', () => {
-    expect(stickerToText({})).toBe('ユーザーがスタンプを送った。');
+    expect(stickerToText({})).toBe('The user sent a sticker. ');
   });
 });
 
@@ -91,7 +91,7 @@ describe('位置情報のテキスト化', () => {
         longitude: 139.692566,
       })
     ).toBe(
-      'ユーザーが位置情報を送った。LINE本社 / 東京都新宿区西新宿1-2-3 (35.687574, 139.692566)'
+      'The user sent a location. LINE本社 / 東京都新宿区西新宿1-2-3 (35.687574, 139.692566)'
     );
   });
 
@@ -102,29 +102,29 @@ describe('位置情報のテキスト化', () => {
         latitude: 35.687574,
         longitude: 139.692566,
       })
-    ).toBe('ユーザーが位置情報を送った。東京都新宿区西新宿1-2-3 (35.687574, 139.692566)');
+    ).toBe('The user sent a location. 東京都新宿区西新宿1-2-3 (35.687574, 139.692566)');
   });
 
   it('No.11b 住所も題名もなくても座標は渡る', () => {
     expect(locationToText({ latitude: 35.687574, longitude: 139.692566 })).toBe(
-      'ユーザーが位置情報を送った。(35.687574, 139.692566)'
+      'The user sent a location. (35.687574, 139.692566)'
     );
   });
 });
 
 describe('メディア種別の通知文', () => {
   it('取得できなかった動画は種別だけ伝える', () => {
-    expect(mediaNoticeText('video')).toBe('ユーザーが動画を送った。');
+    expect(mediaNoticeText('video')).toBe('The user sent 動画.');
   });
 
   it('ファイルは名前を添える', () => {
     expect(mediaNoticeText('file', '見積書.pdf')).toBe(
-      'ユーザーがファイルを送った。名前: 見積書.pdf'
+      'The user sent ファイル. Name: 見積書.pdf'
     );
   });
 
   it('音声は種別だけ伝える', () => {
-    expect(mediaNoticeText('audio')).toBe('ユーザーが音声を送った。');
+    expect(mediaNoticeText('audio')).toBe('The user sent 音声.');
   });
 });
 
@@ -140,16 +140,16 @@ describe('添付だけが届いたときの指示文', () => {
   it('種別・LINEの制約・文脈での判断・質問の許可をすべて含む', () => {
     expect(attachmentOnlyPrompt('ファイル')).toBe(
       [
-        'ユーザーがファイルを送った。',
-        '- LINEでは画像やファイルにテキストを添えられないため、指示は無い',
-        '- 内容を確認し、これまでの文脈に応じて答える',
-        '- 文脈から求められることが分からない場合は、ユーザーに質問を返す',
+        'The user sent ファイル.',
+        '- LINE cannot include text with images or files, so no instruction accompanies this attachment',
+        '- Inspect the content and respond based on the conversation so far',
+        '- Ask the user if the desired action is unclear from context',
       ].join('\n')
     );
   });
 
   it('種別ラベルが差し替わる', () => {
-    expect(attachmentOnlyPrompt('画像')).toContain('ユーザーが画像を送った。');
+    expect(attachmentOnlyPrompt('画像')).toContain('The user sent 画像.');
     expect(mediaLabel('video')).toBe('動画');
     expect(mediaLabel('audio')).toBe('音声');
   });

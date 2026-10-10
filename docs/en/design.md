@@ -68,6 +68,8 @@ Based on `discord.js` v14. Split into modules by responsibility:
 - `tool-history.ts` — Tool history formatting/accumulation (display lines capped via `TOOL_HISTORY_MAX_LINES`)
 - `message-utils.ts` — Discord message link expansion, reply quoting, thread-starter quoting, channel-mention expansion
 
+- On error, preserve partial text and tool history, display the failure, and finish the turn. Do not invoke agentRunner.run for a report or keep the coordinator busy with a follow-up turn.
+
 Behavior:
 
 - Per-channel / per-thread session isolation (`contextKey = discord:<channelId>`; when thread-reply mode creates a new thread, `discord:<threadId>`)
@@ -90,7 +92,7 @@ Based on `@slack/bolt`.
 - Handles normal `message` events, user `/me` posts (`me_message`), and attachment-bearing `file_share` events, while ignoring other Slack system subtypes such as channel renames
 - Handles follow-up messages without mentions inside active threads that xangi started from a mention, while ignoring unrelated thread replies in non-auto-reply channels
 - Keeps Slack API posting on `channelId`, but uses `runKey = contextKey` for runner / timeout / Stop / processing state so separate threads in the same Slack channel do not share an execution slot
-- Resolves backend settings with the parent `channelId` while keeping runner execution on `runKey`. `/backend set/show/reset` updates both `CHANNEL_OVERRIDES` and the live resolver, then discards existing thread sessions and runners in that channel so the next message switches without a restart
+- Resolves backend settings with the parent `channelId` while keeping runner execution on `runKey`. `/backend set/status/reset` updates both `CHANNEL_OVERRIDES` and the live resolver, then discards existing thread sessions and runners in that channel so the next message switches without a restart
 - Prevents duplicate runs with a per-`runKey` busy lock, message timestamp de-dupe, and message-handler bot-mention skip so `app_mention` owns mention events
 - Shows formatted tool-history lines while a Slack turn is running, then exposes chronological commentary and tool history through a user-only `History` button in the source thread. The button retains a turn reference so persisted history can be restored after a process restart
 - Slash commands and reactions supported
@@ -125,7 +127,7 @@ With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless set
 - Monitor accumulates each agent turn's wall-clock duration per Session in `DATA_DIR/sessions.json` and shows the cumulative processing time on both cards and the detail panel. `Chat`, `Web`, and `Schedule` are independent toggles, with only `Chat` and `Web` enabled by default; enabled types share the same token/time presentation and can appear together. Scheduler Session titles use the schedule label instead of the full execution prompt, and long card titles are truncated to one line; pre-feature scheduler history is explicitly labeled as an approximation from Session creation to update
 - The completed-Session range is independent of the `Chat`, `Web`, and `Schedule` toggles, offering 24 hours, 7 days, 30 days, or all history with 24 hours as the default
 - Project filtering happens server-side in both `GET /api/sessions` and `GET /api/sessions/stream`. Typing in search no longer reconnects SSE, and the redundant initial search request is skipped
-- `/monitor` is the session-monitoring mode of the same React app. It presents Sessions in three columns: Running, Waiting for input, and Completed, without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running; after the response completes it is omitted from both Waiting and Completed while its conversation log remains in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Waiting and use the card's status label and colored dot instead of a separate column. The detail panel can open the conversation or mark the Session completed through `POST /api/sessions/:id/close` while preserving history. For multi-step work, the agent explicitly calls the `progress_card` tool to replace the Session plan. The durable plan stores `pending`, `in_progress`, and `completed` steps plus an optional note in `DATA_DIR/sessions.json`, with at most one current step. Collapsed Monitor cards show the current step and completed-step count, while details show every step with textual Pending / Current / Completed labels. Neither view infers a percentage. Completed history keeps the existing actions for continuing in the original Discord conversation or branching into a history-inheriting Web conversation. Account windows retrieved from an official structured source are shown regardless of whether that provider has a current Session and refreshed from `GET /api/usage` every 60 seconds. Provider cards can be collapsed or hidden. Per-Session context usage and progress-card updates are persisted and pushed in SSE snapshots. Chat also presents the model, the currently effective runner cwd, and context usage in a compact status line below each pane. Each snapshot resolves cwd from the Session workspace snapshot, or the current default workdir when absent, matching the runner workdir injected into every turn's runtime context. `GET /api/sessions/stream` carries turn-boundary, context, and progress snapshots, so the Session list is not polled.
+- `/monitor` is the session-monitoring mode of the same React app. It presents Sessions in two columns: Working and Completed, without exposing the internal Open / Closed lifecycle. A stateless extension backend with no provider-side context appears only while its request is running; after the response completes it is omitted from both Working and Completed while its conversation log remains in Chat. Completed Sessions are limited to the last 24 hours by default. Errors and aborted turns stay in Working and use the card's status label and colored dot instead of a separate column. Cards and details use `POST /api/sessions/:id/close` to complete and `POST /api/sessions/:id/reopen` to return the same Session to Working, with Undo and desktop drag-and-drop. Running Sessions reject completion. Reopening restores activeByContext, preserves history and provider context, persists and notifies subscribers without invoking a model. It rejects another active Session in that context or scheduler history with 409. For multi-step work, the agent explicitly calls the `progress_card` tool to replace the Session plan. The durable plan stores `pending`, `in_progress`, and `completed` steps plus an optional note in `DATA_DIR/sessions.json`, with at most one current step. Collapsed Monitor cards show the current step and completed-step count, while details show every step with textual Pending / Current / Completed labels. Neither view infers a percentage. Completed history keeps the existing actions for continuing in the original Discord conversation or branching into a history-inheriting Web conversation. Account windows retrieved from an official structured source are shown regardless of whether that provider has a current Session and refreshed from `GET /api/usage` every 60 seconds. Provider cards can be collapsed or hidden. Per-Session context usage and progress-card updates are persisted and pushed in SSE snapshots. Chat also presents the model, the currently effective runner cwd, and context usage in a compact status line below each pane. Each snapshot resolves cwd from the Session workspace snapshot, or the current default workdir when absent, matching the runner workdir injected into every turn's runtime context. `GET /api/sessions/stream` carries turn-boundary, context, and progress snapshots, so the Session list is not polled.
 
 The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
 - `/workspace` is the workspace browser/editor mode of the same React app. `workspace-browser.ts` accepts workspace-relative paths and normalizes absolute paths that remain inside `WORKSPACE_PATH`; hidden/state/dependency/build paths, symlinks, non-text files, and files larger than 1 MiB remain unavailable. Web Chat text-file links become `/workspace?path=...&line=...` deep links that open the parent directory and file, then select the requested line. `MEDIA:` inside fenced, inline, or indented code is excluded from media splitting so only real media notation leaves the Markdown stream. Markdown YAML frontmatter provides `tags` for filtering, and files can be sorted by name or modification time. Saves compare the SHA-256 captured at read time and atomically rename a temporary file in the same directory. External changes return 409 so the UI can require a reload
@@ -244,6 +246,8 @@ Session-oriented Runner implementations (Claude Code / Codex / Cursor / Grok / A
 `EventEmitter`s and emit `timeout-started` / `timeout-extended` / `timeout-cleared`
 events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refresh the UI. Single-request HTTP adapters do not expose these timeout events.
 
+Codex CLI run/runStream reset completion state on turn.started and require both turn.completed and process exit 0 for success. Missing completion raises IncompleteAgentTurnError, suppressing successful response persistence, automatic resume retries, and error follow-ups. A turn.failed event remains a failure even if the process exits with code 0.
+
 ### Activity Store (activity-store.ts)
 
 `runWithBubbleEvents` updates a lightweight snapshot of the current turn from the shared lifecycle.
@@ -258,6 +262,8 @@ events so upstream consumers (web-chat SSE / Discord bot / Slack bot) can refres
 - `GET /api/sessions` and the Even Terminal compatible `GET /api/sessions?provider=...` read the same activity data
 
 ### Timeout Controller (timeout-controller.ts)
+
+The whole-turn deadline uses `TIMEOUT_MS` (60 minutes by default), independently of `LOCAL_LLM_TIMEOUT_MS` (30 minutes). Non-streaming calls are timed through body completion; streaming calls monitor initial reception and gaps between received chunks. Data resets only the receive deadline, never the whole-turn deadline.
 
 A shared helper that centralizes per-channel timeout state for every runner:
 
@@ -524,11 +530,11 @@ Note: individual env vars at startup (e.g. `LOCAL_LLM_TOOLS=false`) are **ignore
 
 **`/llmmode` slash command (index.ts):**
 
-`/llmmode <agent|chat|default|show>` flips the per-channel mode interactively. `agent/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `show` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
+`/llmmode <agent|chat|default|status>` flips the per-channel mode interactively. `agent/chat` invokes `BackendResolver.setChannelLocalLlmMode()` for in-memory + `.env` persistence. `default` clears the override. `status` displays the currently resolved mode. The command is disabled by `ALLOW_LLM_MODE_COMMAND=false` (default `true`).
 
 **`/llmeffort` slash command:**
 
-`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|show>` persists the parent channel's `localLlmReasoningEffort` in memory and `.env`. The Local LLM runner injects it into each chat and streaming request, and `LLMClient` emits the top-level OpenAI-compatible `reasoning_effort` field. `default` removes the channel override.
+`/llmeffort <none|minimal|low|medium|high|xhigh|max|default|status>` persists the parent channel's `localLlmReasoningEffort` in memory and `.env`. The Local LLM runner injects it into each chat and streaming request, and `LLMClient` emits the top-level OpenAI-compatible `reasoning_effort` field. `default` removes the channel override.
 
 **Tool Deferred Loading (`tool_search`, Codex / Claude Code style):**
 
@@ -778,9 +784,9 @@ External process (build script / CI / watcher cron)
 
 **Security:**
 
-- Explicit opt-in via `TRIGGER_ENABLED` (default: false)
+- `TRIGGER_ENABLED` enables triggers when unset, empty, or `true`; `false` and invalid values disable them. Execution and prompt generation share the predicate in `trigger-config.ts`
 - HTTP requests require Bearer auth with `XANGI_TRIGGER_TOKEN`. If the token is not configured, all requests are rejected even when enabled (the tool-server binds 0.0.0.0, so unauthenticated acceptance would allow arbitrary prompt injection over the network). Token comparison is constant-time
-- `xangi tool trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still requires the opt-in
+- `xangi tool trigger` (via `/api/execute`) follows the existing trust boundary of local commands and skips token verification, but still rejects requests when the feature is disabled
 - Abuse protection: per-source rate limiting (`TRIGGER_MIN_INTERVAL_MS`, default 10s, `429` on excess) and a concurrent-run guard (`409` while the same source is running). Message length capped at 4000 chars
 
 ### GitHub App Authentication (github-auth.ts)
@@ -1235,7 +1241,7 @@ Update the host and Studio together. For rollback, stop both services and restor
 
 Projects and Agents are sibling entries in the Web sidebar. Choose an Agent to filter its conversations, or choose a new-conversation Agent before creating a chat.
 
-Discord/Slack support `/agent list`, `/agent show`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
+Discord/Slack support `/agent list`, `/agent status`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
 
 A selected Agent supplies the complete backend/model/reasoning/workspace bundle. Individual channel settings remain stored but inactive; clearing the Agent restores them. Missing values use instance or backend defaults, never a model belonging to another backend. Individual model/workspace mutations are rejected while an Agent is selected.
 
@@ -1243,7 +1249,7 @@ Changing or clearing an Agent is rejected during processing and starts a new ses
 
 `xangi agent delete <ID>` shares Web deletion rules. Channel bindings and open/running conversations block deletion and are identified in the error. After unbinding and closing conversations, deleting an Agent preserves conversation text and workspace files.
 
-Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action show --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
+Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
 
 ### Agent delegation
 
@@ -1331,3 +1337,9 @@ The host periodically checks running work and undelivered terminal results witho
 Set `AGENT_PARENT_CHECK_INTERVAL_MS` (default 30000) for checks/retries and `AGENT_PARENT_PROGRESS_INTERVAL_MS` (default 180000) for running-work notices in `.env`. Both accept integers from 1000 to 86400000 milliseconds and require restart. Notices are sent on check ticks, so timing is rounded up to a check interval. Reports describe running/queued state and elapsed time, without inventing a completion percentage.
 
 Recovery and progress notices require explicit delivery tracking recorded when a task is created or deliberately rerun. Legacy untracked records are never replayed automatically. Web result delivery updates the existing session and never creates an empty conversation to replace a closed or missing routing entry.
+
+## Secret persistence boundary
+
+The `secret_` session prefix remains recognizable after close, preventing late callbacks from recreating persisted transcripts. Session serialization excludes private records and pointers; transcripts use a bounded in-memory store. Only external conversation identifiers needed to prevent history re-import are retained.
+
+DynamicRunnerManager isolates private runners, disables native resume, replays bounded plain-message history without adding recordkeeping restrictions or overriding user hook/auto-memory settings. Native privacy-flag failures never fall back to ordinary execution. AsyncLocalStorage isolates diagnostic suppression from concurrent ordinary requests. Monitor, trajectory, title generation and the tool HTTP server enforce their own boundaries. Global event subscribers receive no private content; explicit Web-session response transports can opt in for that session only. See the usage guide for retention limitations.

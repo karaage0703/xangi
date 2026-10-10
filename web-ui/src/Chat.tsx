@@ -1,3 +1,4 @@
+import { parseSecretCommand } from '../../src/secret-command-parser';
 import { DocumentAttachment } from './DocumentAttachment';
 import { FileChanges } from './FileChanges';
 import { CatalogFilter } from './CatalogFilter';
@@ -919,15 +920,15 @@ function ChatPane({
     });
   }
 
-  async function createSession() {
+  async function createSession(secret = false) {
     const result = await requestJson<{ sessionId: string }>(
       '/api/sessions',
-      jsonInit('POST', { projectId, agentId: selectedAgentId })
+      jsonInit('POST', { projectId, agentId: selectedAgentId, secret })
     );
     onSessionChange(result.sessionId);
     setDetail({
       id: result.sessionId,
-      title: '新しい会話',
+      title: secret ? 'シークレット' : '新しい会話',
       platform: 'web',
       messages: [],
     });
@@ -1076,6 +1077,25 @@ function ChatPane({
   async function send(rawMessage?: string, displayMessage?: string, skipPermissions = false) {
     const cleanMessage = (rawMessage ?? draft).trim();
     if (!cleanMessage || !sessionId || busy || streamRecovery || !editable) return;
+    const privacyCommand = parseSecretCommand(cleanMessage);
+    if (privacyCommand && !discordRemoteMode) {
+      setPaletteOpen(false);
+      setDraft('');
+      const mode = privacyCommand;
+      if (mode === 'status' || (mode === 'on') === sessionId.startsWith('secret_')) {
+        setError(
+          sessionId.startsWith('secret_')
+            ? 'シークレットモードはONです。終了・再起動で会話は失われます。'
+            : 'シークレットモードはOFFです。'
+        );
+      } else {
+        if (sessionId.startsWith('secret_'))
+          await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+        await createSession(mode === 'on');
+        setDraft('');
+      }
+      return;
+    }
     if (discordRemoteMode) {
       setDraft('');
       setError('');
@@ -1331,10 +1351,16 @@ function ChatPane({
             <button
               type="button"
               className="empty-cta"
-              onClick={() => runPaneAction(createSession)}
+              onClick={() => runPaneAction(() => createSession())}
             >
               ＋ 新しい会話
             </button>
+          </div>
+        )}
+        {sessionId?.startsWith('secret_') && (
+          <div className="secret-notice" role="status">
+            シークレット：会話の保存を抑えています。完了・削除・サーバー再起動で会話を破棄します。
+            チャットサービス・AI提供元の記録、添付・作成ファイルは残る場合があります。
           </div>
         )}
         {sessionId && loadingDetail && !detail && (
@@ -2094,7 +2120,7 @@ export function Chat() {
     return () => window.removeEventListener('popstate', restore);
   });
 
-  async function createSession() {
+  async function createSession(secret = false) {
     const active = panes.find((pane) => pane.key === activeKey);
     const needsNewPane = !active || Boolean(busyPanes[activeKey]);
     let targetKey = active?.key || '';
@@ -2114,6 +2140,7 @@ export function Chat() {
         jsonInit('POST', {
           projectId: activeProjectId || undefined,
           agentId: selectedAgentId || undefined,
+          secret,
         })
       );
       setPanes((current) =>
@@ -2426,6 +2453,14 @@ export function Chat() {
             onClick={() => void createSession()}
           >
             ＋ 新規
+          </button>
+          <button
+            type="button"
+            className="button sidebar-new-chat"
+            onClick={() => void createSession(true)}
+            title="極力ログを残さない新規会話"
+          >
+            シークレット
           </button>
         </div>
         <div className="session-filter" role="group" aria-label="セッションの状態で絞り込む">

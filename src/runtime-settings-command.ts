@@ -138,9 +138,9 @@ async function executeBackend(
     throw new ValidationError('runtime_settings backend: --scope must be one of: channel, global');
   }
   const channelId = scope === 'channel' ? requireChannel(request) : undefined;
-  const action = requireAction(request, ['show', 'set', 'reset']);
+  const action = requireAction(request, ['status', 'set', 'reset']);
   if (scope === 'global') {
-    if (action === 'show') {
+    if (action === 'status') {
       const current = resolver.getDefault();
       return [
         '全体の既定バックエンド設定',
@@ -215,7 +215,7 @@ async function executeBackend(
       '- 実行中のturn: 変更なし',
     ].join('\n');
   }
-  if (action === 'show') {
+  if (action === 'status') {
     const resolved = resolver.resolve(channelId!);
     const sessionId =
       request.appSessionId ??
@@ -335,8 +335,8 @@ async function executeBackend(
 
 function executeLlmMode(request: RuntimeSettingsRequest, resolver: BackendResolver): string {
   const channelId = requireChannel(request);
-  const action = requireAction(request, ['show', 'set', 'reset']);
-  if (action === 'show') {
+  const action = requireAction(request, ['status', 'set', 'reset']);
+  if (action === 'status') {
     const resolved = resolver.resolve(channelId);
     return `Local LLM mode: ${resolved.localLlmMode ?? process.env.LOCAL_LLM_MODE ?? 'agent'} (channel: ${channelId})`;
   }
@@ -356,7 +356,7 @@ function executeAutoReply(
 ): string {
   platformGuard(platform, 'autoreply', ['discord', 'slack']);
   const channelId = requireChannel(request);
-  const action = requireAction(request, ['show', 'set', 'reset']);
+  const action = requireAction(request, ['status', 'set', 'reset']);
   const settings = loadSettings();
   const isDiscord = platform === 'discord';
   const key = isDiscord ? 'discordAutoReplyChannels' : 'slackAutoReplyChannels';
@@ -374,7 +374,7 @@ function executeAutoReply(
         )
       : getSlackChannelAutoReply(loadSettings(), channelId, defaultEnabled);
 
-  if (action === 'show') {
+  if (action === 'status') {
     return `${platform} autoreply: ${effective() ? 'on' : 'off'} (channel: ${channelId})`;
   }
   if (action === 'reset') delete channels[channelId];
@@ -386,10 +386,10 @@ function executeAutoReply(
 function executeNotify(request: RuntimeSettingsRequest, config: Config, platform: ChatPlatform) {
   platformGuard(platform, 'notify', ['discord']);
   const channelId = requireChannel(request);
-  const action = requireAction(request, ['show', 'set', 'reset']);
+  const action = requireAction(request, ['status', 'set', 'reset']);
   const settings = loadSettings();
   const defaultMode = config.discord.completionNotifyMode ?? 'message';
-  if (action === 'show') {
+  if (action === 'status') {
     return `Discord completion notify: ${getChannelCompletionNotifyMode(settings, channelId, defaultMode)} (channel: ${channelId})`;
   }
   const channels = { ...(settings.discordCompletionNotifyChannels ?? {}) };
@@ -414,10 +414,10 @@ function executeThreadMode(
 ) {
   platformGuard(platform, 'threadmode', ['discord']);
   const channelId = requireChannel(request);
-  const action = requireAction(request, ['show', 'set', 'reset']);
+  const action = requireAction(request, ['status', 'set', 'reset']);
   const settings = loadSettings();
   const defaultEnabled = config.discord.replyInThread ?? false;
-  if (action === 'show') {
+  if (action === 'status') {
     return `Discord threadmode: ${getChannelThreadMode(settings, channelId, defaultEnabled) ? 'on' : 'off'} (channel: ${channelId})`;
   }
   const channels = { ...(settings.discordThreadModeChannels ?? {}) };
@@ -430,8 +430,8 @@ function executeThreadMode(
 }
 
 function executeReplySuggestions(request: RuntimeSettingsRequest, config: Config): string {
-  const action = requireAction(request, ['show', 'set', 'reset']);
-  if (action === 'show') {
+  const action = requireAction(request, ['status', 'set', 'reset']);
+  if (action === 'status') {
     const settings = loadSettings();
     return [
       'reply suggestions',
@@ -451,8 +451,8 @@ function executeRespondToBots(
   platform: ChatPlatform
 ): string {
   platformGuard(platform, 'respondtobots', ['discord']);
-  const action = requireAction(request, ['show', 'set', 'reset']);
-  if (action === 'show') {
+  const action = requireAction(request, ['status', 'set', 'reset']);
+  if (action === 'status') {
     return `Discord respondtobots: ${config.discord.respondToBotsEnabled ? 'on' : 'off'}`;
   }
   const enabled = action === 'reset' ? false : requireValue(request, ['on', 'off']) === 'on';
@@ -498,16 +498,16 @@ export async function executeRuntimeSettingsCommand(
       'Teamのチャンネル設定は廃止しました。team runでチームを指定してください'
     );
   if (name === 'agent') {
-    if (request.action !== 'show' && dependencies.config?.features?.workspaceSwitching === false)
+    if (request.action !== 'status' && dependencies.config?.features?.workspaceSwitching === false)
       throw new ValidationError(
         'workspace switching is disabled by WORKSPACE_SWITCHING_ENABLED=false'
       );
-    if (request.action !== 'show' && dependencies.config?.features?.backendSwitching === false)
+    if (request.action !== 'status' && dependencies.config?.features?.backendSwitching === false)
       throw new ValidationError('backend switching is disabled by BACKEND_SWITCHING_ENABLED=false');
     const platform = requirePlatform(request);
     platformGuard(platform, name, ['discord', 'slack']);
     const channel = requireChannel(request);
-    const action = requireAction(request, ['show', 'set', 'reset']);
+    const action = requireAction(request, ['status', 'set', 'reset']);
     if (action === 'set' && !request.value?.trim())
       throw new ValidationError('Agent IDを指定してください');
     if (action === 'set') {
@@ -515,7 +515,7 @@ export async function executeRuntimeSettingsCommand(
       if (!candidate) throw new ValidationError('エージェントが見つかりません');
       for (const member of [candidate]) resolveAgentBackend(dependencies.resolver, member);
     }
-    if (action !== 'show')
+    if (action !== 'status')
       await changeChannelAgent(
         platform,
         channel,

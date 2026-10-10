@@ -1,7 +1,8 @@
 /**
  * xangi専用コマンド — プラットフォーム別に組み立て
  */
-import { XANGI_COMMANDS_COMMON } from './xangi-commands-common.js';
+import { isTriggerEnabled } from '../trigger-config.js';
+import { XANGI_COMMANDS_COMMON, buildXangiCommandsCommon } from './xangi-commands-common.js';
 import { buildXangiCommandsChatPlatform } from './xangi-commands-chat-platform.js';
 import { XANGI_COMMANDS_DISCORD } from './xangi-commands-discord.js';
 import { XANGI_COMMANDS_SLACK } from './xangi-commands-slack.js';
@@ -22,7 +23,7 @@ export type ChatPlatform = 'discord' | 'slack' | 'web' | 'line' | 'telegram';
  * コマンドごとの契約は `xangi tool help`からオンデマンドで取得する。
  */
 export function buildXangiCommands(platform?: ChatPlatform): string {
-  const parts = [XANGI_COMMANDS_COMMON];
+  const parts = [buildXangiCommandsCommon(isTriggerEnabled())];
 
   if (platform === 'web') {
     parts.push(buildXangiCommandsChatPlatform());

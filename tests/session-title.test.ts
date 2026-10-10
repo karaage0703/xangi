@@ -1,3 +1,5 @@
+import { appendReplySuggestionInstruction } from '../src/reply-suggestions.js';
+import { buildPrefetchedHistoryBlock } from '../src/prefetched-history.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -256,4 +258,13 @@ describe('session title Unicode helpers', () => {
   it('孤立したsurrogateだけを除去する', () => {
     expect(sanitizeSessionTitle('before\uD83Dmiddle\uDCCEafter📎')).toBe('beforemiddleafter📎');
   });
+});
+
+// English runtime wrappers and historical Japanese fixtures must both remain readable.
+it('strips current English prompt wrappers without leaking them into a Japanese title', () => {
+  const body = '内部プロンプトを英語化して';
+  const prompt = appendReplySuggestionInstruction(
+    buildPrefetchedHistoryBlock('Web', []) + '\n\n' + body
+  );
+  expect(stripPromptMetadata(prompt)).toBe(body);
 });

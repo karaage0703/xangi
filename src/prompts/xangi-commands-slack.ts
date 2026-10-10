@@ -1,5 +1,5 @@
-export const XANGI_COMMANDS_SLACK = `## Slack固有ルール
+export const XANGI_COMMANDS_SLACK = `## Slack rules
 
-- Slack操作は必要時に xangi tool help slack または xangi tool help <command> で確認する
-- SlackチャンネルIDを discord_* へ渡さない
-- Slackのメッセージ指定にはDiscord message IDではなく ts を使う`;
+- For Slack operations, read xangi tool help slack or xangi tool help <command> when needed.
+- Do not pass Slack channel IDs to discord_* tools.
+- Identify Slack messages by ts, not Discord message IDs.`;

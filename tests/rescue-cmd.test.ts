@@ -68,8 +68,8 @@ describe('xangi rescue', () => {
     expect(prompt).toContain(layout.configFile);
     expect(prompt).toContain(join(layout.stateDir, 'logs'));
     expect(prompt).toContain("'/Applications/Xangi/xangi' doctor");
-    expect(prompt).toContain('調査と修正を続ける');
-    expect(prompt).toContain('secretの値を表示・会話へ転記・外部送信しない');
+    expect(prompt).toContain('continue investigating and fixing');
+    expect(prompt).toContain('Do not display, copy into the conversation, or externally transmit token, password, or secret values');
   });
 
   it('asks for the user-visible symptom before running diagnostics', () => {
@@ -81,22 +81,22 @@ describe('xangi rescue', () => {
       layout,
     });
 
-    expect(prompt).toContain('最初の応答では診断toolやファイル読み取りを始めず');
-    expect(prompt).toContain('「何が起きていますか？」と尋ねて返答を待つ');
-    expect(prompt.indexOf('何が起きていますか？')).toBeLessThan(
-      prompt.indexOf('service状態、doctor結果、直近ログを調査')
+    expect(prompt).toContain('In the first response, do not start diagnostic tools or read files');
+    expect(prompt).toContain('Ask what is happening and wait for the user');
+    expect(prompt.indexOf('Ask what is happening')).toBeLessThan(
+      prompt.indexOf('service state, doctor results, and recent logs')
     );
-    expect(prompt).toContain('その利用者向け経路を最優先に調べる');
-    expect(prompt).toContain('無関係な警告を主症状と取り違えない');
+    expect(prompt).toContain('prioritize investigating that user-facing path');
+    expect(prompt).toContain('Do not confuse unrelated doctor checks or warnings with the main symptom');
   });
 
   it('asks for the symptom before exposing the private detailed instructions', async () => {
     const prepared = await prepareRescueLaunch('private diagnostic instructions');
     roots.push(dirname(prepared.instructionPath));
     expect(prepared.visiblePrompt).not.toContain('private diagnostic instructions');
-    expect(prepared.visiblePrompt).toContain('最初の応答ではtoolやファイル読み取りをせず');
-    expect(prepared.visiblePrompt).toContain('「何が起きていますか？」と尋ねて返答を待って');
-    expect(prepared.visiblePrompt).toContain('利用者が回答した後に');
+    expect(prepared.visiblePrompt).toContain('In the first response, do not use tools or read files');
+    expect(prepared.visiblePrompt).toContain('Ask the user in Japanese what is happening and wait for their response');
+    expect(prepared.visiblePrompt).toContain('After the user answers');
     expect(await readFile(prepared.instructionPath, 'utf8')).toContain('private diagnostic');
     expect((await stat(prepared.instructionPath)).mode & 0o777).toBe(0o600);
     await prepared.cleanup();
@@ -116,7 +116,7 @@ describe('xangi rescue', () => {
     expect(prompt).toContain('/home/tester/xangi');
     expect(prompt).toContain("service start --dir '/home/tester/xangi'");
     expect(prompt).toContain("doctor --dir '/home/tester/xangi'");
-    expect(prompt).toContain('設定の有無だけを扱う');
+    expect(prompt).toContain('Check only whether they are configured');
   });
 
   it('still launches when the configured workspace is missing', async () => {

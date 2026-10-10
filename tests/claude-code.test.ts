@@ -60,7 +60,7 @@ describe('ClaudeCodeRunner args', () => {
   async function getSpawnArgs(
     runner: ClaudeCodeRunner,
     prompt: string,
-    options?: { sessionId?: string; skipPermissions?: boolean }
+    options?: { sessionId?: string; skipPermissions?: boolean; secret?: boolean }
   ) {
     const { spawn, getMockProcess } = await import('child_process');
 
@@ -94,6 +94,13 @@ describe('ClaudeCodeRunner args', () => {
 
     return { command, args, spawnOptions };
   }
+
+  it('uses nonpersistent print mode without overriding user memory/hooks settings', async () => {
+    const { args } = await getSpawnArgs(new ClaudeCodeRunner({}), 'private', { secret: true, sessionId: 'old' });
+    expect(args).toContain('--no-session-persistence');
+    expect(args).not.toContain('--resume');
+    expect(args).not.toContain('--settings');
+  });
 
   it('should include basic args', async () => {
     const runner = new ClaudeCodeRunner({});

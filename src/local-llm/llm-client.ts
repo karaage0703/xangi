@@ -1,10 +1,11 @@
+import { isPrivateExecution } from '../privacy-console.js';
 /**
  * OpenAI互換 + Ollama ネイティブAPI 対応 LLMクライアント
  */
 import type { LLMMessage, LLMToolCall, LLMChatOptions, LLMChatResponse } from './types.js';
 import { Agent } from 'undici';
 import { assertOpenRouterReady, openRouterProviderPolicy } from '../openrouter.js';
-import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
+import { formatErrorDiagnostic, isTransientNetworkError, LlmTimeoutError } from '../errors.js';
 import { parsePseudoToolCall } from './pseudo-toolcall.js';
 
 /**
@@ -148,6 +149,7 @@ async function* responseLines(response: Response): AsyncGenerator<string> {
       yield* lines;
     }
   } finally {
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -203,7 +205,8 @@ export class LLMClient {
     private readonly defaultReasoningEffort?: import('./reasoning-effort.js').LocalLlmReasoningEffort,
     private readonly provider?: 'openrouter'
   ) {
-    this.timeoutMs = parseInt(process.env.TIMEOUT_MS || '300000', 10);
+    const configured = Number(process.env.LOCAL_LLM_TIMEOUT_MS);
+    this.timeoutMs = Number.isSafeInteger(configured) && configured > 0 ? configured : 1_800_000;
     this.dispatcher = new Agent({
       headersTimeout: this.timeoutMs,
       bodyTimeout: this.timeoutMs,
@@ -303,9 +306,24 @@ export class LLMClient {
     };
     const reasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
     if (this.provider === 'openrouter') {
-      body.provider = openRouterProviderPolicy();
+      body.provider = isPrivateExecution()
+        ? { data_collection: 'deny', zdr: true, require_parameters: true }
+        : openRouterProviderPolicy();
       if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
     } else if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+    // Hybrid Qwen3 templates default to thinking when this flag is omitted.
+    // Keep this server extension away from OpenRouter, Ollama and other models.
+    // Explicit effort (including per-call compaction 'none') overrides thinking.
+    if (
+      this.provider !== 'openrouter' &&
+      !this.isOllamaUrl() &&
+      /(?:^|\/)qwen3(?:[.-]|$)/i.test(this.model) &&
+      !/thinking/i.test(this.model)
+    ) {
+      body.chat_template_kwargs = {
+        enable_thinking: reasoningEffort ? reasoningEffort !== 'none' : this.thinking,
+      };
+    }
     applyOpenAITools(body, options);
     const temperature = this.resolveTemperature(options?.temperature);
     if (temperature !== undefined) body.temperature = temperature;
@@ -319,22 +337,96 @@ export class LLMClient {
     body: Record<string, unknown>,
     headers: Record<string, string>,
     label: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    streaming = false
   ): Promise<Response> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-    if (signal) {
-      if (signal.aborted) controller.abort();
-      else signal.addEventListener('abort', () => controller.abort(), { once: true });
-    }
+    let timer: ReturnType<typeof setTimeout>;
+    const armTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => controller.abort(new LlmTimeoutError(this.timeoutMs, streaming)),
+        this.timeoutMs
+      );
+    };
+    const onAbort = () => {
+      const reason = signal?.reason;
+      controller.abort(
+        reason instanceof Error && reason.name !== 'AbortError'
+          ? reason
+          : new Error('Request cancelled by user')
+      );
+    };
+    let onBodyAbort: (() => void) | undefined;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (onBodyAbort) controller.signal.removeEventListener('abort', onBodyAbort);
+    };
+    armTimer();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      return await this.fetchWithTransientRetry(
+      controller.signal.throwIfAborted();
+      const response = await this.fetchWithTransientRetry(
         `${this.baseUrl}${path}`,
         { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
         label
       );
-    } finally {
-      clearTimeout(timeoutId);
+      controller.signal.throwIfAborted();
+      if (!response.body) {
+        cleanup();
+        return response;
+      }
+      const reader = response.body.getReader();
+      let settled = false;
+      if (streaming) armTimer();
+      const wrapped = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          onBodyAbort = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            streamController.error(controller.signal.reason);
+            void reader.cancel(controller.signal.reason).catch(() => {});
+          };
+          controller.signal.addEventListener('abort', onBodyAbort, { once: true });
+        },
+        async pull(streamController) {
+          try {
+            const { done, value } = await reader.read();
+            if (settled) return;
+            controller.signal.throwIfAborted();
+            if (done) {
+              settled = true;
+              cleanup();
+              streamController.close();
+            } else {
+              if (streaming && value.byteLength > 0) armTimer();
+              streamController.enqueue(value);
+            }
+          } catch (error) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            streamController.error(controller.signal.aborted ? controller.signal.reason : error);
+          }
+        },
+        async cancel(reason) {
+          settled = true;
+          cleanup();
+          await reader.cancel(reason).catch(() => {});
+        },
+      });
+      return new Response(wrapped, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    } catch (error) {
+      cleanup();
+      controller.signal.throwIfAborted();
+      throw error;
     }
   }
 
@@ -383,8 +475,8 @@ export class LLMClient {
     }
 
     let finishReason: LLMChatResponse['finishReason'] = 'stop';
-    if (toolCalls.length > 0) finishReason = 'tool_calls';
-    else if (data.done_reason === 'length') finishReason = 'length';
+    if (data.done_reason === 'length') finishReason = 'length';
+    else if (toolCalls.length > 0) finishReason = 'tool_calls';
 
     return {
       content: data.message.content ?? '',
@@ -460,8 +552,9 @@ export class LLMClient {
     }
 
     let finishReason: LLMChatResponse['finishReason'] = 'stop';
-    if (toolCalls.length > 0 || choice.finish_reason === 'tool_calls') finishReason = 'tool_calls';
-    else if (choice.finish_reason === 'length') finishReason = 'length';
+    if (choice.finish_reason === 'length') finishReason = 'length';
+    else if (toolCalls.length > 0 || choice.finish_reason === 'tool_calls')
+      finishReason = 'tool_calls';
 
     return {
       content,
@@ -488,17 +581,14 @@ export class LLMClient {
 
     const { body, headers } = this.openAIRequest(messages, options, true);
 
-    const response = await this.fetchWithTransientRetry(
-      `${this.baseUrl}/v1/chat/completions`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: options?.signal,
-      },
-      'OpenAI-compatible stream'
+    const response = await this.fetchChatResponse(
+      '/v1/chat/completions',
+      body,
+      headers,
+      'OpenAI-compatible stream',
+      options?.signal,
+      true
     );
-
     if (!response.ok) {
       throw new Error(`LLM API error ${response.status}: ${await response.text()}`);
     }
@@ -553,16 +643,14 @@ export class LLMClient {
   ): AsyncGenerator<string> {
     const body = this.ollamaRequest(messages, options, true);
 
-    const response = await this.fetchWithTransientRetry(
-      `${this.baseUrl}/api/chat`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-      'Ollama stream'
+    const response = await this.fetchChatResponse(
+      '/api/chat',
+      body,
+      { 'Content-Type': 'application/json' },
+      'Ollama stream',
+      options?.signal,
+      true
     );
-
     if (!response.ok) {
       throw new Error(`Ollama API error ${response.status}: ${await response.text()}`);
     }

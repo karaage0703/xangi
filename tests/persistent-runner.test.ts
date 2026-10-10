@@ -618,8 +618,8 @@ describe('PersistentRunner', () => {
     expect(state.active).toBe(true);
     expect(state.timeoutAt).toBeGreaterThan(Date.now());
     expect(state.maxTimeoutAt).toBeGreaterThan(state.timeoutAt!);
-    // 初期 timeoutMs = DEFAULT_TIMEOUT_MS (30 分)
-    expect(state.timeoutMs).toBe(30 * 60_000);
+    // 初期 timeoutMs = DEFAULT_TIMEOUT_MS (60 分)
+    expect(state.timeoutMs).toBe(60 * 60_000);
     expect(state.remainingMs).toBeGreaterThan(0);
   });
 
@@ -633,7 +633,7 @@ describe('PersistentRunner', () => {
 
     expect(result.ok).toBe(true);
     expect(result.timeoutAt).toBe(beforeTimeoutAt + 5 * 60_000);
-    expect(result.timeoutMs).toBe(35 * 60_000); // 30 + 5 分
+    expect(result.timeoutMs).toBe(65 * 60_000); // 60 + 5 分
     expect(result.remainingMs).toBeGreaterThan(0);
 
     const after = runner.getTimeoutState();
@@ -652,15 +652,15 @@ describe('PersistentRunner', () => {
 
     // 元の timeoutAt は変わっていないこと
     const state = runner.getTimeoutState();
-    expect(state.timeoutMs).toBe(30 * 60_000);
+    expect(state.timeoutMs).toBe(60 * 60_000);
   });
 
   it('extendTimeout can be called multiple times until reaching cap', async () => {
     runner.run('test prompt').catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // 30 分初期 + 19 回 30 分延長 = 10 時間 (上限ぴったり)、20 回目で超える
-    for (let i = 0; i < 19; i++) {
+    // 60 分初期 + 18 回 30 分延長 = 10 時間 (上限ぴったり)、19 回目で超える
+    for (let i = 0; i < 18; i++) {
       const r = runner.extendTimeout(undefined, 30 * 60_000);
       expect(r.ok).toBe(true);
     }
@@ -712,7 +712,7 @@ describe('PersistentRunner', () => {
     expect(extendedSpy).toHaveBeenCalledTimes(1);
     const payload = extendedSpy.mock.calls[0][0];
     expect(payload.timeoutAt).toBeGreaterThan(Date.now());
-    expect(payload.timeoutMs).toBe(35 * 60_000);
+    expect(payload.timeoutMs).toBe(65 * 60_000);
     expect(payload.remainingMs).toBeGreaterThan(0);
   });
 

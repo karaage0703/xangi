@@ -11,6 +11,8 @@ import { executeProjectAgentCommand, executeTeamCommand } from './project-agent-
  * xangi toolを使う子プロセスへ渡す。
  */
 import { createServer, type Server } from 'http';
+import { privacyConsole as console, withPrivateDiagnostics } from './privacy-console.js';
+import { isSecretSession } from './secret.js';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { discordApi } from './cli/discord-api.js';
@@ -445,6 +447,7 @@ export function startToolServer(options?: {
 
     // ツール実行エンドポイント
     if (req.url === '/api/execute' && req.method === 'POST') {
+      let secret = false;
       try {
         const body = await parseBody(req);
         const { command, flags, context } = body;
@@ -455,8 +458,13 @@ export function startToolServer(options?: {
           return;
         }
 
-        console.log(`[tool-server] ${command} ${JSON.stringify(flags || {})}`);
-        const result = await executeCommand(command, flags || {}, context);
+        secret = Boolean(
+          context?.channelId && isSecretSession(getActiveSessionId(context.channelId))
+        );
+        if (!secret) console.log(`[tool-server] ${command} ${JSON.stringify(flags || {})}`);
+        const result = await withPrivateDiagnostics(secret, () =>
+          executeCommand(command, flags || {}, context)
+        );
 
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, result }));
@@ -468,7 +476,7 @@ export function startToolServer(options?: {
           err instanceof ValidationError ||
           (err instanceof Error && err.name === 'ValidationError');
         const status = isValidation ? 400 : 500;
-        console.error(`[tool-server] Error (${status}): ${message}`);
+        if (!secret) console.error(`[tool-server] Error (${status}): ${message}`);
         res.writeHead(status);
         res.end(JSON.stringify({ ok: false, error: message }));
       }

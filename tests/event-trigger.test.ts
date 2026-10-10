@@ -52,11 +52,19 @@ async function flush(): Promise<void> {
 }
 
 describe('loadTriggerConfig', () => {
-  it('defaults: disabled, no token, 10s interval', () => {
+  it('defaults: enabled, no token, 10s interval', () => {
     const cfg = loadTriggerConfig({});
-    expect(cfg.enabled).toBe(false);
+    expect(cfg.enabled).toBe(true);
     expect(cfg.token).toBeUndefined();
     expect(cfg.minIntervalMs).toBe(10_000);
+  });
+
+  it.each(['false', '0', 'invalid'])('disables triggers for explicit %s', (value) => {
+    expect(loadTriggerConfig({ TRIGGER_ENABLED: value }).enabled).toBe(false);
+  });
+
+  it.each(['', ' ', 'true', ' true '])('enables triggers for default or true: %s', (value) => {
+    expect(loadTriggerConfig({ TRIGGER_ENABLED: value }).enabled).toBe(true);
   });
 
   it('reads env values', () => {
@@ -411,6 +419,7 @@ describe('EventTrigger firing', () => {
     ['slack', 'slack-channel'],
     ['telegram', 'telegram-chat'],
     ['web', 'web-session'],
+    ['line', 'line-user'],
   ] as const)('records delivery references for %s', async (platform, destinationId) => {
     const scheduler = {
       getAgentRunner: (registeredPlatform: string) =>
@@ -432,7 +441,7 @@ describe('EventTrigger firing', () => {
           : undefined,
       getSender: () => undefined,
     } as unknown as Scheduler;
-    const trigger = new EventTrigger(makeConfig(), scheduler);
+    const trigger = new EventTrigger(loadTriggerConfig({}), scheduler);
     const fired = await trigger.handleLocal({
       channel: destinationId,
       message: 'done',

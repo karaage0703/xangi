@@ -11,6 +11,17 @@ export class ValidationError extends Error {
   }
 }
 
+/** A model request has its own budget, distinct from the enclosing turn. */
+export class LlmTimeoutError extends Error {
+  constructor(
+    public readonly timeoutMs: number,
+    public readonly streaming: boolean
+  ) {
+    super(`LLM ${streaming ? 'stream idle' : 'request'} timed out after ${timeoutMs}ms`);
+    this.name = 'LlmTimeoutError';
+  }
+}
+
 /**
  * The operation failed after side effects may already have completed, so
  * retrying the enclosing task could duplicate externally visible work.
@@ -21,6 +32,17 @@ export class NonRetryableError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'NonRetryableError';
+  }
+}
+
+/** CLI exited without confirming completion; side effects may already exist. */
+export class IncompleteAgentTurnError extends NonRetryableError {
+  constructor(
+    public readonly backend: string,
+    public readonly sessionId?: string
+  ) {
+    super(`${backend} exited without turn.completed; completion is unconfirmed`);
+    this.name = 'IncompleteAgentTurnError';
   }
 }
 
@@ -45,6 +67,7 @@ export type AgentErrorKind =
   | 'circuit-breaker' // 連続クラッシュによる一時停止
   | 'usage-limit' // バックエンドの利用枠・支出予算の上限到達
   | 'antigravity-artifact-path' // Agy が通常ファイルを内部 artifact と誤分類
+  | 'incomplete-turn' // Process exited without the backend's completion event
   | 'unknown';
 
 const CANCEL_MESSAGE = 'Request cancelled by user';
@@ -52,6 +75,7 @@ const CANCEL_MESSAGE = 'Request cancelled by user';
 /** エラーメッセージから種類を判別する */
 export function classifyAgentError(error: unknown): AgentErrorKind {
   const msg = error instanceof Error ? error.message : String(error);
+  if (error instanceof IncompleteAgentTurnError) return 'incomplete-turn';
   if (msg === CANCEL_MESSAGE) return 'cancelled';
   if (isAntigravityWorkspaceArtifactPathError(error)) return 'antigravity-artifact-path';
   if (msg.includes('timed out')) return 'timeout';
@@ -72,6 +96,9 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
     case 'cancelled':
       return '🛑 タスクを停止しました';
     case 'timeout':
+      if (error instanceof LlmTimeoutError) {
+        return `⏱️ LLM${error.streaming ? '受信待ち' : '応答待ち'}がタイムアウトしました（${Math.round(error.timeoutMs / 1000)}秒）`;
+      }
       return opts?.timeoutMs
         ? `⏱️ タイムアウトしました（${Math.round(opts.timeoutMs / 1000)}秒）`
         : '⏱️ タイムアウトしました';
@@ -83,6 +110,8 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
       return `💳 バックエンドの利用上限に達しています: ${detail}`;
     case 'antigravity-artifact-path':
       return '❌ Agyがワークスペースへの書き込みを内部artifactと誤判定しました。自動回復にも失敗したため、もう一度お試しください';
+    case 'incomplete-turn':
+      return '⚠️ AIの完了通知を受け取れないまま処理が終了しました。作業が一部実行された可能性があります。自動再実行はしていません。続ける前に変更・送信済みの内容を確認してください。';
     case 'unknown':
     default:
       return `❌ エラーが発生しました: ${detail}`;
@@ -193,15 +222,4 @@ export function formatErrorDiagnostic(error: unknown): string {
   }
 
   return entries.join(' <- ').slice(0, 1200) || 'unknown error';
-}
-
-/**
- * エラー後にエージェントへ「途中経過の報告」フォローアップを送ってよいか。
- * - timeout / circuit-breaker: 壊れたセッションに負荷を重ねるだけなので不可
- * - usage-limit: フォローアップ自体が同じ上限に当たるので不可
- * - cancelled: ユーザーが止めたものに追撃しない
- */
-export function shouldSendErrorFollowUp(error: unknown): boolean {
-  const kind = classifyAgentError(error);
-  return kind === 'crash' || kind === 'unknown';
 }

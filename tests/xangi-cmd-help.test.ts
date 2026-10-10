@@ -14,23 +14,23 @@ describe('xangi tool help', () => {
     expect(formatXangiCmdHelp('extension_uninstall')).toContain('--id <extension-id>');
     expect(formatXangiCmdHelp('schedule')).toContain('xangi tool schedule_add');
     expect(formatXangiCmdHelp('schedule_add')).toContain(
-      'Usage: xangi tool schedule_add --input <自然言語またはcron>'
+      'Usage: xangi tool schedule_add --input <natural-language-or-cron>'
     );
     expect(formatXangiCmdHelp('schedule')).toContain('xangi tool schedule_update');
     expect(formatXangiCmdHelp('schedule_update')).toContain(
       'Usage: xangi tool schedule_update --id <schedule-id>'
     );
     expect(formatXangiCmdHelp('settings')).toContain('xangi tool runtime_settings');
-    expect(formatXangiCmdHelp('models')).toContain('返った正確なID');
-    expect(formatXangiCmdHelp('runtime_settings')).toContain('明示依頼');
+    expect(formatXangiCmdHelp('models')).toContain('exact returned IDs');
+    expect(formatXangiCmdHelp('runtime_settings')).toContain('explicitly requests');
     expect(formatXangiCmdHelp('runtime_settings')).toContain('--scope <channel|global>');
-    expect(formatXangiCmdHelp('trigger')).toContain('定刻確認はschedule');
-    expect(formatXangiCmdHelp('system_restart')).toContain('復帰後に状態');
+    expect(formatXangiCmdHelp('trigger')).toContain('Use schedule for timed checks');
+    expect(formatXangiCmdHelp('system_restart')).toContain('After recovery, verify status');
     expect(formatXangiCmdHelp('progress')).toContain('xangi tool progress_card');
     expect(formatXangiCmdHelp('progress_card')).toContain('--plan-json');
     expect(formatXangiCmdHelp('remote_worker')).toContain('executionPolicy');
     expect(formatXangiCmdHelp('inter_chat_ask')).toContain('--to <instance_id>');
-    expect(formatXangiCmdHelp('inter_chat_ask')).toContain('ユーザー承認');
+    expect(formatXangiCmdHelp('inter_chat_ask')).toContain('not user approval');
   });
 
   it('未知のtopicやcommandを拒否する', () => {

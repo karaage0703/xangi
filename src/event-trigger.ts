@@ -7,12 +7,15 @@
  * プッシュ（イベント発生時のみ起動）に置き換えるための機構。
  *
  * セキュリティ設計:
- * - TRIGGER_ENABLED=true の明示 opt-in が必要（デフォルト無効）
+ * - 既定で有効。TRIGGER_ENABLED=false で無効化
  * - Bearer トークン（XANGI_TRIGGER_TOKEN）必須。トークン未設定の場合は
  *   有効化されていても全リクエストを拒否する（tool-server は 0.0.0.0 bind のため、
  *   トークン無し運用を許すとネットワーク越しに任意プロンプトを注入できてしまう）
  * - source 単位のレート制限と同時実行ガードで暴走・連打を防ぐ
  */
+import type { TriggerConfig } from './trigger-config.js';
+export { loadTriggerConfig, type TriggerConfig } from './trigger-config.js';
+
 import { timingSafeEqual } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -26,15 +29,6 @@ export const TRIGGER_MAX_MESSAGE_LENGTH = 4000;
 const SOURCE_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 const VALID_PLATFORMS: Platform[] = ['discord', 'slack', 'telegram', 'web', 'line'];
-
-export interface TriggerConfig {
-  /** 機能全体の有効化（TRIGGER_ENABLED、デフォルト false） */
-  enabled: boolean;
-  /** Bearer 認証トークン（XANGI_TRIGGER_TOKEN）。未設定なら HTTP 経由は全拒否 */
-  token?: string;
-  /** 同一 source の最短発火間隔 ms（TRIGGER_MIN_INTERVAL_MS、デフォルト 10000） */
-  minIntervalMs: number;
-}
 
 export interface TriggerRequestBody {
   channel?: unknown;
@@ -66,21 +60,6 @@ export interface TriggerReceipt {
 }
 
 const MAX_TRIGGER_RECEIPTS = 1000;
-
-/**
- * 環境変数からトリガー設定を読み込む
- */
-export function loadTriggerConfig(env: NodeJS.ProcessEnv = process.env): TriggerConfig {
-  const rawInterval = env.TRIGGER_MIN_INTERVAL_MS;
-  // Number('') は 0 になるため、未設定・空文字は明示的にデフォルトへ落とす
-  const parsedInterval =
-    rawInterval === undefined || rawInterval === '' ? NaN : Number(rawInterval);
-  return {
-    enabled: env.TRIGGER_ENABLED === 'true',
-    token: env.XANGI_TRIGGER_TOKEN || undefined,
-    minIntervalMs: Number.isFinite(parsedInterval) && parsedInterval >= 0 ? parsedInterval : 10_000,
-  };
-}
 
 /** 定数時間比較でトークンを検証する */
 function verifyToken(expected: string, provided: string): boolean {
@@ -155,7 +134,7 @@ export class EventTrigger {
   /**
    * ローカル（xangi-cmd / tool-server の /api/execute）経由のトリガー。
    * tool-server のローカルコマンド経路は既存の信頼境界に従い token 検証を
-   * 省略するが、機能自体の opt-in（TRIGGER_ENABLED）は要求する。
+   * 省略するが、機能自体が無効（TRIGGER_ENABLED=false）なら拒否する。
    */
   async handleLocal(body: TriggerRequestBody): Promise<TriggerResult> {
     if (!this.config.enabled) {

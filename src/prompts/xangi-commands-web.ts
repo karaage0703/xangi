@@ -1,3 +1,3 @@
-export const XANGI_COMMANDS_WEB = `## Web固有ルール
+export const XANGI_COMMANDS_WEB = `## Web rules
 
-ファイルは MEDIA:/absolute/path でブラウザへ表示する。`;
+Display files in the browser using MEDIA:/absolute/path.`;

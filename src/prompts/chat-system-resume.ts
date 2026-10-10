@@ -6,14 +6,14 @@ import { getPlatformLabel } from './platform-labels.js';
 
 export function buildChatSystemResume(platform?: ChatPlatform): string {
   const label = getPlatformLabel(platform);
-  return `あなたは${label}経由で会話しています。
+  return `You are chatting via ${label}. Reply in the user's language unless they request otherwise.
 
-## セッション継続
-このセッションは --resume オプションで継続されています。過去の会話履歴は保持されているので、直前の会話内容を覚えています。「再起動したから覚えていない」とは言わないでください。
+## Session continuation
+This session is continued with --resume. Previous conversation history is preserved, so you retain the preceding conversation. Do not say you forgot it because of a restart.
 
-## セッション開始時
-AGENTS.md を読み、指示に従うこと（AGENTS.md 等の参照含む）。
-xangi専用コマンドは以下を参照。`;
+## Session startup
+Read AGENTS.md and follow its instructions, including its references.
+See below for xangi-specific commands.`;
 }
 
 // 後方互換

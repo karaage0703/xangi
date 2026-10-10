@@ -1,3 +1,4 @@
+import { isSecretSession } from './secret.js';
 /**
  * LINE Messaging API platform integration.
  *
@@ -760,10 +761,10 @@ const STICKER_KEYWORD_LIMIT = 3;
  */
 export function attachmentOnlyPrompt(label: string): string {
   return [
-    `ユーザーが${label}を送った。`,
-    '- LINEでは画像やファイルにテキストを添えられないため、指示は無い',
-    '- 内容を確認し、これまでの文脈に応じて答える',
-    '- 文脈から求められることが分からない場合は、ユーザーに質問を返す',
+    `The user sent ${label}.`,
+    '- LINE cannot include text with images or files, so no instruction accompanies this attachment',
+    '- Inspect the content and respond based on the conversation so far',
+    '- Ask the user if the desired action is unclear from context',
   ].join('\n');
 }
 
@@ -819,14 +820,14 @@ export function resolveContentRequest(
  * text は本人が打った言葉で意図に近い。
  */
 export function stickerToText(sticker: { keywords?: string[]; text?: string }): string {
-  const head = 'ユーザーがスタンプを送った。';
+  const head = 'The user sent a sticker. ';
   const meaning = (sticker.keywords ?? []).slice(0, STICKER_KEYWORD_LIMIT).join(', ');
   if (sticker.text) {
     return meaning
-      ? `${head}「${sticker.text}」（意味: ${meaning}）`
+      ? `${head}「${sticker.text}」（Meaning: ${meaning}）`
       : `${head}「${sticker.text}」`;
   }
-  return meaning ? `${head}意味: ${meaning}` : head;
+  return meaning ? `${head}Meaning: ${meaning}` : head;
 }
 
 /**
@@ -842,8 +843,8 @@ export function locationToText(location: {
   const label = [location.title, location.address].filter(Boolean).join(' / ');
   const coords = `(${location.latitude}, ${location.longitude})`;
   return label
-    ? `ユーザーが位置情報を送った。${label} ${coords}`
-    : `ユーザーが位置情報を送った。${coords}`;
+    ? `The user sent a location. ${label} ${coords}`
+    : `The user sent a location. ${coords}`;
 }
 
 /**
@@ -863,8 +864,8 @@ export function mediaLabel(kind: string): string {
 }
 
 export function mediaNoticeText(kind: string, fileName?: string): string {
-  const head = `ユーザーが${mediaLabel(kind)}を送った。`;
-  return fileName ? `${head}名前: ${fileName}` : head;
+  const head = `The user sent ${mediaLabel(kind)}.`;
+  return fileName ? `${head} Name: ${fileName}` : head;
 }
 
 /**
@@ -1003,7 +1004,7 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       // **無言で捨てず、何が届いたかだけはエージェントへ渡す。**
       const unknownType = (message as { type?: string }).type ?? 'unknown';
       console.log(`[xangi-line] unknown message type: ${unknownType}`);
-      text = `ユーザーが${unknownType}を送った。`;
+      text = `The user sent ${unknownType}.`;
       break;
     }
   }
@@ -1141,7 +1142,11 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
       const activeId = getActiveSessionId(contextKey);
       if (activeId) {
         const entry = getSessionEntry(activeId);
-        if (entry && hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)) {
+        if (
+          entry &&
+          !isSecretSession(activeId) &&
+          hasSessionGoneIdle(entry.updatedAt, ctx.idleResetMs)
+        ) {
           archiveSession(activeId);
           // 会話の区切りに合わせて控えも捨てる。3 日前の画像が今日の発言へ
           // 合流すると意味が通らなくなる。

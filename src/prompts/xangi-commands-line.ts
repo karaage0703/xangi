@@ -1,3 +1,3 @@
-export const XANGI_COMMANDS_LINE = `## LINE固有ルール
+export const XANGI_COMMANDS_LINE = `## LINE rules
 
-LINEはMarkdownを描画しない。見出し・強調・コードフェンスを使わず、プレーンテキスト、改行、中黒で整える。MEDIA: 添付は使わず、必要ならURLを案内する。`;
+LINE does not render Markdown. Use plain text, line breaks, and bullet characters, without headings, emphasis, or code fences. Do not use MEDIA: attachments; provide URLs when needed.`;

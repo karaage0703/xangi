@@ -118,12 +118,12 @@ export function validateTeamAssignments(
   return input.map((a) => ({ agentId: a.agentId, task: a.task.trim() }));
 }
 export function teamCallerInstructions(team: TeamSnapshot): string {
-  return `利用するTeam: ${team.name} (ID: ${team.id})。あなたがリーダーです。別のリーダーを起動しません。
+  return `Team to use: ${team.name} (ID: ${team.id}). You are the leader; do not start another leader.
 ${team.prompt}
-メンバー: ${JSON.stringify(team.members)}
-必要な前提を会話や資料から確認してください。必須情報が不足する場合はユーザーへ質問し、まだTeamを起動しないでください。
-xangi tool help team を確認し、team runで全メンバーに独立した仕事を一括依頼してください。--taskに共通背景・根拠・仮定、--assignments-jsonに [{"agentId":"ID","task":"その担当だけで完結する具体的な依頼"}] を渡します。兄弟の結果待ちを前提にしないでください。
-受付後は完了通知を待ち、結果を確認してあなたが最終回答してください。完了通知に対して同じ調査を再起動しないでください。`;
+Members: ${JSON.stringify(team.members)}
+Check prerequisites in the conversation and reference material. If required information is missing, ask the user and do not start the Team yet.
+Read xangi tool help team, then use team run to dispatch independent tasks to all members together. Pass shared context, evidence, and assumptions in --task, and use --assignments-json with [{"agentId":"ID","task":"a concrete self-contained assignment for this member"}] . Do not make assignments depend on waiting for sibling results.
+After dispatch, wait for completion notifications, review the results, and provide the final answer yourself. Do not restart the same investigation in response to a completion notification.`;
 }
 
 /** Convert persisted hierarchy metadata without discarding named Agents or their instructions. */

@@ -96,13 +96,13 @@ function commandExecutor(
 const discordHistoryHandler: ToolHandler = {
   name: 'discord_history',
   description:
-    'チャンネルの履歴を取得する。channel省略時は現在のチャンネルを使う。結果はDiscordに送信されず、コンテキストに返る。',
+    'Fetch channel history. Omit channel to use the current channel. Results return to context and are not sent to Discord.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID（省略時は現在のチャンネル）' },
-      count: { type: 'string', description: '取得件数（デフォルト10、最大100）' },
-      offset: { type: 'string', description: 'オフセット（古いメッセージに遡る）' },
+      channel: { type: 'string', description: 'Channel ID (defaults to the current channel)' },
+      count: { type: 'string', description: 'Number to fetch (default 10, maximum 100)' },
+      offset: { type: 'string', description: 'Offset into older messages' },
     },
   },
   execute: commandExecutor('discord_history', ['channel', 'count', 'offset'], true),
@@ -111,12 +111,12 @@ const discordHistoryHandler: ToolHandler = {
 const discordMessageHandler: ToolHandler = {
   name: 'discord_message',
   description:
-    '履歴に表示されたメッセージIDを使い、特定のDiscordメッセージ本文を省略せず取得する。channel省略時は現在のチャンネルを使う。',
+    'Fetch the full, untruncated Discord message using its ID from history. Omit channel to use the current channel.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID（省略時は現在のチャンネル）' },
-      'message-id': { type: 'string', description: '取得するメッセージID' },
+      channel: { type: 'string', description: 'Channel ID (defaults to the current channel)' },
+      'message-id': { type: 'string', description: 'Message ID to fetch' },
     },
     required: ['message-id'],
   },
@@ -125,12 +125,12 @@ const discordMessageHandler: ToolHandler = {
 
 const discordSendHandler: ToolHandler = {
   name: 'discord_send',
-  description: '指定チャンネルにメッセージを送信する。',
+  description: 'Send a message to the specified channel.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID' },
-      message: { type: 'string', description: '送信するメッセージ' },
+      channel: { type: 'string', description: 'Channel ID' },
+      message: { type: 'string', description: 'Message to send' },
     },
     required: ['channel', 'message'],
   },
@@ -139,11 +139,11 @@ const discordSendHandler: ToolHandler = {
 
 const discordChannelsHandler: ToolHandler = {
   name: 'discord_channels',
-  description: 'サーバーのチャンネル一覧を取得する。',
+  description: 'List channels in a server.',
   parameters: {
     type: 'object',
     properties: {
-      guild: { type: 'string', description: 'サーバー（ギルド）ID' },
+      guild: { type: 'string', description: 'Server (guild) ID' },
     },
     required: ['guild'],
   },
@@ -152,12 +152,12 @@ const discordChannelsHandler: ToolHandler = {
 
 const discordSearchHandler: ToolHandler = {
   name: 'discord_search',
-  description: 'チャンネル内のメッセージを検索する（最新100件から）。',
+  description: 'Search the latest 100 messages in a channel.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID' },
-      keyword: { type: 'string', description: '検索キーワード' },
+      channel: { type: 'string', description: 'Channel ID' },
+      keyword: { type: 'string', description: 'Search keyword' },
     },
     required: ['channel', 'keyword'],
   },
@@ -166,13 +166,13 @@ const discordSearchHandler: ToolHandler = {
 
 const discordEditHandler: ToolHandler = {
   name: 'discord_edit',
-  description: '自分のメッセージを編集する。',
+  description: 'Edit your own message.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID' },
-      'message-id': { type: 'string', description: 'メッセージID' },
-      content: { type: 'string', description: '新しいメッセージ内容' },
+      channel: { type: 'string', description: 'Channel ID' },
+      'message-id': { type: 'string', description: 'Message ID' },
+      content: { type: 'string', description: 'New message content' },
     },
     required: ['channel', 'message-id', 'content'],
   },
@@ -181,27 +181,46 @@ const discordEditHandler: ToolHandler = {
 
 const discordDeleteHandler: ToolHandler = {
   name: 'discord_delete',
-  description: '自分のメッセージを削除する。',
+  description: 'Delete your own message.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID' },
-      'message-id': { type: 'string', description: 'メッセージID' },
+      channel: { type: 'string', description: 'Channel ID' },
+      'message-id': { type: 'string', description: 'Message ID' },
     },
     required: ['channel', 'message-id'],
   },
   execute: commandExecutor('discord_delete', ['channel', 'message-id']),
 };
 
-const discordThreadLeaveHandler: ToolHandler = {
-  name: 'discord_thread_leave',
+const discordThreadRenameHandler: ToolHandler = {
+  name: 'discord_thread_rename',
   description:
-    'スレッドから指定ユーザーを退出させる（Discordの「このスレッドを退出」と同じ＝そのユーザーのサイドバーから消える）。channel 省略時は現在のスレッドが対象。user は必須で、自分を退出させたい場合は発言者のユーザーIDを渡す。',
+    'Rename a Discord thread when the user requests it. Omit channel to use the current thread.',
   parameters: {
     type: 'object',
     properties: {
-      user: { type: 'string', description: '退出させるユーザーID（必須。自分＝発言者のIDを渡す）' },
-      channel: { type: 'string', description: 'スレッドID（省略時は現在のスレッド）' },
+      name: { type: 'string', description: 'New thread title (1–100 characters)' },
+      channel: { type: 'string', description: 'Thread ID (defaults to the current thread)' },
+    },
+    required: ['name'],
+  },
+  execute: commandExecutor('discord_thread_rename', ['name', 'channel']),
+};
+
+const discordThreadLeaveHandler: ToolHandler = {
+  name: 'discord_thread_leave',
+  description:
+    "Remove the specified user from a thread (equivalent to Discord's Leave Thread: removes it from that user's sidebar). Omit channel to use the current thread. user is required; when the speaker wants to leave, pass the speaker's user ID.",
+  parameters: {
+    type: 'object',
+    properties: {
+      user: {
+        type: 'string',
+        description:
+          "User ID to remove (required; for the speaker to leave, pass the speaker's ID)",
+      },
+      channel: { type: 'string', description: 'Thread ID (defaults to the current thread)' },
     },
     required: ['user'],
   },
@@ -212,7 +231,7 @@ const discordThreadLeaveHandler: ToolHandler = {
 
 const scheduleListHandler: ToolHandler = {
   name: 'schedule_list',
-  description: 'スケジュール一覧を表示する。',
+  description: 'List schedules.',
   parameters: {
     type: 'object',
     properties: {},
@@ -238,21 +257,22 @@ export function createScheduleAddHandler(
   return {
     name: 'schedule_add',
     description:
-      'スケジュールを追加する。現在の会話へ送る場合はchannelとplatformを省略する。例: "30分後 ミーティング", "15:00 レビュー", "毎日 9:00 おはよう", "cron 0 9 * * * おはよう"',
+      'Add a schedule. Omit channel and platform to send to the current conversation. Examples: "30分後 ミーティング", "15:00 レビュー", "毎日 9:00 おはよう", "cron 0 9 * * * おはよう"',
     parameters: {
       type: 'object',
       properties: {
         input: {
           type: 'string',
-          description: 'スケジュール設定（例: "毎日 9:00 おはよう"）',
+          description: 'Schedule input (e.g. "毎日 9:00 おはよう")',
         },
         channel: {
           type: 'string',
-          description: '別の送信先を指定する場合の実ID（現在の会話では省略）',
+          description:
+            'Actual destination ID for another conversation (omit for the current conversation)',
         },
         platform: {
           type: 'string',
-          description: 'プラットフォーム（discord/slack/telegram/line）',
+          description: 'Platform (discord/slack/telegram/line)',
           enum: ['discord', 'slack', 'telegram', 'line'],
         },
       },
@@ -273,20 +293,20 @@ export function createScheduleAddHandler(
 const scheduleUpdateHandler: ToolHandler = {
   name: 'schedule_update',
   description:
-    '既存スケジュールをIDを維持したまま更新する。未指定項目は保持される。本文だけならmessage、日時・種別も変えるならinputを指定する。',
+    'Update a schedule while preserving its ID. Unspecified fields are retained. Use message to change only the body, or input to also change its time or type.',
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: 'スケジュールID' },
+      id: { type: 'string', description: 'Schedule ID' },
       input: {
         type: 'string',
-        description: '日時・種別・本文をまとめて更新する自然言語設定',
+        description: 'Natural-language input updating time, type, and body together',
       },
-      message: { type: 'string', description: '日時・種別を変えずに更新する本文' },
-      channel: { type: 'string', description: '新しい送信先チャンネルID' },
+      message: { type: 'string', description: 'New body without changing time or type' },
+      channel: { type: 'string', description: 'New destination channel ID' },
       platform: {
         type: 'string',
-        description: '新しいプラットフォーム（変更時はchannelも必須）',
+        description: 'New platform (channel is also required when changing it)',
         enum: ['discord', 'slack', 'telegram', 'web', 'line'],
       },
     },
@@ -297,11 +317,11 @@ const scheduleUpdateHandler: ToolHandler = {
 
 const scheduleRemoveHandler: ToolHandler = {
   name: 'schedule_remove',
-  description: 'スケジュールを削除する。',
+  description: 'Delete a schedule.',
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: 'スケジュールID' },
+      id: { type: 'string', description: 'Schedule ID' },
     },
     required: ['id'],
   },
@@ -310,11 +330,11 @@ const scheduleRemoveHandler: ToolHandler = {
 
 const scheduleToggleHandler: ToolHandler = {
   name: 'schedule_toggle',
-  description: 'スケジュールの有効/無効を切り替える。',
+  description: 'Toggle a schedule on or off.',
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: 'スケジュールID' },
+      id: { type: 'string', description: 'Schedule ID' },
     },
     required: ['id'],
   },
@@ -325,12 +345,12 @@ const scheduleToggleHandler: ToolHandler = {
 
 const mediaSendHandler: ToolHandler = {
   name: 'media_send',
-  description: 'ファイルをDiscordチャンネルに送信する。',
+  description: 'Send a file to a Discord channel.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID' },
-      file: { type: 'string', description: 'ファイルパス' },
+      channel: { type: 'string', description: 'Channel ID' },
+      file: { type: 'string', description: 'File path' },
     },
     required: ['channel', 'file'],
   },
@@ -342,7 +362,7 @@ const mediaSendHandler: ToolHandler = {
 const systemRestartHandler: ToolHandler = {
   name: 'system_restart',
   description:
-    'xangiを再起動する（管理者が.envでXANGI_SELF_LIFECYCLE=restart-onlyを設定している場合のみ）。',
+    'Restart xangi (only if an administrator set XANGI_SELF_LIFECYCLE=restart-only in .env).',
   parameters: {
     type: 'object',
     properties: {},
@@ -352,7 +372,8 @@ const systemRestartHandler: ToolHandler = {
 
 const webStatusHandler: ToolHandler = {
   name: 'web_status',
-  description: '現在のWeb UIアクセス先、bind、port、Chat・WorkspaceのHTTP状態を取得する。',
+  description:
+    'Get the current Web UI address, bind, port, and HTTP status for Chat and Workspace.',
   parameters: {
     type: 'object',
     properties: {},
@@ -363,11 +384,11 @@ const webStatusHandler: ToolHandler = {
 const extensionUninstallHandler: ToolHandler = {
   name: 'extension_uninstall',
   description:
-    '承認済みのworkspace cleanup後、現在のxangi instanceでextensionを停止・unlinkして完了状態を検証する。',
+    'After approved workspace cleanup, stop and unlink the extension in the current xangi instance, then verify completion.',
   parameters: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: '削除するextension ID' },
+      id: { type: 'string', description: 'Extension ID to remove' },
     },
     required: ['id'],
   },
@@ -378,13 +399,13 @@ function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandl
   return {
     name: 'runtime_settings',
     description:
-      'ユーザーが明示した場合に、許可されたランタイム設定を確認・変更する。任意のスラッシュコマンドは実行しない。',
+      'Inspect or change permitted runtime settings when explicitly requested by the user. Do not execute arbitrary slash commands.',
     parameters: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          description: '設定名',
+          description: 'Setting name',
           enum: [
             'backend',
             'llmmode',
@@ -397,22 +418,22 @@ function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandl
         },
         action: {
           type: 'string',
-          description: '操作',
-          enum: ['show', 'set', 'reset'],
+          description: 'Action',
+          enum: ['status', 'set', 'reset'],
         },
-        value: { type: 'string', description: '設定値' },
-        backend: { type: 'string', description: 'backend設定時のbackend' },
-        model: { type: 'string', description: 'backend設定時のmodel' },
-        effort: { type: 'string', description: 'backend設定時のeffort' },
+        value: { type: 'string', description: 'Setting value' },
+        backend: { type: 'string', description: 'Backend for the backend setting' },
+        model: { type: 'string', description: 'Model for the backend setting' },
+        effort: { type: 'string', description: 'Effort for the backend setting' },
         scope: {
           type: 'string',
-          description: 'backend設定の範囲（既定: channel）',
+          description: 'Scope of the backend setting (default: channel)',
           enum: ['channel', 'global'],
         },
-        channel: { type: 'string', description: '設定対象チャンネルID' },
+        channel: { type: 'string', description: 'Channel ID to configure' },
         platform: {
           type: 'string',
-          description: '対象プラットフォーム',
+          description: 'Target platform',
           enum: ['discord', 'slack', 'web', 'line', 'telegram'],
         },
       },
@@ -448,13 +469,13 @@ function createRuntimeSettingsHandler(defaultPlatform?: ChatPlatform): ToolHandl
 const webHistoryHandler: ToolHandler = {
   name: 'web_history',
   description:
-    '現在のWeb Chatペインの会話履歴を取得する。Web経由のセッションでのみ動作。結果はWebに送信されず、コンテキストに返る。',
+    'Fetch conversation history for the current Web Chat pane. Only available in Web sessions. Results return to context and are not sent to Web.',
   parameters: {
     type: 'object',
     properties: {
-      count: { type: 'string', description: '取得件数（デフォルト10）' },
-      session: { type: 'string', description: 'セッションID（省略時は現在のペイン）' },
-      'max-chars': { type: 'string', description: '1メッセージあたり最大文字数（デフォルト500）' },
+      count: { type: 'string', description: 'Number to fetch (default 10)' },
+      session: { type: 'string', description: 'Session ID (defaults to the current pane)' },
+      'max-chars': { type: 'string', description: 'Maximum characters per message (default 500)' },
     },
   },
   execute: commandExecutor('web_history', ['count', 'session', 'max-chars'], true),
@@ -463,17 +484,17 @@ const webHistoryHandler: ToolHandler = {
 const progressCardHandler: ToolHandler = {
   name: 'progress_card',
   description:
-    '現在のセッションの進捗カードを更新する。複数ステップの長い作業で、計画や現在位置が変わった時だけ使う。',
+    "Update the current session's progress card. Use only when the plan or current step changes during a long, multi-step task.",
   parameters: {
     type: 'object',
     properties: {
       plan: {
         type: 'array',
-        description: 'カード全体を置き換えるステップ一覧',
+        description: 'Steps replacing the entire card',
         items: {
           type: 'object',
           properties: {
-            step: { type: 'string', description: '短い作業ステップ' },
+            step: { type: 'string', description: 'Short task step' },
             status: {
               type: 'string',
               enum: ['pending', 'in_progress', 'completed'],
@@ -482,8 +503,8 @@ const progressCardHandler: ToolHandler = {
           required: ['step', 'status'],
         },
       },
-      note: { type: 'string', description: '必要な時だけ表示する短い補足' },
-      clear: { type: 'boolean', description: '既存カードを削除する' },
+      note: { type: 'string', description: 'Short note shown only when needed' },
+      clear: { type: 'boolean', description: 'Remove the existing card' },
     },
   },
   async execute(args, context): Promise<ToolResult> {
@@ -503,12 +524,12 @@ const progressCardHandler: ToolHandler = {
 const slackHistoryHandler: ToolHandler = {
   name: 'slack_history',
   description:
-    '現在のSlackチャンネルの会話履歴を取得する。Slack経由のセッションでのみ動作。結果はSlackに送信されず、コンテキストに返る。',
+    'Fetch conversation history for the current Slack channel. Only available in Slack sessions. Results return to context and are not sent to Slack.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'チャンネルID（省略時は現在のチャンネル）' },
-      count: { type: 'string', description: '取得件数（デフォルト10、最大100）' },
+      channel: { type: 'string', description: 'Channel ID (defaults to the current channel)' },
+      count: { type: 'string', description: 'Number to fetch (default 10, maximum 100)' },
     },
   },
   execute: commandExecutor('slack_history', ['channel', 'count'], true),
@@ -516,13 +537,16 @@ const slackHistoryHandler: ToolHandler = {
 
 const slackSendHandler: ToolHandler = {
   name: 'slack_send',
-  description: '指定Slackチャンネルにメッセージを送信する。thread-ts指定でスレッド返信もできる。',
+  description: 'Send a message to the specified Slack channel. Set thread-ts to reply in a thread.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'SlackチャンネルID（省略時は現在のチャンネル）' },
-      message: { type: 'string', description: '送信するメッセージ' },
-      'thread-ts': { type: 'string', description: '返信先スレッドのts（任意）' },
+      channel: {
+        type: 'string',
+        description: 'Slack channel ID (defaults to the current channel)',
+      },
+      message: { type: 'string', description: 'Message to send' },
+      'thread-ts': { type: 'string', description: 'Thread ts to reply to (optional)' },
     },
     required: ['message'],
   },
@@ -531,15 +555,16 @@ const slackSendHandler: ToolHandler = {
 
 const slackChannelsHandler: ToolHandler = {
   name: 'slack_channels',
-  description: 'Slackチャンネル一覧を取得する。',
+  description: 'List Slack channels.',
   parameters: {
     type: 'object',
     properties: {
       types: {
         type: 'string',
-        description: '取得対象（例: public_channel,private_channel。デフォルトは両方）',
+        description:
+          'Channel types to fetch (e.g. public_channel,private_channel; defaults to both)',
       },
-      limit: { type: 'string', description: '取得件数（デフォルト100、最大1000）' },
+      limit: { type: 'string', description: 'Number to fetch (default 100, maximum 1000)' },
     },
   },
   execute: commandExecutor('slack_channels', ['types', 'limit']),
@@ -547,13 +572,19 @@ const slackChannelsHandler: ToolHandler = {
 
 const slackSearchHandler: ToolHandler = {
   name: 'slack_search',
-  description: 'Slackチャンネル内のメッセージを検索する（最新メッセージから）。',
+  description: 'Search messages in a Slack channel, starting with the most recent.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'SlackチャンネルID（省略時は現在のチャンネル）' },
-      keyword: { type: 'string', description: '検索キーワード' },
-      count: { type: 'string', description: '検索対象件数（デフォルト15、最大100）' },
+      channel: {
+        type: 'string',
+        description: 'Slack channel ID (defaults to the current channel)',
+      },
+      keyword: { type: 'string', description: 'Search keyword' },
+      count: {
+        type: 'string',
+        description: 'Number of messages to search (default 15, maximum 100)',
+      },
     },
     required: ['keyword'],
   },
@@ -562,13 +593,16 @@ const slackSearchHandler: ToolHandler = {
 
 const slackEditHandler: ToolHandler = {
   name: 'slack_edit',
-  description: 'Slack上の自分のメッセージを編集する。SlackのメッセージIDはtsを使う。',
+  description: 'Edit your own Slack message. Use ts as the Slack message ID.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'SlackチャンネルID（省略時は現在のチャンネル）' },
-      'message-ts': { type: 'string', description: 'Slackメッセージts' },
-      content: { type: 'string', description: '新しいメッセージ内容' },
+      channel: {
+        type: 'string',
+        description: 'Slack channel ID (defaults to the current channel)',
+      },
+      'message-ts': { type: 'string', description: 'Slack message ts' },
+      content: { type: 'string', description: 'New message content' },
     },
     required: ['message-ts', 'content'],
   },
@@ -577,12 +611,15 @@ const slackEditHandler: ToolHandler = {
 
 const slackDeleteHandler: ToolHandler = {
   name: 'slack_delete',
-  description: 'Slack上の自分のメッセージを削除する。SlackのメッセージIDはtsを使う。',
+  description: 'Delete your own Slack message. Use ts as the Slack message ID.',
   parameters: {
     type: 'object',
     properties: {
-      channel: { type: 'string', description: 'SlackチャンネルID（省略時は現在のチャンネル）' },
-      'message-ts': { type: 'string', description: 'Slackメッセージts' },
+      channel: {
+        type: 'string',
+        description: 'Slack channel ID (defaults to the current channel)',
+      },
+      'message-ts': { type: 'string', description: 'Slack message ts' },
     },
     required: ['message-ts'],
   },
@@ -602,6 +639,7 @@ export function getDiscordTools(): ToolHandler[] {
     discordEditHandler,
     discordDeleteHandler,
     discordThreadLeaveHandler,
+    discordThreadRenameHandler,
     mediaSendHandler,
   ];
 }

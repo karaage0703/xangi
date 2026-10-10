@@ -12,14 +12,14 @@ export interface AttachmentRecoveryResult {
 function buildRecoveryPrompt(failure: NonNullable<AttachmentResult['attachmentFailure']>): string {
   const reason =
     failure === 'missing'
-      ? '指定したファイルが存在しません。'
+      ? 'The specified files do not exist.'
       : failure === 'outside_allowed'
-        ? '指定した実在ファイルが添付許可パスの外にあります。'
-        : '存在しないファイルと、添付許可パス外のファイルが含まれています。';
+        ? 'The specified existing files are outside the allowed attachment paths.'
+        : 'Some files are missing and others are outside the allowed attachment paths.';
   return `[xangi ファイル添付エラー]
 ${reason}
-添付できるのは WORKSPACE_PATH 配下または /tmp にある実在ファイルです。
-これは1回限りの修正機会です。元の依頼や外部操作をやり直さず、送付するファイルだけを許可パスへ作成・コピーするか正しいパスへ直し、最終回答を返してください。ファイル本体は MEDIA:/absolute/path で指定してください。`;
+Only existing files under WORKSPACE_PATH or /tmp can be attached.
+This is a single recovery attempt. Do not repeat the original task or external actions. Only create or copy the files to send into an allowed path, or correct their paths, then return the final answer. Specify file attachments as MEDIA:/absolute/path.`;
 }
 
 /** 添付検証NGを同じセッションへ一度だけ返す。再帰しないため無限再試行しない。 */

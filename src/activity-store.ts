@@ -1,3 +1,4 @@
+import { isSecretTurn } from './secret.js';
 import { fileChangeSummary, type FileChangeReport } from './file-changes.js';
 import type { Platform } from './events-emitter.js';
 import {
@@ -292,6 +293,7 @@ function appendActivityLog(
     turnHistory?: TurnHistoryEntry[];
   } = {}
 ): void {
+  if (isSecretTurn(record.threadId, record.turnId)) return;
   try {
     const workdir = process.env.WORKSPACE_PATH || process.cwd();
     const dir = join(workdir, monitorActivityDir);
@@ -397,11 +399,13 @@ function getExisting(ctx: ActivityContext): ActivityRecord {
 }
 
 export function startActivity(ctx: ActivityContext): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   createActivity(ctx);
   notifyActivity(ctx.threadId);
 }
 
 export function updateActivityText(ctx: ActivityContext, fullText: string, chunk = fullText): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   const record = getExisting(ctx);
   const preview = truncate(fullText, maxPreviewChars);
   const t = now();
@@ -433,6 +437,7 @@ export function updateActivityTool(
   toolName: string,
   toolInput: Record<string, unknown>
 ): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   const record = getExisting(ctx);
   flushPendingText(record);
   const line = summarizeTool(toolName, toolInput);
@@ -459,6 +464,7 @@ export function updateActivityTool(
 }
 
 export function updateActivityFileChanges(ctx: ActivityContext, report: FileChangeReport): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   if (!report.files.length && !report.partial) return;
   const record = getExisting(ctx);
   const at = now();
@@ -476,6 +482,7 @@ export function updateActivityFileChanges(ctx: ActivityContext, report: FileChan
 }
 
 export function completeActivity(ctx: ActivityContext, resultText?: string): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   const record = getExisting(ctx);
   const pendingText = record.pendingText?.text.trim();
   if (pendingText && resultText?.trim().endsWith(pendingText)) {
@@ -501,6 +508,7 @@ export function completeActivity(ctx: ActivityContext, resultText?: string): voi
 }
 
 export function abortActivity(ctx: ActivityContext): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   const record = getExisting(ctx);
   flushPendingText(record);
   const t = now();
@@ -513,6 +521,7 @@ export function abortActivity(ctx: ActivityContext): void {
 }
 
 export function errorActivity(ctx: ActivityContext, message: string): void {
+  if (isSecretTurn(ctx.threadId, ctx.turnId)) return;
   const record = getExisting(ctx);
   flushPendingText(record);
   const t = now();

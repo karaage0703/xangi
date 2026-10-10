@@ -17,14 +17,32 @@ function runnerWithRun(run: AgentRunner['run']): AgentRunner {
 }
 
 describe('normalizeAiSessionTitle', () => {
-  it('引用符・改行・末尾記号を除去して50文字へ収める', () => {
-    expect(normalizeAiSessionTitle('「AIタイトル生成の設計相談。」\n説明')).toBe(
+  it('改行・末尾記号を除去して50文字へ収める', () => {
+    expect(normalizeAiSessionTitle('AIタイトル生成の設計相談。\n説明')).toBe(
       'AIタイトル生成の設計相談'
     );
     expect(normalizeAiSessionTitle('あ'.repeat(60))).toHaveLength(50);
     expect(normalizeAiSessionTitle('LLMエラー: API error 404')).toBe('');
     expect(normalizeAiSessionTitle('Error: model unavailable')).toBe('');
     expect(normalizeAiSessionTitle('LLMサーバーに接続できませんでした。')).toBe('');
+  });
+
+  it.each([
+    '「fetch failed」エラーの原因',
+    'エラー「fetch failed」',
+    '「タイトル全体」',
+    '『作品名』の感想',
+    '感想：『作品名』',
+    '『タイトル全体』',
+    '"fetch failed" error',
+    'Error "fetch failed"',
+    '"Title"',
+    "'Title'",
+    '`fetch` error',
+    'Error `fetch`',
+    '`Title`',
+  ])('タイトルの引用符・カッコを保持する: %s', (title) => {
+    expect(normalizeAiSessionTitle(title)).toBe(title);
   });
 });
 
@@ -39,7 +57,7 @@ describe('generateAiSessionTitle', () => {
         userText: '既存スレッドのタイトルを直したい',
         runOptions: { platform: 'discord' },
       })
-    ).resolves.toBe('再生成タイトル');
+    ).resolves.toBe('「再生成タイトル。」');
 
     expect(runner.run).toHaveBeenCalledWith(
       expect.stringContaining('既存スレッドのタイトルを直したい'),

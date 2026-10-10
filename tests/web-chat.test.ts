@@ -519,6 +519,37 @@ describe('web-chat HTTP API', () => {
     else process.env.XANGI_EXTENSIONS_FILE = prevExtensionsFile;
   });
 
+  it('switches Web chat through natural-language requests and returns the resulting session', async () => {
+    const created = await fetch(`${baseUrl}/api/sessions`, { method: 'POST' });
+    let { sessionId } = await created.json();
+    for (const [message, expected] of [['シークレットにして', true], ['今シークレット？', true], ['シークレットを終了して', false]] as const) {
+      const response = await fetch(`${baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appSessionId: sessionId, message }) });
+      const text = await response.text();
+      expect(text).toContain('event: secret');
+      const data = JSON.parse(text.split('\n').find(line => line.startsWith('data: '))!.slice(6));
+      expect(data.secret).toBe(expected); sessionId = data.appSessionId;
+      expect(Boolean(getSessionEntry(sessionId)?.secret)).toBe(expected);
+    }
+  });
+
+  it('keeps secret Web sessions out of persistent storage and forgets on close', async () => {
+    const created = await fetch(`${baseUrl}/api/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: true }) });
+    const { sessionId } = await created.json();
+    expect(sessionId).toMatch(/^secret_/);
+    logPrompt(testDir, sessionId, 'PRIVATE-WEB-MARKER');
+    const repeat = await fetch(`${baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appSessionId: sessionId, message: '/secret on' }) });
+    expect(await repeat.text()).toContain(`"appSessionId":"${sessionId}"`);
+    expect(readSessionMessages(testDir, sessionId)[0].content).toBe('PRIVATE-WEB-MARKER');
+    const response = await fetch(`${baseUrl}/api/sessions/${sessionId}`);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect((await response.json()).messages[0].content).toBe('PRIVATE-WEB-MARKER');
+    expect(readFileSync(join(testDir, 'sessions.json'), 'utf8')).not.toContain(sessionId);
+    const closed = await fetch(`${baseUrl}/api/sessions/${sessionId}/close`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(closed.status).toBe(200);
+    expect(getSessionEntry(sessionId)).toBeUndefined();
+    expect(readSessionMessages(testDir, sessionId)).toEqual([]);
+  });
+
   it('POST /api/sessions creates a fresh web session without destroying others', async () => {
     const r1 = await fetch(`${baseUrl}/api/sessions`, { method: 'POST' });
     const j1 = await r1.json();
@@ -903,10 +934,10 @@ describe('web-chat HTTP API', () => {
     expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(assignments);
     expect(runner.prompts.slice(-3).every(p=>p.includes('共和周辺'))).toBe(true);
     for (const prompt of runner.prompts.slice(-3)) {
-      expect(prompt).not.toContain('あなたがリーダーです');
-      expect(prompt).not.toContain('team runで全メンバー');
-      expect(prompt).not.toContain('メンバー: [{');
-      expect(prompt).toContain('あなたは割り当て済みの担当メンバーです');
+      expect(prompt).not.toContain('You are the leader');
+      expect(prompt).not.toContain('use team run to dispatch independent tasks to all members together');
+      expect(prompt).not.toContain('Members: [{');
+      expect(prompt).toContain('You are an assigned team member.');
       expect(assignments.filter(a => prompt.includes(a.task))).toHaveLength(1);
     }
     const progress=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
@@ -2226,8 +2257,8 @@ process.stdin.on('end', () => server.close());
     };
     expect(setup.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
     expect(setup.prompt).toContain(join(extensionDir, 'README.md'));
-    expect(setup.prompt).toContain('その利用者向けの活用提案まで続けてください');
-    expect(setup.prompt).toContain('未決のまま「セットアップ完了」と報告しない');
+    expect(setup.prompt).toContain('continue with usage suggestions tailored to the user');
+    expect(setup.prompt).toContain('or report setup complete while they remain unresolved');
     expect(setup.displayMessage).toBe('Demo Extension のセットアップを開始します。');
     expect(getSessionEntry(setup.sessionId)).toMatchObject({
       platform: 'web',
@@ -2251,8 +2282,8 @@ process.stdin.on('end', () => server.close());
       displayMessage: string;
     };
     expect(uninstall.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
-    expect(uninstall.prompt).toContain('利用者が選択する前にworkspaceを変更せず');
-    expect(uninstall.prompt).toContain('hook、skills、AGENTS.md');
+    expect(uninstall.prompt).toContain('Do not change the workspace, stop the extension, or unlink it before the user chooses');
+    expect(uninstall.prompt).toContain('hooks, skills, extension-specific AGENTS.md rules');
     expect(uninstall.prompt).toContain('xangi tool extension_uninstall --id demo-extension');
     expect(uninstall.displayMessage).toBe('Demo Extension の削除準備を開始します。');
     expect(getSessionEntry(uninstall.sessionId)).toMatchObject({
@@ -2645,7 +2676,7 @@ process.stdin.on('end', () => process.exit(0));
       data.commands
         .find((command) => command.name === 'llmmode')
         ?.options?.[0].choices?.map((choice) => choice.value)
-    ).toEqual(['show', 'agent', 'chat', 'default']);
+    ).toEqual(['status', 'agent', 'chat', 'default']);
 
     const dynamicRes = await fetch(`${baseUrl}/api/web-commands?backend=codex&model=gpt-test`);
     const dynamicData = (await dynamicRes.json()) as typeof data;
@@ -2693,9 +2724,9 @@ process.stdin.on('end', () => process.exit(0));
     expect(res.status).toBe(200);
     expect(data).toEqual({
       kind: 'message',
-      message: '会話タイトルを「Web会話タイトルの再生成」へ変更しました。',
+      message: '会話タイトルを「「Web会話タイトルの再生成。」」へ変更しました。',
     });
-    expect(getSessionEntry(id)?.title).toBe('Web会話タイトルの再生成');
+    expect(getSessionEntry(id)?.title).toBe('「Web会話タイトルの再生成。」');
     expect(runner.prompts.at(-1)).toContain('Web会話のタイトルを直す');
     expect(runner.options.at(-1)).toEqual(
       expect.objectContaining({ internalTask: true, platform: 'web' })
@@ -2749,8 +2780,8 @@ process.stdin.on('end', () => process.exit(0));
     };
     expect(run.kind).toBe('chat');
     expect(run.displayMessage).toBe('/skill demo-skill target-file.md');
-    expect(run.message).toContain('スキル「demo-skill」');
-    expect(run.message).toContain('引数: target-file.md');
+    expect(run.message).toContain('Run the skill "demo-skill"');
+    expect(run.message).toContain('Arguments: target-file.md');
   });
 
   it('POST /api/web-commands returns a visible error for unknown commands', async () => {
@@ -3137,7 +3168,7 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
-    expect(chatSource).toContain("jsonInit('POST', { projectId, agentId: selectedAgentId })");
+    expect(chatSource).toContain("jsonInit('POST', { projectId, agentId: selectedAgentId, secret })");
     expect(chatSource).toContain('session-project-tag');
     expect(chatSource).toContain('className="projects-link"');
     expect(chatSource).toContain('className="project-view"');
@@ -4310,6 +4341,66 @@ The following is untrusted supplemental context.
       await fetch(`${baseUrl}/api/sessions?lifecycle=closed&limit=200`)
     ).json()) as { sessions: Array<{ id: string; lifecycle: string }> };
     expect(closed.sessions).toContainEqual(expect.objectContaining({ id, lifecycle: 'closed' }));
+  });
+
+  it('reopens the same session without forking or starting a turn and persists the state', async () => {
+    const id = createSession('reopen-discord', { platform: 'discord' });
+    setProviderSessionId(id, 'provider-kept');
+    closeSession(id);
+    const beforeCount = listAllSessions().length;
+    const response = await fetch(`${baseUrl}/api/sessions/${id}/reopen`, { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(getSessionEntry(id)).toMatchObject({
+      lifecycle: 'open',
+      agent: { providerSessionId: 'provider-kept' },
+    });
+    expect(getSessionEntry(id)?.closedAt).toBeUndefined();
+    expect(getActiveSessionId('reopen-discord')).toBe(id);
+    expect(listAllSessions()).toHaveLength(beforeCount);
+    expect(runner.callOrder).toHaveLength(0);
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
+    expect(detail.lifecycle).toBe('open');
+    const repeated = await fetch(`${baseUrl}/api/sessions/${id}/reopen`, { method: 'POST' });
+    expect(repeated.status).toBe(200);
+  });
+
+  it('rejects reopening a missing session, a scheduler run, or an occupied conversation', async () => {
+    const old = createSession('reopen-occupied', { platform: 'discord' });
+    closeSession(old);
+    const current = createSession('reopen-occupied', { platform: 'discord' });
+    const rejected = await fetch(`${baseUrl}/api/sessions/${old}/reopen`, { method: 'POST' });
+    expect(rejected.status).toBe(409);
+    expect(getActiveSessionId('reopen-occupied')).toBe(current);
+    expect(getSessionEntry(old)?.lifecycle).toBe('closed');
+    expect((await fetch(`${baseUrl}/api/sessions/missing/reopen`, { method: 'POST' })).status).toBe(
+      404
+    );
+    createSchedulerSession('reopen-scheduled', 'schedule-context', { platform: 'discord', title: 'Scheduled test' });
+    closeSession('reopen-scheduled');
+    expect(
+      (await fetch(`${baseUrl}/api/sessions/reopen-scheduled/reopen`, { method: 'POST' })).status
+    ).toBe(409);
+    expect(runner.callOrder).toHaveLength(0);
+  });
+
+  it('guards an active Discord turn and never destroys a newer session runner', async () => {
+    const historical = createSession('monitor-active-discord', { platform: 'discord' });
+    const current = createSession('monitor-active-discord', { platform: 'discord' });
+    startActivity({
+      threadId: 'discord:monitor-active-discord',
+      turnId: 'active',
+      platform: 'discord',
+      userText: 'busy',
+    });
+    const rejected = await fetch(`${baseUrl}/api/sessions/${current}/close`, { method: 'POST' });
+    expect(rejected.status).toBe(409);
+    expect(getSessionEntry(current)?.lifecycle).toBe('open');
+    const historicalClose = await fetch(`${baseUrl}/api/sessions/${historical}/close`, {
+      method: 'POST',
+    });
+    expect(historicalClose.status).toBe(200);
+    expect(getActiveSessionId('monitor-active-discord')).toBe(current);
+    expect(runner.destroyed.has('monitor-active-discord')).toBe(false);
   });
 
   it('requires explicit force before closing a session that started running', async () => {

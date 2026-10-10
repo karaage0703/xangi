@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  IncompleteAgentTurnError,
+  LlmTimeoutError,
   classifyAgentError,
   formatErrorDiagnostic,
   formatAgentErrorForUser,
-  shouldSendErrorFollowUp,
 } from '../src/errors.js';
 import { consumeRestartNote, resetRestartNoteStateForTest } from '../src/restart-note.js';
 
@@ -104,25 +105,6 @@ describe('formatErrorDiagnostic', () => {
   });
 });
 
-describe('shouldSendErrorFollowUp', () => {
-  it.each([
-    ['timed out after 300000ms', false],
-    ['Circuit breaker OPEN', false],
-    ["You've hit your usage limit", false],
-    ["You've hit your session limit · resets 5am (Asia/Tokyo)", false],
-    ...claudeLimitErrors.map((message) => [message, false]),
-    ['Request cancelled by user', false],
-    [
-      'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/',
-      false,
-    ],
-    ['Process exited unexpectedly with code 143', true],
-    ['Some random error', true],
-  ])('%s → %s', (message, expected) => {
-    expect(shouldSendErrorFollowUp(new Error(message))).toBe(expected);
-  });
-});
-
 describe('consumeRestartNote', () => {
   beforeEach(() => {
     resetRestartNoteStateForTest();
@@ -130,7 +112,7 @@ describe('consumeRestartNote', () => {
 
   it('既存セッションがあるチャンネルの初回だけ注記を返す', () => {
     const note = consumeRestartNote('ch1', true);
-    expect(note).toContain('再起動');
+    expect(note).toContain('restart');
     expect(note).toContain('rejected');
     // 2 回目は null
     expect(consumeRestartNote('ch1', true)).toBeNull();
@@ -147,4 +129,21 @@ describe('consumeRestartNote', () => {
     expect(consumeRestartNote('ch4', true)).not.toBeNull();
     expect(consumeRestartNote('ch3', true)).toBeNull();
   });
+});
+
+it('reports an incomplete turn without automatic follow-up', () => {
+  const error = new IncompleteAgentTurnError('Codex', 'test-thread');
+  expect(classifyAgentError(error)).toBe('incomplete-turn');
+  expect(formatAgentErrorForUser(error)).toContain('完了通知を受け取れない');
+  expect(formatAgentErrorForUser(error)).toContain('自動再実行はしていません');
+  expect(error.retryable).toBe(false);
+});
+
+it('shows the model deadline instead of the enclosing turn deadline', () => {
+  expect(
+    formatAgentErrorForUser(new LlmTimeoutError(1_800_000, false), { timeoutMs: 3_600_000 })
+  ).toBe('⏱️ LLM応答待ちがタイムアウトしました（1800秒）');
+  expect(
+    formatAgentErrorForUser(new LlmTimeoutError(1_800_000, true), { timeoutMs: 3_600_000 })
+  ).toBe('⏱️ LLM受信待ちがタイムアウトしました（1800秒）');
 });

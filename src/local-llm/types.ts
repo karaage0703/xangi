@@ -78,6 +78,8 @@ export interface LLMChatResponse {
 }
 
 export interface ToolContext {
+  /** Turn cancellation; tools must not start after it is aborted. */
+  signal?: AbortSignal;
   workspace: string;
   userId?: string;
   channelId?: string;

@@ -126,9 +126,10 @@ After adding or changing scopes/events, reinstall the app from **"Install App"**
 | `/delete`   | Delete the previous or specified bot message (Usage Hint: `[message-ts-or-link]`) |
 | `/skill`    | List or run a skill (Usage Hint: `[skill-name] [args]`)                           |
 | `/settings` | Show current settings                                                             |
+| `/secret` | Secret mode: `[on|off|status]` |
 | `/models`   | List available models (Usage Hint: `[backend]`)                                   |
-| `/agent` | List/select/clear the channel Agent (Usage Hint: `list\|show\|set <ID>\|reset`) |
-| `/backend`  | Switch this channel's backend immediately (Usage Hint: `show\|set\|reset ...`)  |
+| `/agent` | List/select/clear the channel Agent (Usage Hint: `list\|status\|set <ID>\|reset`) |
+| `/backend`  | Switch this channel's backend immediately (Usage Hint: `status\|set\|reset ...`)  |
 | `/restart`  | Request a graceful xangi restart                                                  |
 
 > **Note**: Request URL is not needed in Socket Mode.

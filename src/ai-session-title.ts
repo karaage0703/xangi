@@ -1,3 +1,4 @@
+import { isSecretSession } from './secret.js';
 import type { AgentRunner, RunOptions } from './agent-runner.js';
 import {
   stripPromptMetadata,
@@ -20,8 +21,7 @@ export function normalizeAiSessionTitle(raw: string): string {
   const firstLine = raw
     .trim()
     .split(/\r?\n/, 1)[0]
-    ?.replace(/^["'`「『]+|["'`」』]+$/g, '')
-    .replace(/[。．.!！?？]+$/g, '')
+    ?.replace(/[。．.!！?？]+$/g, '')
     .trim();
   if (
     /^(?:LLMエラー\s*[:：]|LLM(?:サーバー|との)|エラー\s*[:：]|error\s*[:：]|timeout\s*[:：]|タイムアウト\s*[:：]|ごめん、うまく応答)/i.test(
@@ -68,6 +68,7 @@ export function buildAiSessionTitleSource(userMessages: string[]): string {
 export async function generateAiSessionTitle(
   options: GenerateAiSessionTitleOptions
 ): Promise<string> {
+  if (isSecretSession(options.appSessionId)) return 'シークレット';
   const userText = stripUserPromptHookContexts(stripPromptMetadata(options.userText)).trim();
   if (!userText) throw new Error('empty user text');
 
@@ -108,6 +109,7 @@ export async function generateAiSessionTitle(
  * 失敗時は既存prefixを維持し、会話本体へ例外を伝播しない。
  */
 export function startAiSessionTitle(options: StartAiSessionTitleOptions): boolean {
+  if (isSecretSession(options.appSessionId)) return false;
   if (inFlight.has(options.appSessionId)) return false;
 
   const userText = stripUserPromptHookContexts(stripPromptMetadata(options.userText)).trim();

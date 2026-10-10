@@ -1,3 +1,5 @@
+import { isSecretSession, parseSecretCommand } from '../secret.js';
+import { handleSecretConversationCommand } from '../secret-conversation-command.js';
 import { findAgentWork, submitAgentWork } from '../agent-work.js';
 import { registerDiscordAgentWork } from './agent-work.js';
 import {
@@ -10,7 +12,7 @@ import {
 } from 'discord.js';
 import type { Config } from '../config.js';
 import type { AgentRunner, AgentTraceEvent, RunResult } from '../agent-runner.js';
-import { formatAgentErrorForUser, shouldSendErrorFollowUp } from '../errors.js';
+import { formatAgentErrorForUser } from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
@@ -18,7 +20,7 @@ import { threadIdFor, turnIdFor } from '../events-emitter.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from '../file-utils.js';
 import { recoverAttachmentOnce } from '../attachment-recovery.js';
 import { splitDiscordMessage } from '../message-split.js';
-import { DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
+import { DEFAULT_TIMEOUT_MS, DISCORD_MAX_LENGTH, DISCORD_SAFE_LENGTH } from '../constants.js';
 import { StreamSession } from '../stream-session.js';
 import { registerStreamFinalizer } from '../stream-finalizer.js';
 import { buildCompletionNotification } from './completion-notify.js';
@@ -38,6 +40,7 @@ import {
   incrementMessageCount,
   getActiveSessionId,
   getSessionEntry,
+  createSession,
   activateSession,
   updateSessionTitle,
 } from '../sessions.js';
@@ -165,7 +168,13 @@ export async function sendDiscordCompletedResult(options: {
   return finalMessage;
 }
 
-async function resolveDiscordMessageTarget(
+function discordSecretControlText(message: Message): string | undefined {
+  if (message.attachments?.size) return;
+  const botId = message.client?.user?.id;
+  return message.content?.replaceAll(`<@${botId}>`, '').replaceAll(`<@!${botId}>`, '').trim();
+}
+
+export async function resolveDiscordMessageTarget(
   message: Message,
   channelId: string,
   config: Config,
@@ -183,14 +192,21 @@ async function resolveDiscordMessageTarget(
     config.discord.replyInThread ?? false
   );
 
-  if (replyInThread) {
+  // Capture privacy before awaiting Discord: a newly created thread has its own
+  // context key and must not briefly open an ordinary, persisted session.
+  const sourceSessionId = getActiveSessionId(channelId);
+  const secretSource = isSecretSession(sourceSessionId)
+    ? getSessionEntry(sourceSessionId!)
+    : undefined;
+  // Controls apply to the conversation where they were sent, not a new thread.
+  if (replyInThread && !parseSecretCommand(discordSecretControlText(message))) {
     const ch = message.channel as unknown as { isThread?: () => boolean };
     const alreadyThread = typeof ch.isThread === 'function' && ch.isThread();
     const canStartThread =
       typeof (message as unknown as { startThread?: unknown }).startThread === 'function';
     if (!alreadyThread && canStartThread) {
       try {
-        const threadName = deriveThreadTitle(message.content);
+        const threadName = secretSource ? 'シークレット' : deriveThreadTitle(message.content);
         newThread = (await (
           message as unknown as {
             startThread: (opts: { name: string }) => Promise<unknown>;
@@ -208,6 +224,20 @@ async function resolveDiscordMessageTarget(
         );
       }
     }
+  }
+
+  if (newThread && secretSource) {
+    createSession(newThread.id, {
+      platform: 'discord',
+      secret: true,
+      title: 'シークレット',
+      workspaceId: secretSource.workspaceId,
+      workspacePath: secretSource.workspacePath,
+      projectId: secretSource.projectId,
+      selectedAgentId: secretSource.selectedAgentId,
+      selectedAgentConfig: secretSource.selectedAgentConfig,
+      agentBindingKey: secretSource.agentBindingKey,
+    });
   }
 
   const conversationChannelId = resolveConversationChannelId(channelId, newThread?.id);
@@ -297,6 +327,20 @@ export async function processPrompt(
   const settingsChannelId = target.settingsChannelId;
   let resolvedSessionWorkspace: Awaited<ReturnType<typeof ensureSessionWithWorkspace>>;
   try {
+    const controlText = actor?.userText ?? discordSecretControlText(message);
+    const controlResult = await handleSecretConversationCommand({
+      registry: workspaceRegistry,
+      platform: 'discord',
+      contextKey: conversationChannelId,
+      bindingKey: settingsChannelId,
+      userText: controlText,
+    });
+    if (controlResult) {
+      if (parseSecretCommand(controlText) !== 'status')
+        agentRunner.destroy?.(conversationChannelId);
+      await target.sendInitial({ content: controlResult.result });
+      return controlResult.result;
+    }
     resolvedSessionWorkspace = await ensureSessionWithWorkspace({
       registry: workspaceRegistry,
       platform: 'discord',
@@ -347,7 +391,7 @@ export async function processPrompt(
     // 起動時設定より強い権限が明示された内部呼び出しではワンショットランナーを使用
     // （persistent-runner はプロセス起動時の権限設定を変えられないため）
     const defaultSkip = config.agent.config.skipPermissions ?? false;
-    const needsSkipRunner = skipPermissions && !defaultSkip;
+    const needsSkipRunner = skipPermissions && !defaultSkip && !isSecretSession(appSessionId);
     const runner: AgentRunner = needsSkipRunner
       ? new ClaudeCodeRunner({ ...config.agent.config, workdir: sessionWorkdir })
       : agentRunner;
@@ -394,7 +438,11 @@ export async function processPrompt(
 
     const settings = loadSettings();
 
-    if (!existingProviderSessionId && config.historyPrefetch?.enabled) {
+    if (
+      !sessionEntry?.skipHistoryPrefetch &&
+      !existingProviderSessionId &&
+      config.historyPrefetch?.enabled
+    ) {
       const prefetchedHistory = target.createdThreadName
         ? buildPrefetchedHistoryBlock('Discord', [])
         : await prefetchDiscordHistory(message, config.historyPrefetch.count);
@@ -797,7 +845,7 @@ export async function processPrompt(
 
     // エラーの種類を判別して詳細メッセージを生成（分類ロジックは errors.ts に共通化）
     const errorDetail = formatAgentErrorForUser(error, {
-      timeoutMs: config.agent.config.timeoutMs ?? 300000,
+      timeoutMs: config.agent.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
 
     // エラー詳細を表示（途中のテキスト・ツール履歴を残す）
@@ -813,41 +861,8 @@ export async function processPrompt(
       await message.reply(errorMessage).catch(() => {});
     }
 
-    // エラー後にエージェントへ自動フォローアップ。
-    // タイムアウト・サーキットブレーカー時は壊れたセッションに負荷を重ねるだけ、
-    // 利用上限時はフォローアップ自体が同じ上限に当たるため送らない（判定は errors.ts）
-    if (shouldSendErrorFollowUp(error)) {
-      try {
-        console.log('[xangi] Sending error follow-up to agent');
-        const sessionId = getSession(conversationChannelId);
-        if (sessionId) {
-          const followUpPrompt =
-            '先ほどの処理がエラー（タイムアウト等）で中断されました。途中まで行った作業内容と現在の状況を簡潔に報告してください。';
-          const followUpAppId = getActiveSessionId(conversationChannelId);
-          const followUpResult = await agentRunner.run(followUpPrompt, {
-            skipPermissions,
-            sessionId,
-            channelId: conversationChannelId,
-            appSessionId: followUpAppId,
-            settingsChannelId,
-            workdir: sessionWorkdir,
-          });
-          if (followUpResult.result) {
-            setSession(conversationChannelId, followUpResult.sessionId);
-            const followUpText = followUpResult.result.slice(0, DISCORD_SAFE_LENGTH);
-            // スレッド返信時は replyMessage がスレッド内にあるので、その投稿先へ揃える
-            const followUpChannel = (replyMessage?.channel ?? message.channel) as {
-              send?: (content: string) => Promise<unknown>;
-            };
-            if (typeof followUpChannel.send === 'function') {
-              await followUpChannel.send(`📋 **エラー前の作業報告:**\n${followUpText}`);
-            }
-          }
-        }
-      } catch (followUpError) {
-        console.error('[xangi] Error follow-up failed:', followUpError);
-      }
-    }
+    // Do not start another agent turn to report an error. A reporting prompt still
+    // permits tool execution and can hold the conversation busy indefinitely.
     latency.finish('error');
 
     return null;
@@ -1141,10 +1156,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     if (!prompt && attachmentPaths.length === 0) return;
 
     // 添付ファイル情報をプロンプトに追加
-    prompt = buildPromptWithAttachments(
-      prompt || '添付ファイルを確認してください',
-      attachmentPaths
-    );
+    prompt = buildPromptWithAttachments(prompt || 'Inspect the attached files', attachmentPaths);
 
     const channelId = message.channel.id;
 

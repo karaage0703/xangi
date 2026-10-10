@@ -301,12 +301,12 @@ export function buildOnboardingPrompt(options: {
   const candidates =
     options.workspaceCandidates.length > 0
       ? options.workspaceCandidates.map((path) => `- ${path}`).join('\n')
-      : '- 既知の場所には見つかりませんでした';
-  const templateChoice = `GitHubのkaraage0703/ai-assistant-workspaceから選択時点のmain最新commitをGitなしで取得する推奨テンプレートを、既定path ${join(options.homeDir, 'ai-assistant-workspace')} へ作成する方法`;
+      : '- None found in known locations';
+  const templateChoice = `the recommended template at the default path ${join(options.homeDir, 'ai-assistant-workspace')}, fetched without Git from the latest main commit of karaage0703/ai-assistant-workspace on GitHub at selection time`;
   const workspaceFlow =
     options.workspaceCandidates.length > 0
-      ? `1. 検出したworkspaceのいずれかを使うか、日本語で確認してください。home directoryを再帰的に検索しないでください。利用者が候補を選ばない場合は、${templateChoice}、空の新規workspace、別の絶対pathにある既存workspaceの順に案内してください。`
-      : `1. 「既知のworkspaceは見つかりませんでした」と日本語で伝えてください。最初に、${templateChoice}。代替として、空の新規workspace、別の絶対pathにある既存workspaceも選べると案内してください。`;
+      ? `1. Ask in Japanese whether to use one of the detected workspaces. Do not recursively search the home directory. If the user selects none, offer ${templateChoice}, a new blank workspace, and an existing workspace at another absolute path, in that order.`
+      : `1. Tell the user in Japanese that no known workspace was found. First offer ${templateChoice}. Also offer a new blank workspace or an existing workspace at another absolute path as alternatives.`;
   const readmePath = join(options.documentationRoot, 'README.md');
   const usagePath = join(options.documentationRoot, 'docs', 'usage.md');
   const discordSetupPath = join(options.documentationRoot, 'docs', 'discord-setup.md');
@@ -314,38 +314,38 @@ export function buildOnboardingPrompt(options: {
     options.installationKind === 'managed'
       ? `${options.launcherCommand} install`
       : `${options.launcherCommand} service start`;
-  const startupFlow = `6. ${readmePath}の起動手順を読み、\`${startCommand}\`でxangiをlocal起動してください。その後\`${options.launcherCommand} doctor\`を実行し、config、workspace、backend、service、health、runtime-workspaceが正常で、実際のworkspaceが設定値と一致することを確認してください。ここまではTailscaleのstatusやServe設定を確認・変更してはいけません。PM2など必要softwareが無い場合は勝手にinstallせず、公式手順を説明して許可を得てください。localで上記全項目が通ってからだけ「基本セットアップ完了」と伝えてください。次に、OSへのログインまたはOS起動時にもxangiを自動起動するかを別の質問で確認してください。利用者が明確に希望した場合だけ\`${options.launcherCommand} service autostart enable\`を実行し、希望しない場合や回答が曖昧な場合は登録しないでください。後から解除するcommandは\`${options.launcherCommand} service autostart disable\`です。`;
-  return `あなたはxangiの初回セットアップを案内します。利用者への質問、説明、確認、要約はすべて日本語にしてください。短い質問を一度に一つだけ行い、回答を決めつけないでください。
+  const startupFlow = `6. Read ${readmePath} for startup instructions, then run \`${startCommand}\` to start xangi locally. Then run \`${options.launcherCommand} doctor\` and verify config, workspace, backend, service, health, and runtime-workspace, including that the actual workspace matches the configured value. Do not inspect or change Tailscale status or Serve settings yet. If required software such as PM2 is missing, explain the official installation steps and obtain permission instead of installing it unilaterally. Report basic setup complete only after all these local checks pass. Then separately ask whether xangi should start automatically at OS login or boot. Only if the user explicitly wants this, run \`${options.launcherCommand} service autostart enable\`; do not register autostart if the user declines or their answer is unclear. The command to disable it later is \`${options.launcherCommand} service autostart disable\`.`;
+  return `Guide initial xangi setup. Ask questions, explain, confirm, and summarize in Japanese. Ask one short question at a time without assuming the answer.
 
-ルールベースの事前確認で${options.backend.label}が選択されました。設定内容の検証と保存はあなたではなくxangiが行います。
+Rule-based preflight selected ${options.backend.label}. xangi validates and saves settings; you do not.
 
-ルールベースで検出したworkspace:
+Workspaces detected by rule-based checks:
 ${candidates}
 
-必須の進行順:
+Required sequence:
 ${workspaceFlow}
-2. 利用者がworkspaceの絶対pathと方式を選んだら、Web Chatのアクセス範囲は質問せず、placeholderを置き換えて次のlocal用コマンドだけを実行してください:
+2. Once the user selects the workspace absolute path and mode, replace placeholders and run only the following local command without asking about Web Chat access scope:
    ${options.launcherCommand} setup --apply --backend ${options.backend.id} --workspace <ABSOLUTE_PATH> --workspace-mode <existing|template|blank> --web-chat-access local
-3. 選んだworkspaceへ移動してください。BOOTSTRAP.mdがあれば読み、その指示に従ってください。空の新規workspaceではxangiが安全なBOOTSTRAP.mdを作成します。
-4. 最初は名前、AIの人格、重要なルールなど最低限だけを設定してください。
-5. 最低限のセットアップが終わり、BOOTSTRAP.mdの指示に従って同ファイルが削除されたら次を実行してください:
+3. Change to the selected workspace. If BOOTSTRAP.md exists, read and follow it. xangi creates a safe BOOTSTRAP.md for a new blank workspace.
+4. Initially configure only essentials such as names, AI personality, and important rules.
+5. After minimal setup is complete and BOOTSTRAP.md has been deleted according to its instructions, run:
    ${options.launcherCommand} setup --complete
 ${startupFlow}
-7. basic setupがlocalで動作した後だけ、この端末のみで使うか、他端末からも使うかを一問で確認してください。この端末のみならlocalのままとし、Tailscale commandは実行しないでください。他端末から使う場合だけ、次の選択肢を案内してください:
-   - Tailscale経由: Web Chatはloopbackのまま、Tailscale Serveでtailnet内だけへ転送する
-   - LAN内の他端末: 0.0.0.0。Web Chat自体には認証がなく、同じLANの到達可能な端末からアクセスできると事前に警告する
-8. Tailscaleを選んだ場合だけ、\`tailscale status\`で利用可能と確認し、\`tailscale serve status --json\`でTCP ${webChatPort}が別の転送先に使われていないことを確認してから次を実行してください。設定後はTCP ${webChatPort}から127.0.0.1:${webChatPort}への転送を確認し、Funnelは使わないでください。別の転送先や他のServe/Funnel設定は変更しないでください。ルート設定に失敗した場合は追加設定の失敗だと説明し、local設定のまま終了してください:
+7. Only after basic setup works locally, ask one question: use only this device or other devices too? For this device only, keep local access and run no Tailscale commands. Only for other-device access, offer:
+   - Tailscale: keep Web Chat on loopback and forward only within the tailnet using Tailscale Serve
+   - Other LAN devices: 0.0.0.0. Warn first that Web Chat itself has no authentication and is accessible to reachable devices on the same LAN
+8. Only if Tailscale is selected, verify availability with \`tailscale status\` and use \`tailscale serve status --json\` to confirm TCP ${webChatPort} is not forwarding elsewhere before running the following. Afterward, verify forwarding from TCP ${webChatPort} to 127.0.0.1:${webChatPort}. Do not use Funnel or change other forwarding destinations or Serve/Funnel settings. If routing setup fails, explain that the optional setup failed and finish with local settings:
    tailscale serve --bg --tcp=${webChatPort} tcp://127.0.0.1:${webChatPort}
-   Tailscaleの転送確認に成功した後だけ: ${options.launcherCommand} setup --access tailscale
-9. LANを選んだ場合だけ、警告への明示的な同意後に次を実行してください:
+   Only after Tailscale forwarding verification succeeds: ${options.launcherCommand} setup --access tailscale
+9. Only if LAN is selected and the user explicitly accepts the warning, run:
    ${options.launcherCommand} setup --access lan
-10. access設定を変更した場合だけ\`${options.launcherCommand} service restart\`と\`${options.launcherCommand} doctor\`を実行し、選んだ経路の確認まで成功したか報告してください。
-11. その後、すぐxangiを使い始めるか、Discord、他のchat platform、schedule、skillなどの追加設定を続けるか日本語で確認してください。xangi自体の設定では、workspace内にxangiのオンボーディング手順を探してはいけません。workspaceはAIの人格、BOOTSTRAP、利用者データのための場所です。必ずxangi本体に同梱された次の公式documentを必要な範囲だけ読んでから、一問ずつ案内してください:
+10. Only if access settings changed, run \`${options.launcherCommand} service restart\` and \`${options.launcherCommand} doctor\` and report whether verification of the selected access path succeeded.
+11. Then ask in Japanese whether to start using xangi now or continue configuring Discord, other chat platforms, schedules, skills, or other extras. Do not search the workspace for xangi onboarding instructions when configuring xangi itself. The workspace contains AI personality, BOOTSTRAP, and user data. Read relevant parts of the following official documents bundled with xangi before guiding the user one question at a time:
    - README: ${readmePath}
-   - CLIと設定のusage: ${usagePath}
-   - Discord設定: ${discordSetupPath}
-   secretやtokenをAIとの会話へ貼り付けるよう求めたり、read・printf・echoなどのshell commandを組み立てて保存させたりしないでください。Discordの許可ユーザーID、Discord、Slack、LINE、Telegramのtoken設定が必要な場合は、利用者自身がTerminalで\`${options.launcherCommand} settings\`を実行し、ローカルの専用設定画面へ入力すると案内してください。
-任意のsoftwareを勝手にインストールしたり、署名されていないworkspace templateを取得したり、secretを表示したり、利用者の明示的な選択なしに外部連携を有効化したりしないでください。`;
+   - CLI and settings usage: ${usagePath}
+   - Discord setup: ${discordSetupPath}
+   Do not ask users to paste secrets or tokens into the AI conversation or construct shell commands such as read, printf, or echo to save them. For Discord allowed user IDs or Discord, Slack, LINE, or Telegram tokens, tell the user to run \`${options.launcherCommand} settings\` themselves in Terminal and enter values in the dedicated local settings screen.
+Do not unilaterally install software, fetch unsigned workspace templates, display secrets, or enable external integrations without an explicit user choice.`;
 }
 
 export interface GuidedSetupOptions extends DetectBackendsOptions {
@@ -372,7 +372,7 @@ export async function prepareOnboardingLaunch(initialPrompt: string): Promise<{
   await writeFile(instructionPath, initialPrompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await chmod(instructionPath, 0o600);
   return {
-    visiblePrompt: `xangiのセットアップを始めます。最初に ${instructionPath} を読み、その指示に従って日本語で一問ずつ案内してください。`,
+    visiblePrompt: `Begin xangi setup. First read ${instructionPath}, then follow its instructions and guide the user in Japanese, one question at a time.`,
     instructionPath,
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };
@@ -483,18 +483,18 @@ export interface ApplySetupDependencies {
 
 const BLANK_BOOTSTRAP = `# BOOTSTRAP.md
 
-新しい個人AIアシスタント用workspaceをセットアップします。
+Set up a new workspace for a personal AI assistant.
 
-すべて日本語で一度に一つずつ質問し、最低限必要なファイルを作成してください:
+Ask one question at a time in Japanese and create only the essential files:
 
-1. 利用者の名前と希望する呼び方を聞く。
-2. AIアシスタントの名前と振る舞い方を聞く。
-3. 重要な禁止事項と、実行前に確認が必要な操作を聞く。
-4. 合意した人格、ルール、workspaceの約束をAGENTS.mdへ記録する。
-5. 情報を分かりやすく分離できる場合だけUSER.mdとCHARACTER.mdを作る。
-6. すぐ使い始めるか、追加の外部連携設定を続けるか確認する。
+1. Ask the user's name and preferred form of address.
+2. Ask the AI assistant's name and desired behavior.
+3. Ask about important prohibitions and actions requiring confirmation before execution.
+4. Record the agreed personality, rules, and workspace conventions in AGENTS.md.
+5. Create USER.md and CHARACTER.md only if they help separate information clearly.
+6. Ask whether to start using the assistant now or continue setting up external integrations.
 
-最低限のセットアップが完了した後だけ、このファイルを削除してください。
+Delete this file only after minimal setup is complete.
 `;
 
 export async function writeOnboardingState(

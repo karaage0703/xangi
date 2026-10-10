@@ -1,3 +1,4 @@
+import { isPrivateExecution } from './privacy-console.js';
 import { editedPaths } from './file-changes.js';
 import { readOpenCodeTurnModels } from './opencode-model-evidence.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
@@ -60,6 +61,15 @@ export class OpenCodeRunner extends CliRunnerBase {
   protected readonly logPrefix = 'opencode';
 
   private readonly systemPrompt: string;
+
+  protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
+    const env = super.buildEnv(channelId);
+    if (isPrivateExecution()) {
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT || '{}');
+      env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...config, share: 'disabled' });
+    }
+    return env;
+  }
 
   constructor(options?: OpenCodeOptions) {
     super(options);

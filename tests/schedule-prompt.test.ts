@@ -7,8 +7,8 @@ describe('schedule discovery in agent prompts', () => {
     (platform) => {
       const prompt = buildXangiCommands(platform);
       expect(prompt).toContain('xangi tool help schedule_add');
-      expect(prompt).toContain('実行結果を確認してから登録完了');
-      expect(prompt).toContain('失敗時は実際のエラー');
+      expect(prompt).toContain('Verify the result before confirming registration');
+      expect(prompt).toContain('report the actual error on failure');
     }
   );
 });

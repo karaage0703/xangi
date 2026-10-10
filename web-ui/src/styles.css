@@ -3107,6 +3107,10 @@ details.settings-card[open] > summary::before {
   cursor: pointer;
 }
 
+.sidebar > .project-context-chip {
+  flex-shrink: 0;
+}
+
 .project-context-chip strong,
 .project-context-chip small {
   overflow: hidden;
@@ -4685,19 +4689,15 @@ video.media-preview {
 
 .monitor-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-areas: 'running waiting completed';
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: 'working completed';
   align-items: start;
   gap: 10px;
   padding-bottom: 28px;
 }
 
-.monitor-column-running {
-  grid-area: running;
-}
-
-.monitor-column-waiting {
-  grid-area: waiting;
+.monitor-column-working {
+  grid-area: working;
 }
 
 .monitor-column-completed {
@@ -4746,12 +4746,8 @@ video.media-preview {
   background: var(--ink-subtle);
 }
 
-.monitor-column-dot.running {
+.monitor-column-dot.working {
   background: var(--accent);
-}
-
-.monitor-column-dot.waiting {
-  background: var(--ink-muted);
 }
 
 .monitor-column-dot.completed {
@@ -5424,9 +5420,7 @@ video.media-preview {
 
   .monitor-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-areas:
-      'running waiting'
-      'completed completed';
+    grid-template-areas: 'working completed';
   }
 }
 
@@ -5776,8 +5770,7 @@ video.media-preview {
   .monitor-board {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      'running'
-      'waiting'
+      'working'
       'completed';
   }
 
@@ -6694,4 +6687,80 @@ video.media-preview {
 .team-list-row p {
   margin: 4px 0 0;
   color: var(--ink-secondary);
+}
+
+/* Keep status controls separate from the card's detail button and easy to tap. */
+.monitor-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px 8px;
+}
+.monitor-card-actions button,
+.monitor-undo button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 8px 14px;
+  touch-action: manipulation;
+}
+.monitor-undo {
+  position: fixed;
+  bottom: calc(80px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 24px));
+  box-sizing: border-box;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+}
+.monitor-undo span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.monitor-card-actions button,
+.monitor-undo button {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.monitor-card-actions button:hover:not(:disabled),
+.monitor-undo button:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+.monitor-card-actions button:focus-visible,
+.monitor-undo button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.monitor-card-actions button:disabled,
+.monitor-undo button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.monitor-column[data-drop-target='true'] {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.secret-notice {
+  padding: 10px 14px;
+  margin: 8px 0;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  opacity: 0.85;
 }

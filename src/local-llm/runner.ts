@@ -1,3 +1,5 @@
+import { isSecretSession } from '../secret.js';
+import { privacyConsole as console } from '../privacy-console.js';
 import { openRouterRunnerEnv } from '../openrouter.js';
 import { ProviderModels } from '../provider-model.js';
 /**
@@ -12,7 +14,14 @@ import { TimeoutController } from '../timeout-controller.js';
 import type { LocalLlmMode } from '../backend-resolver.js';
 import type { AgentConfig } from '../config.js';
 import { LOCAL_LLM_REASONING_EFFORTS, type LocalLlmReasoningEffort } from './reasoning-effort.js';
-import type { LLMMessage, LLMImageContent, LLMTool, LLMToolCall } from './types.js';
+import type {
+  LLMMessage,
+  LLMImageContent,
+  LLMTool,
+  LLMToolCall,
+  LLMChatOptions,
+  LLMChatResponse,
+} from './types.js';
 import { LLMClient } from './llm-client.js';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
@@ -839,6 +848,7 @@ export function isSessionRelatedError(err: unknown): boolean {
  * - 画像添付（images）も raw データが残っていないので復元しない
  */
 export function loadMessagesFromTranscript(workdir: string, appSessionId: string): LLMMessage[] {
+  if (isSecretSession(appSessionId)) return [];
   let entries: TranscriptEntry[];
   try {
     entries = readSessionMessages(workdir, appSessionId);
@@ -1279,6 +1289,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           signal: abortController.signal,
           onModel: (model) => this.pendingModels.get(channelId)?.add(model),
         });
+        abortController.signal.throwIfAborted();
         this.addUsage(channelId, response);
         return response.content;
       },
@@ -1343,6 +1354,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       // (executeAgentLoop は assistant message を内部で push するため pushRetryToHistory=false)
       // ツール無効モード (chat) では継続ラウンドでフィードバックに対処する手段
       // (schedule_add 等) が無いため、ゲート自体をスキップする
+      abortController.signal.throwIfAborted();
       if (callFlags.tools) {
         result = await this.applyStopHookGate(
           session,
@@ -1363,6 +1375,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         );
       }
 
+      abortController.signal.throwIfAborted();
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
@@ -1381,8 +1394,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         ...this.pendingModels.get(channelId)?.result(),
       };
     } catch (err) {
+      this.rethrowUserCancellation(session, abortController.signal);
       // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
-      if (session.messages.length > 1 && isSessionRelatedError(err)) {
+      if (
+        !abortController.signal.aborted &&
+        session.messages.length > 1 &&
+        isSessionRelatedError(err)
+      ) {
         console.warn(
           `[local-llm] Session-related error, retrying with fresh session: ${err instanceof Error ? err.message : String(err)}`
         );
@@ -1400,8 +1418,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         session.messages = [userMsg];
 
         try {
-          const retryAbortController = new AbortController();
-          this.activeAbortControllers.set(channelId, retryAbortController);
+          const retryAbortController = abortController;
 
           const result = await this.executeAgentLoop(
             session,
@@ -1414,6 +1431,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             appSid
           );
 
+          abortController.signal.throwIfAborted();
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, {
             result,
@@ -1424,6 +1442,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           this.timeoutController.clear(channelId, 'completed');
           return { result, sessionId, ...this.pendingModels.get(channelId)?.result() };
         } catch (retryErr) {
+          this.rethrowUserCancellation(session, abortController.signal);
           const errorMsg = formatLlmError(retryErr);
           logError(
             this.workdir,
@@ -1490,6 +1509,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       // (executeStreamLoop は assistant message を push しないため pushRetryToHistory=true)
       // ツール無効モード (chat) では継続ラウンドでフィードバックに対処する手段
       // (schedule_add 等) が無いため、ゲート自体をスキップする
+      abortController.signal.throwIfAborted();
       if (callFlags.tools) {
         fullText = await this.applyStopHookGate(
           session,
@@ -1512,6 +1532,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         );
       }
 
+      abortController.signal.throwIfAborted();
       session.updatedAt = Date.now();
 
       // トランスクリプトにレスポンスを記録
@@ -1533,8 +1554,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       callbacks.onComplete?.(result);
       return result;
     } catch (err) {
+      this.rethrowUserCancellation(session, abortController.signal);
       // セッション履歴に起因するエラーの場合、セッションをクリアしてリトライ
-      if (session.messages.length > 1 && isSessionRelatedError(err)) {
+      if (
+        !abortController.signal.aborted &&
+        session.messages.length > 1 &&
+        isSessionRelatedError(err)
+      ) {
         console.warn(
           `[local-llm] Session-related stream error, retrying with fresh session: ${err instanceof Error ? err.message : String(err)}`
         );
@@ -1552,8 +1578,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         session.messages = [userMsg];
 
         try {
-          const retryAbortController = new AbortController();
-          this.activeAbortControllers.set(channelId, retryAbortController);
+          const retryAbortController = abortController;
 
           const fullText = await this.executeStreamLoop(
             session,
@@ -1569,6 +1594,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           );
 
           session.messages.push({ role: 'assistant', content: fullText });
+          abortController.signal.throwIfAborted();
           session.updatedAt = Date.now();
           logResponse(this.workdir, appSid, {
             result: fullText,
@@ -1585,6 +1611,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           callbacks.onComplete?.(result);
           return result;
         } catch (retryErr) {
+          this.rethrowUserCancellation(session, abortController.signal);
           const error = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
           const errorMsg = formatLlmError(retryErr);
           logError(this.workdir, appSid, `LLM stream retry failed: ${error.message}`);
@@ -1613,20 +1640,46 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     }
   }
 
+  private rethrowUserCancellation(session: Session, signal: AbortSignal): void {
+    if (!signal.aborted) return;
+    let lastCallIndex = session.messages.length - 1;
+    while (lastCallIndex >= 0 && !session.messages[lastCallIndex].toolCalls?.length)
+      lastCallIndex--;
+    if (lastCallIndex >= 0) {
+      const answered = new Set(
+        session.messages.slice(lastCallIndex + 1).map((message) => message.toolCallId)
+      );
+      for (const call of session.messages[lastCallIndex].toolCalls ?? []) {
+        if (!answered.has(call.id)) {
+          session.messages.push({
+            role: 'tool',
+            toolCallId: call.id,
+            content:
+              'Turn interrupted. This tool did not return a result; effects may be incomplete. Do not assume success.',
+          });
+        }
+      }
+    }
+    if (signal.reason instanceof Error && signal.reason.message === 'Request cancelled by user') {
+      throw signal.reason;
+    }
+  }
+
   cancel(channelId?: string): boolean {
     if (channelId) {
       const controller = this.activeAbortControllers.get(channelId);
       if (controller) {
-        controller.abort();
+        controller.abort(new Error('Request cancelled by user'));
         this.activeAbortControllers.delete(channelId);
         this.timeoutController.clear(channelId, 'error');
         return true;
       }
+      return false;
     }
     // channelId不明の場合は全部止める
     if (this.activeAbortControllers.size > 0) {
       for (const [id, controller] of this.activeAbortControllers) {
-        controller.abort();
+        controller.abort(new Error('Request cancelled by user'));
         this.activeAbortControllers.delete(id);
         this.timeoutController.clear(id, 'error');
       }
@@ -1675,10 +1728,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     round: number,
     options: RunOptions | undefined,
     mediaPaths: string[],
+    signal: AbortSignal,
     callbacks?: StreamCallbacks
   ): Promise<void> {
     const trajectory = this.trajectoryCommon(logId, options?.channelId, round);
     const toolContext = {
+      signal,
       workspace: this.workdir,
       channelId: options?.channelId,
       activateTools: (names: string[]) => {
@@ -1697,6 +1752,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     };
 
     for (const toolCall of toolCalls) {
+      signal.throwIfAborted();
       console.log(
         `[local-llm] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 200)})`
       );
@@ -1775,6 +1831,50 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     }
   }
 
+  /** Discard incomplete generations before recording or executing any tool call. */
+  private async chatWithOutputRecovery(
+    session: Session,
+    options: LLMChatOptions,
+    channelId: string,
+    logId: string
+  ): Promise<LLMChatResponse> {
+    for (let attempt = 0; ; attempt++) {
+      options.signal?.throwIfAborted();
+      const response = await this.llm.chat(session.messages, options);
+      options.signal?.throwIfAborted();
+      const missing = (response.toolCalls ?? []).flatMap((call) => {
+        const schema = options.tools?.find((tool) => tool.name === call.name)?.parameters;
+        const required = Array.isArray(schema?.required) ? schema.required : [];
+        return required
+          .filter((key): key is string => typeof key === 'string')
+          .filter((key) => !Object.prototype.hasOwnProperty.call(call.arguments ?? {}, key))
+          .map((key) => `${call.name}.${key}`);
+      });
+      if (response.finishReason !== 'length' && missing.length === 0) return response;
+      this.addUsage(channelId, response);
+      this.trajectoryLogger.logRunnerEvent(this.trajectoryCommon(logId, channelId), {
+        event: 'incomplete_generation',
+        details: {
+          finish_reason: response.finishReason,
+          output_tokens: response.usage?.outputTokens,
+          missing_arguments: missing,
+          retry: attempt,
+          tool_count: response.toolCalls?.length ?? 0,
+        },
+      });
+      if (attempt >= 2) {
+        throw new Error(
+          'LLMの出力が途中で切れたか、ツールの必須引数が欠けています。2回の再生成でも回復せず停止しました。不完全な呼び出しは実行していません。'
+        );
+      }
+      session.messages.push({
+        role: 'system',
+        content:
+          'The previous generation was incomplete (output limit or missing required tool arguments). None of its tool calls were executed. Regenerate a smaller, complete action. For file changes, write a small section or make one small edit at a time, then continue with further calls. Include all required arguments, especially content/new_string. Do not resend the entire large file or append a suffix to the discarded generation. Reduce reasoning and output size. Continue the task using tools; do not just promise to finish later.',
+      });
+    }
+  }
+
   private async executeAgentLoop(
     session: Session,
     systemPrompt: string,
@@ -1785,6 +1885,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     options?: RunOptions,
     appSessionId?: string
   ): Promise<string> {
+    abortController.signal.throwIfAborted();
     const logId = appSessionId || channelId;
     // ツール無効: 1回のLLM呼び出しで完了
     if (llmTools.length === 0) {
@@ -1797,11 +1898,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           reasoningEffort: options?.localLlmReasoningEffort,
         });
       } catch (err) {
+        abortController.signal.throwIfAborted();
         const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
+      abortController.signal.throwIfAborted();
       this.addUsage(channelId, response);
       session.messages.push({
         role: 'assistant',
@@ -1819,6 +1922,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const pendingMediaPaths: string[] = [];
 
     while (true) {
+      abortController.signal.throwIfAborted();
       // 各 iteration の頭で active tools を再計算（tool_search で拡張された分を反映）
       const iterTools = this.toolSearchEnabled
         ? toLLMTools(getActiveTools(session.activeToolNames))
@@ -1826,19 +1930,26 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
       let response;
       try {
-        response = await this.llm.chat(session.messages, {
-          systemPrompt,
-          tools: iterTools.length > 0 ? iterTools : undefined,
-          signal: abortController.signal,
-          onModel: (model) => this.pendingModels.get(channelId)?.add(model),
-          reasoningEffort: options?.localLlmReasoningEffort,
-        });
+        response = await this.chatWithOutputRecovery(
+          session,
+          {
+            systemPrompt,
+            tools: iterTools.length > 0 ? iterTools : undefined,
+            signal: abortController.signal,
+            onModel: (model) => this.pendingModels.get(channelId)?.add(model),
+            reasoningEffort: options?.localLlmReasoningEffort,
+          },
+          channelId,
+          logId
+        );
       } catch (err) {
+        abortController.signal.throwIfAborted();
         const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chat call failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chat call failed: ${errorMsg}`);
         throw err;
       }
+      abortController.signal.throwIfAborted();
       this.addUsage(channelId, response);
 
       if (
@@ -1870,7 +1981,8 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         logId,
         toolRounds,
         options,
-        pendingMediaPaths
+        pendingMediaPaths,
+        abortController.signal
       );
 
       toolRounds++;
@@ -2011,6 +2123,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     options?: RunOptions,
     appSessionId?: string
   ): Promise<string> {
+    abortController.signal.throwIfAborted();
     const logId = appSessionId || channelId;
     const pendingMediaPaths: string[] = [];
 
@@ -2026,6 +2139,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       let toolRounds = 0;
       let stepLimitReached = false;
       while (true) {
+        abortController.signal.throwIfAborted();
         // 各 iteration の頭で active tools を再計算（tool_search で拡張された分を反映）
         const iterTools = this.toolSearchEnabled
           ? toLLMTools(getActiveTools(session.activeToolNames))
@@ -2034,19 +2148,26 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
         let response;
         try {
-          response = await this.llm.chat(session.messages, {
-            systemPrompt,
-            tools: iterTools.length > 0 ? iterTools : undefined,
-            signal: abortController.signal,
-            onModel: (model) => this.pendingModels.get(channelId)?.add(model),
-            reasoningEffort: options?.localLlmReasoningEffort,
-          });
+          response = await this.chatWithOutputRecovery(
+            session,
+            {
+              systemPrompt,
+              tools: iterTools.length > 0 ? iterTools : undefined,
+              signal: abortController.signal,
+              onModel: (model) => this.pendingModels.get(channelId)?.add(model),
+              reasoningEffort: options?.localLlmReasoningEffort,
+            },
+            channelId,
+            logId
+          );
         } catch (err) {
+          abortController.signal.throwIfAborted();
           const errorMsg = formatErrorDiagnostic(err);
           console.error(`[local-llm] LLM chat call failed (stream tool loop): ${errorMsg}`);
           logError(this.workdir, logId, `LLM chat call failed (stream tool loop): ${errorMsg}`);
           throw err;
         }
+        abortController.signal.throwIfAborted();
         this.addUsage(channelId, response);
 
         if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -2070,6 +2191,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           toolRounds,
           options,
           pendingMediaPaths,
+          abortController.signal,
           callbacks
         );
         toolRounds++;
@@ -2118,6 +2240,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         })) {
+          abortController.signal.throwIfAborted();
           const { release, dropped } = driftBuffer.feed(chunk);
           if (dropped) totalDroppedDuringStream = true;
           if (release.length > 0) {
@@ -2127,11 +2250,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           // release が空でも続行 (次の chunk で確定するまで hold)
         }
       } catch (err) {
+        abortController.signal.throwIfAborted();
         const errorMsg = formatErrorDiagnostic(err);
         console.error(`[local-llm] LLM chatStream failed: ${errorMsg}`);
         logError(this.workdir, logId, `LLM chatStream failed: ${errorMsg}`);
         throw err;
       }
+      abortController.signal.throwIfAborted();
       // stream 終了: 残った hold を最終応答にマージ (Step C/D の最終 drift 検証に通す)
       const { release: tail, droppedAny } = driftBuffer.flush();
       if (tail.length > 0) {
@@ -2180,6 +2305,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     // self-correct を促す方式に変更。
     const MAX_DRIFT_RESCUE_RETRIES = 2;
     const rescueToolContext = {
+      signal: abortController.signal,
       workspace: this.workdir,
       channelId: options?.channelId,
       activateTools: (names: string[]) => {
@@ -2507,11 +2633,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             [
               '## Deferred Tools (load on demand via tool_search)',
               '',
-              `以下の ${deferred.length} 個のツールは schema が未ロードです。使うには:`,
-              '1. `tool_search({query: "..."})` を呼んで関連ツールをアクティブ化',
-              '2. 次のターンで対象ツールが呼べるようになる',
+              `Schemas for the following ${deferred.length} tools are not loaded. To use them:`,
+              '1. Call `tool_search({query: "..."})` to activate relevant tools',
+              '2. The selected tools become callable on the next turn',
               '',
-              '常駐ツール（即時呼び出し可）: ' + Array.from(this.defaultActiveToolNames).join(', '),
+              'Active tools (callable immediately): ' +
+                Array.from(this.defaultActiveToolNames).join(', '),
               '',
               '### Catalog',
               ...lines,
@@ -2535,9 +2662,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    */
   private buildFinalResponseSystemPrompt(flags: ModeFlags): string {
     const promptWithoutTools = this.buildSystemPrompt({ ...flags, tools: false });
-    const finalResponseInstruction = `## 最終回答
+    const finalResponseInstruction = `## Final answer
 
-ツール実行フェーズは終了しました。会話履歴にあるツール結果を使い、ユーザー向けの通常テキストだけで回答してください。ツール呼び出しを生成せず、XML、function call、思考用マーカーを出力しないでください。`;
+The tool execution phase is over. Use tool results in the conversation history to answer in normal user-facing text only. Do not generate tool calls, XML, function calls, or reasoning markers.`;
     return [promptWithoutTools, finalResponseInstruction].filter(Boolean).join('\n\n');
   }
 

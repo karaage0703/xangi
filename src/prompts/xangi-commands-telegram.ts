@@ -1,3 +1,3 @@
-export const XANGI_COMMANDS_TELEGRAM = `## Telegram固有ルール
+export const XANGI_COMMANDS_TELEGRAM = `## Telegram rules
 
-プレーンテキストで返し、Markdown記法を避ける。4096文字を意識して段落を分ける。MEDIA: 添付は使わない。`;
+Reply in plain text without Markdown syntax. Split paragraphs with the 4096-character limit in mind. Do not use MEDIA: attachments.`;

@@ -1,3 +1,4 @@
+import { privacyConsole as console } from './privacy-console.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
@@ -172,6 +173,8 @@ export class AntigravityRunner extends CliRunnerBase {
     outputFormat?: 'json' | 'stream-json'
   ): Promise<string[]> {
     const args: string[] = [];
+    if (options?.secret)
+      args.push('--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
 
     if (await this.supportsDisableSlashCommands(options?.channelId)) {
       args.push('--disable-slash-commands');

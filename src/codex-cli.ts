@@ -1,3 +1,5 @@
+import { privacyConsole as console } from './privacy-console.js';
+import { IncompleteAgentTurnError, NonRetryableError, isNonRetryableError } from './errors.js';
 import { codexFileChanges } from './file-changes.js';
 import { CodexAppServerRunner } from './codex-app-server.js';
 import { readCodexTurnModels } from './codex-model-evidence.js';
@@ -80,12 +82,36 @@ interface CodexEvent {
 export type ResumeErrorKind = 'busy' | 'stale' | 'other';
 
 export function classifyResumeError(error: unknown): ResumeErrorKind {
+  if (isNonRetryableError(error)) return 'other';
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('already has an active writer')) return 'busy';
   if (message.includes('thread/resume failed') || message.includes('no rollout found')) {
     return 'stale';
   }
   return 'other';
+}
+
+/** Track the current turn, including a final JSONL event flushed at process exit. */
+class CodexTurnCompletion {
+  private state: 'pending' | 'completed' | 'failed' = 'pending';
+  private errorMessage?: string;
+
+  observe(event: CodexEvent, errorMessage?: string): void {
+    if (event.type === 'turn.started') {
+      this.state = 'pending';
+      this.errorMessage = undefined;
+    }
+    if (errorMessage) this.errorMessage = errorMessage;
+    if (event.type === 'turn.completed') this.state = 'completed';
+    if (event.type === 'turn.failed') this.state = 'failed';
+  }
+
+  assertCompleted(sessionId: string): void {
+    if (this.state === 'failed') {
+      throw new NonRetryableError(this.errorMessage ?? 'Codex turn failed');
+    }
+    if (this.state !== 'completed') throw new IncompleteAgentTurnError('Codex', sessionId);
+  }
 }
 
 export class CodexRunner extends CliRunnerBase {
@@ -155,6 +181,7 @@ export class CodexRunner extends CliRunnerBase {
     // precede the exec subcommand.
     if (!skip) args.push('--ask-for-approval', 'never');
     args.push('exec', '--json');
+    if (options?.secret) args.push('--ephemeral');
 
     if (skip) {
       args.push('--dangerously-bypass-approvals-and-sandbox');
@@ -181,7 +208,7 @@ export class CodexRunner extends CliRunnerBase {
     }
 
     // セッション継続（--cd, --model等のオプションはresumeサブコマンドの前に置く必要がある）
-    if (options?.sessionId) {
+    if (options?.sessionId && !options.secret) {
       args.push('resume', options.sessionId);
     }
 
@@ -324,7 +351,7 @@ export class CodexRunner extends CliRunnerBase {
   }
 
   async run(rawPrompt: string, options?: RunOptions): Promise<RunResult> {
-    if (options?.codexLineTransport === 'app-server') {
+    if (options?.codexLineTransport === 'app-server' && !options.secret) {
       if (!options.channelId) throw new Error('LINE app-server requires channelId');
       return this.appServer(options.channelId).run(rawPrompt, options);
     }
@@ -386,14 +413,17 @@ export class CodexRunner extends CliRunnerBase {
 
     let sessionId = '';
     const models = new ProviderModels();
+    const completion = new CodexTurnCompletion();
     let usage: RunResult['usage'];
     this.forEachJsonlEvent(stdout, (event) => {
+      completion.observe(event, this.extractErrorMessage(event));
       if (['thread.started', 'turn.started', 'turn.completed'].includes(event.type))
         models.add(event.model);
       const sid = this.extractSessionId(event);
       if (sid) sessionId = sid;
       usage = this.extractUsage(event) ?? usage;
     });
+    completion.assertCompleted(sessionId);
     const result = this.extractResult(stdout);
 
     // トランスクリプトログ: 応答を記録
@@ -426,7 +456,7 @@ export class CodexRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    if (options?.codexLineTransport === 'app-server') {
+    if (options?.codexLineTransport === 'app-server' && !options.secret) {
       if (!options.channelId) throw new Error('LINE app-server requires channelId');
       return this.appServer(options.channelId).runStream(rawPrompt, callbacks, options);
     }
@@ -491,6 +521,7 @@ export class CodexRunner extends CliRunnerBase {
     const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
     let sessionId = '';
+    const completion = new CodexTurnCompletion();
     let errorMessage: string | undefined;
     let usage: RunResult['usage'];
     const emittedToolIds = new Set<string>();
@@ -555,6 +586,7 @@ export class CodexRunner extends CliRunnerBase {
         // エラーイベント抽出（利用上限到達などの本当の理由）
         const errMsg = this.extractErrorMessage(event);
         if (errMsg) errorMessage = errMsg;
+        completion.observe(event, errMsg);
 
         const toolUse = this.extractToolUse(event);
         if (toolUse) {
@@ -617,6 +649,7 @@ export class CodexRunner extends CliRunnerBase {
       },
       finalize: () => {
         finalized = true;
+        completion.assertCompleted(sessionId);
         return { result: fullText, sessionId, ...(usage ? { usage } : {}), ...models.result() };
       },
       exitErrorDetail: () => {

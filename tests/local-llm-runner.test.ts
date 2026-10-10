@@ -1676,7 +1676,7 @@ describe('streaming drift-dropped-to-empty recovery (executeStreamLoop / runStre
 
     await runner.runStream('国歌を探して', {}, { sessionId: 'st3', channelId: 'ch3' });
 
-    expect(finalSystemPrompt).not.toContain('## ツール利用契約');
-    expect(finalSystemPrompt).toContain('ツール呼び出しを生成せず');
+    expect(finalSystemPrompt).not.toContain('## Tool usage rules');
+    expect(finalSystemPrompt).toContain('Do not generate tool calls');
   });
 });

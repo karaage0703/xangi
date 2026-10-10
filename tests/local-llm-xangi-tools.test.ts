@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  createScheduleAddHandler,
-  getXangiTools,
-} from '../src/local-llm/xangi-tools.js';
+import { createScheduleAddHandler, getXangiTools } from '../src/local-llm/xangi-tools.js';
 
 function names(platform?: Parameters<typeof getXangiTools>[0]): string[] {
   return getXangiTools(platform).map((tool) => tool.name);
@@ -40,6 +37,7 @@ describe('Local LLM xangi tools by platform', () => {
 
     expect(toolNames).toContain('discord_history');
     expect(toolNames).toContain('discord_message');
+    expect(toolNames).toContain('discord_thread_rename');
     expect(toolNames).toContain('discord_send');
     expect(toolNames).toContain('web_status');
     expect(toolNames).toContain('runtime_settings');
@@ -91,7 +89,9 @@ describe('Local LLM xangi tools by platform', () => {
     const tool = getXangiTools('line').find((candidate) => candidate.name === 'schedule_add');
     expect(tool).toBeDefined();
     expect(tool!.parameters.required).toEqual(['input']);
-    expect(tool!.parameters.properties.channel.description).toContain('現在の会話では省略');
+    expect(tool!.parameters.properties.channel.description).toContain(
+      'omit for the current conversation'
+    );
   });
 
   it('forwards the current conversation to the child schedule command', async () => {
@@ -144,6 +144,7 @@ describe('Local LLM xangi tools by platform', () => {
 
     expect(toolNames).toContain('discord_history');
     expect(toolNames).toContain('discord_message');
+    expect(toolNames).toContain('discord_thread_rename');
     expect(toolNames).toContain('web_history');
     expect(toolNames).toContain('slack_history');
     expect(toolNames).toContain('slack_search');

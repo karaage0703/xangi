@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenCodeRunner } from '../src/opencode-cli.js';
+import { withPrivateDiagnostics } from '../src/privacy-console.js';
 
 vi.mock('child_process', () => {
   const EventEmitter = require('events');
@@ -37,6 +38,18 @@ vi.mock('fs', async () => {
 });
 
 describe('OpenCodeRunner', () => {
+  it('disables sharing for secret child processes without changing the parent environment', async () => {
+    vi.stubEnv('OPENCODE_CONFIG_CONTENT', '{"share":"auto","model":"vendor/model"}');
+    try {
+      const run = await withPrivateDiagnostics(true, () => start(new OpenCodeRunner({})));
+      const { spawn } = await import('child_process');
+      const env = (spawn as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[2]?.env;
+      expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT)).toEqual({ share: 'disabled' });
+      expect(process.env.OPENCODE_CONFIG_CONTENT).toContain('auto');
+      run.process.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'text', sessionID: 'private', part: { text: 'ok' } })+'\n'));
+      run.process.emit('close', 0); await run.promise;
+    } finally { vi.unstubAllEnvs(); }
+  });
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.clearAllMocks());
 

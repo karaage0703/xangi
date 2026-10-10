@@ -1,3 +1,4 @@
+import { privacyConsole as console } from './privacy-console.js';
 import { ProviderModels, observeClaudeModel } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { mergeTexts, sanitizeSurrogates, prependRuntimeContext } from './agent-runner.js';
@@ -101,6 +102,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     options?: RunOptions
   ): string[] {
     const args: string[] = ['-p', '--output-format', outputFormat];
+    if (options?.secret) args.push('--no-session-persistence');
     if (outputFormat === 'stream-json') {
       args.push('--verbose');
     }
@@ -119,7 +121,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
     }
 
     // セッション継続
-    if (options?.sessionId) {
+    if (options?.sessionId && !options.secret) {
       args.push('--resume', options.sessionId);
     }
 
