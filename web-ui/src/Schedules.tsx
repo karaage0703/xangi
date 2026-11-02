@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react
 import { formatDateTime, getJson, platformLabel, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
 import { ConfirmDialog } from './ConfirmDialog';
+import { ScheduleDestination } from './ScheduleDestination';
 import type { ProjectsResponse, Schedule, SchedulesResponse, WebProject } from './types';
 
 type ScheduleMode = 'once' | 'daily' | 'weekly' | 'cron' | 'startup';
@@ -438,6 +439,13 @@ export function Schedules() {
                   </select>
                   <small>実行するたびに、選んだプロジェクトへ新しいWeb会話を作ります。</small>
                 </label>
+              ) : platform === 'discord' || platform === 'slack' ? (
+                <ScheduleDestination
+                  key={`${platform}:${editingId}`}
+                  platform={platform}
+                  channelId={channelId}
+                  onChange={setChannelId}
+                />
               ) : (
                 <label>
                   <span>送信先ID</span>
@@ -445,13 +453,7 @@ export function Schedules() {
                     required
                     value={channelId}
                     onChange={(event) => setChannelId(event.target.value)}
-                    placeholder={
-                      platform === 'discord'
-                        ? 'チャンネルまたはスレッドID'
-                        : platform === 'slack'
-                          ? 'チャンネルID'
-                          : 'チャットID'
-                    }
+                    placeholder="チャットID"
                   />
                 </label>
               )}
