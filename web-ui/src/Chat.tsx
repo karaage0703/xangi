@@ -1919,6 +1919,16 @@ function ChatPane({
               }
               disabled={!editable || processing}
               value={draft}
+              onPaste={(event) => {
+                const images = Array.from(event.clipboardData.items)
+                  .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+                  .map((item) => item.getAsFile())
+                  .filter((file): file is File => file !== null);
+                if (!images.length) return;
+                event.preventDefault();
+                if (!editable || processing || uploading) return;
+                void uploadFiles(images);
+              }}
               onChange={(event) => {
                 setDraft(event.target.value);
                 setPaletteOpen(event.target.value.startsWith('/'));
