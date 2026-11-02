@@ -269,6 +269,8 @@ Content-Type: application/json
 Set up periodic tasks and reminders. Ask the AI in natural language, and it calls `xangi tool schedule_add` etc. on your behalf.
 Scheduled results show elapsed time on both success and failure. Discord, Slack, Telegram, and LINE use a result footer, while Web shows it in the message header.
 
+In Web UI Schedules, select Discord and Slack destinations by channel name. Discord also shows the server name; IDs distinguish channels with the same name. Choose “IDを直接指定（スレッドなど）” to enter a destination missing from the list, including Discord thread IDs and Slack `channelId:thread_ts` destinations. Direct ID entry remains available when loading the list fails, and editing preserves existing IDs that are absent from the list.
+
 ### How to Operate
 
 | Entry point                 | Description                                                    |
