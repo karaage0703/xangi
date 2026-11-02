@@ -9,6 +9,7 @@ import {
   ensureSession,
   getSessionEntry,
   initSessions,
+  setProviderSessionId,
 } from '../src/sessions.js';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 
@@ -116,6 +117,23 @@ describe('ensureSessionWithWorkspace', () => {
       name: project.name,
       path: historicalPath,
     });
+  });
+
+  it('値の無いスレッドの会話は発言を受けると親チャンネルに結び付く', async () => {
+    const { registry } = await fixture();
+    const existing = ensureSession('T1', { platform: 'discord' });
+    setProviderSessionId(existing, 'P1', 'claude-code', 'claude-opus-5-5');
+
+    const resolved = await ensureSessionWithWorkspace({
+      registry,
+      platform: 'discord',
+      contextKey: 'T1',
+      bindingKey: 'C1',
+    });
+
+    expect(resolved.appSessionId).toBe(existing);
+    expect(getSessionEntry(existing)?.agentBindingKey).toBe('C1');
+    expect(getSessionEntry(existing)?.agent?.providerSessionId).toBe('P1');
   });
 
   it('rejects a stored path pointing into the state directory', async () => {

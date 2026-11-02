@@ -12,6 +12,7 @@ import {
   closeSession,
   getActiveSessionId,
   getSessionEntry,
+  updateSessionAgentBindingKey,
   type SessionScope,
 } from './sessions.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
@@ -84,6 +85,7 @@ async function resolveSessionWithWorkspace(
       (!project && !activeEntry.projectId && channelAgent(platform, bindingKey)?.id !== agent?.id)
     )
       return resolveSessionWithWorkspace(options);
+    if (!activeEntry.agentBindingKey) updateSessionAgentBindingKey(activeId, bindingKey);
     return { appSessionId: activeId, workspace };
   }
 
