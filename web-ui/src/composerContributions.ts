@@ -4,15 +4,20 @@ import { requestJson } from './api';
 export interface ComposerExtension {
   id: string;
   displayName: string;
+  path: string;
+  permissions?: string[];
 }
-interface Entry extends ComposerExtension {
+interface Entry {
+  id: string;
+  displayName: string;
+  composer?: { path: string; permissions?: string[] };
   installed: boolean;
   running: boolean;
   healthy: boolean;
   uiAvailable: boolean;
   capabilities: string[];
 }
-export function selectComposerExtensions(entries: Entry[]): ComposerExtension[] {
+export function selectComposerContributions(entries: Entry[]): ComposerExtension[] {
   return entries
     .filter(
       (e) =>
@@ -21,36 +26,40 @@ export function selectComposerExtensions(entries: Entry[]): ComposerExtension[] 
         e.running &&
         e.healthy &&
         e.uiAvailable &&
-        e.capabilities.includes('composer.input')
+        Boolean(e.composer)
     )
-    .map(({ id, displayName }) => ({ id, displayName }));
+    .map(({ id, displayName, composer }) => ({ id, displayName, ...composer! }));
 }
-export function replaceComposerText(draft: string, previous: string, next: string): string {
+export function applyComposerSnapshot(draft: string, previous: string, next: string): string {
   if (!next.trim()) return draft;
   if (!previous) return draft + (draft && !/\s$/.test(draft) ? '\n' : '') + next;
   return draft.endsWith(previous) ? draft.slice(0, -previous.length) + next : draft;
 }
-export function useComposerExtensions() {
+export function useComposerContributions() {
   const [extensions, setExtensions] = useState<ComposerExtension[]>([]);
   useEffect(() => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
+    let generation = 0;
     const load = async () => {
+      const current = ++generation;
       try {
         const catalog = await requestJson<{ extensions: Entry[] }>('/api/extensions', {
           signal: controller.signal,
         });
-        if (!controller.signal.aborted) setExtensions(selectComposerExtensions(catalog.extensions));
+        if (!controller.signal.aborted && current === generation)
+          setExtensions(selectComposerContributions(catalog.extensions));
       } catch {
-        if (!controller.signal.aborted) setExtensions([]);
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => void load(), 5000);
+        if (!controller.signal.aborted && current === generation) setExtensions([]);
       }
     };
-    void load();
+    const refresh = () => {
+      void load();
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
     return () => {
       controller.abort();
-      clearTimeout(timer);
+      window.removeEventListener('focus', refresh);
     };
   }, []);
   return extensions;

@@ -7,10 +7,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ComposerExtension } from './composerExtensions';
-import './composer-input.css';
+import type { ComposerExtension } from './composerContributions';
+import './composer-contributions.css';
 
-export interface ComposerInputHandle {
+export interface ComposerContributionsHandle {
   cancel(): void;
 }
 interface Props {
@@ -34,8 +34,8 @@ interface Operation {
 }
 
 /** Trusted installed extensions contribute text snapshots, never a send operation. */
-export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
-  function ComposerInput(props, ref) {
+export const ComposerContributions = forwardRef<ComposerContributionsHandle, Props>(
+  function ComposerContributions(props, ref) {
     const frames = useRef(new Map<string, HTMLIFrameElement>());
     const frameRefs = useRef(new Map<string, (frame: HTMLIFrameElement | null) => void>());
     const current = useRef(props);
@@ -43,19 +43,36 @@ export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
     const context = useRef(contextId());
     const operation = useRef<Operation | null>(null);
     const [messages, setMessages] = useState<Record<string, string>>({});
-    const ids = props.extensions.map((e) => e.id).join(',');
+    const ids = JSON.stringify(props.extensions);
     const configure = useCallback(() => {
-      for (const [id, frame] of frames.current)
+      for (const [id, frame] of frames.current) {
+        const style = getComputedStyle(frame.closest('.pane-composer') || frame);
+        const value = (name: string) => style.getPropertyValue(name).trim();
         frame.contentWindow?.postMessage(
           {
             type: 'xangi.composer.configure',
             schemaVersion: 1,
+            capabilities: ['draft.insert', 'draft.snapshot'],
+            appearance: {
+              colorScheme:
+                document.documentElement.dataset.theme ||
+                (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+              foreground: value('--ink-muted'),
+              hoverBackground: value('--hover'),
+              focusColor: value('--accent'),
+              buttonSize: value('--composer-button-size'),
+              iconSize: value('--composer-icon-size'),
+              strokeWidth: value('--composer-stroke-width'),
+              borderRadius: value('--composer-button-radius'),
+              disabledOpacity: '0.45',
+            },
             contextId: context.current,
             disabled:
               current.current.disabled || Boolean(operation.current && operation.current.id !== id),
           },
           location.origin
         );
+      }
     }, []);
     const cancel = useCallback(() => {
       context.current = contextId();
@@ -64,10 +81,24 @@ export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
       setMessages({});
       configure();
     }, [configure]);
+    useEffect(() => {
+      const observer = new MutationObserver(configure);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'style', 'class'],
+      });
+      const media = matchMedia('(prefers-color-scheme: dark)');
+      media.addEventListener('change', configure);
+      return () => {
+        observer.disconnect();
+        media.removeEventListener('change', configure);
+      };
+    }, [configure]);
     useImperativeHandle(ref, () => ({ cancel }), [cancel]);
     useLayoutEffect(() => {
       cancel();
     }, [props.contextKey, props.disabled, ids, cancel]);
+    useEffect(() => () => current.current.onActive(false), []);
     useEffect(() => {
       const hidden = () => {
         if (document.hidden) cancel();
@@ -102,6 +133,19 @@ export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
         )
           return;
         if (typeof m.requestId !== 'string' || !m.requestId || m.requestId.length > 100) return;
+        if (m.type === 'xangi.composer.insert') {
+          if (
+            operation.current ||
+            typeof m.text !== 'string' ||
+            !m.text.trim() ||
+            m.text.length > 100000
+          )
+            return;
+          current.current.onText(m.text, '');
+          context.current = contextId();
+          configure();
+          return;
+        }
         if (m.type === 'xangi.composer.begin') {
           if (operation.current) return;
           operation.current = { id, requestId: m.requestId, revision: 0, text: '' };
@@ -148,9 +192,9 @@ export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
           <span key={extension.id} className="composer-extension">
             <iframe
               title={extension.displayName}
-              allow="microphone"
+              allow={extension.permissions?.join('; ')}
               className="composer-extension-frame"
-              src={`/api/extensions/${encodeURIComponent(extension.id)}/service/composer/`}
+              src={`/api/extensions/${encodeURIComponent(extension.id)}/service${extension.path}`}
               ref={(() => {
                 let callback = frameRefs.current.get(extension.id);
                 if (!callback) {
@@ -189,3 +233,5 @@ export const ComposerInput = forwardRef<ComposerInputHandle, Props>(
     );
   }
 );
+
+export default ComposerContributions;

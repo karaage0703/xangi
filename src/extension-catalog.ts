@@ -26,6 +26,7 @@ export interface DevelopmentExtensionCatalogEntry {
   running: boolean;
   healthy: boolean;
   uiAvailable: boolean;
+  composer?: NonNullable<ExtensionManifest['ui']>['composer'];
   detail?: string;
   setupRepositoryUrl?: string;
   updateSupported?: boolean;
@@ -226,25 +227,6 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     statusKnown: true,
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
-  },
-  {
-    id: 'xangi-voice-input',
-    displayName: 'Voice Input',
-    description:
-      'Japanese voice input using Chrome speech recognition. Remote access requires Tailscale HTTPS.',
-    permissions: [
-      'Browser microphone access with user permission',
-      'Communication with the browser speech recognition service',
-      'Optional Tailscale Serve HTTPS setup after approval',
-    ],
-    capabilities: ['composer.input'],
-    installed: false,
-    running: false,
-    healthy: false,
-    uiAvailable: true,
-    statusKnown: true,
-    actionsAvailable: true,
-    setupRepositoryUrl: 'https://github.com/airpocket-soundman/xangi-voice-input',
   },
 ];
 
@@ -636,6 +618,7 @@ export async function listDevelopmentExtensionCatalog(): Promise<DevelopmentExte
         capabilities: manifest.capabilities.map((capability) => capability.id),
         installed: Boolean(installedRecord),
         uiAvailable: Boolean(manifest.ui),
+        ...(manifest.ui?.composer ? { composer: manifest.ui.composer } : {}),
         updateSupported:
           Boolean(installedRecord) && sourceMatchesLinked && Boolean(manifest.update),
         statusKnown,
@@ -669,6 +652,7 @@ export async function listDevelopmentExtensionCatalog(): Promise<DevelopmentExte
       capabilities: manifest.capabilities.map((capability) => capability.id),
       installed: true,
       uiAvailable: Boolean(manifest.ui),
+      ...(manifest.ui?.composer ? { composer: manifest.ui.composer } : {}),
       statusKnown: result.statusKnown,
       actionsAvailable: linkedStoreKnown && result.statusKnown,
       updateSupported: false,

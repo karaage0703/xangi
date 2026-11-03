@@ -148,7 +148,6 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-stopwatch](https://github.com/karaage0703/xangi-stopwatch) - Voice conversations through the built-in microphone, screen, and speaker over USB or Tailscale
 - [xangi-tasks](https://github.com/karaage0703/xangi-tasks) - Task and category management, with requests to xangi from tasks
 - [xangi-remote-desktop](https://github.com/karaage0703/xangi-remote-desktop) - View and control the same PC’s VNC desktop from a browser
-- [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Japanese draft input using Chrome speech recognition; remote access requires Tailscale HTTPS. [Composer protocol](docs/composer-input.md)
 
 ## Related projects
 

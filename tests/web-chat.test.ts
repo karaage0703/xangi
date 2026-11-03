@@ -2833,12 +2833,6 @@ describe('web-chat HTTP API', () => {
           uiAvailable: true,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
         }),
-        expect.objectContaining({
-          id: 'xangi-voice-input',
-          capabilities: ['composer.input'],
-          installed: false,
-          setupRepositoryUrl: 'https://github.com/airpocket-soundman/xangi-voice-input',
-        }),
       ],
       issues: [],
     });
@@ -2891,7 +2885,6 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-stopwatch' }),
         expect.objectContaining({ id: 'xangi-tasks' }),
         expect.objectContaining({ id: 'xangi-remote-desktop' }),
-        expect.objectContaining({ id: 'xangi-voice-input' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });

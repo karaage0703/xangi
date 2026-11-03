@@ -1,9 +1,9 @@
-import { ComposerInput, type ComposerInputHandle } from './ComposerInput';
+import type { ComposerContributionsHandle } from './ComposerContributions';
 import {
-  replaceComposerText,
-  useComposerExtensions,
+  applyComposerSnapshot,
+  useComposerContributions,
   type ComposerExtension,
-} from './composerExtensions';
+} from './composerContributions';
 import { UserQuestions } from './UserQuestions';
 import { parseSecretCommand } from '../../src/secret-command-parser';
 import { DocumentAttachment } from './DocumentAttachment';
@@ -15,6 +15,8 @@ import {
   ReactNode,
   FormEvent,
   KeyboardEvent,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -22,6 +24,8 @@ import {
   useRef,
   useState,
 } from 'react';
+const ComposerContributions = lazy(() => import('./ComposerContributions'));
+
 import { ApiError, clearRecoveredReadError, requestJson } from './api';
 import {
   followConversationTurn,
@@ -561,7 +565,7 @@ function ChatPane({
   } | null>(null);
   const [draft, setDraft] = useState('');
   const [composerActive, setComposerActive] = useState(false);
-  const composerRef = useRef<ComposerInputHandle>(null);
+  const composerRef = useRef<ComposerContributionsHandle>(null);
   const [busy, setBusy] = useState(false);
   const [sharedSending, setSharedSending] = useState(false);
   const [deliveryRetry, setDeliveryRetry] = useState<{ sessionId: string; requestId: string }>();
@@ -1893,7 +1897,9 @@ function ChatPane({
                 requestAnimationFrame(() => draftRef.current?.focus());
               }}
             >
-              /
+              <svg className="pane-composer-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m15 4-6 16" />
+              </svg>
             </button>
             <button
               type="button"
@@ -1902,7 +1908,17 @@ function ChatPane({
               onClick={() => fileInputRef.current?.click()}
               aria-label="ファイルを添付"
             >
-              {uploading ? '…' : '📎'}
+              <svg className="pane-composer-icon" viewBox="0 0 24 24" aria-hidden="true">
+                {uploading ? (
+                  <>
+                    <circle cx="5" cy="12" r="1" />
+                    <circle cx="12" cy="12" r="1" />
+                    <circle cx="19" cy="12" r="1" />
+                  </>
+                ) : (
+                  <path d="m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8a7 7 0 0 1 10 10l-8 8" />
+                )}
+              </svg>
             </button>
             <input
               ref={fileInputRef}
@@ -1915,20 +1931,24 @@ function ChatPane({
                 event.target.value = '';
               }}
             />
-            <ComposerInput
-              ref={composerRef}
-              extensions={composerExtensions}
-              contextKey={`${pane.key}:${sessionId || ''}:${projectId || ''}`}
-              disabled={!editable || processing || uploading || !active}
-              onText={(text, previous) =>
-                setDraft((value) => replaceComposerText(value, previous, text))
-              }
-              onActive={setComposerActive}
-              onStart={() => {
-                draftRef.current?.blur();
-                setPaletteOpen(false);
-              }}
-            />
+            {composerExtensions.length > 0 && (
+              <Suspense fallback={null}>
+                <ComposerContributions
+                  ref={composerRef}
+                  extensions={composerExtensions}
+                  contextKey={`${pane.key}:${sessionId || ''}:${projectId || ''}`}
+                  disabled={!editable || processing || uploading || !active}
+                  onText={(text, previous) =>
+                    setDraft((value) => applyComposerSnapshot(value, previous, text))
+                  }
+                  onActive={setComposerActive}
+                  onStart={() => {
+                    draftRef.current?.blur();
+                    setPaletteOpen(false);
+                  }}
+                />
+              </Suspense>
+            )}
             <textarea
               ref={draftRef}
               className="pane-input"
@@ -2278,7 +2298,7 @@ function NewChatButton({
 }
 
 export function Chat() {
-  const composerExtensions = useComposerExtensions();
+  const composerExtensions = useComposerContributions();
   const restored = useMemo(restorePanes, []);
   const [panes, setPanes] = useState<PaneDescriptor[]>(restored.panes);
   const [activeKey, setActiveKey] = useState(restored.activeKey);

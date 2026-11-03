@@ -4058,6 +4058,10 @@ video.media-preview {
 }
 
 .pane-composer {
+  --composer-button-size: 44px;
+  --composer-icon-size: 18px;
+  --composer-stroke-width: 1.7;
+  --composer-button-radius: 8px;
   display: flex;
   min-width: 0;
   align-items: flex-end;
@@ -4068,13 +4072,37 @@ video.media-preview {
 
 .pane-command-btn,
 .pane-attach-btn {
-  width: 34px;
-  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--composer-button-size);
+  height: var(--composer-button-size);
+  padding: 0;
   flex: 0 0 auto;
   border: 0;
+  border-radius: var(--composer-button-radius);
   background: transparent;
   color: var(--ink-muted);
   cursor: pointer;
+}
+.pane-composer-icon {
+  display: block;
+  width: var(--composer-icon-size);
+  height: var(--composer-icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--composer-stroke-width);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pane-command-btn:not(:disabled):hover,
+.pane-attach-btn:not(:disabled):hover {
+  background: var(--hover);
+}
+.pane-command-btn:focus-visible,
+.pane-attach-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .pane-file-input {

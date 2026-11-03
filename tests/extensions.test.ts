@@ -695,3 +695,47 @@ it('requires explicit device ingress with a declared capability and extension be
     );
   }
 });
+
+describe('composer UI contributions', () => {
+  const base = {
+    schemaVersion: 2,
+    id: 'snippets',
+    displayName: 'Snippets',
+    version: '1.0.0',
+    entrypoint: 'extension-cli',
+    runtime: { kind: 'managed-http' },
+    capabilities: [{ id: 'snippets', protocol: 'http', healthPath: '/health' }],
+  };
+  const parse = (composer: unknown) =>
+    parseExtensionManifest({ ...base, ui: { capability: 'snippets', path: '/', composer } });
+  it('keeps ordinary UI separate and defaults to no browser permissions', () => {
+    expect(parse({ path: '/snippets/' }).ui).toEqual({
+      capability: 'snippets',
+      path: '/',
+      composer: { path: '/snippets/' },
+    });
+    expect(
+      parse({ path: '/capture/', permissions: ['microphone'] }).ui?.composer?.permissions
+    ).toEqual(['microphone']);
+    expect(
+      parseExtensionManifest({ ...base, ui: { capability: 'snippets', path: '/' } }).ui
+    ).toEqual({ capability: 'snippets', path: '/' });
+  });
+  it.each([
+    '//outside.example/',
+    '/../secret',
+    '/%2e%2e/secret',
+    '/a?next=//outside',
+    '/a#b',
+    '/a\\b',
+    'relative',
+  ])('rejects unsafe widget path %s', (path) => {
+    expect(() => parse({ path })).toThrow(/composer/);
+  });
+  it.each([['camera'], ['microphone', 'camera'], 'microphone', null])(
+    'rejects undeclared browser permission shape %j',
+    (permissions) => {
+      expect(() => parse({ path: '/widget/', permissions })).toThrow(/composer/);
+    }
+  );
+});

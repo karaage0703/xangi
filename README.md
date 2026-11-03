@@ -148,7 +148,6 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 - [xangi-stopwatch](https://github.com/karaage0703/xangi-stopwatch) - 本体マイク・画面・スピーカーでの会話、USB・Tailscale接続
 - [xangi-tasks](https://github.com/karaage0703/xangi-tasks) - タスク整理・カテゴリ管理と、タスクからxangiへの仕事の依頼
 - [xangi-remote-desktop](https://github.com/karaage0703/xangi-remote-desktop) - 同じPCのVNC画面をブラウザから閲覧・操作
-- [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Chromeの音声認識で日本語を下書きへ入力（別端末からはTailscale HTTPS）。[入力連携仕様](docs/composer-input.md)
 
 ## 関連プロジェクト
 

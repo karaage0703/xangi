@@ -202,12 +202,6 @@ describe('development extension catalog', () => {
         actionsAvailable: true,
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
       }),
-      expect.objectContaining({
-        id: 'xangi-voice-input',
-        capabilities: ['composer.input'],
-        installed: false,
-        setupRepositoryUrl: 'https://github.com/airpocket-soundman/xangi-voice-input',
-      }),
     ]);
     expect(entries.every((entry) => !('version' in entry))).toBe(true);
     const readmes = await Promise.all([
@@ -220,60 +214,18 @@ describe('development extension catalog', () => {
     }
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
-    ]).toEqual([
-      'xangi-stackchan',
-      'xangi-even-g2',
-      'xangi-avatar',
-      'xangi-terminal',
-      'xangi-dots',
-      'xangi-stopwatch',
-      'xangi-tasks',
-      'xangi-remote-desktop',
-      'xangi-voice-input',
-    ]);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/example/other'),
-    ]).toEqual([
-      'xangi-search',
-      'xangi-stackchan',
-      'xangi-even-g2',
-      'xangi-avatar',
-      'xangi-terminal',
-      'xangi-dots',
-      'xangi-stopwatch',
-      'xangi-tasks',
-      'xangi-remote-desktop',
-      'xangi-voice-input',
-    ]);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...(await loadExtensionIdsReservedForRepository(
         'https://github.com/karaage0703/xangi-search'
       )),
-    ]).toEqual([
-      'xangi-stackchan',
-      'xangi-even-g2',
-      'xangi-avatar',
-      'xangi-terminal',
-      'xangi-dots',
-      'xangi-stopwatch',
-      'xangi-tasks',
-      'xangi-remote-desktop',
-      'xangi-voice-input',
-    ]);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...(await loadExtensionIdsReservedForRepository('https://github.com/example/other')),
-    ]).toEqual([
-      'xangi-search',
-      'xangi-stackchan',
-      'xangi-even-g2',
-      'xangi-avatar',
-      'xangi-terminal',
-      'xangi-dots',
-      'xangi-stopwatch',
-      'xangi-tasks',
-      'xangi-remote-desktop',
-      'xangi-voice-input',
-    ]);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
   });
 
   it('isolates an unsupported repository manifest and keeps the official catalog visible', async () => {
@@ -301,7 +253,6 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-stopwatch' }),
         expect.objectContaining({ id: 'xangi-tasks' }),
         expect.objectContaining({ id: 'xangi-remote-desktop' }),
-        expect.objectContaining({ id: 'xangi-voice-input' }),
       ],
       issues: [
         expect.objectContaining({
@@ -340,7 +291,6 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-stopwatch', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-tasks', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-remote-desktop', statusKnown: false }),
-        expect.objectContaining({ id: 'xangi-voice-input', statusKnown: false }),
       ],
       issues: expect.arrayContaining([
         expect.objectContaining({ code: 'source-store-invalid' }),
@@ -398,7 +348,6 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-stopwatch', installed: false }),
       expect.objectContaining({ id: 'xangi-tasks', installed: false }),
       expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
-      expect.objectContaining({ id: 'xangi-voice-input', installed: false }),
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ code: 'manifest-invalid' })]);
   });
@@ -520,7 +469,6 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-stopwatch', installed: false }),
       expect.objectContaining({ id: 'xangi-tasks', installed: false }),
       expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
-      expect.objectContaining({ id: 'xangi-voice-input', installed: false }),
     ]);
     expect(result.extensions.some((entry) => entry.id === 'changed-id')).toBe(false);
     expect(result.issues).toEqual([
@@ -567,19 +515,7 @@ describe('development extension catalog', () => {
 
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/karaage0703/xangi-search')
-    ).resolves.toEqual(
-      new Set([
-        'xangi-stackchan',
-        'xangi-even-g2',
-        'xangi-avatar',
-        'xangi-terminal',
-        'xangi-dots',
-        'xangi-stopwatch',
-        'xangi-tasks',
-        'xangi-remote-desktop',
-        'xangi-voice-input',
-      ])
-    );
+    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']));
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/example/other')
     ).rejects.toThrow('invalid extension manifest');
@@ -755,9 +691,7 @@ describe('development extension catalog', () => {
     expect(uninstall.prompt).toContain(
       'Do not delete downloaded source, extension-owned data, indexes, settings, or FACTs in this removal'
     );
-    expect(uninstall.prompt).toContain(
-      `${instanceCliCommand} tool extension_uninstall --id demo-search`
-    );
+    expect(uninstall.prompt).toContain(`${instanceCliCommand} tool extension_uninstall --id demo-search`);
     expect(uninstall.prompt).toContain(
       'Do not stop or unlink using an arbitrary xangi CLI on PATH'
     );
@@ -879,3 +813,21 @@ it.each(['sample-watch', 'sample-controller'])(
     );
   }
 );
+
+it('exposes validated composer metadata for discovered and linked-only extensions', async () => {
+  const { root, manifestPath } = await fixture();
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.ui.composer = { path: '/snippets/' };
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  let entry = (await listDevelopmentExtensionCatalog()).extensions.find(
+    (e) => e.id === manifest.id
+  );
+  expect(entry?.composer).toEqual({ path: '/snippets/' });
+  expect(entry?.installed).toBe(false);
+  await linkExtension(manifestPath);
+  delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+  entry = (await listDevelopmentExtensionCatalog()).extensions.find((e) => e.id === manifest.id);
+  expect(entry?.composer).toEqual({ path: '/snippets/' });
+  expect(entry?.installed).toBe(true);
+  expect(entry?.uiAvailable).toBe(true);
+});
