@@ -227,6 +227,25 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
   },
+  {
+    id: 'xangi-voice-input',
+    displayName: 'Voice Input',
+    description:
+      'Japanese voice input using Chrome speech recognition. Remote access requires Tailscale HTTPS.',
+    permissions: [
+      'Browser microphone access with user permission',
+      'Communication with the browser speech recognition service',
+      'Optional Tailscale Serve HTTPS setup after approval',
+    ],
+    capabilities: ['composer.input'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/airpocket-soundman/xangi-voice-input',
+  },
 ];
 
 export interface ExtensionSetupRequest {
