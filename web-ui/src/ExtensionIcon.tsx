@@ -8,6 +8,8 @@ const paths: Record<string, string> = {
     'M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0V5 M5 10v2a7 7 0 0 0 14 0v-2 M12 19v3 M8 22h8',
   'xangi-studio': 'M4 3h16v18H4z M8 7h8 M8 11h5 M8 15h8 M8 18h5',
   'xangi-dashboard': 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+  'xangi-workbench': 'M3 4h18v16H3z M3 8h18 M11 8v12 M6 6h1 M9 6h1',
+  'xangi-browser': 'M3 4h18v16H3z M3 9h18 M6 6.5h1 M9 6.5h1 M13 6.5h5',
   'xangi-stackchan': 'M4 7h16v13H4z M12 7V3 M10 3h4 M8 12h1 M15 12h1 M8 16q4 3 8 0',
   'xangi-even-g2': 'M2 10h8v6H2z M14 10h8v6h-8z M10 12h4 M2 10l2-5 M22 10l-2-5',
   'xangi-avatar': 'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M4 21v-3a8 5 0 0 1 16 0v3',
