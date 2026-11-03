@@ -1,3 +1,9 @@
+import { ComposerInput, type ComposerInputHandle } from './ComposerInput';
+import {
+  replaceComposerText,
+  useComposerExtensions,
+  type ComposerExtension,
+} from './composerExtensions';
 import { UserQuestions } from './UserQuestions';
 import { parseSecretCommand } from '../../src/secret-command-parser';
 import { DocumentAttachment } from './DocumentAttachment';
@@ -528,7 +534,9 @@ function ChatPane({
   refreshVersion,
   onAbortReady,
   linkedProject,
+  composerExtensions = [],
 }: {
+  composerExtensions?: ComposerExtension[];
   linkedProject?: Project;
   pane: PaneDescriptor;
   active: boolean;
@@ -552,6 +560,8 @@ function ChatPane({
     previousIds: Array<string | undefined>;
   } | null>(null);
   const [draft, setDraft] = useState('');
+  const [composerActive, setComposerActive] = useState(false);
+  const composerRef = useRef<ComposerInputHandle>(null);
   const [busy, setBusy] = useState(false);
   const [sharedSending, setSharedSending] = useState(false);
   const [deliveryRetry, setDeliveryRetry] = useState<{ sessionId: string; requestId: string }>();
@@ -1865,7 +1875,7 @@ function ChatPane({
         className={processing ? 'pane-input-area busy' : 'pane-input-area'}
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
-          void send();
+          if (!composerActive) void send();
         }}
       >
         <div className="pane-command-shell">
@@ -1877,6 +1887,7 @@ function ChatPane({
               aria-label="コマンドとスキルを選択"
               aria-expanded={paletteOpen}
               onClick={() => {
+                composerRef.current?.cancel();
                 if (!draft.trim()) setDraft('/');
                 setPaletteOpen((current) => !current);
                 requestAnimationFrame(() => draftRef.current?.focus());
@@ -1902,6 +1913,20 @@ function ChatPane({
               onChange={(event: ChangeEvent<HTMLInputElement>) => {
                 void uploadFiles(Array.from(event.target.files || []));
                 event.target.value = '';
+              }}
+            />
+            <ComposerInput
+              ref={composerRef}
+              extensions={composerExtensions}
+              contextKey={`${pane.key}:${sessionId || ''}:${projectId || ''}`}
+              disabled={!editable || processing || uploading || !active}
+              onText={(text, previous) =>
+                setDraft((value) => replaceComposerText(value, previous, text))
+              }
+              onActive={setComposerActive}
+              onStart={() => {
+                draftRef.current?.blur();
+                setPaletteOpen(false);
               }}
             />
             <textarea
@@ -1930,6 +1955,7 @@ function ChatPane({
                 void uploadFiles(images);
               }}
               onChange={(event) => {
+                composerRef.current?.cancel();
                 setDraft(event.target.value);
                 setPaletteOpen(event.target.value.startsWith('/'));
               }}
@@ -1958,6 +1984,7 @@ function ChatPane({
             value={draft}
             open={paletteOpen && active && !discordRemoteMode}
             onChange={(value) => {
+              composerRef.current?.cancel();
               setDraft(value);
               requestAnimationFrame(() => draftRef.current?.focus());
             }}
@@ -1973,7 +2000,9 @@ function ChatPane({
           <button
             type="submit"
             className="pane-send action-btn"
-            disabled={(!draft.trim() && !pendingFiles.length) || uploading || !editable}
+            disabled={
+              composerActive || (!draft.trim() && !pendingFiles.length) || uploading || !editable
+            }
           >
             送信
           </button>
@@ -2249,6 +2278,7 @@ function NewChatButton({
 }
 
 export function Chat() {
+  const composerExtensions = useComposerExtensions();
   const restored = useMemo(restorePanes, []);
   const [panes, setPanes] = useState<PaneDescriptor[]>(restored.panes);
   const [activeKey, setActiveKey] = useState(restored.activeKey);
@@ -3496,6 +3526,7 @@ export function Chat() {
               {panes.map((pane) => (
                 <ChatPane
                   key={pane.key}
+                  composerExtensions={composerExtensions}
                   pane={pane}
                   linkedProject={projects.find(
                     (p) => p.id === (pane.draftProjectId || activeProjectId)

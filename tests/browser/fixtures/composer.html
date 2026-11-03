@@ -1,0 +1,43 @@
+<!doctype html><meta charset="utf-8" /><button id="control" disabled>Input</button>
+<script>
+  // Test fixture only: models the contribution protocol without a speech engine.
+  let config,
+    operation,
+    old,
+    revision = 0;
+  window.cancelCount = 0;
+  const button = document.querySelector('button');
+  const post = (m) => parent.postMessage({ schemaVersion: 1, ...m }, location.origin);
+  addEventListener('message', (e) => {
+    if (
+      e.source !== parent ||
+      e.origin !== location.origin ||
+      e.data?.type !== 'xangi.composer.configure'
+    )
+      return;
+    if (operation && (config?.contextId !== e.data.contextId || e.data.disabled)) {
+      old = operation;
+      operation = null;
+      window.cancelCount++;
+    }
+    config = e.data;
+    button.disabled = config.disabled;
+    button.textContent = operation ? 'Stop' : 'Input';
+  });
+  button.onclick = () => {
+    if (operation) return window.finish();
+    operation = { contextId: config.contextId, requestId: crypto.randomUUID() };
+    old = operation;
+    revision = 0;
+    post({ ...operation, type: 'xangi.composer.begin' });
+  };
+  window.update = (text) =>
+    post({ ...operation, type: 'xangi.composer.update', revision: ++revision, text });
+  window.finish = () => {
+    post({ ...operation, type: 'xangi.composer.end' });
+    old = operation;
+    operation = null;
+  };
+  window.stale = (text) => post({ ...old, type: 'xangi.composer.update', revision: 999, text });
+  post({ type: 'xangi.composer.ready' });
+</script>
