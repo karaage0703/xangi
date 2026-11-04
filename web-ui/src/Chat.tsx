@@ -36,6 +36,7 @@ import {
 } from './conversationTurns';
 import { AppTopbar } from './AppTopbar';
 import { NavigationIcon } from './AppNavigation';
+import { SessionActions } from './SessionActions';
 import { SidebarProjects } from './SidebarProjects';
 import {
   extensionConversationPrompt,
@@ -80,7 +81,16 @@ import {
   type StreamRecovery,
 } from './liveTurn';
 import { MessageContent, copyText } from './MessageContent';
-import { sessionListStatus, sessionListStatusLabel } from './sessionList';
+import {
+  sessionListStatus,
+  sessionListStatusLabel,
+  sessionSource,
+  parseSessionSources,
+  restoreSessionSources,
+  SESSION_SOURCE_FILTERS,
+  SESSION_SOURCES_KEY,
+  type SessionSource,
+} from './sessionList';
 import {
   messageElementId,
   messageIdFromHash,
@@ -2304,6 +2314,20 @@ export function Chat() {
   const [activeKey, setActiveKey] = useState(restored.activeKey);
   const initialHistory = useRef(true);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [visibleSources, setVisibleSources] = useState<SessionSource[]>(() => {
+    try {
+      return restoreSessionSources(localStorage);
+    } catch {
+      return parseSessionSources(null);
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(SESSION_SOURCES_KEY, JSON.stringify(visibleSources));
+    } catch {
+      /* Filtering still works when browser storage is unavailable. */
+    }
+  }, [visibleSources]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [agents, setAgents] = useState<Project[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
@@ -2852,13 +2876,14 @@ export function Chat() {
   const grouped = useMemo(() => {
     const result: Array<{ label: string; sessions: Session[] }> = [];
     for (const session of sessions) {
+      if (!visibleSources.includes(sessionSource(session))) continue;
       const label = dateGroup(session.updatedAt);
       const group = result[result.length - 1];
       if (group?.label === label) group.sessions.push(session);
       else result.push({ label, sessions: [session] });
     }
     return result;
-  }, [sessions]);
+  }, [sessions, visibleSources]);
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
@@ -2984,8 +3009,55 @@ export function Chat() {
           />
           <div className="sidebar-conversation-heading">
             <h2>{activeProject?.name || '会話'}</h2>
+            <details
+              className="session-source-settings"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector('summary')?.focus();
+                }
+              }}
+              onBlur={(event) => {
+                if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+                  event.currentTarget.open = false;
+              }}
+            >
+              <summary aria-label="会話の表示設定">
+                表示
+                {visibleSources.length < SESSION_SOURCE_FILTERS.length
+                  ? ` ${visibleSources.length}/3`
+                  : ''}
+              </summary>
+              <fieldset>
+                <legend>表示する会話</legend>
+                {SESSION_SOURCE_FILTERS.map((item) => (
+                  <label key={item.value}>
+                    <input
+                      type="checkbox"
+                      checked={visibleSources.includes(item.value)}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setVisibleSources((current) =>
+                          checked
+                            ? [...current, item.value]
+                            : current.filter((value) => value !== item.value)
+                        );
+                      }}
+                    />
+                    {item.label}
+                  </label>
+                ))}
+              </fieldset>
+            </details>
           </div>
           <nav className="session-list" aria-label="セッション一覧">
+            {!grouped.length && !searching && (
+              <p className="session-source-empty" role="status">
+                {visibleSources.length
+                  ? '表示対象の会話はありません。'
+                  : 'すべて非表示です。「表示」から戻せます。'}
+              </p>
+            )}
             {grouped.map((group) => (
               <section className="session-group" key={group.label}>
                 <h2>{group.label}</h2>
@@ -3033,7 +3105,7 @@ export function Chat() {
                           </small>
                         </span>
                       </button>
-                      <div className="session-actions">
+                      <SessionActions title={session.title}>
                         <button
                           type="button"
                           aria-label={`${session.title}を別ペインで開く`}
@@ -3043,7 +3115,7 @@ export function Chat() {
                             else setSidebarOpen(false);
                           }}
                         >
-                          ⊞
+                          ⊞<span className="session-action-label">別ペインで開く</span>
                         </button>
                         {session.isActive && (
                           <button
@@ -3051,7 +3123,7 @@ export function Chat() {
                             aria-label="停止"
                             onClick={() => void stopSession(session.id)}
                           >
-                            ■
+                            ■<span className="session-action-label">停止</span>
                           </button>
                         )}
                         {session.lifecycle !== 'closed' && (
@@ -3061,7 +3133,7 @@ export function Chat() {
                             title="完了にする"
                             onClick={() => requestSessionCompletion(session)}
                           >
-                            ✓
+                            ✓<span className="session-action-label">完了にする</span>
                           </button>
                         )}
                         {session.platform === 'web' && (
@@ -3072,7 +3144,7 @@ export function Chat() {
                             disabled={session.isActive}
                             onClick={() => openMoveSession(session)}
                           >
-                            ▱
+                            ▱<span className="session-action-label">Projectへ移動</span>
                           </button>
                         )}
                         <button
@@ -3080,9 +3152,9 @@ export function Chat() {
                           aria-label="削除"
                           onClick={() => setSessionToDelete(session)}
                         >
-                          ×
+                          ×<span className="session-action-label">削除</span>
                         </button>
-                      </div>
+                      </SessionActions>
                     </div>
                   );
                 })}

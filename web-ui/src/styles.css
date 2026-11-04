@@ -1114,6 +1114,14 @@ button:disabled {
   white-space: nowrap;
 }
 
+.session-actions-trigger,
+.session-action-label {
+  display: none;
+}
+.session-action-menu {
+  min-width: 0;
+}
+
 .session-actions {
   display: flex;
   width: 0;
@@ -7472,6 +7480,57 @@ video.media-preview {
 }
 .sidebar-conversation-heading {
   margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.sidebar-conversation-heading h2 {
+  min-width: 0;
+}
+.session-source-settings {
+  position: relative;
+  flex-shrink: 0;
+}
+.session-source-settings summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--ink-secondary);
+  font-size: var(--sidebar-caption);
+}
+.session-source-settings summary:focus-visible,
+.session-source-settings input:focus-visible {
+  outline: 2px solid var(--ink-secondary);
+  outline-offset: 2px;
+}
+.session-source-settings fieldset {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  min-width: 155px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-secondary);
+}
+.session-source-settings legend {
+  font-size: var(--sidebar-caption);
+}
+.session-source-settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  cursor: pointer;
+}
+.session-source-empty {
+  padding: 8px;
+  color: var(--ink-secondary);
+  font-size: var(--sidebar-caption);
 }
 .sidebar .session-group h2,
 .sidebar .session-copy small {
@@ -7501,9 +7560,9 @@ video.media-preview {
     font-size: 16px;
   }
   .sidebar .session-row {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    align-content: start;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    grid-template-rows: auto;
+    align-items: center;
   }
   .sidebar .session-main {
     padding-block: 4px;
@@ -7514,9 +7573,72 @@ video.media-preview {
     gap: 2px;
     line-height: 18px;
   }
+  .sidebar .session-action-menu {
+    position: relative;
+  }
+  .sidebar .session-actions-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-secondary);
+    cursor: pointer;
+  }
+  .session-actions-trigger svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+  }
+  .sidebar .session-actions-trigger:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .sidebar .session-actions-trigger:hover,
+  .sidebar .session-actions-trigger[aria-expanded='true'] {
+    background: var(--hover);
+  }
   .sidebar .session-row .session-actions {
-    width: auto;
-    justify-content: flex-end;
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 2px);
+    z-index: 10;
+    width: 180px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    flex-direction: column;
+    align-items: stretch;
+    overflow-y: auto;
+    opacity: 1;
+    transition: none;
+  }
+  .sidebar .session-action-menu.is-open .session-actions {
+    display: flex;
+  }
+  .sidebar .session-row .session-actions.above {
+    top: auto;
+    bottom: calc(100% + 2px);
+  }
+  .sidebar .session-actions button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    height: auto;
+    flex-shrink: 0;
+    padding: 6px 10px;
+    text-align: left;
+    font-size: var(--sidebar-text);
+  }
+  .sidebar .session-action-label {
+    display: inline;
   }
 }
 .settings-configured-channels {

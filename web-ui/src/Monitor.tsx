@@ -1,3 +1,8 @@
+import {
+  SESSION_SOURCE_FILTERS,
+  sessionSource,
+  type SessionSource,
+} from '../../src/session-source';
 import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
@@ -90,6 +95,7 @@ export interface MonitorSession {
   title?: string;
   platform?: string;
   scope?: 'interactive' | 'scheduler';
+  executionOrigin?: 'manual' | 'automation';
   contextKey?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -149,7 +155,7 @@ interface MonitorActivityEvent {
   ts: number;
 }
 
-type MonitorFilter = 'chat' | 'web' | 'scheduler';
+type MonitorFilter = SessionSource;
 export type MonitorTimeRange = '24h' | '7d' | '30d' | 'all';
 export type MonitorLane = 'working' | 'completed';
 export type UsageDisplayMode = 'used' | 'remaining';
@@ -163,11 +169,7 @@ export function resolveUsageDisplayMode(stored: string | null | undefined): Usag
   return stored === 'remaining' ? 'remaining' : DEFAULT_USAGE_DISPLAY_MODE;
 }
 
-const FILTERS: Array<{ value: MonitorFilter; label: string }> = [
-  { value: 'chat', label: 'Chat' },
-  { value: 'web', label: 'Web' },
-  { value: 'scheduler', label: 'Schedule' },
-];
+const FILTERS = SESSION_SOURCE_FILTERS;
 
 const TIME_RANGES: Array<{ value: MonitorTimeRange; label: string; durationMs?: number }> = [
   { value: '24h', label: '24時間', durationMs: 24 * 60 * 60 * 1000 },
@@ -265,7 +267,7 @@ function isRunning(session: MonitorSession): boolean {
 }
 
 export function isMonitorVisible(session: MonitorSession): boolean {
-  if (session.scope === 'scheduler') return true;
+  if (sessionSource(session) === 'scheduler') return true;
   return isRunning(session) || session.sessionMode !== 'stateless';
 }
 
@@ -307,10 +309,6 @@ export function formatSessionProcessingTime(
   return processingTime?.source === 'session-elapsed' ? `約${duration}` : duration;
 }
 
-function isChatPlatform(session: MonitorSession): boolean {
-  return session.platform === 'discord' || session.platform === 'slack';
-}
-
 export function isWithinMonitorTimeRange(
   session: MonitorSession,
   range: MonitorTimeRange,
@@ -323,9 +321,7 @@ export function isWithinMonitorTimeRange(
 }
 
 export function matchesFilter(session: MonitorSession, filters: readonly MonitorFilter[]): boolean {
-  if (session.scope === 'scheduler') return filters.includes('scheduler');
-  if (session.platform === 'web') return filters.includes('web');
-  return isChatPlatform(session) && filters.includes('chat');
+  return filters.includes(sessionSource(session));
 }
 
 export function monitorLane(session: MonitorSession): MonitorLane {
