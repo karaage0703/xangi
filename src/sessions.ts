@@ -1,3 +1,4 @@
+import { sessionExecutionOrigin } from './session-source.js';
 import { migrateTeamState } from './team-migration.js';
 import {
   SECRET_PREFIX,
@@ -93,6 +94,8 @@ export interface SessionEntry {
   platform: string; // 'discord' | 'slack' | 'web'
   contextKey: string; // channelId or 'web-chat'
   scope: SessionScope;
+  executionOrigin?: 'manual' | 'automation';
+  parentAppSessionId?: string;
   bootId: string;
   createdAt: string;
   updatedAt: string;
@@ -468,6 +471,8 @@ export function createWebSession(
     backend?: string;
     resumedFromSessionId?: string;
     interAgentPeerId?: string;
+    executionOrigin?: 'manual' | 'automation';
+    parentAppSessionId?: string;
     secret?: boolean;
   } & SessionSnapshotOptions = {}
 ): string {
@@ -485,6 +490,11 @@ export function createWebSession(
     title: opts.title || '',
     platform: 'web',
     scope: 'interactive',
+    executionOrigin:
+      sessionExecutionOrigin(data.sessions[opts.parentAppSessionId || '']) === 'automation'
+        ? 'automation'
+        : opts.executionOrigin || 'manual',
+    parentAppSessionId: opts.parentAppSessionId,
     agent: opts.backend ? { backend: opts.backend } : undefined,
     resumedFromSessionId: opts.resumedFromSessionId,
     externalSourceSessionId,

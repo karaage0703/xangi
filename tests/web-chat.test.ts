@@ -505,6 +505,33 @@ describe('web-chat HTTP API', () => {
     }
   });
 
+  it('persists explicit automation and inherits it through parent sessions without trusting titles', async () => {
+    const create = async (body: Record<string, unknown>) => {
+      const response = await fetch(`${baseUrl}/api/sessions`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      expect(response.status).toBe(200);
+      return (await response.json()).sessionId as string;
+    };
+    const manual = await create({});
+    updateSessionTitle(manual, 'Mail: メールチェック');
+    const automatic = await create({executionOrigin: 'automation'});
+    const child = await create({parentAppSessionId: automatic, executionOrigin: 'manual'});
+    const grandchild = await create({parentAppSessionId: child});
+    const entries = (await (await fetch(`${baseUrl}/api/sessions`)).json()).sessions;
+    expect(entries.find((entry: {id: string}) => entry.id === manual)).toMatchObject({executionOrigin: 'manual', scope: 'interactive'});
+    for (const id of [automatic, child, grandchild]) {
+      expect(entries.find((entry: {id: string}) => entry.id === id)).toMatchObject({executionOrigin: 'automation', scope: 'interactive'});
+    }
+    initSessions(testDir);
+    expect(getSessionEntry(grandchild)).toMatchObject({executionOrigin: 'automation', parentAppSessionId: child});
+  });
+
+  it('rejects invalid execution origins and unknown parents', async () => {
+    for (const body of [{executionOrigin: 'cron'}, {executionOrigin: ['automation']}, {parentAppSessionId: 'missing'}, {parentAppSessionId: 1}]) {
+      const response = await fetch(`${baseUrl}/api/sessions`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      expect(response.status).toBe(400);
+    }
+  });
+
   it('answers pending Web questions once and rejects cross-origin or other-session answers', async () => {
     const sessionId = createWebSession({});
     const otherSessionId = createWebSession({});
@@ -1394,6 +1421,8 @@ describe('web-chat HTTP API', () => {
       return original(prompt, options);
     });
     await scheduler.getAgentRunner('web')!('Scheduled work', WEB_SCHEDULE_NEW_SESSION_ID);
+    expect(getSessionEntry(scheduledId!)).toMatchObject({executionOrigin: 'automation'});
+    expect(getSessionEntry(run!.appSessionId)).toMatchObject({executionOrigin: 'automation', parentAppSessionId: scheduledId!});
     expect(run!.parentAppSessionId).toBe(scheduledId!);
     expect(scheduledId!).not.toBe(existing);
     const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run!.appSessionId}`;

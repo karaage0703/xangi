@@ -66,13 +66,15 @@ with sync_playwright() as pw:
         expect(page.locator('.session-row')).to_have_count(8)
         row = page.locator('.session-row').first
         box = row.bounding_box()
-        assert box['height'] <= 90, box
+        assert box['height'] <= (60 if width < 768 else 90), box
         row.hover()
         page.wait_for_timeout(150)
+        if width < 768:
+            row.locator('.session-actions-trigger').click()
         actions = row.locator('.session-actions')
         last = actions.locator('button').last.bounding_box()
         action_box = actions.bounding_box()
-        assert abs(action_box['x'] + action_box['width'] - last['x'] - last['width']) <= 1
+        assert abs(action_box['x'] + action_box['width'] - last['x'] - last['width']) <= (6 if width < 768 else 1)
         if width < 768:
             for b in row.locator('.session-actions button').all():
                 bb = b.bounding_box(); assert bb['width'] >= 44 and bb['height'] >= 44

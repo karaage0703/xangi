@@ -1,3 +1,4 @@
+import { sessionExecutionOrigin } from './session-source.js';
 import type { PlatformCompletionRefs } from './platform-completion.js';
 import { answerUserInput, listUserInputs, requestUserInput } from './user-input.js';
 import { configuredChannelsSnapshot } from './configured-channels.js';
@@ -692,6 +693,8 @@ ${delegatedTeam.prompt}`
 
     const workspace = await resolveWorkspace(agentId ? execution?.workspaceId : body.workspaceId);
     const appSessionId = createWebSession({
+      executionOrigin: sessionExecutionOrigin(parentId ? getSessionEntry(parentId) : undefined),
+      parentAppSessionId: parentId,
       projectId,
       selectedAgentId: agentId,
       selectedAgentConfig: execution,
@@ -960,6 +963,7 @@ ${delegatedTeam.prompt}`
     const appSessionId =
       requestedId === WEB_SCHEDULE_NEW_SESSION_ID
         ? createWebSession({
+            executionOrigin: 'automation',
             projectId: scheduledProject?.id,
             title: job?.label,
             ...scheduledSnapshot,
@@ -1124,6 +1128,8 @@ ${delegatedTeam.prompt}`
         title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
         platform: s.platform,
         scope: s.scope,
+        executionOrigin: sessionExecutionOrigin(s),
+        parentAppSessionId: s.parentAppSessionId,
         contextKey: s.contextKey,
         createdAt: s.createdAt,
         updatedAt: activity?.updatedAt
@@ -3478,6 +3484,17 @@ ${delegatedTeam.prompt}`
     if (url === '/api/sessions' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        if (
+          body.executionOrigin !== undefined &&
+          body.executionOrigin !== 'manual' &&
+          body.executionOrigin !== 'automation'
+        )
+          throw new WebProjectError('executionOrigin must be manual or automation', 400);
+        if (
+          body.parentAppSessionId !== undefined &&
+          (typeof body.parentAppSessionId !== 'string' || !getSessionEntry(body.parentAppSessionId))
+        )
+          throw new WebProjectError('parentAppSessionId must identify an existing session', 400);
         if (body.secret !== undefined && typeof body.secret !== 'boolean')
           throw new WebProjectError('secret must be a boolean', 400);
         const project = resolveProject(body.projectId);
@@ -3527,6 +3544,8 @@ ${delegatedTeam.prompt}`
         );
         const snapshot = { workspaceId: workspace.id, workspacePath: workspace.path };
         const newAppId = createWebSession({
+          executionOrigin: body.executionOrigin as 'manual' | 'automation' | undefined,
+          parentAppSessionId: body.parentAppSessionId as string | undefined,
           secret: body.secret === true,
           title: body.secret === true ? 'シークレット' : undefined,
           projectId: project?.id,

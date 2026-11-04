@@ -31,6 +31,8 @@ export interface Session {
   id: string;
   title: string;
   platform: Platform;
+  scope?: 'interactive' | 'scheduler';
+  executionOrigin?: 'manual' | 'automation';
   contextKey: string;
   createdAt: string;
   updatedAt: string;
