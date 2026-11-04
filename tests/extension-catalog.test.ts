@@ -813,3 +813,21 @@ it.each(['sample-watch', 'sample-controller'])(
     );
   }
 );
+
+it('exposes validated composer metadata for discovered and linked-only extensions', async () => {
+  const { root, manifestPath } = await fixture();
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.ui.composer = { path: '/snippets/' };
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  let entry = (await listDevelopmentExtensionCatalog()).extensions.find(
+    (e) => e.id === manifest.id
+  );
+  expect(entry?.composer).toEqual({ path: '/snippets/' });
+  expect(entry?.installed).toBe(false);
+  await linkExtension(manifestPath);
+  delete process.env.XANGI_EXTENSION_DEV_MANIFESTS;
+  entry = (await listDevelopmentExtensionCatalog()).extensions.find((e) => e.id === manifest.id);
+  expect(entry?.composer).toEqual({ path: '/snippets/' });
+  expect(entry?.installed).toBe(true);
+  expect(entry?.uiAvailable).toBe(true);
+});

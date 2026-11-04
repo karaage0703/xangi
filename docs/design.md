@@ -1428,3 +1428,9 @@ Webは既存HTTP境界内の`GET/POST /api/user-input/:appSessionId`を使用し
 - runnerの完了後に結果を保存し、bridgeの`deliverResult`で元チャットへ配送する。DiscordはWebのユーザー本文・入力添付を先に投稿し、発言者を表示してから回答・出力添付を投稿する。Slackは従来どおり結果だけを投稿する。回答者名は実行開始時に取得して受付記録へ保存する。返却するplatform message IDの先頭は回答のIDとし、確定したassistant transcript entryへ紐付ける。
 - 進捗は既存thread_idのevents SSEで配信し、最終状態は受付照会で復元する。旧`/api/chat`と`*-continue`は互換経路として残す。Web起点の質問はWebの既存質問UIから回答する。
 - 新規連携会話の`POST /api/sessions`は任意の`requestId`を受け、`DATA_DIR/conversation-creations`の記録から同じsessionIdを返す。外部作成の成否不明は自動再作成しない。
+
+### 入力欄への拡張UI
+
+拡張manifestの `ui.composer` に `path` と必要なブラウザ権限 `permissions`（現在は `microphone` のみ、既定は権限なし）を宣言すると、正常稼働中のインストール済み拡張だけを入力欄横のiframeへ表示する。通常の `ui.path` は独立画面として維持する。
+
+本体は一括挿入と、非同期処理中のテキスト更新・中断だけを提供する。認識エンジン、文例、言語設定は拡張側が持つ。下書きの読み取りと自動送信は提供しない。未導入時は連携UIをロードせず、拡張一覧の定期ポーリングも行わない。追加・起動・停止後はチャット再読込またはウィンドウへのフォーカス復帰で再検出する。

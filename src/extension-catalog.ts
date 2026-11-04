@@ -26,6 +26,7 @@ export interface DevelopmentExtensionCatalogEntry {
   running: boolean;
   healthy: boolean;
   uiAvailable: boolean;
+  composer?: NonNullable<ExtensionManifest['ui']>['composer'];
   detail?: string;
   setupRepositoryUrl?: string;
   updateSupported?: boolean;
@@ -617,6 +618,7 @@ export async function listDevelopmentExtensionCatalog(): Promise<DevelopmentExte
         capabilities: manifest.capabilities.map((capability) => capability.id),
         installed: Boolean(installedRecord),
         uiAvailable: Boolean(manifest.ui),
+        ...(manifest.ui?.composer ? { composer: manifest.ui.composer } : {}),
         updateSupported:
           Boolean(installedRecord) && sourceMatchesLinked && Boolean(manifest.update),
         statusKnown,
@@ -650,6 +652,7 @@ export async function listDevelopmentExtensionCatalog(): Promise<DevelopmentExte
       capabilities: manifest.capabilities.map((capability) => capability.id),
       installed: true,
       uiAvailable: Boolean(manifest.ui),
+      ...(manifest.ui?.composer ? { composer: manifest.ui.composer } : {}),
       statusKnown: result.statusKnown,
       actionsAvailable: linkedStoreKnown && result.statusKnown,
       updateSupported: false,

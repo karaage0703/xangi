@@ -23,7 +23,8 @@
     "xangi": "node dist/cli/xangi-main.js",
     "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js",
     "prepare": "husky",
-    "test:browser:review": "node tests/browser/review-ui-regressions.mjs"
+    "test:browser:review": "node tests/browser/review-ui-regressions.mjs",
+    "test:browser:composer": "node tests/browser/composer-contributions.mjs"
   },
   "lint-staged": {
     "{src,web-ui/src}/**/*.{ts,tsx}": [

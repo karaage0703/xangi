@@ -29,6 +29,7 @@ async function fixture(options: { withSetupDocument?: boolean } = {}) {
   let sha = 'a'.repeat(40);
   let version = '1.0.0';
   let permissions: string[] = [];
+  let composer: {path: string; permissions?: Array<'microphone'>} | undefined;
   let updatePreparation = {
     command: './prepare-update',
     args: ['$SHOULD_NOT_EXPAND'],
@@ -68,7 +69,8 @@ async function fixture(options: { withSetupDocument?: boolean } = {}) {
           : { setup: { instructions: 'XANGI_SETUP.md' } }),
         update: { prepare: updatePreparation },
         permissions,
-        capabilities: [],
+        capabilities: [{id: 'example.ui', protocol: 'http', healthPath: '/health'}],
+        ui: {capability: 'example.ui', path: '/', ...(composer ? {composer} : {})},
       })
     );
     await writeFile(join(destination, 'README.md'), '# Setup\n');
@@ -99,11 +101,13 @@ async function fixture(options: { withSetupDocument?: boolean } = {}) {
       sha: string;
       version: string;
       permissions?: string[];
+      composer?: {path: string; permissions?: Array<'microphone'>};
       updatePreparation?: { command: string; args: string[] };
     }) {
       sha = candidate.sha;
       version = candidate.version;
       permissions = candidate.permissions ?? [];
+      composer = candidate.composer;
       updatePreparation = candidate.updatePreparation ?? updatePreparation;
     },
   };
@@ -238,6 +242,19 @@ describe('repository-managed extension updates', () => {
         }
       )
     ).rejects.toThrow('permission added: read workspace index');
+    expect(actions).toEqual(['status']);
+  });
+
+  it('requires approval when adding an input widget with microphone permission', async () => {
+    const setup = await fixture();
+    const target = '9'.repeat(40);
+    setup.setCandidate({sha: target, version: '1.1.0', composer: {path: '/capture/', permissions: ['microphone']}});
+    const actions: ExtensionAction[] = [];
+    await expect(updateExtension({id: 'demo-extension', expectedCommitSha: target, workspace: '/workspace'}, {
+      dataDir: setup.dataDir, fetch: setup.request, download: async () => new Uint8Array([3]), extract: setup.extract,
+      listLinkedExtensions: async () => [setup.linked],
+      runAction: async (_linked, action) => { actions.push(action); return {ok: true, running: true, healthy: true}; },
+    })).rejects.toThrow('extension UI mapping changed');
     expect(actions).toEqual(['status']);
   });
 

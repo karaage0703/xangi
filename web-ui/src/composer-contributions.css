@@ -1,0 +1,31 @@
+.composer-extensions {
+  display: contents;
+}
+.composer-extension {
+  display: inline-flex;
+  flex: 0 0 var(--composer-button-size);
+  align-self: flex-end;
+}
+.composer-extension-frame {
+  width: var(--composer-button-size);
+  height: var(--composer-button-size);
+  border: 0;
+  display: block;
+  color-scheme: light dark;
+}
+.pane-command-shell {
+  position: relative;
+}
+.composer-extension-status {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--surface, #fff);
+  color: var(--ink, #333);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}

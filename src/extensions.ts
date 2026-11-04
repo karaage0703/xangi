@@ -65,6 +65,7 @@ export interface ExtensionManifest {
   ui?: {
     capability: string;
     path: string;
+    composer?: { path: string; permissions?: Array<'microphone'> };
   };
   deviceIngress?: {
     capability: string;
@@ -351,6 +352,25 @@ export function parseExtensionManifest(value: unknown): ExtensionManifest {
       throw new Error('invalid extension UI declaration');
     }
     parsedUi = { capability: ui.capability, path: ui.path };
+    if (ui.composer !== undefined) {
+      const composer = ui.composer;
+      if (
+        !isRecord(composer) ||
+        typeof composer.path !== 'string' ||
+        !/^\/(?!\/)[A-Za-z0-9/_.-]*$/.test(composer.path) ||
+        composer.path.includes('..') ||
+        (composer.permissions !== undefined &&
+          (!Array.isArray(composer.permissions) ||
+            composer.permissions.some((permission) => permission !== 'microphone')))
+      )
+        throw new Error('invalid extension composer contribution');
+      parsedUi.composer = {
+        path: composer.path,
+        ...(composer.permissions
+          ? { permissions: [...composer.permissions] as Array<'microphone'> }
+          : {}),
+      };
+    }
   }
   let parsedAgentBackend: ExtensionManifest['agentBackend'];
   if (agentBackend !== undefined) {

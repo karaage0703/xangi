@@ -94,7 +94,9 @@ function updateApprovalChanges(current: ExtensionManifest, candidate: ExtensionM
     current.agentBackend?.capability !== candidate.agentBackend?.capability ||
     current.agentBackend?.path !== candidate.agentBackend?.path;
   const uiChanged =
-    current.ui?.capability !== candidate.ui?.capability || current.ui?.path !== candidate.ui?.path;
+    current.ui?.capability !== candidate.ui?.capability ||
+    current.ui?.path !== candidate.ui?.path ||
+    JSON.stringify(current.ui?.composer ?? null) !== JSON.stringify(candidate.ui?.composer ?? null);
   const currentPreparation = current.update?.prepare;
   const candidatePreparation = candidate.update?.prepare;
   const preparationChanged =
