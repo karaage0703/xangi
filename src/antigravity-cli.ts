@@ -13,7 +13,12 @@ import type { BaseRunnerOptions } from './base-runner.js';
 import { inferEffortFromModelName } from './backend-effort.js';
 import { CliRunnerBase, extractNestedText, type CliStreamParser } from './cli-runner-core.js';
 import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
-import { AntigravityTurnError, formatErrorDiagnostic, isNonRetryableError } from './errors.js';
+import {
+  AntigravityTimeoutError,
+  AntigravityTurnError,
+  formatErrorDiagnostic,
+  isNonRetryableError,
+} from './errors.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { spawn } from 'node:child_process';
@@ -433,12 +438,15 @@ export class AntigravityRunner extends CliRunnerBase {
     } catch (error) {
       stderrDiagnostic ??= parseAntigravityStderrError(stderr);
       const response = this.parseResponse(stdoutOnError);
-      const terminated = response
-        ? this.finishedReasonError(response, stderrDiagnostic, error)
-        : undefined;
+      const terminated = this.finishedReasonError(response ?? {}, stderrDiagnostic, error);
       const outputError = (terminated ?? error) as AntigravityOutputError;
-      outputError.antigravityStdout = stdoutOnError;
       outputError.antigravityStderr = stderr;
+      if (outputError instanceof AntigravityTimeoutError) {
+        // The native JSON contains the full partial answer; preserve it without logging it.
+        Object.defineProperty(outputError, 'antigravityStdout', { value: stdoutOnError });
+      } else {
+        outputError.antigravityStdout = stdoutOnError;
+      }
       if (stderrDiagnostic) this.attachDiagnostic(outputError, stderrDiagnostic);
       throw outputError;
     }
@@ -744,7 +752,11 @@ export class AntigravityRunner extends CliRunnerBase {
           sessionId = result.conversation_id ?? sessionId;
 
           // Wait for close so stderr diagnostics and process ownership are finalized before rejection.
-          if (this.finishedReasonError(result)) return undefined;
+          if (
+            (result.finished_reason === 'print_timeout' && result.status === 'ERROR') ||
+            this.finishedReasonError(result)
+          )
+            return undefined;
 
           if (result.status === 'ERROR') {
             sawErrorResult = true;
@@ -865,9 +877,12 @@ export class AntigravityRunner extends CliRunnerBase {
       },
       wrapExitError: (error, stderr = '') => {
         const stderrError = getStderrError(stderr);
-        const terminated = finalResponse
-          ? this.finishedReasonError(finalResponse, stderrError, error)
-          : undefined;
+        const terminated = this.finishedReasonError(
+          finalResponse ?? { conversation_id: sessionId },
+          stderrError,
+          error,
+          fullText
+        );
         if (terminated) {
           return stderrError ? this.attachDiagnostic(terminated, stderrError) : terminated;
         }
@@ -1052,6 +1067,13 @@ export class AntigravityRunner extends CliRunnerBase {
     stderrError?: AntigravityStderrError
   ): string | undefined {
     const response = this.parseResponse(output);
+    if (response?.finished_reason === 'print_timeout') {
+      return (
+        stderrError?.short_error ??
+        this.extractErrorMessage({ ...response, response: undefined }) ??
+        'Antigravity CLI print timeout'
+      );
+    }
     if (response?.status === 'ERROR') {
       return (
         this.extractErrorMessage(response) ??
@@ -1099,16 +1121,33 @@ export class AntigravityRunner extends CliRunnerBase {
   private finishedReasonError(
     response: AntigravityJsonResponse,
     stderrError?: AntigravityStderrError,
-    cause?: unknown
+    cause?: unknown,
+    streamedText = ''
   ): AntigravityTurnError | undefined {
-    const reason = response.finished_reason;
+    const reason = hasFinishedReason(response.finished_reason)
+      ? response.finished_reason
+      : stderrError?.reason === 'print_timeout'
+        ? 'print_timeout'
+        : undefined;
     if (!hasFinishedReason(reason) || (reason === 'print_timeout' && cause === undefined)) return;
+    if (reason === 'print_timeout') {
+      return new AntigravityTimeoutError(
+        stderrError?.short_error ??
+          this.extractErrorMessage({ ...response, response: undefined }) ??
+          'Antigravity CLI print timeout',
+        response.conversation_id,
+        this.withDeniedActions({
+          response:
+            typeof response.response === 'string' && response.response
+              ? response.response
+              : streamedText,
+          denied_actions: response.denied_actions,
+        }),
+        { cause }
+      );
+    }
     const kind =
-      reason === 'interrupted'
-        ? 'interrupted'
-        : reason === 'error' || reason === 'print_timeout'
-          ? 'error'
-          : 'unknown';
+      reason === 'interrupted' ? 'interrupted' : reason === 'error' ? 'error' : 'unknown';
     const fallback =
       kind === 'interrupted'
         ? 'Antigravity CLI was interrupted'

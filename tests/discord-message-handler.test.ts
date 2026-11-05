@@ -8,7 +8,7 @@ import {
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
 import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
-import { AntigravityTurnError } from '../src/errors.js';
+import { AntigravityTimeoutError, AntigravityTurnError } from '../src/errors.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
 import { clearSessions, initSessions, setSession } from '../src/sessions.js';
 import { initSettings } from '../src/settings.js';
@@ -37,6 +37,14 @@ describe('shouldProcessDiscordMessage', () => {
 
 describe('processPrompt error completion', () => {
   it.each([
+    [
+      new AntigravityTimeoutError('terminated task-1', 'agy-session', '途中の回答'),
+      'Agyの時間上限に達したため',
+    ],
+    [
+      new AntigravityTimeoutError('terminated task-1', 'agy-session', '途中の回答' + 'x'.repeat(7891)),
+      'Agyの時間上限に達したため',
+    ],
     [
       new AntigravityTurnError('error', 'AGY_HOOK_BLOCKED: policy stopped this turn.'),
       'AGY_HOOK_BLOCKED: policy stopped this turn.',
@@ -122,6 +130,15 @@ describe('processPrompt error completion', () => {
       expect(coordinator.isBusy('session-limit-test')).toBe(false);
       expect(runStream).toHaveBeenCalledTimes(1);
       expect(run).not.toHaveBeenCalled();
+      if (errorMessage instanceof AntigravityTimeoutError) {
+        const content = edit.mock.calls.at(-1)?.[0].content;
+        expect(content.match(/途中の回答/g)).toHaveLength(1);
+        expect(content).toContain('未完了');
+        expect(content.length).toBeLessThanOrEqual(2000);
+        if (errorMessage.partialResponse.length > 2000) {
+          expect(content).toMatch(/…（以下省略）$/);
+        }
+      }
       expect(edit).toHaveBeenLastCalledWith({
         content: expect.stringContaining(display),
         components: [],

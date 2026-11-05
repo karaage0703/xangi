@@ -38,7 +38,12 @@ import {
   telegramTextChunks,
   type TelegramTextChunk,
 } from './telegram-format.js';
-import { formatAgentErrorForUser, NonRetryableError } from './errors.js';
+import {
+  AntigravityTimeoutError,
+  formatAgentErrorForUser,
+  formatAntigravityTimeoutWithPartial,
+  NonRetryableError,
+} from './errors.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import {
@@ -1958,7 +1963,13 @@ export async function startTelegramBot(opts: {
       }
 
       const attachmentResult = runError
-        ? { filePaths: [], displayText: formatAgentErrorForUser(runError) }
+        ? {
+            filePaths: [],
+            displayText:
+              runError instanceof AntigravityTimeoutError
+                ? formatAntigravityTimeoutWithPartial(runError)
+                : formatAgentErrorForUser(runError),
+          }
         : mediaEnabled
           ? buildAttachmentResult(runResult?.result || '', runResult?.attachments)
           : { filePaths: [], displayText: runResult?.result || '' };

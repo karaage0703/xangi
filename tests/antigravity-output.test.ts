@@ -12,6 +12,16 @@ const REAL_AGY_ERROR = {
 };
 
 describe('parseAntigravityStderrError', () => {
+  it('preserves the validated timeout reason and rejects invalid reason metadata', () => {
+    const marker = { short_error: 'terminated tasks: task-1', reason: 'print_timeout' };
+    expect(parseAntigravityStderrError(`AGY_ERROR: ${JSON.stringify(marker)}`)).toEqual(marker);
+    for (const reason of [42, 'bad\u001bvalue', 'x'.repeat(65)]) {
+      expect(
+        parseAntigravityStderrError(`AGY_ERROR: ${JSON.stringify({ ...marker, reason })}`)
+      ).toBeUndefined();
+    }
+  });
+
   it('parses and validates the Agy 1.2.6 structured error fields', () => {
     expect(
       parseAntigravityStderrError(
