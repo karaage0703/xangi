@@ -316,7 +316,7 @@ export function Extensions() {
                   <div className="extension-main" aria-live="polite">
                     <div className="extension-title-row">
                       <ExtensionIcon id={extension.id} />
-                      <h2>{shortExtensionName(extension.displayName)}</h2>
+                      <h2>{shortExtensionName(extension.id)}</h2>
                       <span className={`extension-status ${extension.healthy ? 'healthy' : ''}`}>
                         {statusLabel(extension)}
                       </span>
