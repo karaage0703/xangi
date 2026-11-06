@@ -1797,7 +1797,7 @@ Shared timeout error notifications stay short and exclude the partial answer. Or
 
 Agy 1.5.0 print timeouts exit with code 3 and remain failures without automatic retries. xangi distinguishes `finished_reason: print_timeout`, displays the returned partial response with an unfinished-turn notice, and retains streamed text when the final response is empty. Validated `AGY_ERROR` diagnostics, including `reason` and task names present in the error text, are retained. Chat display limits still apply. A failed conversation ID is diagnostic only; it does not automatically establish a new channel binding or resume work.
 
-Although 1.5.0 removes the hidden 30-minute limit when no timeout is specified, xangi still supplies `--print-timeout` and enforces its own execution deadline. Older exit-0 `SUCCESS` partial responses retain their existing compatibility behavior. ACP remains a [design investigation (Japanese)](../antigravity-acp-design.md), not an automatic transport migration.
+Although 1.5.0 removes the hidden 30-minute limit when no timeout is specified, xangi still supplies `--print-timeout` and enforces its own execution deadline. Older exit-0 `SUCCESS` partial responses retain their existing compatibility behavior.
 
 The default print-timeout margin allows time for startup and shutdown but does not guarantee delivery of partial output. If MCP initialization or other startup work exceeds this margin, shorten `ANTIGRAVITY_PRINT_TIMEOUT` further. An explicitly configured value is used unchanged.
 
