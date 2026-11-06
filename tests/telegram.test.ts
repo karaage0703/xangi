@@ -34,9 +34,33 @@ import {
   throwTelegramTextDeliveryFailure,
 } from '../src/telegram.js';
 import { TelegramMediaGroupBuffer } from '../src/telegram-media.js';
-import { formatTelegramChunk } from '../src/telegram-format.js';
+import { formatTelegramChunk, telegramTextChunks } from '../src/telegram-format.js';
+import { AntigravityTimeoutError, formatAntigravityTimeoutWithPartial } from '../src/errors.js';
 
 describe('Telegram formatted final delivery', () => {
+  it('splits explicitly included timeout partial answers without losing their notice or text', async () => {
+    const partial = 'PRIVATE_PARTIAL_ANSWER '.repeat(500);
+    const error = new AntigravityTimeoutError('terminated task-1', 'session', partial);
+    const chunks = telegramTextChunks(formatAntigravityTimeoutWithPartial(error), 'plain');
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.text.length <= 4096)).toBe(true);
+    expect(chunks[0].text).toContain('未完了');
+    expect(
+      chunks
+        .map((chunk) => chunk.text)
+        .join('')
+        .match(/PRIVATE_PARTIAL_ANSWER/g)
+    ).toHaveLength(500);
+    const sendTextChunk = vi.fn().mockResolvedValue(undefined);
+    await deliverTelegramResult({
+      chunks: chunks.map((chunk) => chunk.text),
+      attachmentPaths: [],
+      sendTextChunk,
+      sendAttachments: vi.fn().mockResolvedValue({ sent: [], failures: [] }),
+    });
+    expect(sendTextChunk).toHaveBeenCalledTimes(chunks.length);
+  });
+
   it('passes HTML for the final answer and retries plain once after an entity parse error', async () => {
     const operation = vi
       .fn()

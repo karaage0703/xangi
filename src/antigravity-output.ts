@@ -13,6 +13,7 @@ export interface AntigravityStderrError {
   error_code?: number;
   retryable?: boolean;
   error_id?: string;
+  reason?: string;
 }
 
 const MAX_AGY_ERROR_CANDIDATE_LENGTH = 16_384;
@@ -72,7 +73,8 @@ export function parseAntigravityStderrError(stderr: string): AntigravityStderrEr
     const status = optionalToken(parsed.status, 64);
     const codeKind = optionalToken(parsed.code_kind, 64);
     const errorId = optionalToken(parsed.error_id, 256);
-    if (!status.valid || !codeKind.valid || !errorId.valid) continue;
+    const reason = optionalToken(parsed.reason, 64);
+    if (!status.valid || !codeKind.valid || !errorId.valid || !reason.valid) continue;
     if (
       parsed.error_code !== undefined &&
       (typeof parsed.error_code !== 'number' ||
@@ -90,6 +92,7 @@ export function parseAntigravityStderrError(stderr: string): AntigravityStderrEr
       ...(parsed.error_code !== undefined ? { error_code: parsed.error_code as number } : {}),
       ...(parsed.retryable !== undefined ? { retryable: parsed.retryable as boolean } : {}),
       ...(errorId.value ? { error_id: errorId.value } : {}),
+      ...(reason.value ? { reason: reason.value } : {}),
     };
   }
   return undefined;

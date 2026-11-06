@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { inspect } from 'node:util';
 import {
   AntigravityTurnError,
+  AntigravityTimeoutError,
   IncompleteAgentTurnError,
   LlmTimeoutError,
   classifyAgentError,
   formatErrorDiagnostic,
   formatAgentErrorForUser,
+  formatAntigravityTimeoutWithPartial,
   isNonRetryableError,
 } from '../src/errors.js';
 import { consumeRestartNote, resetRestartNoteStateForTest } from '../src/restart-note.js';
@@ -23,6 +26,44 @@ const claudeLimitErrors = [
 ];
 
 describe('classifyAgentError', () => {
+  it('keeps Agy print timeouts non-retryable and displays partial output with a distinct notice', () => {
+    const error = new AntigravityTimeoutError(
+      'terminated tasks: task-1',
+      'session',
+      'Partial answer'
+    );
+    expect(classifyAgentError(error)).toBe('antigravity-print-timeout');
+    expect(isNonRetryableError(error)).toBe(true);
+    expect(formatAgentErrorForUser(error)).toContain('自動再実行はしていません');
+    expect(formatAgentErrorForUser(error)).not.toContain('Partial answer');
+    expect(formatAntigravityTimeoutWithPartial(error)).toContain('Partial answer');
+    expect(formatAgentErrorForUser(error)).toContain('task-1');
+  });
+
+  it('keeps long timeout answers out of generic notifications and error logs', () => {
+    const partial = 'PRIVATE_PARTIAL_ANSWER'.repeat(500);
+    const error = new AntigravityTimeoutError('x'.repeat(5000), 'session', partial);
+    expect(error.partialResponse).toBe(partial);
+    expect(formatAgentErrorForUser(error).length).toBeLessThan(1000);
+    expect(error.message).not.toContain('PRIVATE_PARTIAL_ANSWER');
+    expect(inspect(error, { depth: null })).not.toContain('PRIVATE_PARTIAL_ANSWER');
+    expect(JSON.stringify(error)).not.toContain('PRIVATE_PARTIAL_ANSWER');
+    expect(formatErrorDiagnostic(error)).not.toContain('PRIVATE_PARTIAL_ANSWER');
+    expect(formatAntigravityTimeoutWithPartial(error)).toContain(partial);
+    const bounded = formatAntigravityTimeoutWithPartial(error, 2000);
+    expect(bounded.length).toBeLessThanOrEqual(2000);
+    expect(bounded).toContain('PRIVATE_PARTIAL_ANSWER');
+    expect(bounded).toMatch(/…（以下省略）$/);
+  });
+
+  it('does not split surrogate pairs when truncating an explicitly displayed partial answer', () => {
+    const error = new AntigravityTimeoutError('timeout', undefined, '😀'.repeat(3000));
+    const text = formatAntigravityTimeoutWithPartial(error, 2000);
+    expect(text.length).toBeLessThanOrEqual(2000);
+    expect(text).toMatch(/…（以下省略）$/);
+    expect(text.isWellFormed()).toBe(true);
+  });
+
   it('classifies structured Agy interruptions without relying on message text', () => {
     const error = new AntigravityTurnError('interrupted', 'ETIMEDOUT from a stopped turn');
     expect(classifyAgentError(error)).toBe('antigravity-interrupted');

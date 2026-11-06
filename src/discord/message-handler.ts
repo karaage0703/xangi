@@ -13,7 +13,12 @@ import {
 } from 'discord.js';
 import type { Config } from '../config.js';
 import type { AgentRunner, AgentTraceEvent, RunResult } from '../agent-runner.js';
-import { formatAgentErrorForUser } from '../errors.js';
+import {
+  AntigravityTimeoutError,
+  formatAgentErrorForUser,
+  formatAntigravityTimeoutWithPartial,
+  truncateAgentErrorDisplay,
+} from '../errors.js';
 import { consumeRestartNote } from '../restart-note.js';
 import { ClaudeCodeRunner } from '../claude-code.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
@@ -879,11 +884,20 @@ export async function processPrompt(
 
     // エラー詳細を表示（途中のテキスト・ツール履歴を残す）
     const lastStreamedText = streamSession?.lastText ?? '';
-    const prefix = lastStreamedText ? lastStreamedText + '\n\n' : '';
-    const errorMessage = appendToolHistory(
-      `${prefix}${errorDetail}`,
+    const prefix =
+      lastStreamedText && !(error instanceof AntigravityTimeoutError)
+        ? lastStreamedText + '\n\n'
+        : '';
+    const errorContent = appendToolHistory(
+      error instanceof AntigravityTimeoutError
+        ? formatAntigravityTimeoutWithPartial(error)
+        : `${prefix}${errorDetail}`,
       streamSession?.currentToolLines ?? []
-    ).slice(0, DISCORD_MAX_LENGTH);
+    );
+    const errorMessage =
+      error instanceof AntigravityTimeoutError
+        ? truncateAgentErrorDisplay(errorContent, DISCORD_MAX_LENGTH)
+        : errorContent.slice(0, DISCORD_MAX_LENGTH);
     if (replyMessage) {
       await replyMessage.edit({ content: errorMessage, components: [] }).catch(() => {});
     } else {

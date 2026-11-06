@@ -1793,6 +1793,12 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--always-approve` to a
 
 ### Antigravity CLI (`AGENT_BACKEND=antigravity`)
 
+Shared timeout error notifications stay short and exclude the partial answer. Ordinary Discord replies explicitly include it, adding an omission marker when the combined message exceeds 2,000 characters. Ordinary Telegram replies split the partial answer into messages. Scheduled runs and other commands using shared error notifications show only the short notice. Partial answers and raw JSON output are excluded from ordinary Error inspection and JSON serialization. Unknown stderr `AGY_ERROR.reason` values remain diagnostic-only and do not impose a termination reason or prohibit retry.
+
+Agy 1.5.0 print timeouts exit with code 3 and remain failures without automatic retries. xangi distinguishes `finished_reason: print_timeout`, displays the returned partial response with an unfinished-turn notice, and retains streamed text when the final response is empty. Validated `AGY_ERROR` diagnostics, including `reason` and task names present in the error text, are retained. Chat display limits still apply. A failed conversation ID is diagnostic only; it does not automatically establish a new channel binding or resume work.
+
+Although 1.5.0 removes the hidden 30-minute limit when no timeout is specified, xangi still supplies `--print-timeout` and enforces its own execution deadline. Older exit-0 `SUCCESS` partial responses retain their existing compatibility behavior.
+
 The default print-timeout margin allows time for startup and shutdown but does not guarantee delivery of partial output. If MCP initialization or other startup work exceeds this margin, shorten `ANTIGRAVITY_PRINT_TIMEOUT` further. An explicitly configured value is used unchanged.
 
 Agy 1.1.28 may return partial output with exit code 0 and `SUCCESS` when its print timeout expires. At process exit, xangi checks stderr for `[agy] print timeout after ... with turn in progress; returning partial output`, preserves the answer and conversation ID, and adds an unfinished-answer notice, including when the answer is empty. Nonzero exits, ordinary errors, and missing final result events remain errors. Request continuation in the same conversation; xangi does not automatically resend the task.

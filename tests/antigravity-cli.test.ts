@@ -2,14 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AntigravityRunner } from '../src/antigravity-cli.js';
 import {
   AntigravityTurnError,
+  AntigravityTimeoutError,
   formatAgentErrorForUser,
   isNonRetryableError,
 } from '../src/errors.js';
 import hookTermination from './fixtures/antigravity-hook-termination-1.4.12.json';
+import printTimeout from './fixtures/antigravity-print-timeout-1.5.0.json';
 import { processManager } from '../src/process-manager.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { inspect } from 'node:util';
 
 vi.mock('child_process', () => {
   const EventEmitter = require('events');
@@ -1449,6 +1452,210 @@ describe('AntigravityRunner', () => {
   });
 
   describe('structured finished_reason', () => {
+    it.each(['run', 'stream'])(
+      'keeps unknown stderr reasons diagnostic-only rather than prohibiting retry (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        proc.stderr.emit(
+          'data',
+          Buffer.from(
+            'AGY_ERROR: {"short_error":"EAI_AGAIN","reason":"temporary_network","retryable":true}\n'
+          )
+        );
+        proc.emit('close', 3);
+        const error = await observed;
+        expect(error).not.toBeInstanceOf(AntigravityTurnError);
+        expect(isNonRetryableError(error)).toBe(false);
+        expect(error).toMatchObject({
+          providerDiagnostic: {
+            antigravity: {
+              reason: 'temporary_network',
+              retryable: true,
+            },
+          },
+        });
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'does not use the partial response as an error detail when diagnostics are absent (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        emitResult(proc, mode, {
+          status: 'ERROR',
+          finished_reason: 'print_timeout',
+          response: 'PRIVATE_RESPONSE_ONLY',
+        });
+        proc.emit('close', 3);
+        const error = await observed;
+        expect(error).toMatchObject({ partialResponse: 'PRIVATE_RESPONSE_ONLY', retryable: false });
+        expect(inspect(error, { depth: null })).not.toContain('PRIVATE_RESPONSE_ONLY');
+        expect(JSON.stringify(error)).not.toContain('PRIVATE_RESPONSE_ONLY');
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'recognizes structured stderr timeouts even without a final result (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        if (mode === 'stream') {
+          proc.stdout.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                event: 'step_update',
+                step_update: {
+                  conversation_id: 'partial-session',
+                  step_type: 'agent_response',
+                  text_delta: 'Partial',
+                },
+              }) + '\n'
+            )
+          );
+        }
+        proc.stderr.emit('data', Buffer.from(printTimeout.json.stderr));
+        proc.emit('close', 3);
+        const error = await observed;
+        expect(error).toBeInstanceOf(AntigravityTimeoutError);
+        expect(error).toMatchObject({
+          retryable: false,
+          partialResponse: mode === 'stream' ? 'Partial' : '',
+        });
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'does not infer a print timeout from exit code 3 alone (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        proc.stderr.emit(
+          'data',
+          Buffer.from('AGY_ERROR: {"short_error":"quota exceeded","retryable":false}\n')
+        );
+        proc.emit('close', 3);
+        const error = await observed;
+        expect(error).not.toBeInstanceOf(AntigravityTimeoutError);
+        expect((error as Error).message).toContain('quota exceeded');
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'preserves actual 1.5.0 timeout output and late diagnostics (%s)',
+      async (mode) => {
+        const fixture = mode === 'run' ? printTimeout.json : printTimeout.stream;
+        const runner = new AntigravityRunner({});
+        const onError = vi.fn();
+        const onComplete = vi.fn();
+        const onText = vi.fn();
+        const promise =
+          mode === 'run'
+            ? runner.run('task')
+            : runner.runStream('task', { onError, onComplete, onText });
+        let settled = false;
+        const observed = promise.catch((error: unknown) => {
+          settled = true;
+          return error;
+        });
+        const proc = await waitForProcess();
+        for (const event of mode === 'run'
+          ? [printTimeout.json.stdout]
+          : printTimeout.stream.stdout) {
+          proc.stdout.emit('data', Buffer.from(JSON.stringify(event) + '\n'));
+        }
+        await tick();
+        expect(settled).toBe(false);
+        proc.stderr.emit('data', Buffer.from(fixture.stderr));
+        proc.emit('close', fixture.exitCode);
+        const error = await observed;
+        expect(error).toBeInstanceOf(AntigravityTimeoutError);
+        const response =
+          mode === 'run'
+            ? printTimeout.json.stdout.response
+            : printTimeout.stream.stdout.at(-1)!.result!.response;
+        expect(error).toMatchObject({
+          retryable: false,
+          finishedReason: 'print_timeout',
+          sessionId: 'fixture-conversation',
+          partialResponse: response,
+          providerDiagnostic: {
+            antigravity: {
+              status: 'DEADLINE_EXCEEDED',
+              reason: 'print_timeout',
+              retryable: false,
+            },
+          },
+        });
+        expect(formatAgentErrorForUser(error)).not.toContain('AGY_TIMEOUT_PARTIAL_OK');
+        expect(inspect(error, { depth: null })).not.toContain('AGY_TIMEOUT_PARTIAL_OK');
+        expect(JSON.stringify(error)).not.toContain('AGY_TIMEOUT_PARTIAL_OK');
+        expect(formatAgentErrorForUser(error)).toContain('未完了');
+        expect(onComplete).not.toHaveBeenCalled();
+        if (mode === 'stream') expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'retains terminated-task diagnostics without relying on undocumented task fields (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        const partial = 'Partial answer';
+        if (mode === 'stream') {
+          proc.stdout.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                event: 'step_update',
+                step_update: {
+                  step_type: 'agent_response',
+                  text_delta: partial,
+                },
+              }) + '\n'
+            )
+          );
+        }
+        emitResult(proc, mode, {
+          status: 'ERROR',
+          finished_reason: 'print_timeout',
+          response: mode === 'run' ? partial : '',
+          denied_actions: [{ display_name: 'ReadUrlContent' }],
+        });
+        const diagnostic = {
+          short_error: 'print timeout; terminated tasks: example-task',
+          reason: 'print_timeout',
+          retryable: false,
+        };
+        proc.stderr.emit('data', Buffer.from(`AGY_ERROR: ${JSON.stringify(diagnostic)}\n`));
+        proc.emit('close', 3);
+        const error = await observed;
+        expect(error).toMatchObject({
+          retryable: false,
+          partialResponse: expect.stringContaining(partial),
+          providerDiagnostic: { antigravity: diagnostic },
+        });
+        expect(formatAgentErrorForUser(error)).toContain('example-task');
+        expect((error as AntigravityTimeoutError).partialResponse).toContain('ReadUrlContent');
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
     function emitResult(
       proc: Awaited<ReturnType<typeof waitForProcess>>,
       mode: string,

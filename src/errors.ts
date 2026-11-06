@@ -38,7 +38,7 @@ export class NonRetryableError extends Error {
 /** Agy explicitly ended a turn; a new request must not bypass a stop hook or repeat side effects. */
 export class AntigravityTurnError extends NonRetryableError {
   constructor(
-    public readonly finishedReason: 'interrupted' | 'error' | 'unknown',
+    public readonly finishedReason: 'interrupted' | 'error' | 'unknown' | 'print_timeout',
     message: string,
     // Diagnostic only: failed turns do not establish or replace channel session bindings.
     public readonly sessionId?: string,
@@ -47,6 +47,59 @@ export class AntigravityTurnError extends NonRetryableError {
     super(message, options);
     this.name = 'AntigravityTurnError';
   }
+}
+
+/** Failed timeout turns retain their output, but must never be resumed automatically. */
+export class AntigravityTimeoutError extends AntigravityTurnError {
+  readonly #partialResponse: string;
+
+  get partialResponse(): string {
+    return this.#partialResponse;
+  }
+
+  constructor(
+    detail: string,
+    sessionId: string | undefined,
+    partialResponse: string,
+    options?: ErrorOptions
+  ) {
+    super(
+      'print_timeout',
+      [
+        'Agyの時間上限に達したため、処理は未完了です。自動再実行はしていません。',
+        [...detail].slice(0, 300).join(''),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      sessionId,
+      options
+    );
+    this.name = 'AntigravityTimeoutError';
+    // Keep answer text out of console.error/inspect and JSON serialization of the error.
+    this.#partialResponse = partialResponse;
+  }
+}
+
+/** Only delivery paths with explicit size/splitting policies should include partial answers. */
+export function formatAntigravityTimeoutWithPartial(
+  error: AntigravityTimeoutError,
+  maxLength?: number
+): string {
+  const text = [
+    formatAgentErrorForUser(error),
+    error.partialResponse ? `途中回答:\n${error.partialResponse}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  return maxLength === undefined ? text : truncateAgentErrorDisplay(text, maxLength);
+}
+
+export function truncateAgentErrorDisplay(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const suffix = '\n…（以下省略）';
+  let prefix = text.slice(0, Math.max(0, maxLength - suffix.length));
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return (prefix + suffix).slice(0, maxLength);
 }
 
 /** CLI exited without confirming completion; side effects may already exist. */
@@ -84,6 +137,7 @@ export type AgentErrorKind =
   | 'incomplete-turn' // Process exited without the backend's completion event
   | 'antigravity-interrupted'
   | 'antigravity-terminated'
+  | 'antigravity-print-timeout'
   | 'unknown';
 
 const CANCEL_MESSAGE = 'Request cancelled by user';
@@ -91,6 +145,7 @@ const CANCEL_MESSAGE = 'Request cancelled by user';
 /** エラーメッセージから種類を判別する */
 export function classifyAgentError(error: unknown): AgentErrorKind {
   const msg = error instanceof Error ? error.message : String(error);
+  if (error instanceof AntigravityTimeoutError) return 'antigravity-print-timeout';
   if (error instanceof AntigravityTurnError) {
     return error.finishedReason === 'interrupted'
       ? 'antigravity-interrupted'
@@ -114,6 +169,8 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
   const msg = error instanceof Error ? error.message : String(error);
   const detail = msg.slice(0, 200);
   switch (classifyAgentError(error)) {
+    case 'antigravity-print-timeout':
+      return msg;
     case 'antigravity-interrupted':
       return '🛑 Agyの処理が中断されました。自動再実行はしていません。';
     case 'antigravity-terminated':
@@ -219,6 +276,7 @@ export function formatErrorDiagnostic(error: unknown): string {
       'error_code',
       'retryable',
       'error_id',
+      'reason',
     ]) {
       const value = record[field];
       if (value === undefined || value === null || value === '') continue;
