@@ -60,7 +60,11 @@ Message queuing, conversation boundaries, and media handling vary by platform.
 
 ### Discord / Slack
 
-If another message arrives in the same conversation while a turn is running, xangi replies that it is still processing and does not queue that message. Discord threads and Slack threads are handled as separate sessions.
+In Discord and Slack, additional posts during processing receive only a “完了後に送信” (send after completion) button. The author can opt in within 15 minutes to process that post, including attachments, after the current turn. Multiple posts run one at a time in button-click order. After selection, the button changes to “予約をキャンセル” (cancel reservation), allowing the author to cancel each waiting post individually; use the processing message's `Stop` button after execution starts. If the conversation is already idle when the send button is clicked, processing starts immediately.
+
+Reservations are held in memory and expire on restart. They use the original post's content; cancel and repost to send edited content. Failed processing is not automatically retried.
+
+Discord threads and Slack threads are handled as separate sessions.
 
 See [Session Management](#session-management) for the `New`, in-thread `Close`, and `History` controls shown after a response.
 
@@ -1622,6 +1626,8 @@ Explicit global backend/model/effort changes made through settings survive resta
 
 The composer grows with the message and returns to a single-line height after sending. Its height also updates when text changes programmatically, such as when inserting a suggestion.
 
+You can type and attach files during a response. Select **完了後に送信** (send after completion) to queue inputs in order while this pane remains open. Each queued input can be cancelled individually. Stopping a turn or a send error pauses the remaining queue; select **待機中の送信を再開** to resume. Automatic dispatch preserves your current draft. Queued inputs are held only in the pane and are lost on reload or when the pane is closed.
+
 `/settings` exposes all seven settings supported by the shared `runtime_settings` dispatcher (backend, llmmode, autoreply, notify, threadmode, replysuggestions, and respondtobots), plus allowlisted non-secret startup settings used in normal operation. For a channel override, choose the platform and then select a channel by the name loaded from that connection; xangi retains the corresponding channel ID as the saved value. Each control shows the selected channel's saved setting and currently effective value. Every item is labeled as applying immediately, on the next turn, or after restart.
 
 The startup settings API validates each allowlisted field and writes it to the existing `.env` file without mutating the running process. Write-only inputs can save connection tokens, allowed-user values, and AI-provider API keys to the existing `SecretStore`. Stored secret values are never returned to or redisplayed by the Web UI; it receives only configured/not-configured status. Restart xangi after saving. Explicit environment variables continue to take precedence, and arbitrary environment variable names are rejected.
@@ -1657,7 +1663,7 @@ Directed requests use bearer-authenticated HTTP to URLs registered in `INTER_INS
 
 Web Projects group conversations and shared context. See Shared projects and agents below for management and migration.
 
-The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Choose the workspace in the labeled top bar. The `表示` menu provides sorting by name or modification time and filtering by Markdown frontmatter `tags`. In the two-column layout, including on iPad, use the same top-bar `☰` button as Chat to hide or show the file list without losing edits or its width. The file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. Edit mode shows line numbers by default. The `行番号` (line numbers) checkbox in the header toggles them and remembers the preference in the same browser. With line numbers enabled, long lines scroll horizontally instead of wrapping; disabling them restores wrapping. Markdown and HTML previews do not show line numbers. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
+The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Relative file links in Markdown previews resolve from the document’s folder and retain the selected workspace. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Choose the workspace in the labeled top bar. The `表示` menu provides sorting by name or modification time and filtering by Markdown frontmatter `tags`. In the two-column layout, including on iPad, use the same top-bar `☰` button as Chat to hide or show the file list without losing edits or its width. The file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. Edit mode shows line numbers by default. The `行番号` (line numbers) checkbox in the header toggles them and remembers the preference in the same browser. With line numbers enabled, long lines scroll horizontally instead of wrapping; disabling them restores wrapping. Markdown and HTML previews do not show line numbers. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
 Set `WORKSPACE_BROWSER_EXCLUDE=logs,skills,hooks,tmp/web-uploads` to hide directories from the list by exact workspace-relative path. `hooks` matches only the root directory (`src/hooks` remains visible); a trailing `/` is optional. Unset or empty means no exclusions. The list shows the number of directories hidden by settings. Direct links still allow viewing and editing. Changes apply to all workspaces after restart.
 
@@ -2039,6 +2045,8 @@ See [Shared projects and agents](design.md#shared-projects-and-agents).
 For rollback, stop xangi and restore the pre-upgrade backup as a set. The legacy file does not include edits made after migration.
 
 The Agents section in Settings supports creating, editing and deleting agents and shows their names, roles and models. The Projects screen links directly to the Agents and Workspace sections in Settings. The new-conversation selector always offers every registered agent. Agents used by open or running conversations cannot be deleted; closed conversations do not block deletion.
+
+If deleting an agent fails, the confirmation dialog stays open and displays the reason. Remove agents used as Team leaders or members from the Team settings first. You can cancel or retry from the confirmation dialog.
 
 
 ### Channel agents and precedence

@@ -22,7 +22,10 @@ function positiveInteger(value?: string): number | undefined {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export function workspaceTargetFromHref(href: string): WorkspaceLinkTarget | undefined {
+export function workspaceTargetFromHref(
+  href: string,
+  sourcePath?: string
+): WorkspaceLinkTarget | undefined {
   if (
     href.startsWith('#') ||
     href.startsWith('?') ||
@@ -57,13 +60,28 @@ export function workspaceTargetFromHref(href: string): WorkspaceLinkTarget | und
   path = path.replace(/^\.\//, '');
   if (URI_SCHEME.test(path) && !WINDOWS_ABSOLUTE_PATH.test(path)) return undefined;
   if (!path) return undefined;
+  if (
+    sourcePath &&
+    !href.startsWith('/') &&
+    !path.startsWith('/') &&
+    !WINDOWS_ABSOLUTE_PATH.test(path)
+  ) {
+    const segments = workspaceParentPath(sourcePath).split('/').filter(Boolean);
+    for (const segment of path.split('/')) {
+      if (!segment || segment === '.') continue;
+      if (segment === '..' && segments.length && segments.at(-1) !== '..') segments.pop();
+      else segments.push(segment);
+    }
+    path = (sourcePath.startsWith('/') ? '/' : '') + segments.join('/');
+  }
   return { path, ...(line ? { line } : {}), ...(column ? { column } : {}) };
 }
 
-export function workspaceViewerUrl(target: WorkspaceLinkTarget): string {
+export function workspaceViewerUrl(target: WorkspaceLinkTarget, workspaceId?: string): string {
   const params = new URLSearchParams({ path: target.path });
   if (target.line) params.set('line', String(target.line));
   if (target.column) params.set('column', String(target.column));
+  if (workspaceId) params.set('workspaceId', workspaceId);
   return `/workspace?${params.toString()}`;
 }
 

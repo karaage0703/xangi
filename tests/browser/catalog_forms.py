@@ -143,9 +143,9 @@ with sync_playwright() as playwright:
             section.get_by_role('button', name='Avatar:検証担当を削除').click()
             page.get_by_role('dialog').get_by_role('button', name='削除', exact=True).click()
             expect(section.get_by_role('alert')).to_contain_text('未完了の会話で使用中')
+            expect(page.get_by_role('dialog')).to_be_visible()
             expect(section.locator('.catalog-row')).to_have_count(1)
             reject_delete[0] = False
-            section.get_by_role('button', name='Avatar:検証担当を削除').click()
             page.get_by_role('dialog').get_by_role('button', name='削除', exact=True).click()
             expect(section.locator('.catalog-row')).to_have_count(0)
             expect(section.get_by_role('alert')).to_have_count(0)

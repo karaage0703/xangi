@@ -85,7 +85,7 @@ flowchart LR
 
 - per-channel / per-thread セッション分離（`contextKey = discord:<channelId>`。スレッド返信モードで新規スレッドを作成できた場合は `discord:<threadId>`）
 - Discord API 投稿先は親チャンネルまたは作成済みスレッド、runner / timeout / Stop / processing 管理は確定済みの `runKey = contextKey` で分離し、同じDiscordチャンネル内の別スレッドを別実行単位として扱う。スレッドのpromptには親チャンネル名/IDとスレッド名/IDを併記し、追加検索なしでどちらも送信先に選べるようにする
-- 通常メッセージとWebからのDiscordセッション継続は、同じ`conversationKey`に実行中または待機中の仕事があれば既存の処理中案内・busy errorで拒否する。一方、schedule / triggerターンは同じkeyの実行中処理の後ろへ受付順のFIFOで待機し、異なるkeyは並列に実行できる。先行処理が失敗しても後続を開始する
+- 通常のDiscord投稿は、同じ`conversationKey`に実行中・待機中の仕事があれば、本人だけが操作できる予約ボタンを提示する。予約はボタンを押した順のFIFOで個別キャンセル可能。未選択の受付期限は15分で、予約はメモリ保持のため再起動で失効する。WebからのDiscordセッション継続は従来どおりbusy errorで拒否する。一方、schedule / triggerターンは同じkeyの実行中処理の後ろへ受付順のFIFOで待機し、異なるkeyは並列に実行できる。先行処理が失敗しても後続を開始する
 - 共有待機列はprocess内メモリだけに保持する非永続queueで、再起動後の復元は行わない。この調停はDiscord経路だけに適用し、Discord以外のplatformの実行規則は変更しない
 - Discord スレッド内の per-channel 設定解決は原則として親チャンネルIDを使う。`CHANNEL_OVERRIDES`（`/backend` / `/llmmode`）、`settings.json`（`/notify` / `/threadmode`）、チャンネル topic 注入は親チャンネル設定を継承する。`/autoreply`だけはスレッドIDへ明示overrideを保存し、未設定時に親チャンネルの値を継承する
 - 既存スレッド内の発言では、Discord の starter message（親チャンネル側の元メッセージ）を `🧵 スレッド元` としてプロンプトに注入し、スレッド履歴だけでは見えない最初の話題にフォーカスする
@@ -108,6 +108,7 @@ flowchart LR
 - Slack API 投稿先は `channelId`、runner / timeout / Stop / processing 管理は `runKey = contextKey` で分離し、同じSlackチャンネル内の別スレッドを別実行単位として扱う
 - backend設定解決は親`channelId`、runner実行は`runKey`を使う。`/backend set/status/reset`は`CHANNEL_OVERRIDES`と起動中resolverを同時更新し、同チャンネル配下の既存スレッドsession / runnerを破棄するため、再起動なしで次のメッセージから切り替わる
 - 同一 `runKey` の実行中は二重起動を抑止し、Slack の `app_mention` と `message` の重複配送は message ts de-dupe と bot mention skip で一本化する
+- `slack-pending-messages.ts` が処理中の通常投稿へ本人限定の予約・キャンセルボタンを提示する。予約は会話キーごとにクリック順のFIFOで実行し、共有会話ロックを取得した予約だけが`processMessage`へロック所有権を渡す。待機予約もbusy判定へ含め、Web入力の割り込みを防ぐ。未選択は15分で失効し、予約はメモリ保持のため再起動で失効する。投稿時の本文・添付を保持し、予約単位の取消と失敗後の後続実行に対応する。ボタン値には本文を入れず、投稿者・チャンネル・予約メッセージの一致を確認する。
 - 実行中は `tool-history.ts` の整形済みツール履歴を表示し、完了後は途中コメントとツールを時系列で `History` ボタンから押した本人だけへ元スレッド内で表示する。ボタンにターン参照を保持するため、プロセス再起動後も永続ログから復元できる
 - スラッシュコマンドとリアクション対応
 - `chat.update` でメッセージ末尾に Stop / 延長 / 残り時間ボタン行を 1 秒粒度で差し替え
