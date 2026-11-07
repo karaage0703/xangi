@@ -681,7 +681,11 @@ export function Workspace() {
                 <article className="workspace-markdown-preview markdown-message">
                   <div className="workspace-markdown-document">
                     <Suspense fallback={<p>プレビューを読み込み中…</p>}>
-                      <MarkdownBody content={markdownBody(draft)} />
+                      <MarkdownBody
+                        content={markdownBody(draft)}
+                        sourcePath={selected.path}
+                        workspaceId={workspaceId}
+                      />
                     </Suspense>
                   </div>
                 </article>

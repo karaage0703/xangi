@@ -306,7 +306,8 @@ describe('Discord thread run lock', () => {
 
     expect(runStream).not.toHaveBeenCalled();
     expect(message.reply).toHaveBeenCalledWith({
-      content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+      content: expect.stringContaining('完了後に送信'),
+      components: expect.any(Array),
       allowedMentions: { parse: [], repliedUser: false },
     });
     releaseBlocker();
@@ -314,7 +315,7 @@ describe('Discord thread run lock', () => {
     await queued;
   });
 
-  it('bot宛ての2件目と3件目へ処理中を返し、先行処理の完了後だけ次を実行する', async () => {
+  it('処理中の複数投稿をボタンで予約し、キャンセルした投稿を除いて完了後に実行する', async () => {
     saveSettings({
       discordAutoReplyChannels: { '123': true },
     });
@@ -396,15 +397,45 @@ describe('Discord thread run lock', () => {
     expect(runStream).toHaveBeenCalledTimes(1);
     for (const busyMessage of [secondMessage, thirdMessage]) {
       expect(busyMessage.reply).toHaveBeenCalledWith({
-        content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+        content: expect.stringContaining('完了後に送信'),
+        components: expect.any(Array),
         allowedMentions: { parse: [], repliedUser: false },
       });
     }
 
+    const click = async (message: Message, action: string) => {
+      const replyMessage = await (message.reply as ReturnType<typeof vi.fn>).mock.results[0].value;
+      const interaction = {
+        isButton: () => true,
+        customId: `xangi_pending:${action}`,
+        user: { id: '42' },
+        channelId: 'busy-thread',
+        message: replyMessage,
+        deferUpdate: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+      };
+      await handlers.get(Events.InteractionCreate)!(interaction as unknown as Message);
+    };
+    await click(secondMessage, 'send');
+    await click(thirdMessage, 'send');
+    await click(secondMessage, 'cancel');
+    expect(runStream).toHaveBeenCalledTimes(1);
     releaseFirst();
     await first;
+    await vi.waitFor(() => expect(runStream).toHaveBeenCalledTimes(2));
+    expect(runStream.mock.calls[1][0]).toContain('メンションありの3件目');
+    expect(runStream.mock.calls[1][0]).not.toContain('メンションなしの2件目');
+    await vi.waitFor(() => expect(thirdMessage.reply).toHaveBeenCalledTimes(2));
+    // Wait for completion of the queued turn before sending a fresh normal turn.
+    const thirdReply = await (thirdMessage.reply as ReturnType<typeof vi.fn>).mock.results[0].value;
+    await vi.waitFor(() =>
+      expect(thirdReply.edit).toHaveBeenLastCalledWith({
+        content: '✅ 予約した投稿の処理が終了しました。',
+        components: [],
+      })
+    );
     await onMessageCreate(afterCompletionMessage);
-    expect(runStream).toHaveBeenCalledTimes(2);
+    expect(runStream).toHaveBeenCalledTimes(3);
   });
 
   it('activeな会話スレッドではautoreply無効でもメンションなしの後続投稿を処理する', async () => {
@@ -467,7 +498,8 @@ describe('Discord thread run lock', () => {
     await onMessageCreate(nonRequestMessage);
 
     expect(nonRequestMessage.reply).toHaveBeenCalledWith({
-      content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
+      content: expect.stringContaining('完了後に送信'),
+      components: expect.any(Array),
       allowedMentions: { parse: [], repliedUser: false },
     });
     expect(runStream).toHaveBeenCalledTimes(1);

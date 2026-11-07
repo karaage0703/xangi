@@ -1,3 +1,4 @@
+import { SlackPendingMessages } from './slack-pending-messages.js';
 import { registerSlackUserInput, slackUserInput } from './slack-user-input.js';
 import { completionHistory } from './completion-history.js';
 import { handleSecretCommand } from './secret-command.js';
@@ -593,8 +594,10 @@ const slackProcessingMessages = new Map<string, SlackProcessingEntry>();
 const slackToolHistoryByMessageKey = new Map<string, TurnHistoryEntry[]>();
 const slackReplySuggestionsByMessageKey = new Map<string, string[]>();
 const busySlackConversations = new Set<string>();
+export const slackPendingMessages = new SlackPendingMessages();
 export const isSlackConversationBusy = (key: string): boolean =>
   conversationBusy(key, true) ||
+  slackPendingMessages.isBusy(key, true) ||
   [...busySlackConversations].some((k) => k === key || k.startsWith(key + ':'));
 const processedSlackMessages = new Set<string>();
 
@@ -1273,6 +1276,26 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     };
   }
 
+  app.action(/^xangi_pending_(send|cancel)$/, async ({ ack, action, body, respond }) => {
+    const channelId = body.channel?.id;
+    const messageTs = 'message' in body ? body.message?.ts : undefined;
+    const userId = body.user?.id;
+    if (!channelId || !messageTs || !userId || !('value' in action) || !('action_id' in action)) {
+      await ack();
+      return;
+    }
+    await slackPendingMessages.handle({
+      id: action.value ?? '',
+      action: action.action_id,
+      channelId,
+      messageTs,
+      userId,
+      allowed: isSlackUserAllowed(config.slack.allowedUsers, userId),
+      ack,
+      respond,
+    });
+  });
+
   // ボタンアクション: Stop
   app.action('xangi_stop', async ({ ack, body }) => {
     await ack();
@@ -1430,7 +1453,10 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         selectedMessage.ts ?? String(Date.now()),
         actionClient,
         agentRunner,
-        config
+        config,
+        true,
+        undefined,
+        userId
       );
     }
   );
@@ -1863,7 +1889,9 @@ export async function processMessage(
   removeReaction = true,
   remoteSessionId?: string,
   actorId?: string,
-  remoteAttachments: string[] = []
+  remoteAttachments: string[] = [],
+  // A queued turn already holds the shared lock; only its owner may release it.
+  reservation?: { release: () => void }
 ): Promise<void> {
   const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1906,9 +1934,40 @@ export async function processMessage(
   let acquiredRunLock = false;
   let releaseConversation: (() => void) | undefined;
   try {
-    if (busySlackConversations.has(runKey) || conversationBusy(runKey)) {
+    if (
+      !reservation &&
+      (busySlackConversations.has(runKey) ||
+        conversationBusy(runKey) ||
+        slackPendingMessages.isBusy(runKey))
+    ) {
       if (remoteSessionId) throw new Error('このSlackセッションは処理中です');
-      console.log(`[slack] Skipping busy conversation: runKey=${runKey}`);
+      if (actorId) {
+        await slackPendingMessages.offer({
+          key: runKey,
+          channelId,
+          threadTs,
+          ownerId: actorId,
+          client,
+          run: (release) =>
+            processMessage(
+              channelId,
+              conversationKey,
+              threadTs,
+              text,
+              originalTs,
+              client,
+              agentRunner,
+              config,
+              false,
+              undefined,
+              actorId,
+              remoteAttachments,
+              { release }
+            ),
+        });
+        return;
+      }
+      console.log(`[slack] Skipping busy conversation without author: runKey=${runKey}`);
       await client.chat.postMessage({
         channel: channelId,
         text: '⏳ 現在処理中です。完了後にもう一度送ってください。',
@@ -1916,7 +1975,7 @@ export async function processMessage(
       });
       return;
     }
-    releaseConversation = reserveConversation(runKey);
+    releaseConversation = reservation?.release ?? reserveConversation(runKey);
     busySlackConversations.add(runKey);
     acquiredRunLock = true;
     if (remoteSessionId) {
@@ -2430,6 +2489,7 @@ export function _resetSlackStateForTest(): void {
   slackToolHistoryByMessageKey.clear();
   slackReplySuggestionsByMessageKey.clear();
   busySlackConversations.clear();
+  slackPendingMessages.reset();
   processedSlackMessages.clear();
 }
 

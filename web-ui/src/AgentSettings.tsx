@@ -79,6 +79,7 @@ export function AgentSettings({
   const [notice, setNotice] = useState('');
   const [agentToDelete, setAgentToDelete] = useState<string>();
   const [deletingAgent, setDeletingAgent] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
   const catalogVisible = (agent: Agent) =>
     `${agent.name} ${agent.role || ''}`
@@ -621,7 +622,14 @@ export function AgentSettings({
               name={agent.name}
               disabled={agent.id === 'xangi:default' && !defaultAI}
               onEdit={() => openAgentEditor(agent)}
-              onDelete={agent.id === 'xangi:default' ? undefined : () => setAgentToDelete(agent.id)}
+              onDelete={
+                agent.id === 'xangi:default'
+                  ? undefined
+                  : () => {
+                      setDeleteError('');
+                      setAgentToDelete(agent.id);
+                    }
+              }
             >
               {agent.id === 'xangi:default' && <small>既定</small>}
               <small>
@@ -641,23 +649,28 @@ export function AgentSettings({
         confirmLabel="削除"
         busyLabel="削除中…"
         busy={deletingAgent}
+        error={deleteError}
         variant="danger"
         onCancel={() => {
-          if (!deletingAgent) setAgentToDelete(undefined);
+          if (!deletingAgent) {
+            setAgentToDelete(undefined);
+            setDeleteError('');
+          }
         }}
         onConfirm={() => {
           if (!agentToDelete || deletingAgent) return;
           setDeletingAgent(true);
+          setDeleteError('');
           void requestJson(`/api/agents/${encodeURIComponent(agentToDelete)}`, { method: 'DELETE' })
-            .then(async () => {
-              setAgents((await requestJson<{ agents: Agent[] }>('/api/agents')).agents);
+            .then(() => {
+              setAgents((previous) => previous.filter((agent) => agent.id !== agentToDelete));
               setAgentFormOpen(false);
               setNotice('');
+              setAgentToDelete(undefined);
             })
-            .catch((e) => setNotice(e.message))
+            .catch((e) => setDeleteError(e instanceof Error ? e.message : String(e)))
             .finally(() => {
               setDeletingAgent(false);
-              setAgentToDelete(undefined);
             });
         }}
       />

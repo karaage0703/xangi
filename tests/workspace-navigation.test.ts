@@ -48,6 +48,27 @@ describe('workspace navigation', () => {
     expect(workspaceParentPath(target.path)).toBe('notes');
   });
 
+  it('normalizes document-relative links while preserving escapes for server validation', () => {
+    expect(workspaceTargetFromHref('./My%20Note.md', 'notes/nested/source.md')).toEqual({
+      path: 'notes/nested/My Note.md',
+    });
+    expect(workspaceTargetFromHref('../../README.md', 'notes/nested/source.md')).toEqual({
+      path: 'README.md',
+    });
+    expect(workspaceTargetFromHref('../../../private.md', 'notes/nested/source.md')).toEqual({
+      path: '../private.md',
+    });
+    expect(workspaceTargetFromHref('%2Fhome/user/README.md', 'notes/source.md')).toEqual({
+      path: '/home/user/README.md',
+    });
+  });
+
+  it('encodes the selected workspace in viewer URLs', () => {
+    expect(workspaceViewerUrl({ path: 'notes/file.md' }, 'other & workspace')).toBe(
+      '/workspace?path=notes%2Ffile.md&workspaceId=other+%26+workspace'
+    );
+  });
+
   it('clamps a requested line and column to the file content', () => {
     expect(lineSelection('one\ntwo\nthree', 2, 2)).toEqual({
       start: 5,

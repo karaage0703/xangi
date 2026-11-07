@@ -574,6 +574,11 @@ function ChatPane({
     previousIds: Array<string | undefined>;
   } | null>(null);
   const [draft, setDraft] = useState('');
+  const [queuedMessages, setQueuedMessages] = useState<
+    (ConversationSubmission & { sessionId: string })[]
+  >([]);
+  const queueDispatchRef = useRef(false);
+  const [queuePaused, setQueuePaused] = useState(false);
   const [composerActive, setComposerActive] = useState(false);
   const composerRef = useRef<ComposerContributionsHandle>(null);
   const [busy, setBusy] = useState(false);
@@ -954,15 +959,21 @@ function ChatPane({
     return () => sharedAbortRef.current?.abort();
   }, [sessionId]);
 
-  async function sendShared(targetId: string, submission: ConversationSubmission) {
+  async function sendShared(
+    targetId: string,
+    submission: ConversationSubmission,
+    preserveComposer = false
+  ) {
     const controller = new AbortController();
     sharedAbortRef.current?.abort();
     sharedAbortRef.current = controller;
     abortRef.current = controller;
     try {
       saveSubmission(targetId, submission);
-      setDraft('');
-      setPendingFiles([]);
+      if (!preserveComposer) {
+        setDraft('');
+        setPendingFiles([]);
+      }
       setError('');
       setStreamText('');
       setSharedSending(true);
@@ -1011,8 +1022,8 @@ function ChatPane({
       if (controller.signal.aborted) return;
       window.sessionStorage.removeItem(submissionKey(targetId));
       if (!submission.accepted) {
-        setDraft(submission.message);
-        setPendingFiles(submission.files);
+        setDraft((current) => (current ? `${current}\n${submission.message}` : submission.message));
+        setPendingFiles((current) => [...current, ...submission.files]);
       }
       setRemoteEcho(null);
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1071,7 +1082,7 @@ function ChatPane({
   }
 
   async function uploadFiles(files: File[]) {
-    if (!editable || processing || uploading) return;
+    if (!editable || uploading) return;
     const tooLarge = files.find((file) => file.size > config.uploadMaxBytes);
     if (tooLarge) {
       setError(uploadTooLargeMessage(tooLarge.size, config.uploadMaxBytes));
@@ -1185,6 +1196,7 @@ function ChatPane({
   }
 
   async function stopChat() {
+    setQueuePaused(true);
     abortRef.current?.abort();
     try {
       if (sessionId) {
@@ -1299,10 +1311,16 @@ function ChatPane({
     }
   }
 
-  async function send(rawMessage?: string, displayMessage?: string, skipPermissions = false) {
-    const cleanMessage = (rawMessage ?? draft).trim();
+  async function send(
+    rawMessage?: string,
+    displayMessage?: string,
+    skipPermissions = false,
+    queued?: ConversationSubmission
+  ) {
+    const files = queued?.files ?? pendingFiles;
+    const cleanMessage = (queued?.message ?? rawMessage ?? draft).trim();
     if (
-      (!cleanMessage && !pendingFiles.length) ||
+      (!cleanMessage && !files.length) ||
       (!sessionId && !linkedDraft) ||
       busy ||
       uploading ||
@@ -1310,15 +1328,15 @@ function ChatPane({
       !editable
     )
       return;
-    const remoteFiles = pendingFiles.map((file) => file.path);
+    const remoteFiles = files.map((file) => file.path);
     const clearSentFiles = () => {
-      pendingFiles.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
-      setPendingFiles([]);
+      files.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
+      if (!queued) setPendingFiles([]);
     };
     const submission = (): ConversationSubmission => ({
-      requestId: newRequestId(),
+      requestId: queued?.requestId ?? newRequestId(),
       message: cleanMessage,
-      files: [...pendingFiles],
+      files: [...files],
     });
     if (linkedDraft?.channel) {
       setRemoteEcho({
@@ -1326,7 +1344,7 @@ function ChatPane({
         text: cleanMessage,
         previousIds: detail?.messages.map((message) => message.id) ?? [],
       });
-      setDraft('');
+      if (!queued) setDraft('');
       followBottomRef.current = true;
       setError('');
       setProcessing(true);
@@ -1338,7 +1356,7 @@ function ChatPane({
           '/api/sessions',
           jsonInit('POST', {
             projectId: linkedDraft.id,
-            message: cleanMessage || pendingFiles[0]?.name,
+            message: cleanMessage || files[0]?.name,
             requestId: creationRequest,
           })
         );
@@ -1347,7 +1365,7 @@ function ChatPane({
         window.sessionStorage.removeItem(creationKey);
         onSessionChange(result.sessionId);
         clearSentFiles();
-        setDraft('');
+        if (!queued) setDraft('');
         await onSessionsInvalidated();
       } catch (cause) {
         setRemoteEcho(null);
@@ -1359,10 +1377,10 @@ function ChatPane({
       return;
     }
     if (!sessionId) return;
-    const privacyCommand = parseSecretCommand(cleanMessage);
+    const privacyCommand = queued ? undefined : parseSecretCommand(cleanMessage);
     if (privacyCommand && !discordRemoteMode) {
       setPaletteOpen(false);
-      setDraft('');
+      if (!queued) setDraft('');
       const mode = privacyCommand;
       if (mode === 'status' || (mode === 'on') === sessionId.startsWith('secret_')) {
         setError(
@@ -1374,13 +1392,13 @@ function ChatPane({
         if (sessionId.startsWith('secret_'))
           await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
         await createSession(mode === 'on');
-        setDraft('');
+        if (!queued) setDraft('');
       }
       return;
     }
     if (discordRemoteMode) {
       if (!privacyCommand) {
-        await sendShared(sessionId, submission());
+        await sendShared(sessionId, submission(), Boolean(queued));
         return;
       }
       setRemoteEcho({
@@ -1389,7 +1407,7 @@ function ChatPane({
         previousIds: detail?.messages.map((message) => message.id) ?? [],
       });
       followBottomRef.current = true;
-      setDraft('');
+      if (!queued) setDraft('');
       setError('');
       setProcessing(true);
       try {
@@ -1412,29 +1430,29 @@ function ChatPane({
       }
       return;
     }
-    if (cleanMessage.startsWith('/') && rawMessage === undefined) {
+    if (!queued && cleanMessage.startsWith('/') && rawMessage === undefined) {
       await executeCommand(cleanMessage);
       return;
     }
     if (!sessionId.startsWith('secret_') && !displayMessage) {
-      await sendShared(sessionId, submission());
+      await sendShared(sessionId, submission(), Boolean(queued));
       return;
     }
     const shownMessage = displayMessage ?? cleanMessage;
-    const attachmentLines = pendingFiles.map((file) => `[Attachment] ${file.path}`);
+    const attachmentLines = files.map((file) => `[Attachment] ${file.path}`);
     const modelMessage = [
       displayMessage ? extensionConversationPrompt(cleanMessage, displayMessage) : cleanMessage,
       ...attachmentLines,
     ]
       .filter(Boolean)
       .join('\n');
-    const shownFiles = [...pendingFiles];
+    const shownFiles = [...files];
     const previousAssistantId = [...(detail?.messages ?? [])]
       .reverse()
       .find((message) => message.role === 'assistant')?.id;
     shownFiles.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
-    setPendingFiles([]);
-    setDraft('');
+    if (!queued) setPendingFiles([]);
+    if (!queued) setDraft('');
     setPaletteOpen(false);
     setError('');
     setStreamText('');
@@ -1543,6 +1561,34 @@ function ChatPane({
     }
   }
 
+  function submitComposer() {
+    if (composerActive || uploading || !editable) return;
+    if ((!draft.trim() && !pendingFiles.length) || !sessionId) {
+      if (!sessionId) void send();
+      return;
+    }
+    if (
+      processing ||
+      queueDispatchRef.current ||
+      queuedMessages.some((item) => item.sessionId === sessionId)
+    ) {
+      setQueuedMessages((current) => [
+        ...current,
+        {
+          sessionId,
+          requestId: newRequestId(),
+          message: draft.trim(),
+          files: [...pendingFiles],
+        },
+      ]);
+      setDraft('');
+      setPendingFiles([]);
+      setPaletteOpen(false);
+      return;
+    }
+    void send();
+  }
+
   useEffect(() => {
     if (!sessionId || !detail || busy || !editable) return;
     if (setupStartedSessionRef.current === sessionId) return;
@@ -1581,6 +1627,38 @@ function ChatPane({
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
   const processing = isPaneProcessing(busy || Boolean(streamRecovery), summary?.isActive);
+  const sessionQueue = queuedMessages.filter((item) => item.sessionId === sessionId);
+  useEffect(() => {
+    const next = sessionQueue[0];
+    if (
+      !next ||
+      processing ||
+      uploading ||
+      loadingDetail ||
+      !editable ||
+      error ||
+      queuePaused ||
+      queueDispatchRef.current ||
+      detail?.id !== sessionId
+    )
+      return;
+    queueDispatchRef.current = true;
+    setQueuedMessages((current) => current.filter((item) => item.requestId !== next.requestId));
+    void send(undefined, undefined, false, next).finally(() => {
+      queueDispatchRef.current = false;
+    });
+  }, [
+    queuedMessages,
+    processing,
+    uploading,
+    loadingDetail,
+    editable,
+    error,
+    queuePaused,
+    sessionId,
+    detail,
+  ]);
+
   const showRemoteEcho = Boolean(
     remoteEcho &&
     remoteEcho.sessionId === sessionId &&
@@ -1867,7 +1945,7 @@ function ChatPane({
           </div>
         </div>
       )}
-      {pendingFiles.length > 0 && !busy && (
+      {pendingFiles.length > 0 && (
         <div className="attachment-tray">
           {pendingFiles.map((file, index) => (
             <div className="attachment" key={`${file.path}-${index}`}>
@@ -1884,13 +1962,48 @@ function ChatPane({
           ))}
         </div>
       )}
+      {sessionQueue.length > 0 && (
+        <div className="pane-send-queue" aria-label="送信待ち">
+          <p>送信待ち {sessionQueue.length}件（この画面を開いている間、順番に送信）</p>
+          {(queuePaused || error) && (
+            <button
+              type="button"
+              onClick={() => {
+                setQueuePaused(false);
+                setError('');
+              }}
+            >
+              待機中の送信を再開
+            </button>
+          )}
+          <ol>
+            {sessionQueue.map((item) => (
+              <li key={item.requestId}>
+                <span>{item.message || item.files.map((file) => file.name).join(', ')}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    item.files.forEach(
+                      (file) => file.localUrl && URL.revokeObjectURL(file.localUrl)
+                    );
+                    setQueuedMessages((current) =>
+                      current.filter((entry) => entry.requestId !== item.requestId)
+                    );
+                  }}
+                >
+                  予約をキャンセル
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       <UserQuestions key={sessionId} sessionId={sessionId} active={processing} />
       <form
         className={processing ? 'pane-input-area busy' : 'pane-input-area'}
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
-          if (composerActive) return;
-          void send();
+          submitComposer();
         }}
       >
         <div className="pane-command-shell">
@@ -1914,7 +2027,7 @@ function ChatPane({
             <button
               type="button"
               className="pane-attach-btn"
-              disabled={!editable || processing || uploading}
+              disabled={!editable || uploading}
               onClick={() => fileInputRef.current?.click()}
               aria-label="ファイルを添付"
             >
@@ -1947,7 +2060,7 @@ function ChatPane({
                   ref={composerRef}
                   extensions={composerExtensions}
                   contextKey={`${pane.key}:${sessionId || ''}:${projectId || ''}`}
-                  disabled={!editable || processing || uploading || !active}
+                  disabled={!editable || uploading || !active}
                   onText={(text, previous) =>
                     setDraft((value) => applyComposerSnapshot(value, previous, text))
                   }
@@ -1972,7 +2085,7 @@ function ChatPane({
                       ? 'メッセージを入力'
                       : 'セッションを選択するか、新しい会話を開始'
               }
-              disabled={!editable || processing}
+              disabled={!editable}
               value={draft}
               onPaste={(event) => {
                 const images = Array.from(event.clipboardData.items)
@@ -1981,7 +2094,7 @@ function ChatPane({
                   .filter((file): file is File => file !== null);
                 if (!images.length) return;
                 event.preventDefault();
-                if (!editable || processing || uploading) return;
+                if (!editable || uploading) return;
                 void uploadFiles(images);
               }}
               onChange={(event) => {
@@ -2022,21 +2135,20 @@ function ChatPane({
             onExecute={executeCommand}
           />
         </div>
-        {processing ? (
+        {processing && (
           <button type="button" className="pane-stop action-btn" onClick={() => void stopChat()}>
             停止
           </button>
-        ) : (
-          <button
-            type="submit"
-            className="pane-send action-btn"
-            disabled={
-              (!draft.trim() && !pendingFiles.length) || uploading || !editable || composerActive
-            }
-          >
-            送信
-          </button>
         )}
+        <button
+          type="submit"
+          className="pane-send action-btn"
+          disabled={
+            (!draft.trim() && !pendingFiles.length) || uploading || !editable || composerActive
+          }
+        >
+          {processing || sessionQueue.length ? '完了後に送信' : '送信'}
+        </button>
         {processing && config.timeoutExtendEnabled && (
           <button
             type="button"

@@ -56,6 +56,7 @@ export function ConfirmDialog({
   confirmLabel,
   busyLabel,
   busy = false,
+  error = '',
   variant = 'primary',
   onCancel,
   onConfirm,
@@ -66,12 +67,14 @@ export function ConfirmDialog({
   confirmLabel: string;
   busyLabel?: string;
   busy?: boolean;
+  error?: string;
   variant?: 'primary' | 'danger';
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const titleId = useId();
   const descriptionId = useId();
+  const errorId = useId();
   const dialog = useModalDialog(open, busy, onCancel);
 
   return (
@@ -79,11 +82,16 @@ export function ConfirmDialog({
       {...dialog}
       className="confirm-dialog"
       aria-labelledby={titleId}
-      aria-describedby={descriptionId}
+      aria-describedby={error ? `${descriptionId} ${errorId}` : descriptionId}
     >
       <div className="confirm-dialog-body">
         <h2 id={titleId}>{title}</h2>
         <p id={descriptionId}>{description}</p>
+        {error && (
+          <p id={errorId} className="confirm-dialog-error" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <div className="confirm-dialog-actions">
         <button type="button" autoFocus disabled={busy} onClick={onCancel}>

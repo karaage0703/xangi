@@ -82,6 +82,33 @@ describe('MarkdownBody links', () => {
     );
   });
 
+  it('resolves preview links beside the document and retains its workspace', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content:
+          '[git](references/git.md) [project](./references/projects/bibliocanvas.md) [parent](../README.md#L8:2) [absolute](/home/user/workspace/README.md) [viewer](/workspace/README.md) [section](#details) [web](https://example.test/docs)',
+        sourcePath: 'skills/xs-dev-workflow/SKILL.md',
+        workspaceId: 'other-workspace',
+      })
+    );
+
+    expect(html).toContain(
+      'href="/workspace?path=skills%2Fxs-dev-workflow%2Freferences%2Fgit.md&amp;workspaceId=other-workspace"'
+    );
+    expect(html).toContain(
+      'href="/workspace?path=skills%2Fxs-dev-workflow%2Freferences%2Fprojects%2Fbibliocanvas.md&amp;workspaceId=other-workspace"'
+    );
+    expect(html).toContain(
+      'href="/workspace?path=skills%2FREADME.md&amp;line=8&amp;column=2&amp;workspaceId=other-workspace"'
+    );
+    expect(html).toContain(
+      'href="/workspace?path=%2Fhome%2Fuser%2Fworkspace%2FREADME.md&amp;workspaceId=other-workspace"'
+    );
+    expect(html).toContain('href="/workspace?path=README.md&amp;workspaceId=other-workspace"');
+    expect(html).toContain('<a href="#details">section</a>');
+    expect(html).toContain('href="https://example.test/docs"');
+  });
+
   it('does not turn unsafe URI schemes into workspace links', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownBody, {

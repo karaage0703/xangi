@@ -1,3 +1,4 @@
+import { PENDING_MESSAGE_PREFIX } from './pending-messages.js';
 import { handleQuestionInteraction } from './user-input.js';
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
@@ -1130,6 +1131,10 @@ export function createInteractionHandler(
       );
       return;
     }
+
+    // Pending-message buttons are owned by the message handler, including authorization.
+    if ('customId' in interaction && interaction.customId.startsWith(PENDING_MESSAGE_PREFIX))
+      return;
 
     // ボタンインタラクション処理
     if (interaction.isButton()) {

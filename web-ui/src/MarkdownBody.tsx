@@ -41,7 +41,15 @@ function Pre({ children }: { children?: ReactNode }) {
   );
 }
 
-const MarkdownBody = memo(function MarkdownBody({ content }: { content: string }) {
+const MarkdownBody = memo(function MarkdownBody({
+  content,
+  sourcePath,
+  workspaceId,
+}: {
+  content: string;
+  sourcePath?: string;
+  workspaceId?: string;
+}) {
   return (
     <Markdown
       skipHtml
@@ -52,10 +60,10 @@ const MarkdownBody = memo(function MarkdownBody({ content }: { content: string }
           // Message links must not replace the chat document. This also keeps local
           // file-style links from stranding the user on the server's 404 response.
           const separateContext = Boolean(href && !href.startsWith('#'));
-          const workspaceTarget = href ? workspaceTargetFromHref(href) : undefined;
+          const workspaceTarget = href ? workspaceTargetFromHref(href, sourcePath) : undefined;
           return (
             <a
-              href={workspaceTarget ? workspaceViewerUrl(workspaceTarget) : href}
+              href={workspaceTarget ? workspaceViewerUrl(workspaceTarget, workspaceId) : href}
               title={title}
               className={className}
               target={separateContext ? '_blank' : undefined}

@@ -95,6 +95,7 @@ import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../session-workspace.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
+import { DiscordPendingMessages, PENDING_MESSAGE_PREFIX } from './pending-messages.js';
 import { startAiSessionTitle } from '../ai-session-title.js';
 
 export function shouldProcessDiscordMessage(input: { system?: boolean }): boolean {
@@ -1013,6 +1014,19 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
   const { client, config, agentRunner, workdir, workspaceRegistry } = deps;
   const turnCoordinator = deps.turnCoordinator ?? new DiscordTurnCoordinator();
   const pendingThreadTitles = new Map<string, string>();
+  const pendingMessages = new DiscordPendingMessages(turnCoordinator);
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith(PENDING_MESSAGE_PREFIX)) return;
+    const allowed =
+      config.discord.allowedUsers?.includes('*') ||
+      config.discord.allowedUsers?.includes(interaction.user.id) ||
+      false;
+    try {
+      await pendingMessages.handle(interaction, allowed);
+    } catch (error) {
+      console.error('[xangi] Pending message interaction failed:', error);
+    }
+  });
 
   // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
   // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
@@ -1235,7 +1249,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
 
     // ここへ到達するのは、メンション / DM / autoreply のいずれかで bot 宛てと
     // 判定済みのメッセージだけ。同じ実行キーが処理中またはqueue待ちなら起動しない。
-    const run = await turnCoordinator.tryRun(runKey, () =>
+    const processMessage = () =>
       processPrompt(
         message,
         agentRunner,
@@ -1246,13 +1260,15 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         target,
         undefined,
         workspaceRegistry
-      )
-    );
+      );
+    const run = await turnCoordinator.tryRun(runKey, processMessage);
     if (!run.accepted) {
-      console.log(`[xangi] Rejecting message in busy run: ${runKey}`);
-      await target.sendInitial({
-        content: '⏳ 現在処理中です。完了後にもう一度送ってください。',
-        allowedMentions: { parse: [], repliedUser: false },
+      await pendingMessages.offer({
+        ownerId: message.author.id,
+        channelId: target.conversationChannelId,
+        key: runKey,
+        run: processMessage,
+        send: target.sendInitial,
       });
     }
   });
