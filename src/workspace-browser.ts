@@ -154,8 +154,8 @@ export class WorkspaceBrowser {
     const visible: WorkspaceEntry[] = [];
     let excludedDirectoryCount = 0;
 
-    for (const entry of entries) {
-      if (isExcludedSegment(entry.name)) continue;
+    await mapLimited(entries, 8, async (entry) => {
+      if (isExcludedSegment(entry.name)) return;
       const childRelative = normalized ? `${normalized}/${entry.name}` : entry.name;
       const childAbsolute = join(target, entry.name);
 
@@ -190,7 +190,7 @@ export class WorkspaceBrowser {
         }
         if (targetType === 'directory' && this.excludedDirectoryPaths.has(childRelative)) {
           excludedDirectoryCount++;
-          continue;
+          return;
         }
         visible.push({
           name: entry.name,
@@ -207,7 +207,7 @@ export class WorkspaceBrowser {
         // Display preference only: direct listing, reading and writing stay available.
         if (this.excludedDirectoryPaths.has(childRelative)) {
           excludedDirectoryCount++;
-          continue;
+          return;
         }
         const childStat = await stat(childAbsolute);
         visible.push({
@@ -218,7 +218,7 @@ export class WorkspaceBrowser {
         });
       } else if (entry.isFile() && isViewableFile(entry.name)) {
         const childStat = await stat(childAbsolute);
-        if (childStat.size > this.maxFileBytes) continue;
+        if (childStat.size > this.maxFileBytes) return;
         const tags = entry.name.toLowerCase().endsWith('.md')
           ? await readMarkdownTags(childAbsolute)
           : [];
@@ -231,7 +231,7 @@ export class WorkspaceBrowser {
           ...(tags.length > 0 ? { tags } : {}),
         });
       }
-    }
+    });
 
     visible.sort((left, right) => {
       const leftDirectory = left.type === 'directory' || left.targetType === 'directory';
@@ -383,10 +383,34 @@ export class WorkspaceBrowser {
   }
 }
 
+async function mapLimited<T>(
+  items: T[],
+  limit: number,
+  visit: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await visit(items[next++]);
+    })
+  );
+}
+
 async function readMarkdownTags(filePath: string): Promise<string[]> {
   let content: string;
   try {
-    content = await readFile(filePath, 'utf8');
+    const handle = await open(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      content = buffer.subarray(0, bytesRead).toString('utf8');
+      // Preserve valid large frontmatter; only the common short-header case avoids the body.
+      if (content.startsWith('---') && !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(content)) {
+        content = await readFile(filePath, 'utf8');
+      }
+    } finally {
+      await handle.close();
+    }
   } catch {
     return [];
   }

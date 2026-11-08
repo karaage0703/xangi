@@ -207,3 +207,35 @@ describe('durable conversation receipts', () => {
     expect(restarted.lookup(input.appSessionId, input.requestId)?.delivery).toBe('delivered');
   });
 });
+
+
+describe('notification-backed receipt reads', () => {
+  it('wakes on durable completion and also handles an already changed receipt', async () => {
+    let finish!: (value: { text: string }) => void;
+    const { service } = setup({ execute: () => new Promise((resolve) => { finish = resolve; }) });
+    service.submit(input);
+    await Promise.resolve();
+    const running = service.lookup(input.appSessionId, input.requestId)!;
+    const after = JSON.stringify([running.state, running.delivery, running.updatedAt]);
+    const controller = new AbortController();
+    const pending = service.waitForChange(input.appSessionId, input.requestId, after, controller.signal);
+    finish({ text: 'finished' });
+    expect((await pending)?.state).toBe('completed');
+    await service.idle();
+    expect((await service.waitForChange(input.appSessionId, input.requestId, after, controller.signal))?.delivery).toBe('delivered');
+  });
+  it('releases a disconnected wait without cancelling execution', async () => {
+    let finish!: (value: { text: string }) => void;
+    const { service } = setup({ execute: () => new Promise((resolve) => { finish = resolve; }) });
+    service.submit(input);
+    await Promise.resolve();
+    const running = service.lookup(input.appSessionId, input.requestId)!;
+    const controller = new AbortController();
+    const pending = service.waitForChange(input.appSessionId, input.requestId, JSON.stringify([running.state, running.delivery, running.updatedAt]), controller.signal);
+    controller.abort();
+    expect((await pending)?.state).toBe('running');
+    finish({ text: 'finished' });
+    await service.idle();
+    expect(service.lookup(input.appSessionId, input.requestId)?.state).toBe('completed');
+  });
+});

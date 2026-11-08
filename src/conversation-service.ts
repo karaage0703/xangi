@@ -57,6 +57,7 @@ interface Options {
 
 /** Durable receipts own execution; an HTTP connection never owns a turn. */
 export class ConversationService {
+  private readonly changeListeners = new Set<() => void>();
   private readonly records = new Map<string, ConversationTurn>();
   private readonly tasks = new Map<string, Promise<void>>();
   private closing = false;
@@ -93,11 +94,41 @@ export class ConversationService {
     const temporary = `${path}.${randomUUID()}.tmp`;
     writeFileSync(temporary, JSON.stringify(record) + '\n', { mode: 0o600, flush: true });
     renameSync(temporary, path);
+    for (const listener of this.changeListeners) listener();
   }
 
   lookup(sessionId: string, requestId: string): ConversationTurn | undefined {
     const record = this.records.get(this.key(sessionId, requestId));
     return record ? structuredClone(record) : undefined;
+  }
+
+  /** Notification-backed receipt read, bounded so disconnects never retain listeners. */
+  async waitForChange(
+    sessionId: string,
+    requestId: string,
+    after: string,
+    signal: AbortSignal
+  ): Promise<ConversationTurn | undefined> {
+    const version = (record: ConversationTurn | undefined) =>
+      record ? JSON.stringify([record.state, record.delivery, record.updatedAt]) : '';
+    const initial = this.lookup(sessionId, requestId);
+    if (signal.aborted || version(initial) !== after) return initial;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.changeListeners.delete(changed);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const changed = () => {
+        if (version(this.lookup(sessionId, requestId)) !== after) finish();
+      };
+      const timer = setTimeout(finish, 8000);
+      this.changeListeners.add(changed);
+      signal.addEventListener('abort', finish, { once: true });
+      changed();
+    });
+    return this.lookup(sessionId, requestId);
   }
 
   submit(input: ConversationInput): ConversationTurn {

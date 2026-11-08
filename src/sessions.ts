@@ -299,7 +299,7 @@ function saveSessionsToFile(): void {
         Object.entries(data.activeByContext).filter(([, id]) => !isSecretSession(id))
       ),
     };
-    writeFileSync(path, JSON.stringify(persistent, null, 2) + '\n', 'utf-8');
+    writeFileSync(path, JSON.stringify(persistent) + '\n', 'utf-8');
   } catch (err) {
     console.error('[xangi] Failed to save sessions:', err);
   }

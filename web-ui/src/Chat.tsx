@@ -1,3 +1,4 @@
+import { useBufferedState } from './useBufferedState';
 import type { ComposerContributionsHandle } from './ComposerContributions';
 import {
   applyComposerSnapshot,
@@ -11,11 +12,13 @@ import { FileChanges } from './FileChanges';
 import { CatalogFilter } from './CatalogFilter';
 import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import {
+  CSSProperties,
   ChangeEvent,
   ReactNode,
   FormEvent,
   KeyboardEvent,
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -26,6 +29,7 @@ import {
 } from 'react';
 const ComposerContributions = lazy(() => import('./ComposerContributions'));
 
+import { sharedReadJson } from './api';
 import { ApiError, clearRecoveredReadError, requestJson } from './api';
 import {
   followConversationTurn,
@@ -38,6 +42,7 @@ import { AppTopbar } from './AppTopbar';
 import { NavigationIcon } from './AppNavigation';
 import { SessionActions } from './SessionActions';
 import { SidebarProjects } from './SidebarProjects';
+import { useSidebarResize } from './useSidebarResize';
 import {
   extensionConversationPrompt,
   extensionSetupStorageKey,
@@ -116,6 +121,7 @@ interface Activity extends LiveActivity {
 }
 
 interface Session {
+  transcriptRevision?: string;
   nextBackend?: {
     backend: string;
     model?: string;
@@ -263,7 +269,8 @@ interface TimeoutState {
   timeoutMs?: number;
 }
 
-function MessageView({
+const EMPTY_TURN_HISTORY: TurnHistoryEntry[] = [];
+const MessageView = memo(function MessageView({
   message,
   history,
   sessionId,
@@ -530,7 +537,7 @@ function MessageView({
       />
     </article>
   );
-}
+});
 
 function ChatPane({
   pane,
@@ -586,12 +593,14 @@ function ChatPane({
   const [deliveryRetry, setDeliveryRetry] = useState<{ sessionId: string; requestId: string }>();
   const [retryingDelivery, setRetryingDelivery] = useState(false);
   const [error, setError] = useState('');
-  const [streamText, setStreamText] = useState('');
+  const [streamText, setStreamText, flushStreamText] = useBufferedState('');
   const [toolLines, setToolLines] = useState<string[]>([]);
   const [backendStatus, setBackendStatus] = useState<{ reason: string; retryAt?: number } | null>(
     null
   );
-  const [observedLiveTurn, setObservedLiveTurn] = useState<ObservedLiveTurn>();
+  const [observedLiveTurn, setObservedLiveTurn, flushObservedLiveTurn] = useBufferedState<
+    ObservedLiveTurn | undefined
+  >(undefined);
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
   const [turnHistory, setTurnHistory] = useState<TurnHistoryEntry[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -703,7 +712,7 @@ function ChatPane({
       const viewport = messagesRef.current;
       const oldHeight = viewport?.scrollHeight || 0;
       try {
-        const data = await requestJson<SessionDetail>(
+        const data = await sharedReadJson<SessionDetail>(
           `/api/sessions/${encodeURIComponent(sessionId)}?limit=50&cursor=${encodeURIComponent(
             String(cursor)
           )}`
@@ -844,6 +853,14 @@ function ChatPane({
       try {
         const data = JSON.parse(event.data) as PublishedLiveEvent;
         setObservedLiveTurn((current) => applyPublishedLiveEvent(current, data));
+        if (
+          data.type === 'turn.complete' ||
+          data.type === 'turn.aborted' ||
+          data.type === 'agent.error'
+        ) {
+          flushObservedLiveTurn();
+          flushStreamText();
+        }
         if (sharedSending && data.type === 'message.delta')
           setStreamText(data.full_text || data.text || '');
       } catch {
@@ -861,8 +878,16 @@ function ChatPane({
   ]);
 
   useEffect(() => {
-    if (refreshVersion > 0 && sessionId && !busy) void loadDetail();
-  }, [busy, loadDetail, refreshVersion, sessionId]);
+    if (sessionId && !busy) void loadDetail();
+  }, [
+    busy,
+    loadDetail,
+    refreshVersion,
+    sessionId,
+    summary?.transcriptRevision,
+    summary?.messageCount,
+    summary?.isActive,
+  ]);
 
   useEffect(() => {
     if (!remoteEcho || remoteEcho.sessionId !== sessionId || !sessionId || busy) return;
@@ -906,7 +931,7 @@ function ChatPane({
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
     };
-  }, [detail?.messages, streamText, toolLines]);
+  }, [sessionId]);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -964,6 +989,8 @@ function ChatPane({
     submission: ConversationSubmission,
     preserveComposer = false
   ) {
+    const submittedAt = performance.now();
+    let acceptedMeasured = false;
     const controller = new AbortController();
     sharedAbortRef.current?.abort();
     sharedAbortRef.current = controller;
@@ -989,6 +1016,13 @@ function ChatPane({
         submission,
         controller.signal,
         () => {
+          if (!acceptedMeasured) {
+            performance.measure('xangi.send-to-accepted', {
+              start: submittedAt,
+              end: performance.now(),
+            });
+            acceptedMeasured = true;
+          }
           setError('');
           submission.files.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
         },
@@ -1000,6 +1034,7 @@ function ChatPane({
           )
       );
       if (controller.signal.aborted) return;
+      performance.measure('xangi.send-to-settled', { start: submittedAt, end: performance.now() });
       if (turn.delivery !== 'failed' && turn.delivery !== 'unknown')
         window.sessionStorage.removeItem(submissionKey(targetId));
       setRemoteEcho(null);
@@ -1664,6 +1699,15 @@ function ChatPane({
     remoteEcho.sessionId === sessionId &&
     !hasPersistedRemoteEcho(detail?.messages ?? [], remoteEcho)
   );
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const reloadMessages = useCallback(async () => {
+    await loadDetail();
+  }, [loadDetail]);
+  const selectSuggestion = useCallback((suggestion: string) => {
+    setDraft(suggestion);
+    requestAnimationFrame(() => void sendRef.current(suggestion));
+  }, []);
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
     [detail?.messages, detail?.platform, turnHistory]
@@ -1808,20 +1852,15 @@ function ChatPane({
           <MessageView
             key={message.id || `${message.role}-${index}`}
             message={message}
-            history={messageHistory[index] ?? []}
+            history={messageHistory[index] ?? EMPTY_TURN_HISTORY}
             sessionId={sessionId || ''}
             mutable={Boolean(detail)}
             linked={message.id === linkedMessageId}
             suggestionsEnabled={editable}
             completionShowElapsed={config.completionShowElapsed}
-            onReload={async () => {
-              await loadDetail();
-            }}
+            onReload={reloadMessages}
             onError={setError}
-            onSuggestion={(suggestion) => {
-              setDraft(suggestion);
-              requestAnimationFrame(() => void send(suggestion));
-            }}
+            onSuggestion={selectSuggestion}
           />
         ))}
         {showRemoteEcho && remoteEcho && (
@@ -2115,7 +2154,12 @@ function ChatPane({
                   setPaletteOpen(false);
                   return;
                 }
-                if (event.key === 'Enter' && !event.shiftKey && !isMobile() && !paletteOpen) {
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey &&
+                  (!isMobile() || event.ctrlKey || event.metaKey) &&
+                  !paletteOpen
+                ) {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }
@@ -2503,6 +2547,7 @@ export function Chat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
   );
+  const sidebarResize = useSidebarResize(!sidebarCollapsed);
   const [busyPanes, setBusyPanes] = useState<Record<string, boolean>>({});
   const [config, setConfig] = useState<Config>({
     uploadAccept: null,
@@ -2633,7 +2678,7 @@ export function Chat() {
       setNextOffset((current) =>
         hadAdditionalPages ? current : data.meta?.hasMore ? data.meta.nextOffset : undefined
       );
-      setRefreshVersion((current) => current + 1);
+      // Body changes are tracked per session by transcriptRevision.
     });
     source.addEventListener('activity_snapshot', (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as {
@@ -2663,9 +2708,14 @@ export function Chat() {
         sessionsRef.current = next;
         return next;
       });
-      if (!data.activity.active) setRefreshVersion((current) => current + 1);
+      // Each pane observes its own active -> idle transition.
     });
-    source.onopen = () => setNotice('');
+    let opened = false;
+    source.onopen = () => {
+      setNotice('');
+      if (opened) setRefreshVersion((current) => current + 1);
+      opened = true;
+    };
     source.onerror = () => setNotice('更新ストリームを再接続しています');
     return () => source.close();
   }, [activeProjectId, activeAgentId]);
@@ -3012,12 +3062,14 @@ export function Chat() {
         'app-shell',
         `pane-count-${panes.length}`,
         sidebarCollapsed ? 'sidebar-collapsed' : '',
+        sidebarResize.resizing ? 'sidebar-resizing' : '',
       ]
         .filter(Boolean)
         .join(' ')}
+      style={{ '--chat-sidebar-width': `${sidebarResize.width}px` } as CSSProperties}
     >
       <AppTopbar current="chat" />
-      <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
+      <aside id="chat-sidebar" className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-header sidebar-drawer-header">
           <button
             type="button"
@@ -3293,6 +3345,7 @@ export function Chat() {
           </a>
         </footer>
       </aside>
+      {sidebarResize.handle}
       <section className="workspace">
         {agentViewOpen ? (
           <div className="project-view">

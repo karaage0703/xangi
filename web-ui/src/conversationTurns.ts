@@ -17,6 +17,7 @@ export interface AcceptedConversationTurn {
   state: 'accepted' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   delivery: 'none' | 'pending' | 'sending' | 'delivered' | 'failed' | 'unknown';
   result?: string;
+  updatedAt?: string;
   error?: string;
   deliveryError?: string;
 }
@@ -83,6 +84,7 @@ export async function followConversationTurn(
   const base = `/api/sessions/${encodeURIComponent(sessionId)}`;
   let shouldSubmit = !submission.accepted;
   let wasUncertain = false;
+  let after: string | undefined;
   while (!signal.aborted) {
     try {
       const response = shouldSubmit
@@ -98,7 +100,7 @@ export async function followConversationTurn(
             signal
           )
         : await receiptRequest<{ turn: AcceptedConversationTurn }>(
-            `${base}/turn-requests/${submission.requestId}`,
+            `${base}/turn-requests/${submission.requestId}${after === undefined ? '' : `?after=${encodeURIComponent(after)}`}`,
             {},
             signal
           );
@@ -110,12 +112,14 @@ export async function followConversationTurn(
       shouldSubmit = false;
       wasUncertain = false;
       const turn = response.turn;
+      after = JSON.stringify([turn.state, turn.delivery, turn.updatedAt]);
       if (
         turn.state !== 'accepted' &&
         turn.state !== 'running' &&
         !['pending', 'sending'].includes(turn.delivery)
       )
         return turn;
+      continue;
     } catch (error) {
       if (signal.aborted) throw error;
       if (

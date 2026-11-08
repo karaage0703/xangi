@@ -1,5 +1,20 @@
 import type { ChatSseDataMap, ChatSseEvent, ParsedSsePackets, Platform, SsePacket } from './types';
 
+const sharedReads = new Map<string, Promise<unknown>>();
+/** Share concurrent reads only. Each consumer owns its mutable result. */
+export async function sharedReadJson<T>(url: string): Promise<T> {
+  let pending = sharedReads.get(url);
+  if (!pending) {
+    const started = performance.now();
+    pending = requestJson<T>(url).finally(() => {
+      sharedReads.delete(url);
+      performance.measure('xangi.detail-read', { start: started, end: performance.now() });
+    });
+    sharedReads.set(url, pending);
+  }
+  return structuredClone(await pending) as T;
+}
+
 const READ_RETRY_DELAYS_MS = [200, 800];
 
 export class ApiError extends Error {

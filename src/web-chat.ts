@@ -1,3 +1,5 @@
+import { serveWebAsset } from './web-assets.js';
+import { RevisionCache } from './revision-cache.js';
 import { sessionExecutionOrigin } from './session-source.js';
 import type { PlatformCompletionRefs } from './platform-completion.js';
 import { answerUserInput, listUserInputs, requestUserInput } from './user-input.js';
@@ -51,6 +53,8 @@ import { createHash } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   readFileSync,
+  watch,
+  type FSWatcher,
   writeFileSync,
   existsSync,
   readdirSync,
@@ -1059,24 +1063,42 @@ ${delegatedTeam.prompt}`
   const interChatEnabled = interChatConfig.enabled;
   const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
 
-  const buildSessionsResponse = (
-    query: {
-      limit?: number;
-      offset?: number;
-      cursor?: string;
-      q?: string;
-      projectId?: string;
-      agentId?: string;
-      lifecycle?: 'open' | 'closed';
-      updatedSince?: string;
-    } = {}
-  ) => {
-    const limit = Math.min(
-      SESSION_LIST_MAX_LIMIT,
-      Math.max(1, Math.floor(query.limit ?? SESSION_LIST_LIMIT))
-    );
-    const offset = Math.max(0, Math.floor(query.offset ?? 0));
-    const normalizedQuery = (query.q || '').trim().toLowerCase();
+  const transcriptMetadata = new Map<string, { revision: string; values: Map<string, unknown> }>();
+  const metadataValue = <T>(
+    id: string,
+    revision: string | undefined,
+    field: string,
+    build: () => T
+  ): T => {
+    let cached = transcriptMetadata.get(id);
+    if (!cached || cached.revision !== (revision || 'missing')) {
+      if (transcriptMetadata.size >= 10000) transcriptMetadata.clear();
+      cached = { revision: revision || 'missing', values: new Map() };
+      transcriptMetadata.set(id, cached);
+    }
+    if (!cached.values.has(field)) cached.values.set(field, build());
+    return cached.values.get(field) as T;
+  };
+  const sessionIndex = new RevisionCache<ReturnType<typeof collectSessionCandidates>>();
+  let transcriptWatcher: FSWatcher | undefined;
+  const watchTranscripts = () => {
+    if (transcriptWatcher) return;
+    try {
+      transcriptWatcher = watch(join(workdir, 'logs', 'sessions'), () =>
+        invalidateSessionSnapshots()
+      );
+      transcriptWatcher.on('error', () => {
+        transcriptWatcher?.close();
+        transcriptWatcher = undefined;
+        sessionIndex.invalidate();
+      });
+      transcriptWatcher.unref();
+    } catch {
+      /* The directory may not exist until the first turn. Expiry is the fallback. */
+    }
+  };
+  const collectSessionCandidates = () => {
+    watchTranscripts();
 
     const runBySession = new Map(agentRuns.list().map((run) => [run.appSessionId, run]));
     const allManaged = listAllSessions();
@@ -1096,9 +1118,8 @@ ${delegatedTeam.prompt}`
         isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
       const storedTitle = s.title || '';
       const transcriptPath = join(workdir, 'logs', 'sessions', `${s.id}.jsonl`);
-      const transcriptUpdatedAt = existsSync(transcriptPath)
-        ? statSync(transcriptPath).mtime.toISOString()
-        : undefined;
+      const transcriptStat = existsSync(transcriptPath) ? statSync(transcriptPath) : undefined;
+      const transcriptUpdatedAt = transcriptStat?.mtime.toISOString();
       const execution = latestModelExecution(s);
       // Historical sessions must not inherit today's project or CLI defaults.
       const backend = s.agent
@@ -1136,6 +1157,9 @@ ${delegatedTeam.prompt}`
           ? new Date(activity.updatedAt).toISOString()
           : transcriptUpdatedAt || s.updatedAt,
         messageCount: s.messageCount,
+        transcriptRevision: transcriptStat
+          ? `${transcriptStat.mtimeMs}:${transcriptStat.ctimeMs}:${transcriptStat.size}:${transcriptStat.ino}`
+          : undefined,
         isActive,
         isCurrent: isCurrentSession,
         lifecycle,
@@ -1173,6 +1197,7 @@ ${delegatedTeam.prompt}`
       id: string;
       createdAt: string;
       updatedAt: string;
+      transcriptRevision: string;
     }> = [];
     if (existsSync(sessionsDir)) {
       for (const file of readdirSync(sessionsDir)) {
@@ -1184,12 +1209,15 @@ ${delegatedTeam.prompt}`
           id,
           createdAt: stat.birthtime.toISOString(),
           updatedAt: stat.mtime.toISOString(),
+          transcriptRevision: `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`,
         });
       }
     }
 
     const unmanaged = unmanagedCandidates.flatMap((candidate) => {
-      const title = deriveTitleFromFirstMessage(workdir, candidate.id);
+      const title = metadataValue(candidate.id, candidate.transcriptRevision, 'title', () =>
+        deriveTitleFromFirstMessage(workdir, candidate.id)
+      );
       if (!title) return [];
       return [
         {
@@ -1212,13 +1240,40 @@ ${delegatedTeam.prompt}`
       ];
     });
 
+    return { managed, unmanaged, managedIds };
+  };
+
+  const buildSessionsResponse = (
+    query: {
+      limit?: number;
+      offset?: number;
+      cursor?: string;
+      q?: string;
+      projectId?: string;
+      agentId?: string;
+      lifecycle?: 'open' | 'closed';
+      updatedSince?: string;
+      all?: boolean;
+      monitorSince?: string;
+    } = {}
+  ) => {
+    const limit = Math.min(
+      SESSION_LIST_MAX_LIMIT,
+      Math.max(1, Math.floor(query.limit ?? SESSION_LIST_LIMIT))
+    );
+    const offset = Math.max(0, Math.floor(query.offset ?? 0));
+    const normalizedQuery = (query.q || '').trim().toLowerCase();
+
+    const { managed, unmanaged, managedIds } = sessionIndex.get(collectSessionCandidates);
     const titleCache = new Map<string, string>();
     const resolveTitle = (candidate: (typeof managed)[number] | (typeof unmanaged)[number]) => {
       const cached = titleCache.get(candidate.id);
       if (cached !== undefined) return cached;
       const title =
         candidate.title ||
-        deriveTitleFromFirstMessage(workdir, candidate.id) ||
+        metadataValue(candidate.id, candidate.transcriptRevision, 'title', () =>
+          deriveTitleFromFirstMessage(workdir, candidate.id)
+        ) ||
         candidate.contextKey ||
         candidate.id;
       titleCache.set(candidate.id, title);
@@ -1228,6 +1283,12 @@ ${delegatedTeam.prompt}`
     const matching = [...managed, ...unmanaged]
       .filter((candidate) => {
         if (query.lifecycle && candidate.lifecycle !== query.lifecycle) return false;
+        if (
+          query.monitorSince &&
+          candidate.lifecycle === 'closed' &&
+          candidate.updatedAt < query.monitorSince
+        )
+          return false;
         if (query.updatedSince) {
           const updatedAt = Date.parse(candidate.updatedAt);
           const updatedSince = Date.parse(query.updatedSince);
@@ -1270,7 +1331,10 @@ ${delegatedTeam.prompt}`
         : matching;
     const total = matching.length;
     const pageStart = query.cursor ? 0 : offset;
-    const pageCandidates = cursorFiltered.slice(pageStart, pageStart + limit);
+    const pageCandidates = cursorFiltered.slice(
+      pageStart,
+      query.all ? undefined : pageStart + limit
+    );
     const sessions = pageCandidates.map((candidate) => ({
       ...candidate,
       title: resolveTitle(candidate),
@@ -1278,11 +1342,15 @@ ${delegatedTeam.prompt}`
       origin:
         managedIds.has(candidate.id) &&
         (candidate.platform === 'discord' || candidate.platform === 'slack')
-          ? deriveSessionOrigin(workdir, candidate.id)
+          ? query.all
+            ? metadataValue(candidate.id, candidate.transcriptRevision, 'origin', () =>
+                deriveSessionOrigin(workdir, candidate.id)
+              )
+            : deriveSessionOrigin(workdir, candidate.id)
           : undefined,
     }));
     const nextOffset = offset + sessions.length;
-    const hasMore = pageStart + sessions.length < cursorFiltered.length;
+    const hasMore = !query.all && pageStart + sessions.length < cursorFiltered.length;
     const lastSession = sessions.at(-1);
 
     return {
@@ -1305,19 +1373,28 @@ ${delegatedTeam.prompt}`
 
   const sessionSnapshotListeners = new Set<() => void>();
   const stopWebStreams = new Map<string, () => void>();
+  let sessionSnapshotRefresh: NodeJS.Immediate | undefined;
+  let sessionSnapshotPayloads: Map<string, string> | undefined;
   const invalidateSessionSnapshots = () => {
-    if (sessionSnapshotListeners.size === 0) return;
-    try {
-      for (const listener of sessionSnapshotListeners) {
-        try {
-          listener();
-        } catch {
-          // A disconnected SSE client must not fail the mutation that triggered invalidation.
+    sessionIndex.invalidate();
+    if (sessionSnapshotListeners.size === 0 || sessionSnapshotRefresh) return;
+    // Token usage, title and progress may change together. Publish their latest state once,
+    // outside the mutation path, and reuse identical filtered payloads for this flush only.
+    sessionSnapshotRefresh = setImmediate(() => {
+      sessionSnapshotRefresh = undefined;
+      sessionSnapshotPayloads = new Map();
+      try {
+        for (const listener of sessionSnapshotListeners) {
+          try {
+            listener();
+          } catch {
+            // A disconnected SSE client must not fail other subscribers.
+          }
         }
+      } finally {
+        sessionSnapshotPayloads = undefined;
       }
-    } catch {
-      // Snapshot refresh is best-effort and must not fail the completed mutation.
-    }
+    });
   };
   const unsubscribeSessionChanges = subscribeSessionChanges(invalidateSessionSnapshots);
 
@@ -1377,10 +1454,11 @@ ${delegatedTeam.prompt}`
               backendChanged ||
               (!previousSession && historyPrefetch.enabled)
             ) {
-              const past = readSessionMessages(
+              const past = readSessionMessagesTail(
                 workspace.path,
-                entry.resumedFromSessionId || entry.id
-              ).slice(-historyPrefetch.count);
+                entry.resumedFromSessionId || entry.id,
+                historyPrefetch.count
+              );
               history =
                 buildPrefetchedHistoryBlock(
                   (
@@ -1600,6 +1678,19 @@ ${delegatedTeam.prompt}`
     : undefined;
   conversationService?.resume();
 
+  let catalogPending: ReturnType<typeof listDevelopmentExtensionCatalog> | undefined;
+  let catalogExpires = 0;
+  const readExtensionCatalog = () => {
+    if (!catalogPending || Date.now() >= catalogExpires) {
+      catalogExpires = Date.now() + 1000;
+      catalogPending = listDevelopmentExtensionCatalog();
+      const current = catalogPending;
+      void current.catch(() => {
+        if (catalogPending === current) catalogPending = undefined;
+      });
+    }
+    return catalogPending;
+  };
   const handleExtensionMutation = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -1611,6 +1702,7 @@ ${delegatedTeam.prompt}`
     }
     try {
       await operation();
+      catalogPending = undefined;
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -1892,11 +1984,7 @@ ${delegatedTeam.prompt}`
               : extname(assetPath) === '.svg'
                 ? 'image/svg+xml'
                 : 'application/octet-stream';
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=31536000, immutable',
-        });
-        res.end(readFileSync(assetPath));
+        await serveWebAsset(req, res, assetPath, contentType);
       } catch {
         res.writeHead(404);
         res.end('Not found');
@@ -2373,7 +2461,7 @@ ${delegatedTeam.prompt}`
           JSON.parse(await readRawBody(req, 4096))
         );
         if (action === 'add') {
-          const catalog = await listDevelopmentExtensionCatalog();
+          const catalog = await readExtensionCatalog();
           if (
             !catalog.extensions.some(
               (entry) => entry.id === id && entry.installed && entry.uiAvailable
@@ -3026,33 +3114,40 @@ ${delegatedTeam.prompt}`
       const searchParams = new URL(rawUrl, 'http://localhost').searchParams;
       const requestedLimit = Number(searchParams.get('limit'));
       const requestedOffset = Number(searchParams.get('offset'));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify(
-          buildSessionsResponse({
-            limit:
-              Number.isFinite(requestedLimit) && requestedLimit > 0
-                ? requestedLimit
-                : SESSION_LIST_LIMIT,
-            offset: Number.isFinite(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0,
-            cursor: searchParams.get('cursor') || undefined,
-            q: searchParams.get('q') || '',
-            projectId: searchParams.get('projectId') || undefined,
-            agentId: searchParams.get('agentId') || undefined,
-            lifecycle:
-              searchParams.get('lifecycle') === 'open' || searchParams.get('lifecycle') === 'closed'
-                ? (searchParams.get('lifecycle') as 'open' | 'closed')
-                : undefined,
-            updatedSince: searchParams.get('updatedSince') || undefined,
-          })
-        )
+      const started = performance.now();
+      const payload = JSON.stringify(
+        buildSessionsResponse({
+          limit:
+            Number.isFinite(requestedLimit) && requestedLimit > 0
+              ? requestedLimit
+              : SESSION_LIST_LIMIT,
+          offset: Number.isFinite(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0,
+          cursor: searchParams.get('cursor') || undefined,
+          q: searchParams.get('q') || '',
+          projectId: searchParams.get('projectId') || undefined,
+          agentId: searchParams.get('agentId') || undefined,
+          lifecycle:
+            searchParams.get('lifecycle') === 'open' || searchParams.get('lifecycle') === 'closed'
+              ? (searchParams.get('lifecycle') as 'open' | 'closed')
+              : undefined,
+          updatedSince: searchParams.get('updatedSince') || undefined,
+        })
       );
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Server-Timing': `sessions;dur=${(performance.now() - started).toFixed(2)}`,
+      });
+      res.end(payload);
       return;
     }
 
     // GET /api/sessions/stream — Monitor/Web Chat 共通の軽量更新通知。
     // 初期 snapshot を即返し、その後は turn の境界イベントだけを差分送信する。
     if (url === '/api/sessions/stream' && req.method === 'GET') {
+      const streamParams = new URL(rawUrl, 'http://localhost').searchParams;
+      const changesMode = streamParams.get('mode') === 'changes';
+      const monitorSince = streamParams.get('updatedSince') || undefined;
+      let previousRows: Map<string, string> | undefined;
       const streamAgentId =
         new URL(rawUrl, 'http://localhost').searchParams.get('agentId') || undefined;
       const streamProjectId =
@@ -3065,7 +3160,7 @@ ${delegatedTeam.prompt}`
       });
       let closed = false;
       let backpressured = false;
-      let pendingSnapshot: string | undefined;
+      let pendingSnapshot = false;
       const writeSse = (frame: string): boolean => {
         if (closed || backpressured || res.destroyed || res.writableEnded) return false;
         try {
@@ -3077,19 +3172,45 @@ ${delegatedTeam.prompt}`
         }
       };
       const sendSnapshot = () => {
-        const payload = JSON.stringify(
-          buildSessionsResponse({ projectId: streamProjectId, agentId: streamAgentId })
-        );
+        if (closed || res.destroyed || res.writableEnded) return;
         if (backpressured) {
-          pendingSnapshot = payload;
+          // Keep only a dirty flag; reconstruct current state when the socket drains.
+          pendingSnapshot = true;
           return;
         }
-        writeSse(`event: sessions\ndata: ${payload}\n\n`);
+        const key = JSON.stringify([streamProjectId, streamAgentId, changesMode, monitorSince]);
+        let payload = sessionSnapshotPayloads?.get(key);
+        if (payload === undefined) {
+          payload = JSON.stringify(
+            buildSessionsResponse({
+              projectId: streamProjectId,
+              agentId: streamAgentId,
+              all: changesMode,
+              monitorSince,
+            })
+          );
+          sessionSnapshotPayloads?.set(key, payload);
+        }
+        if (changesMode) {
+          const snapshot = JSON.parse(payload) as ReturnType<typeof buildSessionsResponse>;
+          const rows = new Map(snapshot.sessions.map((row) => [row.id, JSON.stringify(row)]));
+          if (previousRows) {
+            const upsert = snapshot.sessions.filter(
+              (row) => previousRows!.get(row.id) !== rows.get(row.id)
+            );
+            const removed = [...previousRows.keys()].filter((id) => !rows.has(id));
+            if (upsert.length || removed.length)
+              writeSse(`event: session_changes\ndata: ${JSON.stringify({ upsert, removed })}\n\n`);
+          } else {
+            writeSse(`event: sessions\ndata: ${payload}\n\n`);
+          }
+          previousRows = rows;
+        } else writeSse(`event: sessions\ndata: ${payload}\n\n`);
       };
       const handleDrain = () => {
         backpressured = false;
         if (pendingSnapshot) {
-          pendingSnapshot = undefined;
+          pendingSnapshot = false;
           sendSnapshot();
         }
       };
@@ -3141,7 +3262,7 @@ ${delegatedTeam.prompt}`
         sessionSnapshotListeners.delete(sendSnapshot);
         res.off('drain', handleDrain);
         pendingActivityThreads.clear();
-        pendingSnapshot = undefined;
+        pendingSnapshot = false;
       };
       req.on('close', cleanup);
       res.on('close', cleanup);
@@ -3429,7 +3550,21 @@ ${delegatedTeam.prompt}`
             return;
           }
           if (req.method === 'GET' && !turnRoute[4]) {
-            const turn = conversationService.lookup(id, turnRoute[3]);
+            const after = new URL(rawUrl, 'http://localhost').searchParams.get('after');
+            const controller = new AbortController();
+            const disconnected = () => controller.abort();
+            res.once('close', disconnected);
+            const turn =
+              after === null
+                ? conversationService.lookup(id, turnRoute[3])
+                : await conversationService.waitForChange(
+                    id,
+                    turnRoute[3],
+                    after,
+                    controller.signal
+                  );
+            res.off('close', disconnected);
+            if (res.destroyed) return;
             sendJson(res, turn ? 200 : 404, turn ? { turn } : { error: '受付が見つかりません' }, {
               'Cache-Control': 'no-store',
             });
@@ -4350,7 +4485,11 @@ ${delegatedTeam.prompt}`
             !isSecretSession(appSessionId) &&
             (hasExplicitResumeHistory || shouldPrefetchFirstTurn)
           ) {
-            const pastMessages = readSessionMessages(workdir, resumeSourceId || appSessionId);
+            const pastMessages = readSessionMessagesTail(
+              workdir,
+              resumeSourceId || appSessionId,
+              historyPrefetch.count
+            );
             const sourcePlatform = resumeSourceId
               ? getSessionEntry(resumeSourceId)?.platform
               : undefined;
@@ -4420,7 +4559,9 @@ ${delegatedTeam.prompt}`
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
           });
+          res.flushHeaders();
           latency.markInitialReply();
 
           const sendSSE = (event: string, data: unknown) => {
@@ -4706,7 +4847,13 @@ ${delegatedTeam.prompt}`
     });
   });
 
+  const unsubscribeIndexActivity = subscribeActivity(() => sessionIndex.invalidate());
+  server.on('close', unsubscribeIndexActivity);
+  server.on('close', () => transcriptWatcher?.close());
   server.on('close', unsubscribeSessionChanges);
+  server.on('close', () => {
+    if (sessionSnapshotRefresh) clearImmediate(sessionSnapshotRefresh);
+  });
   server.on('close', () => conversationService?.close());
   server.on('close', () => clearInterval(parentWatch));
 

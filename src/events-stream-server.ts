@@ -70,10 +70,40 @@ export function handleEventsStreamRequest(req: IncomingMessage, res: ServerRespo
     })}\n\n`
   );
 
+  let blocked = false;
+  const pending = new Map<string, PublishedEvent>();
+  let sequence = 0;
+  const drain = () => {
+    blocked = false;
+    if (res.destroyed || res.writableEnded) return;
+    for (const [key, payload] of pending) {
+      pending.delete(key);
+      try {
+        if (!res.write(`data: ${JSON.stringify(payload)}\n\n`)) {
+          blocked = true;
+          break;
+        }
+      } catch {
+        res.destroy();
+        break;
+      }
+    }
+  };
+  res.on('drain', drain);
   const writeEvent = (payload: PublishedEvent): void => {
     if (threadFilter && payload.thread_id !== threadFilter) return;
     try {
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      if (blocked) {
+        const key =
+          payload.type === 'message.delta'
+            ? `delta:${payload.thread_id}:${payload.turn_id}`
+            : `event:${sequence++}`;
+        pending.delete(key);
+        pending.set(key, payload);
+        if (pending.size > 64) res.destroy();
+        return;
+      }
+      blocked = !res.write(`data: ${JSON.stringify(payload)}\n\n`);
     } catch {
       // ソケットが既に閉じている場合などは無視。close ハンドラ側で掃除する。
     }
@@ -85,7 +115,7 @@ export function handleEventsStreamRequest(req: IncomingMessage, res: ServerRespo
 
   const keepalive = setInterval(() => {
     try {
-      res.write(': keepalive\n\n');
+      if (!blocked && !res.destroyed && !res.writableEnded) res.write(': keepalive\n\n');
     } catch {
       // ignore
     }
@@ -95,8 +125,12 @@ export function handleEventsStreamRequest(req: IncomingMessage, res: ServerRespo
   const cleanup = (): void => {
     unsubscribe();
     clearInterval(keepalive);
+    res.off('drain', drain);
+    pending.clear();
   };
 
+  res.on('error', cleanup);
+  res.on('close', cleanup);
   req.on('close', cleanup);
   req.on('error', cleanup);
 

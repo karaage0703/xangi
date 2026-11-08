@@ -1624,7 +1624,7 @@ Ordinary Web UI/API reads and mutations reject foreign Origin headers and do not
 
 Explicit global backend/model/effort changes made through settings survive restart and override the initial setup choice. Arbitrary startup environment values do not override setup. The internal persisted `XANGI_GLOBAL_BACKEND_OVERRIDE` flag distinguishes an explicit settings change.
 
-The composer grows with the message and returns to a single-line height after sending. Its height also updates when text changes programmatically, such as when inserting a suggestion.
+The composer grows with the message and returns to a single-line height after sending. Its height also updates when text changes programmatically, such as when inserting a suggestion. On desktop, Enter sends and Shift+Enter inserts a newline. On iPhone, iPad, and Android, Enter inserts a newline; use the send button to send. Resizing or rotating the screen does not change these controls. Ctrl+Enter or Cmd+Enter also sends, including with an external iPad keyboard. Confirming an active IME composition does not send.
 
 You can type and attach files during a response. Select **完了後に送信** (send after completion) to queue inputs in order while this pane remains open. Each queued input can be cancelled individually. Stopping a turn or a send error pauses the remaining queue; select **待機中の送信を再開** to resume. Automatic dispatch preserves your current draft. Queued inputs are held only in the pane and are lost on reload or when the pane is closed.
 
@@ -2038,6 +2038,8 @@ Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-d
 
 Select a project in the chat sidebar to show its conversations, or select “All conversations” to clear the project filter. Use “+” beside the Projects heading to create a project and the row’s “…” to open settings directly and edit its name, shared instructions, default agent and connected channel. Click the Projects heading to hide or show the entire list; the collapsed state persists across reloads in the same browser. Collapsing keeps the selected project and conversation filter; use “All conversations” to clear the filter. With more than five projects, expand the list with “Show all”. Open app-wide settings from the bottom of the sidebar.
 
+On desktop, drag the right edge of the chat sidebar to resize it; the width persists across reloads in the same browser. Focus the divider to use Left/Right (Shift for larger steps) or Home/End. Double-click to restore the default width, or press Escape during a drag to cancel. Narrowing the window keeps your saved width. Mobile keeps the existing drawer controls.
+
 Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. Projects can select a default Agent or Team for new conversations and connect a Discord or Slack channel. Outside a Project, new conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
 
 See [Shared projects and agents](design.md#shared-projects-and-agents).
@@ -2102,7 +2104,7 @@ Use the IDs returned by the preceding commands. An optional `--leader-agent-id I
 
 `workspace set-path` changes a non-default workspace path while preserving its ID, Agent references and channel bindings. New sessions use the new path; saved sessions keep their original path, so start a new session to work in the new location. The target must already exist and pass the registration path checks. Files and Git worktrees are not moved or repaired. Configure the default workspace with `WORKSPACE_PATH`.
 
-Workspace creation registers an existing accessible directory outside the xangi state directory. It does not create, move or delete folders. In Settings, all three lists use “＋ 作成”, explicit edit actions and “キャンセル → 作成/保存” form actions. Workspace editing changes only its display name and preserves IDs, paths and bindings. “登録解除” removes only the registration, leaving files intact; default and in-use registrations remain protected. Agent work-channel changes are still saved immediately, separately from the form.
+Workspace creation registers an existing accessible directory outside the xangi state directory. It does not create, move or delete folders. In Settings, all three lists use “＋ 作成”, explicit edit actions and “キャンセル → 作成/保存” form actions. Workspace editing changes only its display name and preserves IDs, paths and bindings. “登録解除” removes only the registration, leaving files intact; default and in-use registrations remain protected. If workspace unregistration or team deletion fails, the confirmation dialog displays the reason and allows cancellation or retry, just as agent deletion does. Agent work-channel changes are still saved immediately, separately from the form.
 
 ### Agent delegation
 

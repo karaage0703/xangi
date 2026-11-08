@@ -787,15 +787,32 @@ export function Monitor() {
   }, [hasRunningSession]);
 
   useEffect(() => {
-    loadSessions().catch(() => setOnline(false));
-
-    const eventSource = new EventSource('/api/sessions/stream');
+    const params = new URLSearchParams({ mode: 'changes' });
+    const durationMs = monitorTimeRange(timeRange).durationMs;
+    if (durationMs !== undefined)
+      params.set('updatedSince', new Date(Date.now() - durationMs).toISOString());
+    const eventSource = new EventSource(`/api/sessions/stream?${params}`);
     eventSource.onopen = () => setOnline(true);
     eventSource.onerror = () => setOnline(false);
     eventSource.addEventListener('sessions', (rawEvent) => {
       try {
-        JSON.parse((rawEvent as MessageEvent<string>).data);
-        void loadSessions().catch(() => setOnline(false));
+        applySnapshot(
+          JSON.parse((rawEvent as MessageEvent<string>).data) as MonitorSessionsResponse
+        );
+      } catch {
+        setOnline(false);
+      }
+    });
+    eventSource.addEventListener('session_changes', (rawEvent) => {
+      try {
+        const { upsert, removed } = JSON.parse((rawEvent as MessageEvent<string>).data) as {
+          upsert: MonitorSession[];
+          removed: string[];
+        };
+        const rows = new Map(sessionsRef.current.map((row) => [row.id, row]));
+        for (const id of removed) rows.delete(id);
+        for (const row of upsert) rows.set(row.id, row);
+        applySnapshot({ sessions: [...rows.values()] });
       } catch {
         setOnline(false);
       }
@@ -815,9 +832,7 @@ export function Monitor() {
         }
         setUpdatedAt(Date.now());
         setOnline(true);
-        if (!matched || event.type !== 'turn.started') {
-          loadSessions().catch(() => setOnline(false));
-        }
+        // Durable membership changes arrive through session_changes.
       } catch {
         setOnline(false);
       }
@@ -828,11 +843,9 @@ export function Monitor() {
           threadId: string;
           activity: MonitorActivity;
         };
-        let matched = false;
         const updatedSessions = sessionsRef.current
           .map((session) => {
             const isMatch = sessionMatchesActivityThread(data.threadId, session);
-            if (isMatch) matched = true;
             return isMatch ? applyActivitySnapshot(session, data.activity) : session;
           })
           .filter(isMonitorVisible);
@@ -840,16 +853,14 @@ export function Monitor() {
         setSessions(updatedSessions);
         setUpdatedAt(Date.now());
         setOnline(true);
-        if (!matched || !data.activity.active) {
-          void loadSessions().catch(() => setOnline(false));
-        }
+        // The stream supplies additions/removals without paginated re-fetches.
       } catch {
         setOnline(false);
       }
     });
 
     return () => eventSource.close();
-  }, [applySnapshot, loadSessions]);
+  }, [applySnapshot, timeRange]);
 
   const filteredSessions = useMemo(
     () => sessions.filter((session) => matchesFilter(session, filters)),

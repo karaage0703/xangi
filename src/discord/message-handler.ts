@@ -318,6 +318,7 @@ export async function processPrompt(
   workspaceRegistry?: WorkspaceRegistry
 ): Promise<string | null> {
   const startedAt = Date.now();
+  let reactionDone: Promise<unknown> = Promise.resolve();
   let replyMessage: Message | null = null;
   const toolHistory: string[] = []; // 完了後に表示する短いツール履歴
   // 表示状態のコア。エラー時に途中テキスト・ツール行を残すため関数スコープに置く
@@ -386,7 +387,7 @@ export async function processPrompt(
     console.log(
       `[xangi] Processing message in channel ${channelId}, runKey ${conversationChannelId}`
     );
-    if (actor?.react !== false) await message.react('👀').catch(() => {});
+    if (actor?.react !== false) reactionDone = message.react('👀').catch(() => {});
 
     const useStreaming = config.discord.streaming ?? true;
     const showThinking = config.discord.showThinking ?? true;
@@ -443,17 +444,68 @@ export async function processPrompt(
     });
     streamSession = session;
 
-    const settings = loadSettings();
-
-    if (
+    // Start independent history I/O alongside the initial reply; await it before the runner.
+    const historyPromise =
       !sessionEntry?.skipHistoryPrefetch &&
       !existingProviderSessionId &&
       config.historyPrefetch?.enabled
-    ) {
-      const prefetchedHistory = target.createdThreadName
-        ? buildPrefetchedHistoryBlock('Discord', [])
-        : await prefetchDiscordHistory(message, config.historyPrefetch.count);
-      prompt = `${prefetchedHistory}\n\n${prompt}`;
+        ? target.createdThreadName
+          ? Promise.resolve(buildPrefetchedHistoryBlock('Discord', []))
+          : prefetchDiscordHistory(message, config.historyPrefetch.count)
+        : undefined;
+
+    // 以降の追加投稿（続きチャンク・ファイル・完了通知）の送信先。
+    const outputChannel = target.outputChannel;
+
+    // 最初のメッセージを送信
+    const firstPayload = {
+      content: session.view().statusLine,
+      ...(showButtons && { components: [createProcessingButtons()] }),
+    };
+    replyMessage = await target.sendInitial(firstPayload);
+    latency.markInitialReply();
+
+    // プロセス再起動 (SIGTERM) で turn が中断されたとき、ストリーミング表示
+    // (ツール行 + ▌ / スピナー) を放置せず「中断」表示で確定させる (issue #293)
+    unregisterStreamFinalizer = registerStreamFinalizer(async () => {
+      session.finish();
+      if (!replyMessage) return;
+      const view = session.view();
+      const note = '⏸ プロセス再起動により中断されました';
+      const visibleText = stripReplySuggestionMarkup(view.text);
+      const body = visibleText ? `${visibleText}\n\n${note}` : note;
+      const content = appendToolHistory(body, view.toolLines).slice(0, DISCORD_MAX_LENGTH);
+      const updated = await replyMessage
+        .edit({ content, components: [] })
+        .then(() => true)
+        .catch(() => false);
+      if (!updated) return;
+      const tWorkdir = sessionWorkdir;
+      attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', sourceMessageId);
+      ensureVisibleAssistantResponse(
+        tWorkdir,
+        appSessionId,
+        replyMessage.id,
+        content,
+        replyMessage.createdAt?.toISOString()
+      );
+    });
+
+    const settings = loadSettings();
+
+    if (historyPromise) {
+      prompt = `${await historyPromise}\n\n${prompt}`;
+    }
+    if (unregisterStreamFinalizer.isFinalized()) {
+      latency.finish('cancelled');
+      return null;
+    }
+
+    // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で edit される)
+    // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
+    // 別個に作った ClaudeCodeRunner には timeout イベントが流れないのでスキップ
+    if (showButtons && !needsSkipRunner) {
+      discordProcessingMessages.set(conversationChannelId, { message: replyMessage });
     }
 
     prompt = prependReferencedMessages(prompt, sessionWorkdir);
@@ -500,50 +552,6 @@ export async function processPrompt(
     if (replySuggestionsEnabled) {
       prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
     }
-
-    // 以降の追加投稿（続きチャンク・ファイル・完了通知）の送信先。
-    const outputChannel = target.outputChannel;
-
-    // 最初のメッセージを送信
-    const firstPayload = {
-      content: session.view().statusLine,
-      ...(showButtons && { components: [createProcessingButtons()] }),
-    };
-    replyMessage = await target.sendInitial(firstPayload);
-    latency.markInitialReply();
-
-    // タイムアウト UI の自動更新対象として登録 (runner.timeout-* で edit される)
-    // runner が agentRunner (DynamicRunnerManager) 経由のときのみ — needsSkipRunner で
-    // 別個に作った ClaudeCodeRunner には timeout イベントが流れないのでスキップ
-    if (showButtons && !needsSkipRunner) {
-      discordProcessingMessages.set(conversationChannelId, { message: replyMessage });
-    }
-
-    // プロセス再起動 (SIGTERM) で turn が中断されたとき、ストリーミング表示
-    // (ツール行 + ▌ / スピナー) を放置せず「中断」表示で確定させる (issue #293)
-    unregisterStreamFinalizer = registerStreamFinalizer(async () => {
-      session.finish();
-      if (!replyMessage) return;
-      const view = session.view();
-      const note = '⏸ プロセス再起動により中断されました';
-      const visibleText = stripReplySuggestionMarkup(view.text);
-      const body = visibleText ? `${visibleText}\n\n${note}` : note;
-      const content = appendToolHistory(body, view.toolLines).slice(0, DISCORD_MAX_LENGTH);
-      const updated = await replyMessage
-        .edit({ content, components: [] })
-        .then(() => true)
-        .catch(() => false);
-      if (!updated) return;
-      const tWorkdir = sessionWorkdir;
-      attachPlatformMessageIdToLast(tWorkdir, appSessionId, 'user', sourceMessageId);
-      ensureVisibleAssistantResponse(
-        tWorkdir,
-        appSessionId,
-        replyMessage.id,
-        content,
-        replyMessage.createdAt?.toISOString()
-      );
-    });
 
     let result: string;
     let newSessionId: string;
@@ -913,10 +921,14 @@ export async function processPrompt(
   } finally {
     // 正常完了・エラー処理後は shutdown finalizer の対象から外す
     unregisterStreamFinalizer?.();
-    // 👀 リアクションを削除
-    await message.reactions.cache
-      .find((r) => r.emoji.name === '👀')
-      ?.users.remove(message.client.user?.id)
+    // Cosmetic reaction I/O must not hold the conversation busy. If addition finishes
+    // after the turn, remove it afterwards so a late 👀 is not left behind.
+    void reactionDone
+      .then(() =>
+        message.reactions.cache
+          .find((r) => r.emoji.name === '👀')
+          ?.users.remove(message.client.user?.id)
+      )
       .catch((err) => {
         console.error('[xangi] Failed to remove 👀 reaction:', err.message || err);
       });
@@ -1189,22 +1201,14 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
 
     const skipPermissions = config.agent.config.skipPermissions ?? false;
 
-    // Discordリンクからメッセージ内容を取得
-    prompt = await fetchDiscordLinkContent(client, prompt);
-
-    // 既存スレッド内の発言では、スレッド元メッセージを明示的にプロンプトへ追加する。
-    // Discord のスレッド履歴だけでは親チャンネル側の starter message が見えず、
-    // 「このスレッドの最初の話題」を取り違えるため。
-    const threadStarterContent = await fetchThreadStarterContent(message);
-    if (threadStarterContent) {
-      prompt = threadStarterContent + prompt;
-    }
-
-    // 返信元メッセージを取得してプロンプトに追加
-    const replyContent = await fetchReplyContent(message);
-    if (replyContent) {
-      prompt = replyContent + prompt;
-    }
+    // These lookups use only the original message and can run independently.
+    // Compose in the original order after all results arrive.
+    const [linkedPrompt, threadStarterContent, replyContent] = await Promise.all([
+      fetchDiscordLinkContent(client, prompt),
+      fetchThreadStarterContent(message),
+      fetchReplyContent(message),
+    ]);
+    prompt = (replyContent || '') + (threadStarterContent || '') + linkedPrompt;
 
     // チャンネルメンションにID注釈を追加（展開前に実行）
     prompt = annotateChannelMentions(prompt);
