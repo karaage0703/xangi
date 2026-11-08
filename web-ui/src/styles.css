@@ -266,12 +266,41 @@ textarea:focus-visible {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: var(--chat-sidebar-width, 300px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
   transition: grid-template-columns 160ms ease;
+}
+
+/* Overlay the boundary so the handle does not consume chat space. */
+.chat-sidebar-resizer {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: end;
+  width: 10px;
+  transform: translateX(50%);
+  z-index: 4;
+  cursor: col-resize;
+  touch-action: none;
+  outline-offset: -3px;
+}
+.chat-sidebar-resizer:hover,
+.chat-sidebar-resizer:focus-visible,
+.sidebar-resizing .chat-sidebar-resizer {
+  background: var(--accent-tint);
+}
+.chat-sidebar-resizer:focus-visible {
+  outline: 2px solid var(--accent-ink);
+}
+.app-shell.sidebar-resizing {
+  transition: none;
+  cursor: col-resize;
+  user-select: none;
+}
+.app-shell.sidebar-resizing * {
+  cursor: col-resize !important;
 }
 
 .app-shell.sidebar-collapsed {
@@ -5571,7 +5600,7 @@ video.media-preview {
 
 @media (max-width: 900px) {
   .app-shell {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: var(--chat-sidebar-width, 260px) minmax(0, 1fr);
   }
 
   .panes-container[data-count='5'],
@@ -5600,6 +5629,10 @@ video.media-preview {
 }
 
 @media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .chat-sidebar-resizer {
+    display: none;
+  }
+
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);

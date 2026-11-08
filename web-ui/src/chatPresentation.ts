@@ -106,8 +106,10 @@ export function formatRemaining(timeoutAt?: number): string {
 }
 
 export function isMobile(): boolean {
+  // Keep chat keyboard behavior independent of viewport size and mouse support.
+  // iPadOS can use a Mac user agent; touch points distinguish it from a Mac.
   return (
-    window.matchMedia?.('(max-width: 768px), (max-height: 500px) and (hover: none)').matches ??
-    false
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
   );
 }

@@ -197,6 +197,7 @@ export function Settings() {
   const [workspacePath, setWorkspacePath] = useState('');
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
   const [workspaceToRemove, setWorkspaceToRemove] = useState<RegisteredWorkspace>();
+  const [workspaceRemoveError, setWorkspaceRemoveError] = useState('');
   const [platform, setPlatform] = useState<'discord' | 'slack'>('discord');
   const [channelId, setChannelId] = useState('');
   const [channels, setChannels] = useState<SettingsChannel[]>([]);
@@ -474,8 +475,9 @@ export function Settings() {
   };
 
   const unregisterWorkspace = async () => {
-    if (!workspaceToRemove) return;
+    if (!workspaceToRemove || saving === 'workspace-remove') return;
     setSaving('workspace-remove');
+    setWorkspaceRemoveError('');
     setError('');
     setMessage('');
     try {
@@ -487,7 +489,7 @@ export function Settings() {
       setMessage('Workspaceの登録を解除しました。ディレクトリとファイルは残っています');
       setWorkspaceToRemove(undefined);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setWorkspaceRemoveError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving('');
     }
@@ -618,7 +620,10 @@ export function Settings() {
                               : undefined
                           }
                           deleteLabel="登録解除"
-                          onDelete={() => setWorkspaceToRemove(workspace)}
+                          onDelete={() => {
+                            setWorkspaceRemoveError('');
+                            setWorkspaceToRemove(workspace);
+                          }}
                           onEdit={() => {
                             setEditingWorkspace(workspace);
                             setWorkspaceName(workspace.name);
@@ -1001,8 +1006,13 @@ export function Settings() {
         confirmLabel="登録解除"
         busyLabel="解除中…"
         busy={saving === 'workspace-remove'}
+        error={workspaceRemoveError}
+        variant="danger"
         onCancel={() => {
-          if (saving !== 'workspace-remove') setWorkspaceToRemove(undefined);
+          if (saving !== 'workspace-remove') {
+            setWorkspaceToRemove(undefined);
+            setWorkspaceRemoveError('');
+          }
         }}
         onConfirm={() => void unregisterWorkspace()}
       />

@@ -186,6 +186,143 @@ try {
     false,
     'host module stays unloaded without a contribution'
   );
+  // Observe actual form submissions without sending a message to a backend.
+  await evaluate(
+    `window.fixtureSubmits=0;document.querySelector('.pane-input').form.addEventListener('submit',e=>{e.preventDefault();e.stopImmediatePropagation();window.fixtureSubmits++;},true)`
+  );
+  const desktopUA = await evaluate('navigator.userAgent');
+  const macUA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/26.0 Safari/605.1.15';
+  const iphoneUA =
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1';
+  const ipadUA =
+    'Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1';
+  const androidUA =
+    'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36';
+  for (const device of [
+    { name: 'desktop', width: 1440, touch: false, ua: desktopUA, submits: true },
+    { name: 'narrow desktop', width: 600, touch: false, ua: desktopUA, submits: true },
+    { name: 'touch PC', width: 1180, touch: true, ua: desktopUA, submits: true },
+    { name: 'Mac', width: 1440, touch: false, ua: macUA, submits: true },
+    { name: 'iPhone portrait', width: 390, touch: true, ua: iphoneUA, submits: false },
+    { name: 'iPhone landscape', width: 844, touch: true, ua: iphoneUA, submits: false },
+    { name: 'iPad mobile UA', width: 820, touch: true, ua: ipadUA, submits: false },
+    { name: 'iPad desktop UA', width: 1180, touch: true, ua: macUA, submits: false },
+    { name: 'iPad with mouse', width: 1180, touch: false, points: 5, ua: macUA, submits: false },
+    { name: 'Android', width: 390, touch: true, ua: androidUA, submits: false },
+  ]) {
+    await send('Network.setUserAgentOverride', { userAgent: device.ua });
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: device.width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await send('Emulation.setTouchEmulationEnabled', {
+      enabled: device.touch,
+      ...(device.touch ? { maxTouchPoints: 5 } : {}),
+    });
+    await evaluate(
+      `Object.defineProperty(navigator,'maxTouchPoints',{configurable:true,value:${device.points ?? (device.touch ? 5 : 0)}})`
+    );
+    await evaluate(
+      `(()=>{const t=document.querySelector('.pane-input');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,'first');t.dispatchEvent(new Event('input',{bubbles:true}));t.focus();t.setSelectionRange(5,5);window.fixtureSubmits=0;})()`
+    );
+    await send('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+      text: '\r',
+    });
+    await send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    });
+    assert.equal(
+      await evaluate('window.fixtureSubmits'),
+      Number(device.submits),
+      device.name + ' Enter submission'
+    );
+    assert.equal(await text(), device.submits ? 'first' : 'first\n', device.name + ' Enter text');
+    await send('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+      modifiers: 8,
+      text: '\r',
+    });
+    await send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+      modifiers: 8,
+    });
+    assert.equal(
+      await evaluate('window.fixtureSubmits'),
+      Number(device.submits),
+      device.name + ' Shift+Enter does not submit'
+    );
+    assert.equal(
+      await text(),
+      device.submits ? 'first\n' : 'first\n\n',
+      device.name + ' Shift+Enter text'
+    );
+    const unchanged = await text();
+    for (const modifiers of [2, 4]) {
+      // Ctrl / Cmd
+      const previous = await evaluate('window.fixtureSubmits');
+      await send('Input.dispatchKeyEvent', {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13,
+        modifiers,
+      });
+      await send('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13,
+        modifiers,
+      });
+      assert.equal(
+        await evaluate('window.fixtureSubmits'),
+        previous + 1,
+        device.name + ' modified Enter submits'
+      );
+      assert.equal(await text(), unchanged, device.name + ' submitted text preserved by fixture');
+    }
+    // Synthetic IME flags validate the handler guard; this does not emulate a real IME.
+    for (const ime of [{ isComposing: true }, { keyCode: 229 }]) {
+      const previous = await evaluate('window.fixtureSubmits');
+      for (const modifiers of [{}, { ctrlKey: true }, { metaKey: true }]) {
+        const prevented = await evaluate(
+          `(()=>{const e=new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true,...${JSON.stringify(ime)},...${JSON.stringify(modifiers)}});document.querySelector('.pane-input').dispatchEvent(e);return e.defaultPrevented;})()`
+        );
+        assert.equal(prevented, false, device.name + ' IME confirmation not intercepted');
+      }
+      assert.equal(
+        await evaluate('window.fixtureSubmits'),
+        previous,
+        device.name + ' IME does not submit'
+      );
+    }
+    await evaluate('document.querySelector(".pane-send").click()');
+    assert.equal(
+      await evaluate('window.fixtureSubmits'),
+      Number(device.submits) + 3,
+      device.name + ' send button'
+    );
+  }
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await send('Emulation.clearDeviceMetricsOverride');
+  await send('Network.setUserAgentOverride', { userAgent: desktopUA });
+  await evaluate(`delete navigator.maxTouchPoints`);
   const before = catalogRequests;
   await new Promise((r) => setTimeout(r, 5500));
   assert.equal(catalogRequests, before, 'no catalog polling');
@@ -264,6 +401,7 @@ try {
       {
         ok: true,
         checks: [
+          'Enter, Shift+Enter, Ctrl/Cmd+Enter, IME guards and send button across PC, iPhone, iPad and Android profiles',
           'uninstalled lazy loading',
           'no catalog polling',
           'permission-free canned reply insertion',

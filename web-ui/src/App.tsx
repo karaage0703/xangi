@@ -1,15 +1,27 @@
-import { Chat } from './Chat';
-import { Monitor } from './Monitor';
-import { Schedules } from './Schedules';
-import { Workspace } from './Workspace';
-import { Extensions } from './Extensions';
-import { Settings } from './Settings';
+import { lazy, Suspense } from 'react';
+const Chat = lazy(() => import('./Chat').then((m) => ({ default: m.Chat })));
+const Monitor = lazy(() => import('./Monitor').then((m) => ({ default: m.Monitor })));
+const Schedules = lazy(() => import('./Schedules').then((m) => ({ default: m.Schedules })));
+const Workspace = lazy(() => import('./Workspace').then((m) => ({ default: m.Workspace })));
+const Extensions = lazy(() => import('./Extensions').then((m) => ({ default: m.Extensions })));
+const Settings = lazy(() => import('./Settings').then((m) => ({ default: m.Settings })));
 
 export function App() {
-  if (window.location.pathname.startsWith('/monitor')) return <Monitor />;
-  if (window.location.pathname.startsWith('/schedules')) return <Schedules />;
-  if (window.location.pathname.startsWith('/workspace')) return <Workspace />;
-  if (window.location.pathname.startsWith('/extensions')) return <Extensions />;
-  if (window.location.pathname.startsWith('/settings')) return <Settings />;
-  return <Chat />;
+  const path = window.location.pathname;
+  const Page = path.startsWith('/monitor')
+    ? Monitor
+    : path.startsWith('/schedules')
+      ? Schedules
+      : path.startsWith('/workspace')
+        ? Workspace
+        : path.startsWith('/extensions')
+          ? Extensions
+          : path.startsWith('/settings')
+            ? Settings
+            : Chat;
+  return (
+    <Suspense fallback={<div role="status">読み込み中…</div>}>
+      <Page />
+    </Suspense>
+  );
 }

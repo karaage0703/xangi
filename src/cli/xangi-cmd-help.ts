@@ -434,9 +434,18 @@ export function formatXangiCmdHelp(query?: string): string {
 
   const matches = XANGI_CMD_HELP_ENTRIES.filter((entry) => entry.topic === normalized);
   if (matches.length > 0) {
-    return [`${normalized} commands:`, '', ...matches.map((entry) => `  ${entry.usage}`)].join(
-      '\n'
-    );
+    return [
+      `${normalized} commands:`,
+      '',
+      ...(normalized === 'extension'
+        ? [
+            '  xangi extension list    List linked extensions',
+            '  xangi extension --help  Show extension management commands',
+            '',
+          ]
+        : []),
+      ...matches.map((entry) => `  ${entry.usage}`),
+    ].join('\n');
   }
 
   throw new ValidationError(`Unknown help topic or command: ${query}`);

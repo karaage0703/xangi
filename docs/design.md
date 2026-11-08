@@ -126,6 +126,13 @@ flowchart LR
 `WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。eventsまたはHTTP版inter-instance chatだけを指定したheadless構成でも同じサーバーを起動するが、必要な専用endpoint以外のWeb UI assetとWeb APIは404にする。
 
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
+- 各画面はlazy importで分割する。build assetは非同期読込・有界cache・gzip・表現別ETagで配信し、会話本文や添付にasset cacheを適用しない。
+- 一覧の候補索引はsession/activity変更・transcript directory監視で失効する。取り逃がした外部変更は最大1秒のcache期限後の次回読込で再走査する。JSONLのtitleとMonitor用originはファイルrevision単位でcacheする。索引再構築時の全走査は残る。REST一覧には`Server-Timing: sessions`を付ける。
+- Chatは`transcriptRevision`・messageCount・active状態の変更で対象会話だけ本文を取り直す。同じURLの同時詳細GETは共有するが、結果は各ペインへcloneし、完了後はcacheしない。ストリーム表示は50ms単位（backgroundは250ms）で最新状態へまとめ、終端は即flushする。確定メッセージ行はmemoし、scroll observerをdeltaごとに再作成しない。
+- Monitorは`/api/sessions/stream?mode=changes&updatedSince=<ISO>`を使う。初回・再接続は対象期間のclosedと全openを含む完全な`sessions` snapshot、以後は`session_changes`の`upsert`/`removed`を反映し、通知ごとの全ページ再取得を行わない。従来のページ一覧/SSEも維持する。
+- 受付GETの`after`は直前の`JSON.stringify([state, delivery, updatedAt])`。状態が同じなら最大8秒待ち、永続化後の変更通知で即応答する。HTTP切断は待機だけを解除し、実行は取り消さない。通常送信はこれを使い、通信失敗時だけ1秒待ってreceiptを再確認する。受付の同期flushとrequestIdの冪等性は維持する。ブラウザPerformanceには`xangi.detail-read`・`xangi.send-to-accepted`・`xangi.send-to-settled`を記録する。
+- events SSEの低速接続はdeltaをturnごとの最新値へまとめ、保留イベント64件を超えた接続を切断して復旧へ回す。一覧SSEのdirty snapshot方式は維持する。usage probeは全体のin-flightを共有し、拡張カタログは1秒cacheと変更時失効を持つ。Workspace一覧は最大8並列、Markdownタグは先頭64KiBを読み、大きなfrontmatterのみ従来の全読込へfallbackする。履歴先読みは必要件数だけ末尾読込し、session台帳は同期保存を保ったままcompact JSONにする。
+
 - 指名問い合わせは既定でBearer認証付きHTTPを使い、`INTER_INSTANCE_CHAT_PEERS`から宛先を解決する。受信側は送信元ごとの通常Web sessionを再利用し、transcriptとprovider文脈を永続化する。別instanceの内容はユーザー承認として扱わない
 - 指名問い合わせの受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`で制限できる。未設定または`*`は正しい共有tokenを持つ全instanceを許可する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、共通受付から同じDiscord `contextKey` / appSessionIdを継続する入力の2経路を持つ。共通受付ではAI処理完了後、Webからのユーザー本文・添付を元スレッドへ送り、その後でAI回答・添付を送る。本文先頭の `👤 ユーザー（Web）` と `🤖 AI：エージェント名` で発言者を区別する。エージェント未選択時は作業ディレクトリ名を表示する。Discordの投稿アカウントは接続済みBotのままであり、Webの共有認証から個人名を推測しない。回答者名は実行開始時に確定して受付記録へ保存し、配送の再試行でも保持する。配送失敗が投稿前に確定した場合だけ再試行でき、部分配送・応答消失など結果不明の投稿は重複を避けて自動再送しない。AI処理失敗・中断時にはこの完了時配送を行わない。Slackの共通受付は従来どおり結果だけを配送する。共通受付はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
@@ -142,6 +149,7 @@ flowchart LR
 - Monitorは各agent turnのwall-clock時間を`DATA_DIR/sessions.json`へSession単位で加算し、一覧カードと詳細へ累計処理時間を表示する。`Chat`・`Web`・`Schedule`は独立toggleとし、既定では`Chat`と`Web`だけをONにする。ONの種別を同じtoken・処理時間形式で同時表示する。scheduler Sessionのタイトルは長い実行promptでなくschedule labelを保存し、カード上では長いタイトルを1行へ省略する。導入前のscheduler履歴はSessionの作成から更新までを概算値として明示する
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
+- Session一覧のSSE更新は連続変更を次の`setImmediate`で最新状態へまとめ、同一Project・Agent条件の接続で一覧生成とJSON化を共有する。共有はその通知処理内だけで、初期snapshotは即時送信する。送信待ちの接続は再計算せず、`drain`時に最新状態を生成する
 - `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを作業中・完了の2列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は作業中・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、作業中カードの状態ラベルと色付きドットで示す。カードと詳細から`POST /api/sessions/:id/close`で完了、`POST /api/sessions/:id/reopen`で同じSessionを作業中へ戻せる。個別切替はUndoとPCドラッグに対応し、実行中は完了を拒否する。reopenはAIを起動せず、履歴・provider文脈を保持してactiveByContextを復元し、保存後に変更を通知する。同じcontextに別のアクティブSessionがある場合とscheduler履歴は409で拒否する。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
 
 詳しくは[Monitorの完了・再開操作](usage.md#monitor-card-actions)を参照してください。
@@ -882,6 +890,8 @@ skills/
 ```
 
 先読み結果は引用データ境界でpromptに含め、履歴内の命令文をsystem指示として扱わない。`HISTORY_PREFETCH_ENABLED` と `HISTORY_PREFETCH_COUNT` は3プラットフォーム共通。区間別レイテンシは `logs/turn-latency/<platform>.jsonl` に記録する。
+
+Discordの初期返信と初回履歴の先読みは並行実行し、runnerには履歴が揃ってから渡す。リンク先・スレッド元・返信元の取得も並行実行し、引用の並びは返信元→スレッド元→本文を維持する。リアクションの追加・削除は返信や会話の実行枠を待たせず、追加が遅れた場合も追加完了後に削除する。
 
 既定の`SESSION_TITLE_MODE=ai`では、初回ターンのbackend受付通知後（通知非対応時は最初の本文受信後）、同じbackend・modelへタイトル専用の独立リクエストを開始する。タイトル処理は通常セッションとUserPromptSubmit hookから隔離し、Local LLMではchat modeでツールを無効化する。本編からはawaitしない。成功時はセッション台帳を更新し、Discordスレッドもrenameする。失敗・空出力・timeout時はprefixを正本として維持する。AI生成を使わない場合は`SESSION_TITLE_MODE=prefix`を指定する。
 

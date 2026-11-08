@@ -139,6 +139,7 @@ export function Workspace() {
     [draft]
   );
   const gutterRef = useRef<HTMLPreElement>(null);
+  const displayOptionsRef = useRef<HTMLDetailsElement>(null);
   const resizeStart = useRef({ x: 0, width: sidebarWidth });
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const pendingLocation = useRef<{ line: number; column?: number } | undefined>(undefined);
@@ -282,6 +283,17 @@ export function Workspace() {
   }, [draft, dirty, saveState, selected, workspaceId]);
 
   useEffect(() => {
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const menu = displayOptionsRef.current;
+      if (menu && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false;
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+  }, []);
+
+  useEffect(() => {
     void getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces')
       .then((result) => setWorkspaces(result.workspaces))
       .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
@@ -419,6 +431,7 @@ export function Workspace() {
             </nav>
 
             <details
+              ref={displayOptionsRef}
               className="workspace-display-options"
               onKeyDown={(event) => {
                 if (event.key === 'Escape') {
@@ -427,7 +440,9 @@ export function Workspace() {
                 }
               }}
               onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget))
+                // Safari can leave relatedTarget null when tapping a button.
+                // Keep it visible until click; outside taps close via pointerdown.
+                if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
                   event.currentTarget.open = false;
               }}
             >

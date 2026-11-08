@@ -39,6 +39,7 @@ export function TeamSettings() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<Team>();
+  const [deleteError, setDeleteError] = useState('');
   async function load() {
     setLoading(true);
     setError('');
@@ -92,9 +93,10 @@ export function TeamSettings() {
     }
   }
   async function remove() {
-    if (!deleting) return;
+    if (!deleting || saving) return;
     setSaving(true);
-    setError('');
+    setDeleteError('');
+    setNotice('');
     try {
       await requestJson(`/api/teams/${encodeURIComponent(deleting.id)}`, { method: 'DELETE' });
       setTeams((current) => current.filter((p) => p.id !== deleting.id));
@@ -102,8 +104,7 @@ export function TeamSettings() {
       window.dispatchEvent(new Event('xangi:teams-changed'));
       setNotice('チームを削除しました');
     } catch (e) {
-      setError(String(e));
-      setDeleting(undefined);
+      setDeleteError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
@@ -152,7 +153,10 @@ export function TeamSettings() {
                     .then((r) => setAgents(r.agents || []))
                     .catch((e) => setError(String(e)));
                 }}
-                onDelete={() => setDeleting(p)}
+                onDelete={() => {
+                  setDeleteError('');
+                  setDeleting(p);
+                }}
               >
                 <small>
                   {p.members.length}名 ·{' '}
@@ -312,8 +316,15 @@ export function TeamSettings() {
         description={`${deleting?.name || ''}を削除します。Agent自体は残ります。`}
         confirmLabel="削除"
         busy={saving}
+        error={deleteError}
+        variant="danger"
         onConfirm={() => void remove()}
-        onCancel={() => setDeleting(undefined)}
+        onCancel={() => {
+          if (!saving) {
+            setDeleting(undefined);
+            setDeleteError('');
+          }
+        }}
       />
     </section>
   );

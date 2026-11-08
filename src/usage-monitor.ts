@@ -809,7 +809,17 @@ export async function readClaudeUsage(
   };
 }
 
-export async function readAccountUsage(
+let usageInFlight: Promise<AccountUsageResponse> | undefined;
+export function readAccountUsage(
+  ...args: Parameters<typeof fetchAccountUsage>
+): Promise<AccountUsageResponse> {
+  usageInFlight ??= fetchAccountUsage(...args).finally(() => {
+    usageInFlight = undefined;
+  });
+  return usageInFlight;
+}
+
+async function fetchAccountUsage(
   runner: CommandRunner = runCodexAppServer,
   readers: Array<() => Promise<AccountUsageProvider>> = [
     readCopilotUsage,

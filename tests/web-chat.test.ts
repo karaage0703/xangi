@@ -4858,6 +4858,28 @@ process.stdin.on('end', () => process.exit(0));
     expect(second.messages.map((message) => message.id)).toEqual(['stable-m2', 'stable-m3']);
   });
 
+  it('streams complete monitor membership then changed rows and removals', async () => {
+    const ids = Array.from({ length: 105 }, (_, i) => createSession('web-chat:delta-' + i, { platform: 'web', title: 'row-' + i }));
+    const response = await fetch(`${baseUrl}/api/sessions/stream?mode=changes`);
+    const reader = response.body!.getReader();
+    const decode = async () => new TextDecoder().decode((await reader.read()).value);
+    try {
+      const first = await decode();
+      expect(first).toContain('event: sessions');
+      const snapshot = JSON.parse(first.split('data: ')[1].split('\n')[0]);
+      expect(snapshot.sessions).toHaveLength(105);
+      updateSessionTitle(ids[0], 'changed only');
+      const delta = await decode();
+      expect(delta).toContain('event: session_changes');
+      const changes = JSON.parse(delta.split('data: ')[1].split('\n')[0]);
+      expect(changes.upsert).toHaveLength(1);
+      expect(changes.upsert[0].id).toBe(ids[0]);
+      removeSession(ids[0]);
+      const removed = await decode();
+      expect(JSON.parse(removed.split('data: ')[1].split('\n')[0]).removed).toContain(ids[0]);
+    } finally { await reader.cancel(); }
+  });
+
   it('GET /api/sessions/stream sends an initial snapshot without polling', async () => {
     const id = createSession('web-chat:sse', { platform: 'web', title: 'SSE session' });
     const response = await fetch(`${baseUrl}/api/sessions/stream`);
@@ -4896,6 +4918,79 @@ process.stdin.on('end', () => process.exit(0));
     expect(snapshotText).toContain('event: activity_snapshot');
     expect(snapshotText).toContain('test_tool');
     await reader?.cancel();
+  });
+
+  it('coalesces session update bursts and shares snapshots only across matching stream filters', async () => {
+    const id = createSession('discord:snapshot-burst', { platform: 'discord', title: 'before' });
+    const readers = await Promise.all(
+      ['', '', '?agentId=another-agent'].map(async (query) => {
+        const response = await fetch(`${baseUrl}/api/sessions/stream${query}`);
+        const reader = response.body!.getReader();
+        await reader.read();
+        return reader;
+      })
+    );
+    const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
+    try {
+      for (let i = 0; i < 10; i++) updateSessionTitle(id, `burst-${i}`);
+      const frames = await Promise.all(readers.map(async (reader) => {
+        const chunk = await reader.read();
+        return new TextDecoder().decode(chunk.value);
+      }));
+      expect(frames[0]).toContain('burst-9');
+      expect(frames[0].match(/event: sessions/g)).toHaveLength(1);
+      expect(frames[1]).toBe(frames[0]);
+      expect(frames[2]).not.toContain(id);
+      expect(originSpy).toHaveBeenCalledTimes(1);
+
+      originSpy.mockClear();
+      updateSessionTitle(id, 'next-burst');
+      const next = await readers[0].read();
+      expect(new TextDecoder().decode(next.value)).toContain('next-burst');
+      expect(originSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      originSpy.mockRestore();
+      await Promise.all(readers.map((reader) => reader.cancel()));
+    }
+  });
+
+  it('defers snapshot work for a backpressured stream and sends the latest state on drain', async () => {
+    const id = createSession('discord:slow-snapshot', { platform: 'discord', title: 'before' });
+    const responsePromise = new Promise<import('http').ServerResponse>((resolve) => {
+      webServer.once('request', (_request, response) => resolve(response));
+    });
+    const stream = await fetch(`${baseUrl}/api/sessions/stream`);
+    const response = await responsePromise;
+    const reader = stream.body!.getReader();
+    await reader.read();
+    const write = response.write.bind(response);
+    const writeSpy = vi.spyOn(response, 'write').mockImplementation((...args: Parameters<typeof response.write>) => {
+      write(...args);
+      return false;
+    });
+    const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      updateSessionTitle(id, 'fills-buffer');
+      await flush();
+      await reader.read();
+      expect(originSpy).toHaveBeenCalledTimes(1);
+      originSpy.mockClear();
+      for (let i = 0; i < 3; i++) {
+        updateSessionTitle(id, `blocked-${i}`);
+        await flush();
+      }
+      expect(originSpy).not.toHaveBeenCalled();
+      writeSpy.mockRestore();
+      response.emit('drain');
+      const latest = await reader.read();
+      expect(new TextDecoder().decode(latest.value)).toContain('blocked-2');
+      expect(originSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      writeSpy.mockRestore();
+      originSpy.mockRestore();
+      await reader.cancel();
+    }
   });
 
   it('GET /api/sessions/stream publishes title and message count after chat completion', async () => {
