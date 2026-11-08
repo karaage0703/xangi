@@ -673,6 +673,18 @@ export function updateSessionProject(appSessionId: string, projectId?: string): 
   return true;
 }
 
+export function updateSessionAgentBindingKey(
+  appSessionId: string,
+  agentBindingKey: string
+): boolean {
+  const entry = data.sessions[appSessionId];
+  if (!entry) return false;
+  entry.agentBindingKey = agentBindingKey;
+  entry.updatedAt = new Date().toISOString();
+  saveSessionsToFile();
+  return true;
+}
+
 /** Clear retired agent selections without changing conversation history or project membership. */
 export function clearClosedSessionAgentSelections(agentIds: string[], projectId?: string): void {
   let changed = false;

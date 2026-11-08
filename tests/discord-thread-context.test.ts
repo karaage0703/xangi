@@ -26,9 +26,11 @@ import {
   getSessionEntry,
   updateSessionTitle,
   initSessions,
+  setProviderSessionId,
 } from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
+import { WorkspaceRegistry } from '../src/workspace-registry.js';
 
 let tempDir: string | undefined;
 
@@ -1229,6 +1231,72 @@ describe('Discord remote input bridge', () => {
     );
     if (withAttachment) expect(runStream.mock.calls[0][0]).toContain('[Attachment] /tmp/web-uploads/sample.txt');
     expect(getActiveSessionId(threadId)).toBe(appSessionId);
+  });
+  it('値の無いスレッドの会話はWebからの発言でも親チャンネルに結び付く', async () => {
+    const appSessionId = createSession('T1', { platform: 'discord' });
+    setProviderSessionId(appSessionId, 'P1', 'claude-code', 'claude-opus-5-5');
+    const replyMessage = {
+      id: 'remote-reply-1',
+      edit: vi.fn().mockResolvedValue(undefined),
+      channel: { send: vi.fn().mockResolvedValue(undefined) },
+    };
+    const mirroredMessage = {
+      id: 'remote-source-1',
+      content: '🌐 Webから: 確認して',
+      createdTimestamp: Date.now(),
+      channelId: 'T1',
+      client: null as unknown as Client,
+      author: { id: '999', bot: true, username: 'xangi', displayName: 'xangi' },
+      channel: null as unknown,
+      reply: vi.fn().mockResolvedValue(replyMessage),
+      react: vi.fn().mockResolvedValue(undefined),
+      reactions: { cache: { find: vi.fn().mockReturnValue(undefined) } },
+    } as unknown as Message;
+    const thread = {
+      id: 'T1',
+      name: '既存スレッド',
+      parentId: 'C1',
+      parent: { name: 'dev_xangi' },
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(mirroredMessage),
+    };
+    const client = {
+      user: { id: '999' },
+      on: vi.fn().mockReturnThis(),
+      channels: { fetch: vi.fn().mockResolvedValue(thread) },
+    } as unknown as Client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).client = client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).channel = thread;
+    const agentRunner = {
+      runStream: vi.fn().mockResolvedValue({ result: '確認しました', sessionId: 'P1' }),
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { backend: 'claude-code', config: { skipPermissions: false, workdir: tempDir } },
+      discord: {
+        allowedUsers: ['*'],
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+        completionNotifyAfterMs: 60_000,
+      },
+    } as Config;
+    const workspaceRegistry = await WorkspaceRegistry.open({
+      dataDir: join(tempDir!, 'state'),
+      defaultWorkspacePath: tempDir!,
+    });
+
+    const bridge = registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+      workspaceRegistry,
+    });
+    await bridge.continueSession({ appSessionId, message: '確認して' });
+
+    expect(getSessionEntry(appSessionId)?.agentBindingKey).toBe('C1');
+    expect(getSessionEntry(appSessionId)?.agent?.providerSessionId).toBe('P1');
   });
   it.each([false, true])('AI-names a Web-created thread and preserves manual rename=%s', async (manualRename) => {
     const threadId = 'remote-thread-123';

@@ -12,6 +12,7 @@ import { initSettings, clearSettingsCache } from '../src/settings.js';
 import { executeProjectAgentCommand, executeTeamCommand, executeWorkspaceCommand } from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
+import { ensureSessionWithWorkspace } from '../src/session-workspace.js';
 import {
   appendFileSync,
   readFileSync,
@@ -1533,6 +1534,39 @@ describe('web-chat HTTP API', () => {
     expect(receipt.source).toBe('agent-completion');
     expect(receipt.state).toBe(failure === 'execution-failed' ? 'failed' : 'completed');
     expect(runner.callOrder.filter((key) => key === 'completion-retry')).toHaveLength(1);
+  });
+
+  it('スレッドで受けた子の完了は親チャンネルのモデルで会話を引き継ぐ', async () => {
+    const oldResolve = resolver.resolve;
+    resolver.resolve = (channelId, requestDefault) =>
+      oldResolve(channelId, requestDefault ?? { backend: 'claude-code', model: 'claude-sonnet-4-6' });
+    resolver.setChannelOverride('C1', { backend: 'claude-code', model: 'claude-opus-5-5' });
+    const parentId = createSession('T1', { platform: 'discord' });
+    setProviderSessionId(parentId, 'P1', 'claude-code', 'claude-opus-5-5');
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: vi.fn().mockResolvedValue(['answer']) };
+    await ensureSessionWithWorkspace({
+      registry: await WorkspaceRegistry.open({ dataDir: process.env.DATA_DIR!, defaultWorkspacePath: testDir }),
+      platform: 'discord',
+      contextKey: 'T1',
+      bindingKey: 'C1',
+    });
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+      { channelId: 'T1', platform: 'discord' }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has('T1')).toBe(true));
+
+    const completion = runner.options.at(-1)!;
+    expect(resolver.resolve(completion.settingsChannelId)?.model).toBe('claude-opus-5-5');
+    expect(completion.sessionId).toBe('P1');
+    runner.release('T1');
+    await vi.waitFor(async () => {
+      expect((await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run.parentNotifiedAt).toBeTruthy();
+    });
   });
 
   it('keeps new child results separate from a saved completion awaiting delivery', async () => {
