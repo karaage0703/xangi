@@ -71,7 +71,7 @@ describe('recordToolCallAndCheckLoop', () => {
     updatedAt: 0,
     activeToolNames: new Set(),
     recentToolCallSigs: [],
-    recentNormSigs: [],
+    recentToolLoopEntries: [],
     idempotentResultCache: new Map(),
   });
 

@@ -1925,11 +1925,17 @@ GitHub公式の`copilot`コマンドを別途インストールし、対話画�
 | `LOCAL_LLM_TOOL_SEARCH_ENABLED`         | tool 遅延ロード機能（`tool_search`）を有効化                                 | `true`                                                           |
 | `LOCAL_LLM_TOOL_SEARCH_LIMIT`           | `tool_search` が 1 回で返す最大ツール数                                      | `8`                                                              |
 | `LOCAL_LLM_ALWAYS_LOADED_TOOLS`         | 常駐 tool 名（カンマ区切り）。ここに無い tool は deferred 扱い               | `read,write,edit,exec,glob,grep,send_file,web_fetch,tool_search` |
+| `LOCAL_LLM_LOOP_SIMILAR` | 類似ループ判定（`on` / `off`）。完全一致3連続の判定は常に有効 | `on` |
+| `LOCAL_LLM_LOOP_SIMILAR_THRESHOLD` | 類似度の閾値（0より大きく1以下） | `0.85` |
+| `LOCAL_LLM_LOOP_SIMILAR_MATCH_COUNT` | 遮断までの過去の類似一致数（今回を含まない正の整数） | `2` |
+| `LOCAL_LLM_LOOP_WINDOW` | 類似判定だけの履歴件数（一致数以上、最大1024） | `8` |
 | `EXEC_TIMEOUT_MS`                       | execツールのタイムアウト（ミリ秒）                                           | `120000`                                                         |
 | `WEB_FETCH_TIMEOUT_MS`                  | web_fetchツールのタイムアウト（ミリ秒）                                      | `15000`                                                          |
 | `LOCAL_LLM_READ_MAX_BYTES`              | readツールのファイルサイズ上限（バイト）                                     | `524288`（512KB）                                                |
 | `LOCAL_LLM_READ_JSON_MAX_BYTES`         | readツールでJSONを読むときの上限（バイト）                                   | `5120`（5KB）                                                    |
 | `LOCAL_LLM_WRITE_MAX_BYTES`             | writeツールのコンテンツサイズ上限（バイト）                                  | `524288`（512KB）                                                |
+
+ループ判定の設定はrunner作成時に読み込みます。数値が不正、または履歴件数が一致数未満なら、数値3項目をまとめて既定値へ戻します（`off`の指定は維持）。空値は各項目の既定値を使い、`LOCAL_LLM_LOOP_SIMILAR`は`off`以外なら有効です。同じtool内で比較し、`read`はworkspaceを基準に解決した対象パスの一致だけを数えます。存在するファイルのsymlinkも同じ対象として扱い、パスの数字・大文字小文字を一律に潰しません。異なるファイルの連続readは通ります。`exec`はコマンド全体の類似判定を維持するため、別ファイルへのコマンドが誤検知される場合は`LOCAL_LLM_LOOP_SIMILAR=off`で回避できます。完全一致3連続の保護とwrite/edit成功後の履歴リセットは維持されます。
 
 ローカルのOpenAI互換サーバ（vLLM/SGLang）のハイブリッドQwen3モデルには、`LOCAL_LLM_THINKING`を`chat_template_kwargs.enable_thinking`として送ります。ストリーミング・非ストリーミング共通です。明示した`reasoning_effort`が優先され、`none`なら思考OFF、それ以外ならONになります。チャンネル・呼び出し単位のeffortは環境変数の既定値より優先します。モデル名が`qwen3`で始まる場合（名前空間付きも可）が対象で、`thinking`を含む名前は除外します。任意の別名ではサーバ側の設定が必要です。OpenRouter・Ollama・他モデル系統の挙動は変更しません。思考と回答は同じ出力トークン枠を使うため、ONにする場合は十分な枠で動作を検証してください。
 

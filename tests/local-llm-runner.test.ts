@@ -700,7 +700,7 @@ describe('local-llm runner: cache-aware session compaction', () => {
       updatedAt: Date.now(),
       activeToolNames: new Set(),
       recentToolCallSigs: [],
-      recentNormSigs: [],
+      recentToolLoopEntries: [],
       idempotentResultCache: new Map(),
     };
   }
@@ -1181,7 +1181,7 @@ describe('local-llm runner: idempotent tool cache', () => {
         updatedAt: Date.now(),
         activeToolNames: new Set(),
         recentToolCallSigs: [],
-        recentNormSigs: [],
+        recentToolLoopEntries: [],
         idempotentResultCache: undefined as unknown as Map<string, string>,
       } as import('../src/local-llm/runner.js').Session;
       expect(getCachedIdempotentResult(session, 'sig')).toBeUndefined();
@@ -1198,7 +1198,7 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
       updatedAt: Date.now(),
       activeToolNames: new Set(),
       recentToolCallSigs: [],
-      recentNormSigs: [],
+      recentToolLoopEntries: [],
       idempotentResultCache: new Map(),
     };
   }
@@ -1401,7 +1401,7 @@ describe('local-llm runner: normalized signature + similarity loop detection (PR
 
       expect(recordToolCallAndDetectLoop(session, testSig).kind).toBe('none');
       expect(session.recentToolCallSigs).toEqual([testSig]);
-      expect(session.recentNormSigs).toHaveLength(1);
+      expect(session.recentToolLoopEntries).toHaveLength(1);
     });
 
     it('does not reset the loop window after a read-only tool', async () => {
@@ -1428,7 +1428,7 @@ describe('local-llm runner: compactOldToolResults (Prune)', () => {
       updatedAt: Date.now(),
       activeToolNames: new Set(),
       recentToolCallSigs: [],
-      recentNormSigs: [],
+      recentToolLoopEntries: [],
       idempotentResultCache: new Map(),
     };
   }
