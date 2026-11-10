@@ -48,7 +48,7 @@ describe('view_image', () => {
         updatedAt: Date.now(),
         activeToolNames: new Set(),
         recentToolCallSigs: [],
-        recentNormSigs: [],
+        recentToolLoopEntries: [],
         idempotentResultCache: new Map(),
       };
       const runner = new LocalLlmRunner({ workdir: workspace, model: 'test' });

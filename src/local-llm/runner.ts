@@ -9,6 +9,7 @@ import { ProviderModels } from '../provider-model.js';
  * 外部HTTPサーバー不要。
  */
 import { EventEmitter } from 'events';
+import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import { TimeoutController } from '../timeout-controller.js';
@@ -339,11 +340,10 @@ export interface Session {
    */
   recentToolCallSigs: string[];
   /**
-   * recentToolCallSigs に対応する正規化シグネチャ (normalizeSignature 適用後)。
-   * args 微差を吸収して「同じ意図 / 別 wording」のループを Jaccard 類似度で
-   * 検出するために使う。
+   * Similar-loop history, independently bounded by similarWindow. Tool identity and
+   * read targets remain intact; only other arguments use fuzzy similarity.
    */
-  recentNormSigs: string[];
+  recentToolLoopEntries: ToolLoopEntry[];
   /**
    * 冪等な tool_call (wc -c / base64 / hash / URL encode 等) の結果キャッシュ。
    * 同一シグネチャが args 微差で再呼出されたら exec せずキャッシュ返却。
@@ -472,7 +472,7 @@ function prepareMessagesForCompaction(messages: readonly LLMMessage[]): LLMMessa
     updatedAt: 0,
     activeToolNames: new Set(),
     recentToolCallSigs: [],
-    recentNormSigs: [],
+    recentToolLoopEntries: [],
     idempotentResultCache: new Map(),
   };
   compactOldToolResults(temporarySession, 0);
@@ -557,6 +557,52 @@ const SIMILAR_SIGNATURE_THRESHOLD = 0.85;
  * 値 2 = 過去 2 件以上類似 → 今回で 3 件目 → 発火 (完全一致 3 回と同等の厳しさ)。
  */
 const SIMILAR_LOOP_MATCH_COUNT = 2;
+
+export interface ToolLoopConfig {
+  similarEnabled: boolean;
+  similarThreshold: number;
+  similarMatchCount: number;
+  similarWindow: number;
+}
+
+interface ToolLoopEntry {
+  toolName: string;
+  normSig: string;
+  readPath?: string;
+}
+
+const DEFAULT_TOOL_LOOP_CONFIG: Readonly<ToolLoopConfig> = {
+  similarEnabled: true,
+  similarThreshold: SIMILAR_SIGNATURE_THRESHOLD,
+  similarMatchCount: SIMILAR_LOOP_MATCH_COUNT,
+  similarWindow: RECENT_TOOL_CALL_BUFFER,
+};
+
+/** Read once per runner. Invalid numeric settings fall back together to valid defaults. */
+export function loadToolLoopConfig(env: NodeJS.ProcessEnv = process.env): ToolLoopConfig {
+  const number = (key: string, fallback: number): number => {
+    const raw = env[key]?.trim();
+    if (!raw) return fallback;
+    return /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(raw) ? Number(raw) : NaN;
+  };
+  const similarEnabled = env.LOCAL_LLM_LOOP_SIMILAR?.trim().toLowerCase() !== 'off';
+  const similarThreshold = number('LOCAL_LLM_LOOP_SIMILAR_THRESHOLD', SIMILAR_SIGNATURE_THRESHOLD);
+  const similarMatchCount = number('LOCAL_LLM_LOOP_SIMILAR_MATCH_COUNT', SIMILAR_LOOP_MATCH_COUNT);
+  const similarWindow = number('LOCAL_LLM_LOOP_WINDOW', RECENT_TOOL_CALL_BUFFER);
+  if (
+    !Number.isFinite(similarThreshold) ||
+    similarThreshold <= 0 ||
+    similarThreshold > 1 ||
+    !Number.isSafeInteger(similarMatchCount) ||
+    similarMatchCount < 1 ||
+    !Number.isSafeInteger(similarWindow) ||
+    similarWindow < similarMatchCount ||
+    similarWindow > 1024
+  ) {
+    return { ...DEFAULT_TOOL_LOOP_CONFIG, similarEnabled };
+  }
+  return { similarEnabled, similarThreshold, similarMatchCount, similarWindow };
+}
 
 /**
  * tool_call をシグネチャ文字列に正規化する (順序非依存)。
@@ -686,18 +732,43 @@ export function countSimilarMatches(
   return count;
 }
 
+function toolLoopEntry(sig: string, workspace: string): ToolLoopEntry {
+  const separator = sig.indexOf('::');
+  const toolName = separator < 0 ? '' : sig.slice(0, separator);
+  const entry: ToolLoopEntry = { toolName, normSig: normalizeSignature(sig) };
+  if (toolName === 'read') {
+    try {
+      const args = JSON.parse(sig.slice(separator + 2)) as { path?: unknown } | null;
+      if (typeof args?.path === 'string' && args.path) {
+        const path = resolve(workspace, args.path);
+        entry.readPath = path;
+        try {
+          entry.readPath = realpathSync(path);
+        } catch {
+          // Missing/inaccessible paths still have a stable, case-sensitive lexical identity.
+        }
+      }
+    } catch {
+      // Non-JSON signatures can still use the generic similarity guard.
+    }
+  }
+  return entry;
+}
+
 /**
  * セッションに tool_call シグネチャを記録 + ループ判定。
  *
  * - exact: 完全一致が REPEATED_TOOL_CALL_THRESHOLD (=3) 回連続
- * - similar: 正規化シグネチャの Jaccard 類似度 >= SIMILAR_SIGNATURE_THRESHOLD
- *   なエントリが直近 RECENT_TOOL_CALL_BUFFER 件中 SIMILAR_LOOP_MATCH_COUNT 件以上
+ * - similar: 同じ tool の引数を設定された履歴・閾値で比較する。
+ *   read は正規化で識別情報を失わず、解決した対象パスの一致だけを数える。
  *
  * exact が優先 (完全に同一 args の繰り返しは確実なループ判定)。
  */
 export function recordToolCallAndDetectLoop(
   session: Session,
-  sig: string
+  sig: string,
+  config: Readonly<ToolLoopConfig> = DEFAULT_TOOL_LOOP_CONFIG,
+  workspace: string = process.cwd()
 ): { kind: LoopKind; repeats?: number } {
   // exact 用バッファ更新
   const priorRepeats = countTrailingRepeats(session.recentToolCallSigs, sig);
@@ -710,20 +781,24 @@ export function recordToolCallAndDetectLoop(
     return { kind: 'exact', repeats: priorRepeats + 1 };
   }
 
+  if (!config.similarEnabled) return { kind: 'none' };
+
   // similar 用: 既存バッファ (push 前の履歴) と比較してから今回を push
-  const normSig = normalizeSignature(sig);
-  if (!session.recentNormSigs) session.recentNormSigs = [];
-  const similarPriorCount = countSimilarMatches(
-    session.recentNormSigs,
-    normSig,
-    SIMILAR_SIGNATURE_THRESHOLD
-  );
-  session.recentNormSigs.push(normSig);
-  if (session.recentNormSigs.length > RECENT_TOOL_CALL_BUFFER) {
-    session.recentNormSigs.shift();
+  const entry = toolLoopEntry(sig, workspace);
+  if (!session.recentToolLoopEntries) session.recentToolLoopEntries = [];
+  const similarPriorCount = session.recentToolLoopEntries.filter((prior) => {
+    if (prior.toolName !== entry.toolName) return false;
+    if (entry.readPath !== undefined || prior.readPath !== undefined) {
+      return prior.readPath === entry.readPath;
+    }
+    return jaccardSimilarity(prior.normSig, entry.normSig) >= config.similarThreshold;
+  }).length;
+  session.recentToolLoopEntries.push(entry);
+  if (session.recentToolLoopEntries.length > config.similarWindow) {
+    session.recentToolLoopEntries.shift();
   }
 
-  if (similarPriorCount >= SIMILAR_LOOP_MATCH_COUNT) {
+  if (similarPriorCount >= config.similarMatchCount) {
     // 過去 N 件と類似 (今回含めると N+1 件目)
     return { kind: 'similar', repeats: similarPriorCount + 1 };
   }
@@ -739,7 +814,7 @@ export function recordToolCallAndDetectLoop(
 export function resetToolLoopHistoryAfterMutation(session: Session, toolName: string): void {
   if (toolName !== 'write' && toolName !== 'edit') return;
   session.recentToolCallSigs.length = 0;
-  session.recentNormSigs.length = 0;
+  session.recentToolLoopEntries.length = 0;
 }
 
 /** Shell results depend on mutable files, environment and external processes. Do not cache them. */
@@ -908,6 +983,8 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   readonly contextBudget: ContextBudget;
   /** agentic iteration 上限。undefined はモデルが終了を選ぶまで継続 */
   readonly agentStepLimit: number | undefined;
+  /** Similar-loop overrides resolved once; exact repetition protection is always enabled. */
+  readonly toolLoopConfig: Readonly<ToolLoopConfig>;
   /** 起動時に解決された LocalLlmMode（per-call override がなければこれを使う） */
   readonly startupMode: LocalLlmMode;
   /** 起動時 flags（per-call override がない時のフォールバック） */
@@ -1002,6 +1079,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     // Context budget を env から計算（明示優先、未指定なら NUM_CTX から逆算）
     this.contextBudget = loadContextBudget(env);
     this.agentStepLimit = loadAgentStepLimit(env);
+    this.toolLoopConfig = loadToolLoopConfig(env);
 
     // tool_search 機能の制御
     this.toolSearchEnabled = env.LOCAL_LLM_TOOL_SEARCH_ENABLED !== 'false';
@@ -1734,7 +1812,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       );
       callbacks?.onToolUse?.(toolCall.name, toolCall.arguments);
       const signature = toolCallSignature(toolCall.name, toolCall.arguments);
-      const loop = recordToolCallAndDetectLoop(session, signature);
+      const loop = recordToolCallAndDetectLoop(
+        session,
+        signature,
+        this.toolLoopConfig,
+        this.workdir
+      );
       const startedAt = Date.now();
       let result;
       if (loop.kind !== 'none') {
@@ -2388,7 +2471,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         } else if (safety.safe) {
           // read-only safe → 救済実行
           // loop counter にも積む (rescue が無限ループに化けるのを防ぐ)
-          const loopResult = recordToolCallAndDetectLoop(session, sig);
+          const loopResult = recordToolCallAndDetectLoop(
+            session,
+            sig,
+            this.toolLoopConfig,
+            this.workdir
+          );
           if (loopResult.kind !== 'none') {
             console.warn(
               `[local-llm] Pseudo tool_call rescue blocked by loop detection (${loopResult.kind}): ${sig.slice(0, 200)}`
@@ -2672,7 +2760,7 @@ The tool execution phase is over. Use tool results in the conversation history t
         // 起動時の常駐 tool 名で初期化（per-session 拡張可）
         activeToolNames: new Set(this.defaultActiveToolNames),
         recentToolCallSigs: [],
-        recentNormSigs: [],
+        recentToolLoopEntries: [],
         idempotentResultCache: new Map(),
       };
       this.sessions.set(sessionId, session);
