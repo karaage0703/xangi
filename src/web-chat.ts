@@ -1,3 +1,5 @@
+import { executeWebSelection } from './web-command-selection.js';
+import { parentHistorySnapshot } from './agent-context.js';
 import { serveWebAsset } from './web-assets.js';
 import { RevisionCache } from './revision-cache.js';
 import { sessionExecutionOrigin } from './session-source.js';
@@ -160,9 +162,7 @@ import {
   WEB_SCHEDULE_NEW_SESSION_ID,
 } from './web-schedules.js';
 import type { Skill } from './skills.js';
-import { canSelfRestart, getSelfLifecyclePermission } from './self-lifecycle.js';
 import { processManager } from './process-manager.js';
-import { requestProcessRestart } from './restart-process.js';
 import { executeWebCommand, getWebCommandDefinitions } from './web-slash-commands.js';
 import { WorkspaceBrowser, WorkspaceBrowserError } from './workspace-browser.js';
 import { prependWebProjectPrompt, WebProjectError, normalizeAgentOptions } from './web-projects.js';
@@ -557,6 +557,7 @@ export function startWebChat(options: WebChatOptions) {
       }
     })()
       .then(() => {
+        invalidateSessionSnapshots();
         completionDeliveries.delete(parent);
         const next = agentRuns
           .list()
@@ -581,6 +582,7 @@ export function startWebChat(options: WebChatOptions) {
               error instanceof Error ? error.message : String(error)
             );
         }
+        invalidateSessionSnapshots();
         console.error(`[agent-run] Parent completion delivery failed for ${completed.id}:`, error);
       });
   };
@@ -639,7 +641,25 @@ export function startWebChat(options: WebChatOptions) {
       throw new AgentRunError('Projectが見つかりません', 404);
     const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
     const teamLeaderId = typeof body.teamLeaderId === 'string' ? body.teamLeaderId : undefined;
-    const execution = webProjects.execution(undefined, teamLeaderId || agentId);
+    const parentEntry = parentId ? getSessionEntry(parentId) : undefined;
+    const inheritParent = body.inheritParent === true;
+    if (inheritParent && (!parentEntry || teamLeaderId))
+      throw new AgentRunError('selfには有効な親セッションが必要です', 400);
+    let execution = webProjects.execution(undefined, teamLeaderId || agentId);
+    if (inheritParent && parentEntry) {
+      const source = sessionAgent(parentId!) || parentEntry.selectedAgentConfig;
+      const parentBackend = source
+        ? resolveAgentBackend(options.resolver, source)
+        : options.resolver.resolve(parentEntry.agentBindingKey || parentKey);
+      const sharedPrompt = parentProjectId ? webProjects.get(parentProjectId)?.prompt : undefined;
+      execution = {
+        ...(source || execution!),
+        ...parentBackend,
+        team: undefined,
+        prompt: [sharedPrompt, source?.prompt || execution?.prompt].filter(Boolean).join('\n\n'),
+        workspaceId: parentEntry.workspaceId || execution?.workspaceId || 'default',
+      };
+    }
     if (execution && body.teamSnapshot)
       execution.team = structuredClone(body.teamSnapshot) as NonNullable<typeof execution.team>;
 
@@ -665,7 +685,9 @@ ${delegatedTeam.prompt}`
           : '')
     ).trim() as AgentBackend;
     const defaults =
-      (teamLeaderId || agentId) === DEFAULT_TEAM_AGENT_ID ? options.resolver.resolve() : undefined;
+      !inheritParent && (teamLeaderId || agentId) === DEFAULT_TEAM_AGENT_ID
+        ? options.resolver.resolve()
+        : undefined;
     const modelValue = defaults ? defaults.model : agentId ? execution?.model : body.model;
     const effortValue = defaults ? defaults.effort : agentId ? execution?.effort : body.effort;
     const model = modelValue ? String(modelValue).trim() : undefined;
@@ -695,8 +717,30 @@ ${delegatedTeam.prompt}`
       (message) => new AgentRunError(message, 400)
     );
 
-    const workspace = await resolveWorkspace(agentId ? execution?.workspaceId : body.workspaceId);
+    const workspace =
+      inheritParent &&
+      parentEntry?.workspaceId &&
+      parentEntry.workspacePath &&
+      !body.workspaceOverride &&
+      workspaceRegistry
+        ? await workspaceRegistry.resolveSnapshot(
+            parentEntry.workspaceId,
+            parentEntry.workspacePath
+          )
+        : await resolveWorkspace(
+            inheritParent && typeof body.workspaceOverride === 'string'
+              ? body.workspaceOverride
+              : agentId
+                ? execution?.workspaceId
+                : body.workspaceId
+          );
+    if (inheritParent && execution) execution.workspaceId = workspace.id;
+    const history =
+      inheritParent && body.contextMode === 'history'
+        ? parentHistorySnapshot(workdir, parentId!)
+        : '';
     const appSessionId = createWebSession({
+      secret: inheritParent && parentEntry?.secret === true,
       executionOrigin: sessionExecutionOrigin(parentId ? getSessionEntry(parentId) : undefined),
       parentAppSessionId: parentId,
       projectId,
@@ -709,6 +753,7 @@ ${delegatedTeam.prompt}`
     });
     const run = agentRuns.create({
       task,
+      workPresentation: { assignment: String(body.task || '') },
       backend,
       model,
       effort,
@@ -720,6 +765,10 @@ ${delegatedTeam.prompt}`
       projectId,
       agentId,
       teamId: execution?.team?.id,
+      requestId: typeof body.requestId === 'string' ? body.requestId : undefined,
+      requestSignature:
+        typeof body.requestSignature === 'string' ? body.requestSignature : undefined,
+      contextMode: body.contextMode === 'history' ? 'history' : 'fresh',
       selfDelegation: body.selfDelegation === true,
       teamDelegation: body.teamDelegation as AgentRun['teamDelegation'],
       delegationRootId: body.delegationRootId as string | undefined,
@@ -747,6 +796,7 @@ ${delegatedTeam.prompt}`
           settingsChannelId: contextKey,
           appSessionId,
           platform: 'web' as const,
+          secret: inheritParent && parentEntry?.secret === true,
           defaultBackend: backend,
           defaultModel: model,
           defaultEffort: effort,
@@ -764,7 +814,7 @@ ${delegatedTeam.prompt}`
               run,
               agentRuns,
               agentRunner,
-              `[プラットフォーム: Web]\n${instruction ? instruction + '\n\n' : ''}${prompt}`,
+              `[プラットフォーム: Web]\n${instruction ? instruction + '\n\n' : ''}${history}${prompt}`,
               callbacks,
               nextOptions
             )
@@ -1150,7 +1200,7 @@ ${delegatedTeam.prompt}`
         platform: s.platform,
         scope: s.scope,
         executionOrigin: sessionExecutionOrigin(s),
-        parentAppSessionId: s.parentAppSessionId,
+        parentAppSessionId: s.parentAppSessionId || runBySession.get(s.id)?.parentAppSessionId,
         contextKey: s.contextKey,
         createdAt: s.createdAt,
         updatedAt: activity?.updatedAt
@@ -1164,6 +1214,32 @@ ${delegatedTeam.prompt}`
         isCurrent: isCurrentSession,
         lifecycle,
         agentRunStatus: runBySession.get(s.id)?.status,
+        agentWork: (() => {
+          const run = runBySession.get(s.id);
+          if (!run) return undefined;
+          const parent = run.parentAppSessionId
+            ? getSessionEntry(run.parentAppSessionId)
+            : undefined;
+          const team = parent?.selectedAgentConfig?.team || parent?.selectedAgentConfig;
+          return {
+            runId: run.id,
+            teamId: run.teamId || run.delegationTeam?.id,
+            teamName:
+              run.workPresentation?.teamName ||
+              run.delegationTeam?.name ||
+              (run.teamId ? team?.name : undefined),
+            memberId: run.teamMemberId,
+            assignment: (run.workPresentation?.assignment || run.task).slice(0, 240),
+            delivery:
+              run.delegationRootId || run.teamTurnId
+                ? 'team'
+                : run.parentDeliveryError
+                  ? 'failed'
+                  : run.parentNotifiedAt
+                    ? 'delivered'
+                    : 'pending',
+          };
+        })(),
         closedAt: s.closedAt,
         closeReason: s.closeReason,
         sessionMode:
@@ -1373,6 +1449,8 @@ ${delegatedTeam.prompt}`
 
   const sessionSnapshotListeners = new Set<() => void>();
   const stopWebStreams = new Map<string, () => void>();
+  // Keep the cancellation token alive through workspace/backend preparation and reopen.
+  const legacyChatTurns = new Map<string, AbortController>();
   let sessionSnapshotRefresh: NodeJS.Immediate | undefined;
   let sessionSnapshotPayloads: Map<string, string> | undefined;
   const invalidateSessionSnapshots = () => {
@@ -2437,12 +2515,13 @@ ${delegatedTeam.prompt}`
         const entries = extensionFavorites.entries();
         const ids = entries.map((entry) => entry.id);
         const catalog = ids.length ? await listDevelopmentExtensionCatalog() : undefined;
-        const favorites = entries.map(({ id, displayName }) => {
+        const favorites = entries.map(({ id, displayName, showInSidebar }) => {
           const entry = catalog?.extensions.find((candidate) => candidate.id === id);
           return {
             id,
             displayName: displayName || defaultExtensionName(entry?.displayName || id),
             defaultDisplayName: defaultExtensionName(entry?.displayName || id),
+            showInSidebar: showInSidebar !== false,
             available: Boolean(
               entry?.installed && entry.uiAvailable && entry.healthy && entry.actionsAvailable
             ),
@@ -2457,7 +2536,7 @@ ${delegatedTeam.prompt}`
 
     if (url === '/api/extension-favorites' && req.method === 'POST') {
       await handleExtensionMutation(req, res, async () => {
-        const { id, action, displayName } = parseFavoriteAction(
+        const { id, action, displayName, showInSidebar } = parseFavoriteAction(
           JSON.parse(await readRawBody(req, 4096))
         );
         if (action === 'add') {
@@ -2470,7 +2549,9 @@ ${delegatedTeam.prompt}`
             throw new Error('画面のあるインストール済み拡張を選んでください');
           }
         }
-        sendJson(res, 200, { ids: extensionFavorites.update(id, action, displayName) });
+        sendJson(res, 200, {
+          ids: extensionFavorites.update(id, action, displayName, showInSidebar),
+        });
       });
       return;
     }
@@ -2650,31 +2731,40 @@ ${delegatedTeam.prompt}`
 
     // GET /api/web-commands — Web入力欄の候補と引数ヒント
     if (url === '/api/web-commands' && req.method === 'GET') {
-      const commandUrl = new URL(rawUrl, 'http://localhost');
-      const appSessionId = commandUrl.searchParams.get('appSessionId');
-      const selectedBackend = commandUrl.searchParams.get('backend') as AgentBackend | null;
-      const selectedModel = commandUrl.searchParams.get('model') || undefined;
-      const modelDiscovery =
-        selectedBackend && options.resolver?.isBackendSelectable(selectedBackend)
-          ? await (options.discoverModels ?? discoverBackendModels)(selectedBackend)
-          : undefined;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          commands: getWebCommandDefinitions({
-            appSessionId: appSessionId || undefined,
-            workdir,
-            config: options.config,
-            resolver: options.resolver,
-            selectedBackend: modelDiscovery?.backend,
-            selectedModel,
-            modelDiscovery,
-            discoverModels: options.discoverModels,
-            scheduler: options.scheduler,
-            skillsRef: options.skillsRef,
-          }),
-        })
-      );
+      try {
+        const commandUrl = new URL(rawUrl, 'http://localhost');
+        const appSessionId = commandUrl.searchParams.get('appSessionId');
+        const commandWorkspace = appSessionId
+          ? await resolveSessionWorkspace(appSessionId)
+          : await resolveWorkspace();
+        const selectedBackend = commandUrl.searchParams.get('backend') as AgentBackend | null;
+        const selectedModel = commandUrl.searchParams.get('model') || undefined;
+        const modelDiscovery =
+          selectedBackend && options.resolver?.isBackendSelectable(selectedBackend)
+            ? await (options.discoverModels ?? discoverBackendModels)(selectedBackend)
+            : undefined;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            commands: getWebCommandDefinitions({
+              appSessionId: appSessionId || undefined,
+              workdir: commandWorkspace.path,
+              agents: webProjects.teamAgents(),
+              workspaces: workspaceRegistry?.list(),
+              config: options.config,
+              resolver: options.resolver,
+              selectedBackend: modelDiscovery?.backend,
+              selectedModel,
+              modelDiscovery,
+              discoverModels: options.discoverModels,
+              scheduler: options.scheduler,
+              skillsRef: options.skillsRef,
+            }),
+          })
+        );
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -2696,17 +2786,53 @@ ${delegatedTeam.prompt}`
               commandSession.selectedAgentConfig
             )
           : undefined;
+        if (commandSessionId && !commandSession) throw new Error('会話が見つかりません');
+        const commandWorkspace = commandSessionId
+          ? await resolveSessionWorkspace(commandSessionId)
+          : await resolveWorkspace();
         let result = await executeWebCommand(input, {
           appSessionId: commandSessionId,
-          workdir,
+          workdir: commandWorkspace.path,
+          agentRunner,
           config: options.config,
           resolver: options.resolver,
           backendDefault: projectBackendDefault(commandProject),
           backendDefaultSource: commandProject ? `${commandProject.name} Project設定` : undefined,
           discoverModels: options.discoverModels,
           scheduler: options.scheduler,
-          skillsRef: options.skillsRef,
+          selectionCommand: async (name, args) => {
+            const result = await executeWebSelection(name, args, {
+              appSessionId: commandSessionId,
+              catalog: webProjects,
+              registry: workspaceRegistry,
+              resolveWorkspace,
+              resolveSessionWorkspace,
+              busy: (id) => busySessions.has(id) || conversationBusy(`web-chat:${id}`),
+            });
+            if (result.kind === 'session') invalidateSessionSnapshots();
+            return result;
+          },
         });
+
+        if (
+          result.kind === 'action' &&
+          result.action === 'new' &&
+          commandSession?.platform === 'web'
+        ) {
+          const snapshot = await resolveSessionWorkspace(commandSession.id);
+          const sessionId = createWebSession({
+            projectId: commandSession.projectId,
+            selectedAgentId: commandSession.selectedAgentId,
+            selectedAgentConfig: commandSession.selectedAgentConfig,
+            workspaceId: snapshot.id,
+            workspacePath: snapshot.path,
+          });
+          const override = options.resolver?.getChannelOverride(`web-chat:${commandSession.id}`);
+          if (override)
+            options.resolver?.setChannelOverride(`web-chat:${sessionId}`, { ...override });
+          invalidateSessionSnapshots();
+          result = { kind: 'session', sessionId };
+        }
 
         if (result.kind === 'action' && result.action === 'retitle') {
           if (!commandSessionId || !commandSession || commandSession.platform !== 'web') {
@@ -2742,26 +2868,6 @@ ${delegatedTeam.prompt}`
           updateSessionTitle(commandSessionId, title);
           invalidateSessionSnapshots();
           result = { kind: 'message', message: `会話タイトルを「${title}」へ変更しました。` };
-        }
-
-        if (result.kind === 'action' && result.action === 'restart') {
-          if (!canSelfRestart(getSelfLifecyclePermission())) {
-            res.writeHead(403, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error:
-                  '自己再起動が無効です。XANGI_SELF_LIFECYCLE=restart-only を設定してください。',
-              })
-            );
-            return;
-          }
-          if (body.confirm !== true) {
-            sendJson(res, 200, { ...result, confirmationRequired: true });
-            return;
-          }
-          sendJson(res, 200, { ...result, confirmationRequired: false });
-          requestProcessRestart(250);
-          return;
         }
 
         sendJson(res, 200, result);
@@ -3991,8 +4097,12 @@ ${delegatedTeam.prompt}`
         return;
       }
       conversationService?.cancel(targetId);
-      if (current) agentRunner.destroy?.(entry.contextKey);
-      busySessions.delete(targetId);
+      legacyChatTurns.get(targetId)?.abort(new Error('Request cancelled by user'));
+      if (current) {
+        agentRunner.cancel?.(entry.contextKey);
+        agentRunner.destroy?.(entry.contextKey);
+      }
+      if (!legacyChatTurns.has(targetId)) busySessions.delete(targetId);
       closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
       // closeSession already notifies the session snapshot subscribers.
       sendJson(res, 200, { ok: true, lifecycle: 'closed' });
@@ -4451,6 +4561,8 @@ ${delegatedTeam.prompt}`
           return;
         }
         busySessions.add(appSessionId);
+        const turnController = new AbortController();
+        legacyChatTurns.set(appSessionId, turnController);
 
         try {
           const ctxKey = webContextKey(appSessionId);
@@ -4463,6 +4575,10 @@ ${delegatedTeam.prompt}`
             entry.selectedAgentConfig
           );
           const sessionWorkspace = await resolveSessionWorkspace(appSessionId);
+          if (turnController.signal.aborted) {
+            sendJson(res, 409, { error: 'Session was closed' });
+            return;
+          }
           const backendDefault = projectBackendDefault(project);
           const resolvedBackend = options.resolver?.resolve(ctxKey, backendDefault);
           const providerBackendChanged = Boolean(
@@ -4565,6 +4681,7 @@ ${delegatedTeam.prompt}`
           latency.markInitialReply();
 
           const sendSSE = (event: string, data: unknown) => {
+            if (turnController.signal.aborted) return;
             res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           };
 
@@ -4655,6 +4772,7 @@ ${delegatedTeam.prompt}`
           let aiTitleStarted = false;
           const prefixTitle = truncateSessionTitle(message);
           const startTitleIfNeeded = () => {
+            if (turnController.signal.aborted) return;
             if (aiTitleStarted || options.config?.sessionTitle.mode !== 'ai') return;
             const current = getSessionEntry(appSessionId);
             if (!current || current.title) return;
@@ -4712,6 +4830,7 @@ ${delegatedTeam.prompt}`
                 onStatus: (status) => sendSSE('backend_status', { status }),
                 onTraceEvent: (event) => latency.markTraceEvent(event),
                 onComplete: (completedResult) => {
+                  if (turnController.signal.aborted) return;
                   latency.markAgentComplete();
                   if (resumeSourceId) {
                     clearResumedFromSessionId(appSessionId);
@@ -4731,6 +4850,7 @@ ${delegatedTeam.prompt}`
                 },
               },
               {
+                signal: turnController.signal,
                 sessionId,
                 channelId: ctxKey,
                 appSessionId,
@@ -4745,7 +4865,7 @@ ${delegatedTeam.prompt}`
               }
             );
 
-            if (unregisterStreamFinalizer.isFinalized()) {
+            if (turnController.signal.aborted || unregisterStreamFinalizer.isFinalized()) {
               latency.finish('cancelled');
               return;
             }
@@ -4799,7 +4919,7 @@ ${delegatedTeam.prompt}`
             latency.finish('complete');
           } catch (err) {
             latency.markAgentComplete();
-            if (unregisterStreamFinalizer.isFinalized()) {
+            if (turnController.signal.aborted || unregisterStreamFinalizer.isFinalized()) {
               latency.finish('cancelled');
               return;
             }
@@ -4819,6 +4939,7 @@ ${delegatedTeam.prompt}`
             res.end();
           }
         } finally {
+          legacyChatTurns.delete(appSessionId);
           busySessions.delete(appSessionId);
         }
       } catch (err) {

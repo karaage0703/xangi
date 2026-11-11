@@ -123,7 +123,7 @@ export interface Config {
     respondToBots?: string[];
     /**
      * bot メッセージ応答機能を有効化するか (default: false)。
-     * `/respondtobots` slash command でトグル可能。
+     * `/settings item:respondtobots value:on|off` で設定可能。
      */
     respondToBotsEnabled?: boolean;
     /**
@@ -132,13 +132,13 @@ export interface Config {
      * 別 bot や人間のメッセージが入ったら連鎖はリセットされる。
      */
     respondToBotsMaxConsecutive?: number;
-    /** /respondtobots slash command を有効化するか (default: true) */
+    /** /settings respondtobots を有効化するか (default: true) */
     allowRespondToBotsCommand?: boolean;
-    /** /threadmode slash command を有効化するか (default: true) */
+    /** Discord/Slackの /threadmode slash command を有効化するか (default: true) */
     allowThreadModeCommand?: boolean;
-    /** /llmmode slash command を有効化するか (default: true)。Local LLM 動作モードを per-channel 切替 */
+    /** /settings llmmode を有効化するか (default: true)。Local LLM 動作モードを per-channel 切替 */
     allowLlmModeCommand?: boolean;
-    /** /llmeffort slash command を有効化するか (default: true)。Local LLM reasoning effort を per-channel 切替 */
+    /** /settings llmeffort を有効化するか (default: true)。Local LLM reasoning effort を per-channel 切替 */
     allowLlmEffortCommand?: boolean;
   };
   slack: {

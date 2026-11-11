@@ -12,19 +12,69 @@ export interface UserInputRequest {
   questions: UserQuestion[];
 }
 export type UserInputAnswer = { cancelled: true } | { answers: Record<string, string[]> };
+export type UserInputTimeoutAction = 'reply' | 'stop';
+export type UserInputResult =
+  UserInputAnswer | { cancelled: true; timedOut: true } | { unavailable: true; message?: string };
+export const USER_UNAVAILABLE_NOTICE =
+  '[System notice: no user answer] The user is currently unable to respond. ' +
+  'Continue the already authorized work using available information and clearly state any assumptions. ' +
+  'Do not repeat this question or pause all work waiting for it. ' +
+  'Never treat silence as a selected option, consent, or explicit authorization. ' +
+  'Leave actions requiring explicit authorization pending and continue independent authorized work.';
+
+/** Shared deadline for Web, Discord and Slack. Invalid values retain the default. */
+export function userInputTimeoutMs(): number {
+  const value = Number(process.env.AGENT_USER_INPUT_TIMEOUT_MS);
+  return Number.isInteger(value) && value >= 1000 && value <= 86_400_000 ? value : 600_000;
+}
+export function userInputTimeoutAction(): UserInputTimeoutAction {
+  return process.env.AGENT_USER_INPUT_TIMEOUT_ACTION?.trim().toLowerCase() === 'stop'
+    ? 'stop'
+    : 'reply';
+}
+/** Web settings encode arbitrary multiline text in a single dotenv entry. */
+export function decodeUserInputTimeoutMessage(value: string): string {
+  if (!value.startsWith('json:')) return value;
+  try {
+    const decoded: unknown = JSON.parse(value.slice(5));
+    return typeof decoded === 'string' ? decoded : '';
+  } catch {
+    return '';
+  }
+}
+export function userInputTimeoutMessage(): string {
+  const value = decodeUserInputTimeoutMessage(process.env.AGENT_USER_INPUT_TIMEOUT_MESSAGE || '');
+  return value.trim() && value.length <= 4000 ? value : USER_UNAVAILABLE_NOTICE;
+}
+export function userInputTimeoutNotice(message = USER_UNAVAILABLE_NOTICE): string {
+  if (message === USER_UNAVAILABLE_NOTICE) return message;
+  return (
+    '[System notice: no user answer] Configured automatic timeout reply:\n' +
+    message +
+    '\nThe user has not answered. This automatic reply is not a user selection, consent, or explicit authorization.'
+  );
+}
+export function userInputTimeoutHint(action: UserInputTimeoutAction): string {
+  return action === 'stop' ? '期限後は作業を停止します。' : '期限後は未回答として作業を続けます。';
+}
+export function userInputWaitLabel(expiresAt: number): string {
+  const seconds = Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
+  return seconds % 60 === 0 ? `${seconds / 60}分` : `${seconds}秒`;
+}
 export type UserInputCallback = (
   request: UserInputRequest,
   signal: AbortSignal
-) => Promise<UserInputAnswer>;
+) => Promise<UserInputResult>;
 export interface PendingUserInput extends UserInputRequest {
   id: string;
   expiresAt: number;
+  timeoutAction: UserInputTimeoutAction;
 }
 interface Entry {
   scope: string;
   actor: string;
   request: PendingUserInput;
-  finish: (answer: UserInputAnswer) => void;
+  finish: (answer: UserInputResult) => void;
 }
 const pending = new Map<string, Entry>();
 export const userInputEnabled = () => process.env.AGENT_USER_INPUT !== 'false';
@@ -112,21 +162,31 @@ export async function requestUserInput(
   request: UserInputRequest,
   signal: AbortSignal,
   present: (request: PendingUserInput) => Promise<void>
-): Promise<UserInputAnswer> {
+): Promise<UserInputResult> {
   if (signal.aborted) return { cancelled: true };
   const id = randomUUID();
-  const expiresAt = Date.now() + 10 * 60_000;
-  let finish!: (answer: UserInputAnswer) => void;
-  const result = new Promise<UserInputAnswer>((resolve) => {
+  const expiresAt = Date.now() + userInputTimeoutMs();
+  const timeoutAction = userInputTimeoutAction();
+  const message = userInputTimeoutMessage();
+  let finish!: (answer: UserInputResult) => void;
+  const result = new Promise<UserInputResult>((resolve) => {
     finish = (answer) => {
       pending.delete(id);
       resolve(answer);
     };
   });
   const cancel = () => finish({ cancelled: true });
-  const timer = setTimeout(cancel, expiresAt - Date.now());
+  const timer = setTimeout(
+    () =>
+      finish(
+        timeoutAction === 'stop'
+          ? { cancelled: true, timedOut: true }
+          : { unavailable: true, message }
+      ),
+    expiresAt - Date.now()
+  );
   signal.addEventListener('abort', cancel, { once: true });
-  const entry = { scope, actor, request: { ...request, id, expiresAt }, finish };
+  const entry = { scope, actor, request: { ...request, id, expiresAt, timeoutAction }, finish };
   pending.set(id, entry);
   try {
     await present(entry.request);

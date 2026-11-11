@@ -4,6 +4,7 @@ const paths: Record<string, string> = {
   'xangi-tasks': 'm3 6 2 2 3-4 M11 6h10 M3 13l2 2 3-4 M11 13h10 M3 20h5 M11 20h10',
   'xangi-terminal': 'M3 4h18v16H3z m4 4 4 4-4 4 m6 0h4',
   'xangi-search': 'M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 m5 12 6 6',
+  'xangi-context': 'M8 3h13v13 M3 8h13v13H3z M6 12h7 M6 16h4',
   'xangi-studio': 'M4 3h16v18H4z M8 7h8 M8 11h5 M8 15h8 M8 18h5',
   'xangi-dashboard': 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
   'xangi-stackchan': 'M4 7h16v13H4z M12 7V3 M10 3h4 M8 12h1 M15 12h1 M8 16q4 3 8 0',

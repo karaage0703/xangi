@@ -4,7 +4,7 @@ import { loadConfig } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
 import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
-import { loadSkills } from './skills.js';
+import { loadSkills, loadRegisteredSkillCatalog } from './skills.js';
 import { startSlackBot, isSlackConversationBusy, type SlackRemoteInputBridge } from './slack.js';
 import { listDiscordSettingsChannels, type SettingsChannelListers } from './settings-channels.js';
 import { initSettings, loadSettings } from './settings.js';
@@ -284,7 +284,10 @@ async function main() {
     registerDiscordTimeoutUi(agentRunner);
 
     // スラッシュコマンド定義（基本 + 設定で有効化されるコマンド + スキル個別コマンド）
-    const commands = buildSlashCommands(config, skillsRef.current);
+    const commands = buildSlashCommands(
+      config,
+      await loadRegisteredSkillCatalog(workspaceRegistry)
+    );
 
     // スラッシュコマンド登録
     client.once(Events.ClientReady, async (c) => {
@@ -378,6 +381,7 @@ async function main() {
     platformStartupTasks.push(
       startSlackBot({
         remoteInputRef: slackRemoteInputRef,
+        workspaceRegistry,
         config,
         agentRunner,
         resolver,

@@ -190,7 +190,7 @@ it('requires a complete caller plan and submits the whole batch once',async()=>{
   const assignments=[{agentId:member.id,task:'independent research'}];
   await call({action:'run',team:team.id,task:'background','assignments-json':JSON.stringify(assignments)});
   expect(start).toHaveBeenCalledTimes(1);
-  expect(start).toHaveBeenCalledWith(expect.objectContaining({teamAssignments:assignments,task:'background'}));
+  expect(start).toHaveBeenCalledWith(expect.objectContaining({teamAssignments:assignments.map(a=>({...a,memberId:a.agentId})),task:'background'}));
 });
 
 it('defaults to sixteen combined requests and releases a slot after completion',async()=>{

@@ -23,6 +23,7 @@ const request = normalizeQuestions(
 describe('user input lifecycle', () => {
   it('requires every question and validates cardinality and free text capability', () => {
     expect(() => validateAnswer(request, { answers: {} })).toThrow();
+    expect(() => validateAnswer(request, { unavailable: true })).toThrow();
     expect(() => validateAnswer(request, { answers: { '0': ['A', 'B'] } })).toThrow();
     expect(validateAnswer(request, { answers: { '0': ['custom'] } })).toEqual({
       answers: { '0': ['custom'] },
@@ -73,7 +74,7 @@ describe('user input lifecycle', () => {
         async () => {}
       );
       await vi.advanceTimersByTimeAsync(600_000);
-      expect(await promise).toEqual({ cancelled: true });
+      expect(await promise).toMatchObject({ unavailable: true });
       expect(listUserInputs('web:a', 'web')).toEqual([]);
     } finally {
       vi.useRealTimers();
@@ -105,4 +106,94 @@ it('enables question delivery without configuration and supports explicit opt-ou
     if (previous === undefined) delete process.env.AGENT_USER_INPUT;
     else process.env.AGENT_USER_INPUT = previous;
   }
+});
+
+it('uses the configured deadline and rejects late answers', async () => {
+  vi.useFakeTimers();
+  vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MS', '120000');
+  try {
+    const promise = requestUserInput(
+      'web:deadline',
+      'web',
+      request,
+      new AbortController().signal,
+      async () => {}
+    );
+    const [q] = listUserInputs('web:deadline', 'web');
+    expect(q.expiresAt - Date.now()).toBe(120000);
+    await vi.advanceTimersByTimeAsync(119999);
+    expect(listUserInputs('web:deadline', 'web')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await promise).toMatchObject({ unavailable: true });
+    expect(() =>
+      answerUserInput(q.id, 'web:deadline', 'web', { answers: { '0': ['A'] } })
+    ).toThrow();
+  } finally {
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  }
+});
+
+it.each(['0', '-1', 'NaN', '1000junk', '1.5', '86400001'])(
+  'ignores invalid deadline %s',
+  async (value) => {
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MS', value);
+    const controller = new AbortController();
+    try {
+      const promise = requestUserInput(
+        'web:invalid',
+        'web',
+        request,
+        controller.signal,
+        async () => {}
+      );
+      const [q] = listUserInputs('web:invalid', 'web');
+      expect(q.expiresAt - Date.now()).toBeGreaterThan(599900);
+      controller.abort();
+      expect(await promise).toEqual({ cancelled: true });
+    } finally {
+      controller.abort();
+      vi.unstubAllEnvs();
+    }
+  }
+);
+
+it.each(['stop', 'reply', 'invalid'])(
+  'applies timeout action %s with the selected reply',
+  async (action) => {
+    vi.useFakeTimers();
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MS', '1000');
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_ACTION', action);
+    const message = '今は回答できません。\n既存の調査結果を報告してください。';
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MESSAGE', message);
+    try {
+      const result = requestUserInput(
+        'web:policy',
+        'web',
+        request,
+        new AbortController().signal,
+        async () => {}
+      );
+      expect(listUserInputs('web:policy', 'web')[0]).toMatchObject({
+        timeoutAction: action === 'stop' ? 'stop' : 'reply',
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await result).toEqual(
+        action === 'stop' ? { cancelled: true, timedOut: true } : { unavailable: true, message }
+      );
+      expect(listUserInputs('web:policy', 'web')).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
+  }
+);
+
+it('keeps the default reply for blank or oversized messages', async () => {
+  const { userInputTimeoutMessage, USER_UNAVAILABLE_NOTICE } = await import('../src/user-input.js');
+  for (const value of ['', '   ', 'a'.repeat(4001), 'json:not-valid']) {
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MESSAGE', value);
+    expect(userInputTimeoutMessage()).toBe(USER_UNAVAILABLE_NOTICE);
+  }
+  vi.unstubAllEnvs();
 });

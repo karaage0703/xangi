@@ -1788,6 +1788,7 @@ details.settings-card[open] > summary::before {
 .settings-runtime-grid input,
 .settings-runtime-grid select,
 .settings-startup-control input,
+.settings-startup-control textarea,
 .settings-startup-control select {
   width: 100%;
   min-width: 0;
@@ -2005,6 +2006,15 @@ details.settings-card[open] > summary::before {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.settings-startup-control textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.settings-startup-control textarea + button {
+  align-self: start;
 }
 
 .settings-startup-control button {
@@ -6817,6 +6827,8 @@ video.media-preview {
 }
 .extension-favorite-controls {
   display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: 4px;
   flex-shrink: 0;
 }
@@ -7774,4 +7786,63 @@ video.media-preview {
 }
 .pane-send-queue button {
   margin-left: 8px;
+}
+
+.monitor-card-relations {
+  margin: 0 12px 8px 28px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 6px;
+  color: var(--ink-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.monitor-card-relations > span {
+  display: block;
+}
+.monitor-card-relations button,
+.monitor-card-relations a {
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-align: start;
+  padding: 2px 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.monitor-card-children summary {
+  cursor: pointer;
+  padding-block: 4px;
+}
+.monitor-card-children ul {
+  list-style: none;
+  margin: 3px 0 0;
+  padding-left: 10px;
+}
+.monitor-card-children li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 2px;
+}
+.monitor-card-children li button {
+  min-width: 0;
+}
+.monitor-card-children li span {
+  flex-shrink: 0;
+}
+.monitor-card-relations button:focus-visible,
+.monitor-card-relations a:focus-visible,
+.monitor-card-children summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.monitor-assignment p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

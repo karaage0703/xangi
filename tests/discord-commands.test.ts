@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
@@ -349,7 +349,7 @@ describe('Discord Commands', () => {
   });
 
   describe('buildSlashCommands command limit', () => {
-    it('keeps notify while staying within Discord command limit', () => {
+    it('keeps core and frequently used commands within the Discord command limit', () => {
       const config = {
         discord: {
           allowAutoreplyCommand: true,
@@ -370,8 +370,9 @@ describe('Discord Commands', () => {
 
       expect(commands.length).toBeLessThanOrEqual(100);
       expect(names).toContain('threadmode');
-      expect(names).toContain('notify');
-      expect(names).toContain('llmeffort');
+      expect(names).toContain('help');
+      expect(names).not.toContain('notify');
+      expect(names).not.toContain('llmeffort');
       expect(names).toContain('skill');
       expect(names).toContain('retitle');
       expect(names.filter((name) => name.startsWith('skill-')).length).toBeLessThan(120);
@@ -541,29 +542,13 @@ describe('Discord Commands', () => {
   });
 
   describe('/llmeffort command', () => {
-    it('registers the vLLM-supported reasoning effort choices', () => {
-      const commands = buildSlashCommands(
-        {
-          agent: { allowedBackends: ['local-llm'] },
-          discord: { allowLlmEffortCommand: true },
-        } as Config,
-        []
-      );
-      const command = commands.find((item) => item.name === 'llmeffort') as any;
-      expect(command.options[0].choices.map((choice: any) => choice.value)).toEqual([
-        'status',
-        'default',
-        'none',
-        'minimal',
-        'low',
-        'medium',
-        'high',
-        'xhigh',
-        'max',
-      ]);
+    it('removes the standalone command while keeping settings available', () => {
+      const commands = buildSlashCommands({ discord: { allowLlmEffortCommand: true } } as Config, []);
+      expect(commands.map(command => command.name)).not.toContain('llmeffort');
+      expect(commands.map(command => command.name)).toContain('settings');
     });
 
-    it('stores the setting under the parent channel for a Discord thread', async () => {
+    it('rejects stale standalone command interactions without changing a channel', async () => {
       const reply = vi.fn().mockResolvedValue(undefined);
       const setChannelLocalLlmReasoningEffort = vi.fn();
       const handler = createInteractionHandler({
@@ -595,8 +580,8 @@ describe('Discord Commands', () => {
 
       await handler(interaction as never);
 
-      expect(setChannelLocalLlmReasoningEffort).toHaveBeenCalledWith('parent-123', 'low');
-      expect(reply).toHaveBeenCalledWith(expect.stringContaining('`low`'));
+      expect(setChannelLocalLlmReasoningEffort).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('/help') }));
     });
   });
 
@@ -614,6 +599,28 @@ describe('Discord Commands', () => {
 
       expect(names).not.toContain('skills');
       expect(nameOption.required).toBe(false);
+    });
+
+    it('loads skill candidates from the active workspace snapshot instead of the startup catalog', async () => {
+      const workspace = join(discordCommandsTempDir, 'saved-workspace');
+      mkdirSync(join(workspace, 'skills', 'saved-skill'), { recursive: true });
+      writeFileSync(join(workspace, 'skills', 'saved-skill', 'SKILL.md'), '---\nname: saved-skill\ndescription: Saved skill\n---\n');
+      createSession('thread-skill', { platform: 'discord', workspaceId: 'saved', workspacePath: workspace });
+      const resolveSnapshot = vi.fn().mockResolvedValue({ id: 'saved', name: 'saved', path: workspace });
+      const handler = createInteractionHandler({
+        config: { discord: { allowedUsers: ['user'] } } as Config,
+        resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
+        agentRunner: {} as never, scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [{ name: 'startup-only', description: 'Wrong workspace', path: '/unused' }] },
+        workspaceRegistry: { resolveSnapshot } as never,
+      });
+      const respond = vi.fn();
+      await handler({ isAutocomplete: () => true, commandName: 'skill', channelId: 'thread-skill',
+        channel: { isThread: () => true, parentId: 'parent' }, user: { id: 'user' },
+        options: { getFocused: () => ({ name: 'name', value: '' }), getString: () => null }, respond } as never);
+      expect(resolveSnapshot).toHaveBeenCalledWith('saved', workspace);
+      expect(respond.mock.calls[0][0].map((choice: { value: string }) => choice.value)).toEqual(['saved-skill']);
     });
 
     it('streams progress and exposes History and reply suggestions without leaking markup', async () => {
@@ -658,13 +665,17 @@ describe('Discord Commands', () => {
         },
       } as Config;
 
+      mkdirSync(join(discordCommandsTempDir, 'skills', 'xs-test'), { recursive: true });
+      writeFileSync(join(discordCommandsTempDir, 'skills', 'xs-test', 'SKILL.md'), '---\nname: xs-test\ndescription: Test\n---\n');
       await handleSkillCommand(
         interaction as never,
         agentRunner,
         config,
         'channel-skill-1',
         'channel-skill-1',
-        'xs-test'
+        'xs-test',
+        undefined,
+        discordCommandsTempDir
       );
       await Promise.resolve();
 
@@ -948,25 +959,12 @@ describe('Discord Commands', () => {
     });
   });
 
-  describe('/replysuggestions command registration', () => {
-    it('registers the global on/off/status/default choices', () => {
-      const config = {
-        agent: { allowedBackends: ['claude-code'] },
-        discord: {},
-        slack: {},
-        web: { replySuggestions: true, replySuggestionCount: 3 },
-      } as Config;
-
-      const commands = buildSlashCommands(config, []);
-      const command = commands.find((cmd) => cmd.name === 'replysuggestions') as any;
-      const modeOption = command.options.find((opt: any) => opt.name === 'mode');
-
-      expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
-        'status',
-        'on',
-        'off',
-        'default',
-      ]);
+  describe('retired command registration', () => {
+    it('omits retired commands even when their old feature flags are enabled', () => {
+      const commands = buildSlashCommands({ discord: { allowLlmModeCommand: true, allowLlmEffortCommand: true, allowRespondToBotsCommand: true } } as Config, []);
+      const names = commands.map(command => command.name);
+      for (const name of ['notify', 'replysuggestions', 'respondtobots', 'llmmode', 'llmeffort', 'models', 'restart', 'team']) expect(names).not.toContain(name);
+      expect(names).toContain('settings');
     });
   });
 
@@ -994,28 +992,8 @@ describe('Discord Commands', () => {
       expect(await choices('agent-29')).toEqual([]);
     });
 
-    it('offers live Team choices by name or ID, capped at 25', async () => {
-      const config = { discord: {} } as Config;
-      const command = buildSlashCommands(config, []).find((cmd) => cmd.name === 'team') as any;
-      expect(command.options.find((sub: any) => sub.name === 'show').options[0].autocomplete).toBe(
-        true
-      );
-      const agents = Array.from({ length: 30 }, (_, i) => ({ id: `agent-${i}`, name: `担当${i}` }));
-      const listAgents = vi.fn().mockImplementation(() => agents);
-      const choices = (query: string) =>
-        getDiscordAutocompleteChoices(
-          { commandName: 'team', focusedName: 'id', focusedValue: query },
-          [],
-          {} as BackendResolver,
-          undefined,
-          undefined,
-          listAgents
-        );
-      expect(await choices('')).toHaveLength(25);
-      expect(await choices('担当29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
-      expect(await choices('AGENT-29')).toEqual([{ name: '担当29 (agent-29)', value: 'agent-29' }]);
-      agents.splice(29, 1);
-      expect(await choices('agent-29')).toEqual([]);
+    it('keeps Team management out of the slash command list', () => {
+      expect(buildSlashCommands({ discord: {} } as Config, []).map(command => command.name)).not.toContain('team');
     });
 
     it('registers dynamic autocomplete for backend choices', () => {
@@ -1039,8 +1017,8 @@ describe('Discord Commands', () => {
       expect(typeOption.autocomplete).toBe(true);
       expect(typeOption.choices).toBeUndefined();
 
-      const models = commands.find((cmd) => cmd.name === 'models') as any;
-      const modelsBackend = models.options.find((opt: any) => opt.name === 'backend');
+      const models = backend.options.find((sub: any) => sub.name === 'models');
+      const modelsBackend = models.options.find((opt: any) => opt.name === 'type');
       expect(modelsBackend.required).toBe(false);
       expect(modelsBackend.autocomplete).toBe(true);
       expect(modelsBackend.choices).toBeUndefined();

@@ -242,12 +242,12 @@ it('allows the built-in default without registering an Agent and preserves it af
     id: DEFAULT_TEAM_AGENT_ID,
     workspaceId: 'default',
   });
-  expect(() =>
-    reloaded.saveTeam({ leadership: 'caller', name: '重複', members: [...members, ...members] })
-  ).toThrow('重複');
+  const repeated = reloaded.saveTeam({ leadership: 'caller', name: '重複', members: [...members, ...members] });
+  expect(repeated.members).toHaveLength(2);
+  expect(repeated.members[1].memberId).not.toBe(repeated.members[0].memberId);
 });
 
-it('lists and shows Teams without channel assignment commands', async () => {
+it('keeps Teams in the catalog without registering slash commands', async () => {
   const f = await setup();
   const config = { ...f.config, discord: { allowedUsers: ['user'] } } as Config;
   const handler = createInteractionHandler({
@@ -275,12 +275,12 @@ it('lists and shows Teams without channel assignment commands', async () => {
     } as any);
     return reply.mock.calls[0][0].content as string;
   };
-  expect(await call('list')).toContain(f.team.id);
-  expect(await call('show')).toContain(f.team.name);
-  expect(await call('show', 'unknown')).toContain('見つかりません');
+  expect(await call('list')).toContain('/help');
+  expect(await call('show')).toContain('/help');
+  expect(await call('show', 'unknown')).toContain('/help');
+  expect(f.catalog.teams().some(team => team.id === f.team.id)).toBe(true);
   expect(channelAgent('discord', 'parent')).toBeUndefined();
-  const command = buildSlashCommands(config, []).find((c) => c.name === 'team')!;
-  expect(command.options?.map((o) => o.name)).toEqual(['list', 'show']);
+  expect(buildSlashCommands(config, []).some(c => c.name === 'team')).toBe(false);
   for (const feature of ['runtimeSettings', 'workspaceSwitching', 'backendSwitching']) {
     expect(
       buildSlashCommands({ ...config, features: { [feature]: false } } as Config, []).some(
@@ -438,7 +438,7 @@ it('migrates saved group, channel, session and run metadata without changing use
   expect(() => removeRegisteredTeam(f.team.id, catalog)).toThrow('使用中');
   expect(() => catalog.execution(undefined, `party:${f.team.id}`)).toThrow();
   const commands = buildSlashCommands({ ...f.config, discord: {} } as Config, []);
-  expect(commands.some((c) => c.name === 'team')).toBe(true);
+  expect(commands.some((c) => c.name === 'team')).toBe(false);
   expect(commands.some((c) => c.name === 'party')).toBe(false);
 });
 
@@ -646,7 +646,7 @@ it('persists an optional leader, protects it from deletion, and clears it withou
   f.catalog.saveTeam({ leaderAgentId: leader.id }, f.team.id);
   expect(new ProjectCatalog(root).team(f.team.id)?.leaderAgentId).toBe(leader.id);
   expect(() => f.catalog.removeAgent(leader.id)).toThrow('Teamで使用中');
-  expect(() => f.catalog.saveTeam({ leaderAgentId: f.agents[0].id }, f.team.id)).toThrow('別のAgent');
+  expect(f.catalog.saveTeam({ leaderAgentId: f.agents[0].id }, f.team.id).leaderAgentId).toBe(f.agents[0].id);
   expect(() => f.catalog.saveTeam({ leaderAgentId: 'missing' }, f.team.id)).toThrow('見つかりません');
   expect(() => f.catalog.saveTeam({ leaderAgentId: false }, f.team.id)).toThrow('不正');
   f.catalog.saveTeam({ leaderAgentId: '' }, f.team.id);
@@ -662,4 +662,38 @@ it('uses the current CLI in caller and designated-leader instructions', async ()
   for (const leaderAgentId of [undefined, f.agents[0].id]) {
     expect(teamCallerInstructions({ ...f.team, leaderAgentId })).toContain(`${instanceCliCommand} team --help`);
   }
+});
+
+it('dispatches repeated Agent slots with separate assignments, runs, roles and session parents', async () => {
+  const f = await setup();
+  const agentId = f.agents[0].id;
+  const team = f.catalog.saveTeam({ name: 'self-workers', leaderAgentId: agentId, members: [
+    {memberId:'research',agentId,role:'research'}, {memberId:'review',agentId,role:'review'}
+  ]});
+  const snapshot = f.catalog.teamAgent(team.id)!.team!;
+  snapshot.assignments = [{memberId:'research',task:'unique research task'}, {memberId:'review',task:'unique review task'}];
+  vi.mocked(f.runner.runStream).mockImplementation(async (prompt) => ({ result: prompt.includes('unique research task') ? 'research answer' : 'review answer', sessionId:'provider' }));
+  const parentId = createWebSession({ selectedAgentId: 'team:' + team.id, selectedAgentConfig: { ...f.catalog.teamAgent(team.id)!, team: snapshot } });
+  const result = await runTeamTurn(f.runner,snapshot,'shared context',{}, {channelId:'web-chat:'+parentId,appSessionId:parentId});
+  expect(result.failed).toBe(false);
+  const runs = f.runs.list();
+  expect(runs).toHaveLength(2);
+  expect(new Set(runs.map((r) => r.appSessionId)).size).toBe(2);
+  expect(runs.find((r) => r.teamMemberId === 'research')?.result).toBe('research answer');
+  expect(runs.find((r) => r.teamMemberId === 'review')?.result).toBe('review answer');
+  expect(runs.every((r) => r.parentAppSessionId === parentId)).toBe(true);
+  expect(result.result).toContain('research answer');
+  expect(result.result).toContain('review answer');
+});
+
+it('requires an unambiguous memberId for repeated Agents and rejects duplicate slot IDs', async () => {
+  const { validateTeamAssignments } = await import('../src/teams.js');
+  const f = await setup();
+  const agentId = f.agents[0].id;
+  const team = f.catalog.saveTeam({name:'repeated',members:[{agentId,memberId:'a'},{agentId,memberId:'b'}]});
+  const snapshot = f.catalog.teamAgent(team.id)!.team!;
+  expect(() => validateTeamAssignments(snapshot,[{agentId,task:'ambiguous'}],true)).toThrow('memberId');
+  expect(() => validateTeamAssignments(snapshot,[{memberId:'a',task:'first'},{memberId:'a',task:'second'}])).toThrow();
+  expect(validateTeamAssignments(snapshot,[{memberId:'b',task:'one slot only'}],true)).toEqual([{memberId:'b',agentId,task:'one slot only'}]);
+  expect(() => f.catalog.saveTeam({name:'bad',members:[{agentId,memberId:'a'},{agentId,memberId:'a'}]})).toThrow('担当枠ID');
 });

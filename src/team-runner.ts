@@ -13,6 +13,7 @@ import type {
 } from './agent-runner.js';
 import {
   validateTeamAssignments,
+  teamMemberId,
   DEFAULT_TEAM_CONCURRENCY,
   type TeamMember,
   type TeamSnapshot,
@@ -137,7 +138,9 @@ export async function executeTeamTree(team: TeamSnapshot, execute: Execute): Pro
   const roots = team.members;
   const assignments = validateTeamAssignments(team, team.assignments);
   const results = await Promise.all(
-    roots.map((m) => execute(m, 'work', assignments.find((a) => a.agentId === m.agentId)!.task))
+    roots.map((m) =>
+      execute(m, 'work', assignments.find((a) => a.memberId === teamMemberId(m))!.task)
+    )
   );
   return {
     result: results
@@ -235,7 +238,8 @@ export async function runTeamTurn(
           : undefined;
         const child = createWebSession({
           projectId,
-          title: `Team ${team.name}: ${agent.name} (${phase})`,
+          parentAppSessionId: options.appSessionId,
+          title: `Team ${team.name}: ${agent.name} — ${member.role || teamMemberId(member)}`,
           selectedAgentId: agent.id,
           selectedAgentConfig: {
             ...agent,
@@ -257,6 +261,8 @@ export async function runTeamTurn(
           projectId,
           agentId: agent.id,
           parentContextKey: channel,
+          parentAppSessionId: options.appSessionId,
+          teamMemberId: teamMemberId(member),
           parentPlatform: options.platform,
           delegationRootId: rootId,
           teamId: team.id,
@@ -273,6 +279,7 @@ export async function runTeamTurn(
         callbacks.onToolUse?.('team_member', {
           name: agent.name,
           role: member.role,
+          memberId: teamMemberId(member),
           phase,
           runId: run.id,
           workThread: run.workThread?.url,

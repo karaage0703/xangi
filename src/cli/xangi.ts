@@ -149,7 +149,7 @@ Usage:
   xangi worker <run|start|stop|restart|status|uninstall>
   xangi workspace <list|create|set-path|delete>  作業場所の一覧・登録
   xangi team <create|delete|list|show|run|status|wait|logs|close>  Teamの確認・依頼・結果取得
-  xangi agent <create|list|delete|run|status|wait|logs> [--agent ID --task TEXT] [--id RUN_ID]
+  xangi agent <create|update|list|delete|run|status|wait|logs|close> [--agent ID --task TEXT] [--id RUN_ID]
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
@@ -583,7 +583,7 @@ export async function run(argv = process.argv): Promise<void> {
     } else {
       const args = argv.slice(4);
       if (
-        ['run', 'delete', 'show', 'set-path'].includes(action) &&
+        ['run', 'delete', 'show', 'set-path', 'update'].includes(action) &&
         args[0] &&
         !args[0].startsWith('--')
       )

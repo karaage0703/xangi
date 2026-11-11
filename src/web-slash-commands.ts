@@ -1,3 +1,8 @@
+import { parseSecretCommand } from './secret.js';
+import { tokenizeCommand } from './chat-command-input.js';
+import { executeChatSettings } from './chat-command-settings.js';
+import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
+import type { AgentRunner } from './agent-runner.js';
 import { getSessionEntry } from './sessions.js';
 import { formatModelExecution, latestModelExecution } from './model-execution-display.js';
 import type { AgentBackend, Config, EffortLevel } from './config.js';
@@ -15,237 +20,20 @@ import {
   parseScheduleInput,
   resolveScheduleTimeZone,
 } from './scheduler.js';
-import { loadSettings, formatSettings } from './settings.js';
-import { parseSecretCommand } from './secret.js';
 import { loadSkills, type Skill } from './skills.js';
-import { executeModelsCommand, MODELS_COMMAND_USAGE } from './models-command.js';
+import { executeModelsCommand } from './models-command.js';
 import { discoverBackendModels, type BackendModelDiscovery } from './backend-models.js';
 
-export interface WebCommandDefinition {
-  name: string;
-  description: string;
-  usage: string;
-  category: 'session' | 'skills' | 'settings' | 'system';
-  options?: WebCommandOption[];
-}
-
-export interface WebCommandChoice {
-  name: string;
-  value: string;
-  description?: string;
-}
-
-export interface WebCommandOption {
-  name: string;
-  description: string;
-  type: 'subcommand' | 'string';
-  required?: boolean;
-  choices?: WebCommandChoice[];
-  options?: WebCommandOption[];
-}
-
-export const WEB_COMMANDS: WebCommandDefinition[] = [
-  {
-    name: 'secret',
-    description: '極力ログを残さない会話を開始・終了・確認',
-    usage: '/secret [on|off|status]',
-    category: 'session',
-    options: [
-      {
-        name: 'mode',
-        description: '操作',
-        type: 'string',
-        choices: [
-          { name: 'on', value: 'on' },
-          { name: 'off', value: 'off' },
-          { name: 'status', value: 'status' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'new',
-    description: '新しいセッションを開始',
-    usage: '/new',
-    category: 'session',
-  },
-  {
-    name: 'retitle',
-    description: '現在のWeb会話タイトルをAIで再生成',
-    usage: '/retitle',
-    category: 'session',
-  },
-  {
-    name: 'stop',
-    description: '実行中のタスクを停止',
-    usage: '/stop',
-    category: 'session',
-  },
-  {
-    name: 'extend',
-    description: '実行中タスクの残り時間を延長',
-    usage: '/extend',
-    category: 'session',
-  },
-  {
-    name: 'skill',
-    description: '利用可能なスキルを表示・実行',
-    usage: '/skill [name] [args]',
-    category: 'skills',
-    options: [
-      {
-        name: 'name',
-        description: 'スキル名',
-        type: 'string',
-        required: false,
-      },
-      {
-        name: 'args',
-        description: '引数',
-        type: 'string',
-      },
-    ],
-  },
-  {
-    name: 'settings',
-    description: '現在の設定を表示',
-    usage: '/settings',
-    category: 'settings',
-  },
-  {
-    name: 'models',
-    description: '利用可能なモデル一覧を表示',
-    usage: MODELS_COMMAND_USAGE,
-    category: 'settings',
-    options: [
-      {
-        name: 'backend',
-        description: 'バックエンド（省略時はすべて）',
-        type: 'string',
-      },
-    ],
-  },
-  {
-    name: 'backend',
-    description: 'バックエンド設定を表示・変更',
-    usage: '/backend status|set|reset ...',
-    category: 'settings',
-    options: [
-      {
-        name: 'status',
-        description: '現在のバックエンド設定を表示',
-        type: 'subcommand',
-      },
-      {
-        name: 'set',
-        description: 'バックエンドと任意のモデルを設定',
-        type: 'subcommand',
-        options: [
-          {
-            name: 'type',
-            description: 'バックエンド',
-            type: 'string',
-            required: true,
-          },
-          {
-            name: 'model',
-            description: 'モデル名（任意）',
-            type: 'string',
-          },
-        ],
-      },
-      {
-        name: 'reset',
-        description: 'デフォルトへ戻す',
-        type: 'subcommand',
-      },
-    ],
-  },
-  {
-    name: 'llmmode',
-    description: 'Local LLMモードを表示・変更',
-    usage: '/llmmode status|agent|chat|default',
-    category: 'settings',
-    options: [
-      {
-        name: 'mode',
-        description: 'Local LLMモード',
-        type: 'string',
-        required: true,
-        choices: [
-          { name: '現在の設定を表示', value: 'status' },
-          { name: 'agent（全機能）', value: 'agent' },
-          { name: 'chat（純粋な会話）', value: 'chat' },
-          { name: 'デフォルトへ戻す', value: 'default' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'schedule',
-    description: 'スケジュールを追加・一覧・削除・切替',
-    usage: '/schedule add|list|remove|toggle ...',
-    category: 'settings',
-    options: [
-      {
-        name: 'add',
-        description: 'スケジュールを追加',
-        type: 'subcommand',
-        options: [
-          {
-            name: 'input',
-            description: '例: 30分後 確認する',
-            type: 'string',
-            required: true,
-          },
-        ],
-      },
-      {
-        name: 'list',
-        description: 'スケジュール一覧を表示',
-        type: 'subcommand',
-      },
-      {
-        name: 'remove',
-        description: 'スケジュールを削除',
-        type: 'subcommand',
-        options: [
-          {
-            name: 'id',
-            description: 'スケジュールID',
-            type: 'string',
-            required: true,
-          },
-        ],
-      },
-      {
-        name: 'toggle',
-        description: 'スケジュールの有効/無効を切替',
-        type: 'subcommand',
-        options: [
-          {
-            name: 'id',
-            description: 'スケジュールID',
-            type: 'string',
-            required: true,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'restart',
-    description: 'xangiを再起動',
-    usage: '/restart',
-    category: 'system',
-  },
-  {
-    name: 'help',
-    description: 'コマンド一覧を表示',
-    usage: '/help',
-    category: 'system',
-  },
-];
+import {
+  getChatCommands,
+  commandHelp,
+  skillCommandAliases,
+  skillCommandPrompt,
+} from './chat-commands.js';
+import type { ChatCommandDefinition, ChatCommandOption } from './chat-commands.js';
+export type WebCommandDefinition = ChatCommandDefinition;
+export type WebCommandOption = ChatCommandOption;
+export const WEB_COMMANDS = getChatCommands('web');
 
 export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefinition[] {
   const skills = loadSkills(ctx.workdir);
@@ -282,19 +70,9 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
         }))
       : [];
 
-  const visibleCommands = WEB_COMMANDS.filter((command) => {
-    if (command.name === 'settings' || command.name === 'llmmode') {
-      return ctx.config?.features?.runtimeSettings !== false;
-    }
-    if (command.name === 'models' || command.name === 'backend') {
-      return ctx.config?.features?.backendSwitching !== false;
-    }
-    if (command.name === 'schedule') return ctx.config?.scheduler.enabled !== false;
-    if (command.name === 'restart') return ctx.config?.features?.lifecycle !== false;
-    return true;
-  });
+  const visibleCommands = getChatCommands('web', ctx.config);
 
-  return visibleCommands.map((command) => {
+  const definitions = visibleCommands.map((command) => {
     const copy = structuredClone(command);
     if (copy.name === 'skill' && copy.options?.[0]) {
       copy.options[0].choices = skills.map((skill) => ({
@@ -308,6 +86,7 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
       const backendOption = set?.options?.[0];
       if (backendOption) backendOption.choices = backendChoices;
       if (set && backendOption) {
+        const scope = set.options?.find((option) => option.name === 'scope');
         set.options = [backendOption];
         if (ctx.selectedBackend && ctx.modelDiscovery) {
           set.options.push({
@@ -334,10 +113,36 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
             });
           }
         }
+        if (scope) set.options.push(scope);
       }
     }
-    if (copy.name === 'models' && copy.options?.[0]) {
-      copy.options[0].choices = backendChoices;
+    if (copy.name === 'backend') {
+      const models = copy.options?.find((option) => option.name === 'models');
+      if (models?.options?.[0]) models.options[0].choices = backendChoices;
+      for (const sub of copy.options ?? []) {
+        for (const option of sub.options ?? [])
+          if (option.name === 'scope')
+            option.choices = option.choices?.map((choice) => ({
+              ...choice,
+              value: `--scope=${choice.value}`,
+            }));
+      }
+    }
+    if (copy.name === 'agent') {
+      const set = copy.options?.find((option) => option.name === 'set');
+      if (set?.options?.[0])
+        set.options[0].choices = ctx.agents?.map((agent) => ({
+          name: agent.name,
+          value: agent.id,
+        }));
+    }
+    if (copy.name === 'workspace') {
+      const use = copy.options?.find((option) => option.name === 'use');
+      if (use?.options?.[0])
+        use.options[0].choices = ctx.workspaces?.map((workspace) => ({
+          name: workspace.name,
+          value: workspace.name,
+        }));
     }
     if (copy.name === 'schedule') {
       for (const name of ['remove', 'toggle']) {
@@ -349,47 +154,41 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
     }
     return copy;
   });
+  for (const [name, skill] of skillCommandAliases(skills))
+    definitions.push({
+      name,
+      description: skill.description.slice(0, 100),
+      usage: `/${name} [args]`,
+      category: 'skills',
+      options: [{ name: 'args', description: '引数', type: 'string' }],
+    });
+  return definitions;
 }
 
 export type WebCommandResult =
   | { kind: 'message'; message: string }
   | { kind: 'chat'; message: string; displayMessage: string; skipPermissions?: boolean }
   | { kind: 'skills'; skills: Array<Pick<Skill, 'name' | 'description'>> }
-  | { kind: 'action'; action: 'new' | 'retitle' | 'stop' | 'extend' | 'restart'; message?: string };
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'action'; action: 'new' | 'retitle' | 'stop'; message?: string };
 
 export interface WebCommandContext {
   appSessionId?: string;
   workdir: string;
   config?: Config;
   resolver?: BackendResolver;
+  agentRunner?: AgentRunner;
   backendDefault?: ChannelOverride;
   backendDefaultSource?: string;
   selectedBackend?: AgentBackend;
   selectedModel?: string;
+  agents?: Array<{ id: string; name: string }>;
+  workspaces?: Array<{ id: string; name: string }>;
   modelDiscovery?: BackendModelDiscovery;
   discoverModels?: typeof discoverBackendModels;
   scheduler?: Scheduler;
   skillsRef?: { current: Skill[] };
-}
-
-function tokenize(input: string): string[] {
-  const tokens: string[] = [];
-  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(input))) {
-    tokens.push(match[1] ?? match[2] ?? match[3]);
-  }
-  return tokens;
-}
-
-function commandHelp(): string {
-  return [
-    '## Web Chat コマンド',
-    '',
-    ...WEB_COMMANDS.map((command) => `- \`${command.usage}\` — ${command.description}`),
-    '',
-    '`/` を入力するか、入力欄のコマンドボタンから選択できます。',
-  ].join('\n');
+  selectionCommand?: (name: 'agent' | 'workspace', args: string[]) => Promise<WebCommandResult>;
 }
 
 function requireSession(ctx: WebCommandContext): string {
@@ -409,8 +208,70 @@ function requireScheduler(ctx: WebCommandContext): Scheduler {
 
 async function handleBackend(args: string[], ctx: WebCommandContext): Promise<WebCommandResult> {
   const resolver = requireResolver(ctx);
-  const channelId = requireSession(ctx);
   const subcommand = args[0] || 'status';
+  if (subcommand === 'models') {
+    if (args.length > 2) throw new Error('使い方: /backend models [type]');
+    return {
+      kind: 'message',
+      message: await executeModelsCommand(args[1], resolver, ctx.discoverModels),
+    };
+  }
+  const values: { model?: string; effort?: string; scope?: string } = {};
+  const positional: string[] = [];
+  for (let index = 1; index < args.length; index++) {
+    const token = args[index];
+    if (!token.startsWith('--')) {
+      positional.push(token);
+      continue;
+    }
+    const [key, inline] = token.slice(2).split('=', 2);
+    if (!['model', 'effort', 'scope'].includes(key)) throw new Error(`不明なオプション: --${key}`);
+    const value = inline ?? args[++index];
+    if (!value || value.startsWith('--')) throw new Error(`--${key} の値を指定してください`);
+    values[key as keyof typeof values] = value;
+  }
+  if (values.scope && !['channel', 'global'].includes(values.scope))
+    throw new Error('scope は channel または global を指定してください');
+  if (subcommand === 'set') {
+    if (positional.length < 1 || positional.length > 2)
+      throw new Error(
+        '使い方: /backend set <type> [--model model] [--effort effort] [--scope channel|global]'
+      );
+    if (positional[1] && values.model) throw new Error('モデルは一つだけ指定してください');
+    values.model ??= positional[1];
+  } else if (
+    !['status', 'reset'].includes(subcommand) ||
+    positional.length ||
+    values.model ||
+    values.effort
+  ) {
+    throw new Error('使い方: /backend status|models|set|reset');
+  }
+  if (values.model === 'default') values.model = undefined;
+  if (values.effort === 'default') values.effort = undefined;
+  if (values.scope === 'global') {
+    return {
+      kind: 'message',
+      message: await executeRuntimeSettingsCommand(
+        {
+          name: 'backend',
+          action: subcommand,
+          scope: 'global',
+          platform: 'web',
+          backend: subcommand === 'set' ? positional[0] : undefined,
+          model: values.model,
+          effort: values.effort,
+        },
+        {
+          config: ctx.config,
+          resolver,
+          agentRunner: ctx.agentRunner,
+          modelDiscovery: ctx.discoverModels,
+        }
+      ),
+    };
+  }
+  const channelId = requireSession(ctx);
 
   if (subcommand === 'status') {
     const resolved = resolver.resolve(channelId, ctx.backendDefault);
@@ -447,25 +308,13 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
     throw new Error('使い方: /backend status|set|reset');
   }
 
-  const backend = args[1] as AgentBackend | undefined;
-  if (!backend || !resolver.isBackendSelectable(backend)) {
+  const backend = positional[0] as AgentBackend;
+  if (!resolver.isBackendSelectable(backend))
     throw new Error(
       `利用可能なバックエンドを指定してください: ${resolver.getSelectableBackends().join(', ')}`
     );
-  }
-
-  let model: string | undefined;
-  let effort: EffortLevel | undefined;
-  for (let index = 2; index < args.length; index++) {
-    if (args[index] === '--model') model = args[++index];
-    else if (args[index].startsWith('--model=')) model = args[index].slice('--model='.length);
-    else if (args[index] === '--effort') effort = args[++index] as EffortLevel;
-    else if (args[index].startsWith('--effort=')) {
-      effort = args[index].slice('--effort='.length) as EffortLevel;
-    } else if (!model) model = args[index];
-  }
-  if (model === 'default') model = undefined;
-  if ((effort as string | undefined) === 'default') effort = undefined;
+  const model = values.model;
+  const effort = values.effort as EffortLevel | undefined;
 
   if (effort && !supportsEffort(backend, effort)) {
     throw new Error(
@@ -498,29 +347,6 @@ async function handleBackend(args: string[], ctx: WebCommandContext): Promise<We
     kind: 'message',
     message: `${getBackendDisplayName(backend)}${model ? ` / ${model}` : ''}${effort ? ` / effort=${effort}` : ''} に切り替えました。次の送信から適用されます。`,
   };
-}
-
-function handleLlmMode(args: string[], ctx: WebCommandContext): WebCommandResult {
-  const resolver = requireResolver(ctx);
-  const channelId = requireSession(ctx);
-  const mode = args[0] || 'status';
-  if (mode === 'status') {
-    const resolved = resolver.resolve(channelId, ctx.backendDefault);
-    const startupMode = process.env.LOCAL_LLM_MODE || 'agent';
-    return {
-      kind: 'message',
-      message: `Local LLMモード: \`${resolved.localLlmMode || startupMode}\``,
-    };
-  }
-  if (mode === 'default') {
-    resolver.setChannelLocalLlmMode(channelId, null);
-    return { kind: 'message', message: 'Local LLMモードをデフォルトへ戻しました。' };
-  }
-  if (mode !== 'agent' && mode !== 'chat') {
-    throw new Error('使い方: /llmmode status|agent|chat|default');
-  }
-  resolver.setChannelLocalLlmMode(channelId, mode);
-  return { kind: 'message', message: `Local LLMモードを \`${mode}\` に設定しました。` };
 }
 
 function handleSchedule(args: string[], ctx: WebCommandContext): WebCommandResult {
@@ -589,22 +415,21 @@ export async function executeWebCommand(
   input: string,
   ctx: WebCommandContext
 ): Promise<WebCommandResult> {
-  const tokens = tokenize(input.trim());
+  const tokens = tokenizeCommand(input.trim());
   const commandName = (tokens.shift() || '').replace(/^\//, '').toLowerCase();
 
-  if (!WEB_COMMANDS.some((command) => command.name === commandName)) {
-    throw new Error(`Unknown command: /${commandName}`);
-  }
-
-  if (
-    ((commandName === 'settings' || commandName === 'llmmode') &&
-      ctx.config?.features?.runtimeSettings === false) ||
-    ((commandName === 'models' || commandName === 'backend') &&
-      ctx.config?.features?.backendSwitching === false) ||
-    (commandName === 'schedule' && ctx.config?.scheduler.enabled === false) ||
-    (commandName === 'restart' && ctx.config?.features?.lifecycle === false)
-  ) {
-    throw new Error('この機能は管理者により無効化されています');
+  const definitions = getChatCommands('web', ctx.config);
+  if (!definitions.some((command) => command.name === commandName)) {
+    if (WEB_COMMANDS.some((command) => command.name === commandName))
+      throw new Error('この機能は管理者により無効化されています');
+    const alias = skillCommandAliases(loadSkills(ctx.workdir)).get(commandName);
+    if (alias)
+      return {
+        kind: 'chat',
+        displayMessage: input,
+        message: skillCommandPrompt(alias, tokens.join(' ')),
+      };
+    throw new Error(`Unknown command: /${commandName}. /help で使えるコマンドを確認してください`);
   }
 
   switch (commandName) {
@@ -612,24 +437,31 @@ export async function executeWebCommand(
       if (!parseSecretCommand(input)) throw new Error('使い方: /secret on|off|status');
       return { kind: 'chat', message: input, displayMessage: input };
     case 'help':
-      return { kind: 'message', message: commandHelp() };
+      return { kind: 'message', message: commandHelp('web', ctx.config) };
     case 'new':
     case 'retitle':
     case 'stop':
-    case 'extend':
       return { kind: 'action', action: commandName };
-    case 'restart':
-      return {
-        kind: 'action',
-        action: 'restart',
-        message: 'xangiを再起動します。進行中のWeb応答は中断されます。',
-      };
     case 'settings':
-      return { kind: 'message', message: formatSettings(loadSettings()) };
-    case 'models':
+      if (tokens.length > 2) throw new Error('使い方: /settings [item] [value]');
       return {
         kind: 'message',
-        message: await executeModelsCommand(tokens[0], requireResolver(ctx)),
+        message:
+          (await executeChatSettings(
+            tokens[0],
+            tokens[1],
+            {
+              platform: 'web',
+              channelId: ctx.appSessionId ? `web-chat:${ctx.appSessionId}` : undefined,
+              backendDefault: ctx.backendDefault,
+            },
+            {
+              config: ctx.config,
+              resolver: ctx.resolver!,
+              agentRunner: ctx.agentRunner,
+              modelDiscovery: ctx.discoverModels,
+            }
+          )) + '\n[詳細設定・Team管理を開く](/settings)',
       };
     case 'skill': {
       const skillName = tokens.shift();
@@ -647,13 +479,15 @@ export async function executeWebCommand(
       return {
         kind: 'chat',
         displayMessage: input,
-        message: `Run the skill "${skill.name}". ${args ? `Arguments: ${args}` : ''}`,
+        message: skillCommandPrompt(skill, args),
       };
     }
     case 'backend':
       return await handleBackend(tokens, ctx);
-    case 'llmmode':
-      return handleLlmMode(tokens, ctx);
+    case 'agent':
+    case 'workspace':
+      if (!ctx.selectionCommand) throw new Error('この環境では担当・作業場所を切り替えられません');
+      return ctx.selectionCommand(commandName, tokens);
     case 'schedule':
       return handleSchedule(tokens, ctx);
     default:

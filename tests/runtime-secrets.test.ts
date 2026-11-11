@@ -20,6 +20,7 @@ describe('loadStoredSecrets', () => {
       DISCORD_TOKEN: 'stored-discord',
       DISCORD_ALLOWED_USER: '123456789012345678',
       SLACK_APP_TOKEN: 'stored-slack-app',
+      SLACK_USER_TOKEN: 'xoxp-stored-user',
     });
     const env: NodeJS.ProcessEnv = {
       XDG_CONFIG_HOME: configHome,
@@ -29,10 +30,11 @@ describe('loadStoredSecrets', () => {
     };
 
     expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
-      ['DISCORD_ALLOWED_USER', 'SLACK_APP_TOKEN']
+      ['DISCORD_ALLOWED_USER', 'SLACK_APP_TOKEN', 'SLACK_USER_TOKEN']
     );
     expect(env.DISCORD_TOKEN).toBe('explicit-discord');
     expect(env.DISCORD_ALLOWED_USER).toBe('123456789012345678');
     expect(env.SLACK_APP_TOKEN).toBe('stored-slack-app');
+    expect(env.SLACK_USER_TOKEN).toBe('xoxp-stored-user');
   });
 });

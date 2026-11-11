@@ -105,6 +105,7 @@ function DestinationLink({
 }
 
 export function AppNavigation({ current, moreOpen, onMore, favorites = [] }: AppNavigationProps) {
+  const sidebarFavorites = favorites.filter((favorite) => favorite.showInSidebar !== false);
   const secondaryActive = DESTINATIONS.some(
     (destination) => destination.placement === 'secondary' && destination.id === current
   );
@@ -118,9 +119,9 @@ export function AppNavigation({ current, moreOpen, onMore, favorites = [] }: App
           )
         )}
       </div>
-      {favorites.length > 0 ? (
+      {sidebarFavorites.length > 0 ? (
         <div className="app-navigation-favorites" aria-label="お気に入りの拡張">
-          <FavoriteLinks favorites={favorites} />
+          <FavoriteLinks favorites={sidebarFavorites} />
         </div>
       ) : null}
       <div className="app-navigation-secondary">

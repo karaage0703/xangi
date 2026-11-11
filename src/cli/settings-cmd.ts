@@ -33,6 +33,7 @@ export const SECRET_FIELDS: readonly SecretField[] = [
     type: 'text',
   },
   { name: 'SLACK_BOT_TOKEN', label: 'Botトークン (xoxb-…)', group: 'Slack' },
+  { name: 'SLACK_USER_TOKEN', label: '本人名義投稿用User OAuthトークン（任意）', group: 'Slack' },
   { name: 'SLACK_APP_TOKEN', label: 'Appトークン (xapp-…)', group: 'Slack' },
   {
     name: 'SLACK_ALLOWED_USER',
@@ -262,6 +263,9 @@ function renderSavedPage(count: number): string {
 }
 
 export function validateSettingValue(name: string, value: string): string {
+  if (name === 'SLACK_USER_TOKEN' && !/^(?:xoxp-|xoxe\.xoxp-)/.test(value)) {
+    throw new Error('SLACK_USER_TOKENにはUser OAuthアクセストークンを指定してください');
+  }
   const allowedUserPatterns: Partial<Record<string, RegExp>> = {
     DISCORD_ALLOWED_USER: /^\d{1,20}$/,
     SLACK_ALLOWED_USER: /^[UW][A-Z0-9]+$/,

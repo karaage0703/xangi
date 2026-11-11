@@ -48,5 +48,22 @@ xangi tool inter_chat_config
 - request / responseは64 KiB以下、待機時間は既定300秒
 - `WEB_CHAT_ENABLED=false`でも受信用headless serverは起動する
 
+## 長い調査の受付と結果取得
+
+両インスタンスをこの機能に対応した版へ更新して使う。長い依頼は非同期で受け付け、返された`request_id`を保存する。
+
+```bash
+xangi tool inter_chat_ask --to instance-b --text "調査してください" --async true
+xangi tool inter_chat_status --to instance-b --id <request_id>
+```
+
+- `inter_chat_ask`は`POST /api/inter-chat/submit`で受付し、通常は既定300秒まで状態を照会する。`--async true`なら受付応答をすぐ返す。
+- `inter_chat_status`は認証付き`POST /api/inter-chat/status`で同じ依頼を照会する。状態は`queued`（先行依頼待ち）、`running`、`completed`、`failed`。完了時には回答本文、失敗時にはエラーを返す。
+- 待機終了時は`request_id`、最後に確認した状態、`wait_timed_out`を返す。照会中に通信が途切れた場合もIDと`result_unconfirmed`を返す。待機終了や通信断を実行失敗と扱わず、元のIDで結果を取得する。
+- 受付応答を受け取る前に通信が切れた場合は、エラー内のIDを保存して状態照会する。新しいIDで依頼を送り直すと二重実行になり得る。送信前にUUID v4を用意し、`--id <uuid>`で明示することもできる。
+- 同じ送信元・ID・本文の再送は保存済み状態を返し、再実行しない。同じIDで本文を変えると409。別送信元の依頼は照会できない。
+- 受信側は`DATA_DIR/inter-chat-requests/<request_id>.json`へ状態と回答を保存する。完了結果は再起動後も取得可能。再起動で中断した待機中・実行中の依頼は`failed`として返し、自動再実行しない。保存済みIDの重複抑止は、このファイルが保持されている間に有効。
+- 自動完了通知や自動再試行は行わない。旧`POST /api/inter-chat/ask`は同期応答の互換経路として残り、同じ保存・重複抑止を使う。新経路がない旧受信側へ自動で送信し直すことはしない。
+
 旧共有JSONL transport、`/inter-chat`履歴ビューア、単発送信CLI、auto-talkは削除済み。
 通常会話の`logs/sessions/*.jsonl`は別のSession保存機構であり、変更対象ではない。

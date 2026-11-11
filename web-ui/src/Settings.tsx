@@ -20,9 +20,11 @@ interface StartupSetting {
   key: string;
   label: string;
   description: string;
-  type: 'boolean' | 'integer' | 'number' | 'select' | 'text';
+  type: 'boolean' | 'integer' | 'number' | 'select' | 'text' | 'textarea';
   value: string;
   options?: string[];
+  optionLabels?: Record<string, string>;
+  maxLength?: number;
   min?: number;
   max?: number;
 }
@@ -137,7 +139,7 @@ function StartupField({
     <div className="settings-startup-row">
       <div>
         <label htmlFor={`setting-${setting.key}`}>{setting.label}</label>
-        <p>{setting.description}</p>
+        <p id={`setting-description-${setting.key}`}>{setting.description}</p>
         <code>{setting.key}</code>
       </div>
       <div className="settings-startup-control">
@@ -151,11 +153,23 @@ function StartupField({
             {(setting.type === 'boolean' ? ['true', 'false'] : setting.options || []).map(
               (option) => (
                 <option value={option} key={option}>
-                  {option === 'true' ? 'ON' : option === 'false' ? 'OFF' : option}
+                  {setting.optionLabels?.[option] ??
+                    (option === 'true' ? 'ON' : option === 'false' ? 'OFF' : option)}
                 </option>
               )
             )}
           </select>
+        ) : setting.type === 'textarea' ? (
+          <textarea
+            id={`setting-${setting.key}`}
+            aria-describedby={`setting-description-${setting.key}`}
+            value={value}
+            rows={6}
+            maxLength={setting.maxLength}
+            placeholder="空欄で既定の回答文を使います"
+            onChange={(event) => setValue(event.target.value)}
+            disabled={saving}
+          />
         ) : (
           <input
             id={`setting-${setting.key}`}
@@ -776,25 +790,23 @@ export function Settings() {
                       </select>
                       <small>現在: {channelSettings?.notify?.effective || '—'}</small>
                     </label>
-                    <label>
-                      <span>スレッド返信</span>
-                      <select
-                        value={channelSettings?.threadMode?.value || 'inherit'}
-                        onChange={(event) => void updateChannel('threadmode', event.target.value)}
-                        disabled={
-                          !channelId || channelSettingsLoading || saving === 'channel-threadmode'
-                        }
-                      >
-                        <option value="inherit">起動時設定を継承</option>
-                        <option value="on">ON</option>
-                        <option value="off">OFF</option>
-                      </select>
-                      <small>
-                        現在: {channelSettings?.threadMode?.effective.toUpperCase() || '—'}
-                      </small>
-                    </label>
                   </>
                 ) : null}
+                <label>
+                  <span>スレッド返信</span>
+                  <select
+                    value={channelSettings?.threadMode?.value || 'inherit'}
+                    onChange={(event) => void updateChannel('threadmode', event.target.value)}
+                    disabled={
+                      !channelId || channelSettingsLoading || saving === 'channel-threadmode'
+                    }
+                  >
+                    <option value="inherit">起動時設定を継承</option>
+                    <option value="on">ON</option>
+                    <option value="off">OFF</option>
+                  </select>
+                  <small>現在: {channelSettings?.threadMode?.effective.toUpperCase() || '—'}</small>
+                </label>
               </div>
             </section>
 

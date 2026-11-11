@@ -328,6 +328,12 @@ BackendResolverの優先順位:
 
 `scope:global`の変更はbackend・model・effortを1組として`.env`と`BackendResolver`へ保存し、既定runnerを差し替える。実行中turnが参照する旧runnerは完了まで保持し、新しいturnだけが更新後の設定を使う。backendまたはmodelを明示したchannel overrideはglobal effortを継承せず、そのchannelでeffortも明示した場合だけ適用する。
 
+### Discord・Webの共通コマンド
+
+`chat-commands.ts`をコマンド名・引数・説明・有効条件・helpの正本とし、Discord登録・Webパレット・Slack受付を生成する。共通11種類（`secret on|off|status`を含む）にDiscordの`autoreply` / `threadmode`を追加する。`models`は`backend models`へ統合し、設定の細分化したコマンドは`settings item value`とWeb設定画面へまとめる。`chat-command-settings.ts`は両platformから既存の構造化設定dispatcherへ接続する。`restart` / `team` / `extend`は独立slashとして登録しない。`secret`は既存の非AI制御処理へ接続する。Slackも同じ定義から受付し、独立したスレッド名を持たないため`retitle`だけを除外する。旧models/restart/delete受付は削除し、SlackのthreadmodeはslackThreadModeChannelsへ保存して返信経路に適用する。App側の登録はセットアップ手順で揃える。CLI・Telegram・LINEの既存機能は維持する。
+
+スキルaliasは共通の正規化・予約語・衝突判定を使う。Discord登録時は登録済みWorkspaceのスキルを収集するが、候補・実行は現在の会話のWorkspace snapshotで再検証する。Webの担当・作業場所切替は`web-command-selection.ts`が新規会話を作成し、旧会話を変更しない。Webの`/new`は現在の担当・作業場所とbackend overrideを継承する。
+
 ### システムプロンプト（base-runner.ts）
 
 xangiがAI CLIに注入するシステムプロンプトを管理：
@@ -384,7 +390,7 @@ AGENTS.md / CHARACTER.md / USER.md 等のワークスペース設定は、各AI 
 | github-copilot-cli.ts | GitHub Copilot CLI  | JSONL streaming、session再開、SKIP_PERMISSIONS連動の権限制御                                    |
 | local-llm/runner.ts   | Local LLM           | Ollama等のローカルLLMを直接呼び出し、ツール実行・ストリーミング対応                             |
 
-`backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Slack / Web / Telegram / LINE 共通の読み取り専用 `/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
+`backend-models.ts` はバックエンドごとのモデル一覧取得を共通化する。Codex App Serverの`model/list`、Cursor / Grok / Antigravityの各`models`コマンド、Local LLMのOllama / OpenAI互換endpointだけを利用し、取得機能がないCLIのモデル名は固定リストで補わない。`models-command.ts` が Discord / Webの`/backend models [type]`および既存Slack / Telegram / LINEの読み取り専用`/models [backend]` とAI向け `xangi tool models` を構成する。AIは `--use <model-id>` を指定すると、許可リストと動的取得結果を検証したうえで次のturnのモデルを選択できる。コマンド名は外部・Tool Serverとも `models` に統一する。
 
 設定画面は通常設定・起動設定を接続／認証確認とは独立して読み込み、先に表示する。接続確認中・失敗は接続欄に表示し、その欄だけ再読み込みできる。CLIのバージョン取得はタイムアウト付き非同期プロセスで実行し、確認中もWebサーバーが別のリクエストへ応答できる。
 
@@ -559,11 +565,11 @@ buildSystemPrompt(flags) と llmTools = callFlags.tools ? getAllTools() : []
 
 起動時の個別 env (`LOCAL_LLM_TOOLS=false` 等) は per-call override 時には**無視され**、MODE_DEFAULTS が直接適用される。
 
-**`/llmmode` slash コマンド（index.ts）:**
+**Local LLM mode設定（Discord・Webは`/settings llmmode`）:**
 
 `/llmmode <agent|chat|default|status>` で対話的に per-channel mode を切替。`agent/chat` は `BackendResolver.setChannelLocalLlmMode()` で in-memory + `.env` 永続化。`default` は override 削除。`status` は現在の resolved mode を表示。`ALLOW_LLM_MODE_COMMAND=false` で無効化可能（default `true`）。
 
-**`/llmeffort` slash コマンド:**
+**Local LLM effort設定（Discord・Webは`/settings llmeffort`）:**
 
 `/llmeffort <none|minimal|low|medium|high|xhigh|max|default|status>` は、親チャンネル単位の`localLlmReasoningEffort`をin-memoryと`.env`へ保存する。Local LLM runnerは各chat / streamリクエストへこの値を注入し、`LLMClient`がOpenAI互換bodyのトップレベル`reasoning_effort`へ変換する。`default`はチャンネルoverrideを削除する。
 
@@ -1281,6 +1287,9 @@ Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agen
 
 ### エージェントへの委譲
 
+実行の識別はagentId（設定）、memberId（Team内の担当枠）、runId/appSessionId（仕事・会話）へ分けます。同じ設定の複数枠は独立したsessionで起動し、assignment・結果・ログをmemberIdで照合します。直接依頼の予約と再送判定はrequestId単位、上限は受付中も含みます。selfは親の実効設定とWorkspace snapshotを固定し、履歴コピーは明示時だけxangiの完了済み会話を渡します。モニターのsession projectionへ親・run・Team・担当枠・通知状態を載せ、既存の会話操作と同じ詳細表示へ接続します。
+
+
 `xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、明示許可したTeam・defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdは成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
 
 ### エージェントの実行設定
@@ -1290,7 +1299,7 @@ Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agen
 
 ### 拡張お気に入りの保存
 
-`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ`id`と任意の`displayName`を持つ順序付き配列をatomic renameで保存する。旧形式のID文字列配列も読み込み、次の更新時に新形式で保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動・表示名変更を行う。表示名は80文字以内の1行とし、空欄で標準名に戻す。標準名は先頭の`xangi-`を省略する。アイコンはUI側の小さなSVGを共有し、未定義の拡張には共通アイコンを使う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
+`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ`id`と任意の`displayName`・`showInSidebar`を持つ順序付き配列をatomic renameで保存する。旧形式のID文字列配列も読み込み、次の更新時に新形式で保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動・表示名変更・`set-sidebar`による表示切替を行う。`showInSidebar`は真偽値のみ受け付け、省略時は表示する。非表示でもお気に入り一覧に残り、名前から開ける。表示名は80文字以内の1行とし、空欄で標準名に戻す。標準名は先頭の`xangi-`を省略する。アイコンはUI側の小さなSVGを共有し、未定義の拡張には共通アイコンを使う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
 
 
 ### 外部入力のAgent設定
@@ -1367,6 +1376,8 @@ Discordスレッドの子完了は、通常の発言と同じく、会話に保�
 
 対話の `workspace create` / `agent create --workspace-id` / `team create` はtool-server経由で `project-agent-command.ts` のlive registry/catalogを使う。別writerや設定JSONの直接編集は使わない。Workspaceは既存ディレクトリを登録し、Agent/Teamは画面と同じ正規化と参照検証で保存する。作成は実行を開始せず、子Agentからの設定作成は拒否する。複数設定の作成は個別保存であり、後続失敗時にも先行成功分は保持する。
 
+対話の `agent update ID --name NAME --workspace-id ID` も同じlive catalogで指定項目だけを更新し、Agent ID・指示・AI設定・参照を維持する。登録済みworkspaceを検証し、既存セッションのsnapshotやファイルは変更しない。子Agentからの更新は拒否する。
+
 削除は `team delete` / 既存の `agent delete` / `workspace delete` からlive設定を更新する。Workspaceの使用中検査はWeb APIと共通の `removeRegisteredWorkspace` へ集約し、登録だけを解除してファイルを保持する。Teamは既存の `removeRegisteredTeam` を共有し、CLIでは未完了の実行も拒否する。
 
 設定作成相談では `/api/config` の `instanceCliCommand` を取得してコマンド例へ埋め込む。共通常駐案内も同じ `instance-cli.ts` のshell quote済み絶対パスを使い、PATH上の別checkoutを参照しない。
@@ -1427,9 +1438,9 @@ Even G2はこの仕組みを利用する一例で、`deviceIngress.capability`�
 
 ### Codexの質問回答と共通UI
 
-`StreamCallbacks.onUserInput(request, signal)` がCodexと共通の表示側を接続する。他のバックエンドの質問連携は追加せず、Claude Codeの実行方式も変更しない。`user-input.ts` は質問の正規化、回答の検証、会話・回答者・一回限りのID・最長10分の受付を管理する。外側の実行の終了または停止でAbortSignalを発火し、遅れて届いた回答を破棄する。Codexの`serverRequest/resolved`も受付を終了する。未対応経路には質問コールバックを渡さない。
+`StreamCallbacks.onUserInput(request, signal)` がCodexと共通の表示側を接続する。他のバックエンドの質問連携は追加せず、Claude Codeの実行方式も変更しない。`user-input.ts` は質問の正規化、回答の検証、会話・回答者・一回限りのID・設定可能な期限（`AGENT_USER_INPUT_TIMEOUT_MS`、既定10分、1秒〜24時間）の受付を管理する。不正な設定値は既定値へ戻す。期限切れは `AGENT_USER_INPUT_TIMEOUT_ACTION` の `reply`（既定）/`stop` に従う。replyは内部結果 `unavailable` と回答文、stopは `cancelled` と `timedOut` を返し、利用者のキャンセルやAbortSignalと区別する。動作と回答文は受付開始時に固定する。外側の実行の終了または停止でAbortSignalを発火し、遅れて届いた回答を破棄する。Codexの`serverRequest/resolved`も受付を終了する。未対応経路には質問コールバックを渡さない。
 
-Webは既存HTTP境界内の`GET/POST /api/user-input/:appSessionId`を使用し、実行中のWeb会話だけを1.5秒間隔で確認する。POSTは同一ホスト検査とセッション種別検査を行う。Discordは回答ボタンとモーダル、SlackはBoltのaction/viewハンドラを使用する。各チャットの認証済みユーザーIDと開始時の依頼者を照合する。同期質問は保留中のRPCへ回答する。Codexの非同期質問は`agentMessage`の`delivery: async`と`questions`を受け取り、`turn/steer`で回答する。元のターンが完了済みなら同じthreadで`turn/start`して続行する。フォームと外側の実行は回答まで保持し、会話・ターン照合と項目IDによる重複防止を行う。起動オプションは`AGENT_USER_INPUT`、初期値true。
+Webは既存HTTP境界内の`GET/POST /api/user-input/:appSessionId`を使用し、実行中のWeb会話だけを1.5秒間隔で確認する。POSTは同一ホスト検査とセッション種別検査を行う。Discordは回答ボタンとモーダル、SlackはBoltのaction/viewハンドラを使用する。各チャットの認証済みユーザーIDと開始時の依頼者を照合する。同期質問は保留中のRPCへ回答する。Codexの非同期質問は`agentMessage`の`delivery: async`と`questions`を受け取り、`turn/steer`で回答する。元のターンが完了済みなら同じthreadで`turn/start`して続行する。フォームと外側の実行は回答まで保持し、会話・ターン照合と項目IDによる重複防止を行う。起動オプションは`AGENT_USER_INPUT`、初期値true。replyの期限切れでは作業全体をcancelせず、ユーザーが回答できない状況というシステム通知を同期RPCの応答または非同期のsteer/startへ渡す。選択肢を自動選択せず、承認を作らず、仮定を示して許可済み作業を続けるよう指示する。 `AGENT_USER_INPUT_TIMEOUT_MESSAGE` の自由文は4000文字以内。Web起動時設定ではtextareaを使い、単一引用符で囲んだタグ付きJSON文字列として.envの1行へ保存する。改行・引用符・Unicode行区切りをエスケープし、snapshotと実行時に復元する。空欄・不正なメッセージは既定文を使う。独自文も自動応答であり本人の承認ではない旨の通知で囲む。
 
 
 ### Webと元チャットで共有する受付・実行

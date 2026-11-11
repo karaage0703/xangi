@@ -47,6 +47,23 @@ xangi tool inter_chat_config
 - Request and response bodies are limited to 64 KiB; the default timeout is 300 seconds.
 - A headless receiver starts even when `WEB_CHAT_ENABLED=false`.
 
+## Receipts and results for long tasks
+
+Both instances must run a version supporting this feature. Submit long tasks asynchronously and keep the returned `request_id`.
+
+```bash
+xangi tool inter_chat_ask --to instance-b --text "Investigate this" --async true
+xangi tool inter_chat_status --to instance-b --id <request_id>
+```
+
+- `inter_chat_ask` submits through `POST /api/inter-chat/submit`, then polls for up to 300 seconds by default. `--async true` returns the receipt immediately.
+- `inter_chat_status` uses authenticated `POST /api/inter-chat/status`. States are `queued` (waiting for a preceding task), `running`, `completed`, and `failed`. Completed records include the answer; failed records include an error.
+- Waiting expiry returns the ID, last observed state, and `wait_timed_out`. A polling transport error returns the ID and `result_unconfirmed`. Neither means execution failed: retrieve the original ID.
+- If submission loses its response, keep the ID in the error and query its status. Sending a new ID could execute the task twice. You can also generate a UUID v4 before submission and supply `--id <uuid>`.
+- Reusing the same sender, ID, and task returns the existing state without executing again. A different task with the same ID returns 409. Another sender cannot retrieve the record.
+- The receiver saves state and answers in `DATA_DIR/inter-chat-requests/<request_id>.json`. Completed results survive restarts. Queued/running records interrupted by restart become `failed` without automatic retry. Deduplication lasts while the saved record is retained.
+- Automatic completion notifications and retries are outside this feature. Legacy `POST /api/inter-chat/ask` remains synchronous with the same storage and deduplication. There is no automatic resend to an older receiver without the new endpoints.
+
 The former shared-JSONL transport, `/inter-chat` viewer, one-way commands, and auto-talk have been
 removed. Regular `logs/sessions/*.jsonl` files belong to the separate Session storage mechanism and
 are unaffected.

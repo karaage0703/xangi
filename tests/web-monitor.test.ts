@@ -661,3 +661,37 @@ it('distinguishes completed child results awaiting review from active work and c
   expect(stateLabel({ ...child, lifecycle: 'closed' })).toBe('完了');
   expect(stateLabel({ ...child, isActive: true })).not.toBe('結果確認待ち');
 });
+
+it('keeps distinct child runs, Team batches and parents outside the display window', async () => {
+  const { monitorWorkGroups } = await import('../web-ui/src/Monitor.js');
+  const groups = monitorWorkGroups([
+    {id:'parent',title:'router'},
+    {id:'batch',parentAppSessionId:'parent',agentWork:{runId:'r1',teamId:'t',teamName:'builders'}},
+    {id:'worker1',parentAppSessionId:'batch',agentWork:{runId:'r2',memberId:'research'}},
+    {id:'worker2',parentAppSessionId:'batch',agentWork:{runId:'r3',memberId:'review'}},
+    {id:'orphan',parentAppSessionId:'outside'},
+  ]);
+  expect(groups.map((g) => [g.parentId,g.children.map((c) => c.id)])).toEqual([
+    ['parent',['batch']], ['batch',['worker1','worker2']], ['outside',['orphan']]
+  ]);
+  expect(groups[0].parent?.title).toBe('router');
+  expect(groups[2].parent).toBeUndefined();
+});
+
+it('summarizes child lifecycle in existing cards without treating completed children as pending', async () => {
+  const { monitorChildSummary } = await import('../web-ui/src/Monitor.js');
+  expect(monitorChildSummary([
+    {id:'queued',lifecycle:'open',agentRunStatus:'queued'},
+    {id:'review',lifecycle:'open',agentRunStatus:'succeeded'},
+    {id:'done',lifecycle:'closed',agentRunStatus:'succeeded'},
+    {id:'idle',lifecycle:'open'},
+  ])).toBe('子の作業 4件 / 実行・待機 1件 / 結果確認待ち 1件 / 完了 1件 / 入力待ち 1件');
+  expect(monitorChildSummary([{id:'done',lifecycle:'closed',agentRunStatus:'succeeded'}])).toBe('子の作業 1件 / 完了 1件');
+});
+
+it('uses child run status for the card summary when activity has no summary', () => {
+  expect(sessionLine({id:'child',lifecycle:'open',agentRunStatus:'queued'})).toBe('子の作業の開始を待っています');
+  expect(sessionLine({id:'child',lifecycle:'open',agentRunStatus:'running'})).toBe('子の作業を実行中');
+  expect(sessionLine({id:'child',lifecycle:'open',agentRunStatus:'succeeded'})).toContain('結果確認待ち');
+  expect(sessionLine({id:'child',lifecycle:'closed',agentRunStatus:'succeeded'})).toBe('完了: 現在の処理なし');
+});

@@ -103,6 +103,15 @@ export interface MonitorSession {
   isActive?: boolean;
   isCurrent?: boolean;
   lifecycle?: 'open' | 'closed';
+  parentAppSessionId?: string;
+  agentWork?: {
+    runId: string;
+    teamId?: string;
+    teamName?: string;
+    memberId?: string;
+    assignment?: string;
+    delivery?: 'team' | 'failed' | 'delivered' | 'pending';
+  };
   agentRunStatus?: 'queued' | 'running' | 'succeeded' | 'failed';
   sessionMode?: 'stateful' | 'stateless';
   closedAt?: string;
@@ -124,6 +133,99 @@ export interface MonitorSession {
       status: 'pending' | 'in_progress' | 'completed';
     }>;
   };
+}
+
+export interface MonitorWorkGroup {
+  parentId: string;
+  parent?: MonitorSession;
+  children: MonitorSession[];
+}
+/** Group by the actual parent session, retaining orphans and distinct runs of the same agent. */
+export function monitorWorkGroups(sessions: MonitorSession[]): MonitorWorkGroup[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const groups = new Map<string, MonitorWorkGroup>();
+  for (const child of sessions) {
+    const parentId = child.parentAppSessionId;
+    if (!parentId || parentId === child.id) continue;
+    let group = groups.get(parentId);
+    if (!group) {
+      group = { parentId, parent: byId.get(parentId), children: [] };
+      groups.set(parentId, group);
+    }
+    group.children.push(child);
+  }
+  return [...groups.values()];
+}
+
+export function monitorChildSummary(children: MonitorSession[]): string {
+  const running = children.filter((s) => monitorLane(s) === 'working' && isRunning(s)).length;
+  const completed = children.filter((s) => monitorLane(s) === 'completed').length;
+  const review = children.filter(
+    (s) =>
+      s.lifecycle === 'open' &&
+      !isRunning(s) &&
+      (s.agentRunStatus === 'succeeded' || s.agentRunStatus === 'failed')
+  ).length;
+  const waiting = children.length - running - completed - review;
+  return [
+    `子の作業 ${children.length}件`,
+    running ? `実行・待機 ${running}件` : '',
+    review ? `結果確認待ち ${review}件` : '',
+    completed ? `完了 ${completed}件` : '',
+    waiting ? `入力待ち ${waiting}件` : '',
+  ]
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function MonitorRelations({
+  session,
+  parent,
+  children,
+  onSelect,
+}: {
+  session: MonitorSession;
+  parent?: MonitorSession;
+  children: MonitorSession[];
+  onSelect: (id: string) => void;
+}) {
+  if (!session.parentAppSessionId && !session.agentWork && !children.length) return null;
+  return (
+    <div className="monitor-card-relations" aria-label="親子の作業">
+      {session.agentWork?.teamName && (
+        <span className="monitor-card-team">Team: {session.agentWork.teamName}</span>
+      )}
+      {session.parentAppSessionId && (
+        <div className="monitor-card-parent">
+          <span>子の作業 / 親: </span>
+          {parent ? (
+            <button type="button" onClick={() => onSelect(parent.id)}>
+              {parent.title || parent.id}
+            </button>
+          ) : (
+            <a href={sessionPath(session.parentAppSessionId)}>親の会話を開く（表示範囲外）</a>
+          )}
+        </div>
+      )}
+      {session.agentWork?.delivery === 'failed' && <span role="status">親への結果通知に失敗</span>}
+      {session.agentWork?.delivery === 'delivered' && <span>親へ結果通知済み</span>}
+      {children.length > 0 && (
+        <details className="monitor-card-children">
+          <summary>{monitorChildSummary(children)}</summary>
+          <ul>
+            {children.map((child) => (
+              <li key={child.id}>
+                <button type="button" onClick={() => onSelect(child.id)}>
+                  {child.title || child.id}
+                </button>
+                <span>{stateLabel(child)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
 }
 
 export interface MonitorSessionsResponse {
@@ -262,7 +364,10 @@ export function accountUsageStatusLabel(stale?: boolean): string | undefined {
 
 function isRunning(session: MonitorSession): boolean {
   return (
-    session.isActive === true || (session.scope === 'scheduler' && session.lifecycle === 'open')
+    session.isActive === true ||
+    session.agentRunStatus === 'queued' ||
+    session.agentRunStatus === 'running' ||
+    (session.scope === 'scheduler' && session.lifecycle === 'open')
   );
 }
 
@@ -345,6 +450,7 @@ function platformName(platform?: string): string {
 
 export function stateLabel(session: MonitorSession): string {
   if (monitorLane(session) === 'completed') return '完了';
+  if (session.agentRunStatus === 'queued') return '実行待ち';
   if (!isRunning(session)) {
     if (session.agentRunStatus === 'succeeded') return '結果確認待ち';
     if (session.agentRunStatus === 'failed') return '失敗・確認待ち';
@@ -368,6 +474,15 @@ export function sessionLine(session: MonitorSession): string {
   const currentStep = session.progressCard?.plan.find((item) => item.status === 'in_progress');
   return (
     session.activity?.summary ||
+    (session.agentRunStatus === 'queued'
+      ? '子の作業の開始を待っています'
+      : session.agentRunStatus === 'running'
+        ? '子の作業を実行中'
+        : session.lifecycle === 'open' && session.agentRunStatus === 'succeeded'
+          ? '結果確認待ち: 確認後に完了にできます'
+          : session.lifecycle === 'open' && session.agentRunStatus === 'failed'
+            ? '失敗した結果の確認待ち'
+            : undefined) ||
     (currentStep ? `現在: ${currentStep.step}` : undefined) ||
     (session.scope === 'scheduler' && isRunning(session) ? 'スケジュールを実行中' : undefined) ||
     (monitorLane(session) === 'completed' ? '完了: 現在の処理なし' : '次の入力を待っています')
@@ -894,7 +1009,13 @@ export function Monitor() {
     [visibleSessions]
   );
 
-  const selected = sessions.find((session) => session.id === selectedId);
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const childrenByParent = useMemo(
+    () =>
+      new Map(monitorWorkGroups(visibleSessions).map((group) => [group.parentId, group.children])),
+    [visibleSessions]
+  );
+  const selected = sessionById.get(selectedId);
   const runningCount = sessionsByLane.working.filter(isRunning).length;
   const workingCount = sessionsByLane.working.length;
   const completedCount = sessionsByLane.completed.length;
@@ -1262,6 +1383,12 @@ export function Monitor() {
                 </section>
               )}
 
+              {selected.agentWork?.assignment && (
+                <section className="monitor-assignment" aria-label="子への依頼要約">
+                  <h3>依頼要約</h3>
+                  <p>{selected.agentWork.assignment}</p>
+                </section>
+              )}
               <section className="monitor-runtime" aria-label="実行設定">
                 <h3>このセッションの実行設定</h3>
                 <dl>
@@ -1508,6 +1635,16 @@ export function Monitor() {
                               )}
                             </span>
                           </button>
+                          <MonitorRelations
+                            session={session}
+                            parent={
+                              session.parentAppSessionId
+                                ? sessionById.get(session.parentAppSessionId)
+                                : undefined
+                            }
+                            children={childrenByParent.get(session.id) || []}
+                            onSelect={setSelectedId}
+                          />
                           {session.scope !== 'scheduler' && (
                             <div className="monitor-card-actions">
                               <button

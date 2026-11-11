@@ -76,7 +76,14 @@ export function UserQuestions({
   return (
     <section className="user-questions" aria-label="回答待ちの質問">
       <p>
-        <strong>回答を待っています</strong>（10分以内）
+        <strong>回答を待っています</strong>（回答期限:{' '}
+        <time dateTime={new Date(request.expiresAt).toISOString()}>
+          {new Date(request.expiresAt).toLocaleString()}
+        </time>
+        ）。
+        {request.timeoutAction === 'stop'
+          ? '期限後は作業を停止します。'
+          : '期限後は未回答として作業を続けます。'}
       </p>
       <form
         onSubmit={(event) => {

@@ -1,3 +1,4 @@
+import type { WorkspaceRegistry } from './workspace-registry.js';
 import { readdirSync, existsSync, readFileSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { DISCORD_SAFE_LENGTH } from './constants.js';
@@ -150,4 +151,19 @@ export function formatSkillList(skills: Skill[]): string {
     return shortLines.join('\n');
   }
   return result;
+}
+
+/** Registration is application-wide; execution still resolves the current conversation's workspace. */
+export async function loadRegisteredSkillCatalog(registry: WorkspaceRegistry): Promise<Skill[]> {
+  const catalog = new Map<string, Skill>();
+  for (const entry of registry.list()) {
+    try {
+      const workspace = await registry.resolveById(entry.id);
+      for (const skill of loadSkills(workspace.path))
+        if (!catalog.has(skill.name)) catalog.set(skill.name, skill);
+    } catch (error) {
+      console.warn(`[skills] Skipping unavailable workspace ${entry.id}:`, error);
+    }
+  }
+  return [...catalog.values()];
 }

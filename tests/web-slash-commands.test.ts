@@ -196,8 +196,7 @@ describe('Web slash command adapter', () => {
       { name: 'ultra', value: '--effort=ultra' },
     ]);
 
-    const models = commands.find((command) => command.name === 'models');
-    expect(models?.usage).toBe('/models [backend]');
+    const models = commands.find((command) => command.name === 'backend')?.options?.find(option => option.name === 'models');
     expect(models?.options?.[0].choices).toEqual([
       { name: 'Claude Code', value: 'claude-code' },
       { name: 'Codex', value: 'codex' },
@@ -207,6 +206,27 @@ describe('Web slash command adapter', () => {
       .find((command) => command.name === 'schedule')
       ?.options?.find((option) => option.name === 'remove');
     expect(scheduleRemove?.options?.[0].choices?.[0].value).toBe(added.id);
+  });
+
+  it('keeps direct skills and explicit skill calls consistent and reserves retired names', async () => {
+    for (const name of ['Demo_Skill', 'secret', 'help', 'a_b', 'a-b']) {
+      mkdirSync(join(workdir, 'skills', name), { recursive: true });
+      writeFileSync(join(workdir, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test\n---\n`);
+    }
+    const direct = await executeWebCommand('/demo-skill "two words"', { workdir });
+    const explicit = await executeWebCommand('/skill Demo_Skill "two words"', { workdir });
+    expect(direct.message).toBe(explicit.message);
+    expect(await executeWebCommand('/secret status', { workdir })).toEqual({ kind: 'chat', message: '/secret status', displayMessage: '/secret status' });
+    await expect(executeWebCommand('/a-b', { workdir })).rejects.toThrow('Unknown command');
+    expect((await executeWebCommand('/skill secret', { workdir })).kind).toBe('chat');
+    expect((await executeWebCommand('/help', { workdir })).kind).toBe('message');
+  });
+
+  it('rejects invalid backend options without changing the session override', async () => {
+    for (const input of ['/backend set codex --scope=invalid', '/backend set codex --scope', '/backend set codex --unknown=x', '/backend reset accidental']) {
+      await expect(executeWebCommand(input, { workdir, appSessionId: 'web-1', resolver: resolver as unknown as BackendResolver })).rejects.toThrow();
+      expect(resolver.override).toBeUndefined();
+    }
   });
 
   it('stores and resets backend overrides using the Web session context key', async () => {
@@ -261,7 +281,7 @@ describe('Web slash command adapter', () => {
     };
 
     await expect(executeWebCommand('/llmmode lite', context)).rejects.toThrow(
-      '使い方: /llmmode status|agent|chat|default'
+      'Unknown command: /llmmode'
     );
   });
 

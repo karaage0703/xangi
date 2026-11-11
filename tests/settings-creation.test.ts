@@ -61,8 +61,8 @@ it('rejects malformed team options without saving or starting work', async () =>
   for (const extra of [
     {'members-json': 'invalid'}, {'members-json': '{}'}, {'members-json': '[]'},
     {'members-json': '[{"agentId":"missing"}]'},
-    {'members-json': '[{"agentId":"xangi:default"},{"agentId":"xangi:default"}]'},
-    {'leader-agent-id': 'xangi:default'}, {'max-concurrency': '0'}, {'serialize-workspaces': 'sometimes'},
+    {'members-json': '[{"agentId":"xangi:default","memberId":"a"},{"agentId":"xangi:default","memberId":"a"}]'},
+    {'leader-agent-id': 'missing'}, {'max-concurrency': '0'}, {'serialize-workspaces': 'sometimes'},
   ]) {
     await expect(executeTeamCommand({...flags, ...extra}, {channelId: 'parent'}, f.deps)).rejects.toThrow();
   }

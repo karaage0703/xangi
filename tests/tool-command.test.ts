@@ -38,6 +38,28 @@ describe('tool command dispatcher', () => {
     });
   });
 
+  it('forwards the Slack user identity through the CLI dispatcher', async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        command: 'slack_send',
+        flags: { as: 'user', message: 'owner-approved' },
+        context: { channelId: 'C123', platform: 'slack' },
+      });
+      return new Response(JSON.stringify({ ok: true, result: 'sent' }));
+    });
+    await expect(
+      runToolCommand(['slack_send', '--as', 'user', '--message', 'owner-approved'], {
+        env: {
+          XANGI_TOOL_SERVER: 'http://127.0.0.1:41001',
+          XANGI_CHANNEL_ID: 'C123',
+          XANGI_PLATFORM: 'slack',
+        },
+        fetchImpl,
+      })
+    ).resolves.toBe('sent');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('keeps multiple instances isolated by their injected endpoint', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const endpoint = String(input);

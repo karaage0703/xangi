@@ -13,6 +13,7 @@ import {
   getChannelAutoReplyWithParent,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
+  getSlackChannelThreadMode,
   getReplySuggestionsEnabled,
   getSlackChannelAutoReply,
   loadSettings,
@@ -412,21 +413,26 @@ function executeThreadMode(
   config: Config,
   platform: ChatPlatform
 ) {
-  platformGuard(platform, 'threadmode', ['discord']);
+  platformGuard(platform, 'threadmode', ['discord', 'slack']);
   const channelId = requireChannel(request);
   const action = requireAction(request, ['status', 'set', 'reset']);
+  const isDiscord = platform === 'discord';
+  const key = isDiscord ? 'discordThreadModeChannels' : 'slackThreadModeChannels';
+  const fallback = isDiscord
+    ? (config.discord.replyInThread ?? false)
+    : config.slack.replyInThread !== false && !config.slack.replyInChannels?.includes(channelId);
+  const effective = (settings: ReturnType<typeof loadSettings>) =>
+    isDiscord
+      ? getChannelThreadMode(settings, channelId, fallback)
+      : getSlackChannelThreadMode(settings, channelId, fallback);
   const settings = loadSettings();
-  const defaultEnabled = config.discord.replyInThread ?? false;
-  if (action === 'status') {
-    return `Discord threadmode: ${getChannelThreadMode(settings, channelId, defaultEnabled) ? 'on' : 'off'} (channel: ${channelId})`;
-  }
-  const channels = { ...(settings.discordThreadModeChannels ?? {}) };
+  if (action === 'status')
+    return `${platform} threadmode: ${effective(settings) ? 'on' : 'off'} (channel: ${channelId})`;
+  const channels = { ...(settings[key] ?? {}) };
   if (action === 'reset') delete channels[channelId];
   else channels[channelId] = requireValue(request, ['on', 'off']) === 'on';
-  const saved = saveSettings({
-    discordThreadModeChannels: Object.keys(channels).length ? channels : undefined,
-  });
-  return `Discord threadmodeを${getChannelThreadMode(saved, channelId, defaultEnabled) ? 'on' : 'off'}に設定しました。即時反映済みです。`;
+  const saved = saveSettings({ [key]: Object.keys(channels).length ? channels : undefined });
+  return `${platform} threadmodeを${effective(saved) ? 'on' : 'off'}に設定しました。即時反映済みです。`;
 }
 
 function executeReplySuggestions(request: RuntimeSettingsRequest, config: Config): string {

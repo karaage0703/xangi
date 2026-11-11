@@ -1,5 +1,10 @@
 import { codexDiagnosticReader, codexHttpStatus, codexFailureMessage } from './backend-status.js';
-import { normalizeQuestions, userInputEnabled, validateAnswer } from './user-input.js';
+import {
+  normalizeQuestions,
+  userInputEnabled,
+  validateAnswer,
+  userInputTimeoutNotice,
+} from './user-input.js';
 import { codexFileChanges } from './file-changes.js';
 import { readCodexTurnEvidence } from './codex-model-evidence.js';
 import { updateSessionContextUsage } from './sessions.js';
@@ -197,10 +202,19 @@ export class CodexAppServerRunner extends CliRunnerBase {
         void (async () => {
           try {
             const request = normalizeQuestions(p.questions, 'codex');
-            const answer = validateAnswer(
-              request,
-              await t.callbacks.onUserInput!(request, controller.signal)
-            );
+            const outcome = await t.callbacks.onUserInput!(request, controller.signal);
+            // This is a system notice, never a default choice or a user approval.
+            const answer =
+              'unavailable' in outcome
+                ? {
+                    answers: Object.fromEntries(
+                      request.questions.map((q) => [
+                        q.id,
+                        [userInputTimeoutNotice(outcome.message)],
+                      ])
+                    ),
+                  }
+                : validateAnswer(request, outcome);
             if (this.turn !== t || t.cancelled || controller.signal.aborted) return;
             if ('cancelled' in answer) {
               this.cancel();
@@ -376,22 +390,29 @@ export class CodexAppServerRunner extends CliRunnerBase {
           }),
           'codex'
         );
-        const answer = validateAnswer(
-          request,
-          await t.callbacks.onUserInput!(request, controller.signal)
-        );
+        const outcome = await t.callbacks.onUserInput!(request, controller.signal);
+        const answer = 'unavailable' in outcome ? outcome : validateAnswer(request, outcome);
         if (this.turn !== t || controller.signal.aborted || t.cancelled) return;
         if ('cancelled' in answer) {
           this.cancel();
           return;
         }
-        const text = JSON.stringify({
-          questionItemId: id,
-          answers: request.questions.map((q) => ({
-            question: q.question,
-            answers: answer.answers[q.id],
-          })),
-        });
+        const text = JSON.stringify(
+          'unavailable' in answer
+            ? {
+                questionItemId: id,
+                status: 'user_unavailable',
+                questions: request.questions.map((q) => q.question),
+                instruction: userInputTimeoutNotice(answer.message),
+              }
+            : {
+                questionItemId: id,
+                answers: request.questions.map((q) => ({
+                  question: q.question,
+                  answers: answer.answers[q.id],
+                })),
+              }
+        );
         // Serialize answers so only one continuation can start after a completed turn.
         t.answerQueue = t.answerQueue.then(async () => {
           if (this.turn !== t || t.cancelled || controller.signal.aborted) return;

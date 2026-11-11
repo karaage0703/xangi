@@ -30,6 +30,17 @@ describe('safe agent environment', () => {
     else process.env.GEMINI_API_KEY = previousGemini;
   });
 
+  it('keeps Slack user OAuth tokens out of the backend environment', () => {
+    const previous = process.env.SLACK_USER_TOKEN;
+    try {
+      process.env.SLACK_USER_TOKEN = 'xoxp-private-user';
+      expect(getSafeEnv().SLACK_USER_TOKEN).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.SLACK_USER_TOKEN;
+      else process.env.SLACK_USER_TOKEN = previous;
+    }
+  });
+
   it('passes sandbox-owned Codex config and network proxy routes', () => {
     const values = {
       CODEX_HOME: '/var/lib/xangi/codex-home',

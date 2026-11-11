@@ -8,8 +8,9 @@ import { resolveAppLayout } from './installer/layout.js';
 import { SECRET_FIELDS, validateSettingValue } from './cli/settings-cmd.js';
 import { SecretStore } from './setup/secret-store.js';
 import { backendAuthenticationSnapshot } from './backend-auth-status.js';
+import { decodeUserInputTimeoutMessage } from './user-input.js';
 
-type FieldType = 'boolean' | 'integer' | 'number' | 'select' | 'text';
+type FieldType = 'boolean' | 'integer' | 'number' | 'select' | 'text' | 'textarea';
 
 export interface WebStartupSetting {
   key: string;
@@ -19,6 +20,8 @@ export interface WebStartupSetting {
   value: string;
   defaultValue: string;
   options?: string[];
+  optionLabels?: Record<string, string>;
+  maxLength?: number;
   min?: number;
   max?: number;
   applyMode: 'restart';
@@ -36,6 +39,41 @@ interface Definition extends Omit<WebStartupSetting, 'value' | 'applyMode'> {
 }
 
 const DEFINITIONS: Definition[] = [
+  {
+    group: 'questions',
+    groupLabel: '質問への回答待ち',
+    key: 'AGENT_USER_INPUT_TIMEOUT_MS',
+    label: '回答期限 (ms)',
+    description:
+      'Web・Discord・Slack共通の回答待ち時間です。600000で10分です。実行全体の制限時間は別途適用されます。',
+    type: 'integer',
+    defaultValue: '600000',
+    min: 1000,
+    max: 86400000,
+  },
+  {
+    group: 'questions',
+    groupLabel: '質問への回答待ち',
+    key: 'AGENT_USER_INPUT_TIMEOUT_ACTION',
+    label: '期限切れ時の動作',
+    description:
+      '回答がないまま期限を過ぎたときに、作業を停止するか、自動回答文をAIへ渡して続行するかを選びます。',
+    type: 'select',
+    defaultValue: 'reply',
+    options: ['reply', 'stop'],
+    optionLabels: { reply: 'AIへ自動回答して続行', stop: '作業を停止' },
+  },
+  {
+    group: 'questions',
+    groupLabel: '質問への回答待ち',
+    key: 'AGENT_USER_INPUT_TIMEOUT_MESSAGE',
+    label: '期限切れ時の自動回答文',
+    description:
+      'AIへ渡す文を自由に記述できます（改行可・4000文字まで）。空欄なら「今は回答できない状況として、許可済みの作業を続ける」という既定文を使います。停止を選んだ場合は送信しません。',
+    type: 'textarea',
+    defaultValue: '',
+    maxLength: 4000,
+  },
   {
     group: 'general',
     groupLabel: '全般',
@@ -621,7 +659,12 @@ export function webStartupSettingsSnapshot(): WebStartupSettingsGroup[] {
     };
     group.settings.push({
       ...definition,
-      value: values[definition.key] ?? process.env[definition.key] ?? definition.defaultValue,
+      value:
+        definition.type === 'textarea'
+          ? decodeUserInputTimeoutMessage(
+              values[definition.key] ?? process.env[definition.key] ?? definition.defaultValue
+            )
+          : (values[definition.key] ?? process.env[definition.key] ?? definition.defaultValue),
       applyMode: 'restart',
     });
     groups.set(definition.group, group);
@@ -633,8 +676,12 @@ export function updateWebStartupSetting(input: Record<string, unknown>): string 
   const key = String(input.key ?? '');
   const definition = DEFINITIONS.find((candidate) => candidate.key === key);
   if (!definition) throw new Error('Web設定から変更できない項目です');
-  const value = String(input.value ?? '').trim();
-  if ([...value].some((character) => [10, 13].includes(character.charCodeAt(0)))) {
+  const value =
+    definition.type === 'textarea' ? String(input.value ?? '') : String(input.value ?? '').trim();
+  if (
+    definition.type !== 'textarea' &&
+    [...value].some((character) => [10, 13].includes(character.charCodeAt(0)))
+  ) {
     throw new Error('設定値は1行で指定してください');
   }
   if (definition.type === 'boolean' && !['true', 'false'].includes(value)) {
@@ -654,7 +701,20 @@ export function updateWebStartupSetting(input: Record<string, unknown>): string 
       throw new Error(`${key}は${definition.max}以下で指定してください`);
   }
   if (definition.type === 'text' && !value) throw new Error(`${key}を入力してください`);
-  const result = updateEnvKeyValue(key, value);
+  if (definition.maxLength !== undefined && value.length > definition.maxLength)
+    throw new Error(`${key}は${definition.maxLength}文字以内で指定してください`);
+  // A tagged JSON string inside single dotenv quotes preserves newlines, quotes,
+  // backslashes and # without introducing additional environment assignments.
+  const storedValue =
+    definition.type === 'textarea'
+      ? "'json:" +
+        JSON.stringify(value)
+          .replace(/'/g, '\\u0027')
+          .replace(/\u2028/g, '\\u2028')
+          .replace(/\u2029/g, '\\u2029') +
+        "'"
+      : value;
+  const result = updateEnvKeyValue(key, storedValue);
   if (!result.ok) throw new Error(result.reason || '設定を保存できませんでした');
   return `${definition.label}を保存しました。xangiの再起動後に反映されます。`;
 }

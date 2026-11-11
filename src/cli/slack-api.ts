@@ -58,10 +58,24 @@ interface SlackChannelsResponse extends SlackApiResponse {
   channels?: SlackChannel[];
 }
 
-function getToken(): string {
-  const token = process.env.SLACK_BOT_TOKEN;
+type SlackActor = 'bot' | 'user';
+
+function getActor(flags: Record<string, string>): SlackActor {
+  const actor = flags['as'] ?? 'bot';
+  if (actor !== 'bot' && actor !== 'user') {
+    throw new ValidationError('--as must be bot or user');
+  }
+  return actor;
+}
+
+function getToken(actor: SlackActor): string {
+  const name = actor === 'user' ? 'SLACK_USER_TOKEN' : 'SLACK_BOT_TOKEN';
+  const token = process.env[name];
   if (!token) {
-    throw new Error('SLACK_BOT_TOKEN environment variable is not set');
+    throw new Error(`${name} environment variable is not set`);
+  }
+  if (actor === 'user' && !/^(?:xoxp-|xoxe\.xoxp-)/.test(token)) {
+    throw new Error('SLACK_USER_TOKEN must be a Slack user OAuth access token');
   }
   return token;
 }
@@ -97,6 +111,7 @@ async function slackFetch<T extends SlackApiResponse>(
   options?: {
     query?: Record<string, string | undefined>;
     body?: Record<string, unknown>;
+    actor?: SlackActor;
   }
 ): Promise<T> {
   const url = new URL(`${API_BASE}/${method}`);
@@ -110,7 +125,7 @@ async function slackFetch<T extends SlackApiResponse>(
   const res = await fetch(url, {
     method: hasBody ? 'POST' : 'GET',
     headers: {
-      Authorization: `Bearer ${getToken()}`,
+      Authorization: `Bearer ${getToken(options?.actor ?? 'bot')}`,
       ...(hasBody ? { 'Content-Type': 'application/json; charset=utf-8' } : {}),
     },
     body: hasBody ? JSON.stringify(options.body) : undefined,
@@ -155,6 +170,7 @@ async function slackSend(
   if (!message) throw new ValidationError('--message is required');
 
   const response = await slackFetch<SlackPostMessageResponse>('chat.postMessage', {
+    actor: getActor(flags),
     body: {
       channel: channelId,
       text: message,
@@ -248,6 +264,7 @@ async function slackEdit(
   if (!content) throw new ValidationError('--content is required');
 
   await slackFetch<SlackApiResponse>('chat.update', {
+    actor: getActor(flags),
     body: {
       channel: channelId,
       ts: messageTs,
@@ -267,6 +284,7 @@ async function slackDelete(
   if (!messageTs) throw new ValidationError('--message-ts is required');
 
   await slackFetch<SlackApiResponse>('chat.delete', {
+    actor: getActor(flags),
     body: {
       channel: channelId,
       ts: messageTs,
@@ -281,6 +299,12 @@ export async function slackApi(
   flags: Record<string, string>,
   context?: SlackCommandContext
 ): Promise<string> {
+  if (
+    flags['as'] !== undefined &&
+    !['slack_send', 'slack_edit', 'slack_delete'].includes(command)
+  ) {
+    throw new ValidationError('--as is only supported by slack_send, slack_edit, and slack_delete');
+  }
   switch (command) {
     case 'slack_send':
       return slackSend(flags, context);

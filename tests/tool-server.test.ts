@@ -14,6 +14,7 @@ import {
   getInterChatConfig,
 } from '../src/inter-instance-chat/index.js';
 import type { AgentRunner } from '../src/agent-runner.js';
+import { runToolCommand } from '../src/cli/tool-command.js';
 
 /**
  * tool-server のステータスコード退行検出テスト。
@@ -185,6 +186,46 @@ describe('tool-server HTTP status codes', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body.error).toContain('--message is required');
+  });
+
+  it('routes an explicit user post from the CLI through the tool-server', async () => {
+    const originalFetch = globalThis.fetch;
+    const previousToken = process.env.SLACK_USER_TOKEN;
+    process.env.SLACK_USER_TOKEN = 'xoxp-owner-test';
+    const slackFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: 'Bearer xoxp-owner-test' });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        channel: 'COWNER',
+        text: 'owner-approved',
+        thread_ts: '1.0000',
+      });
+      return new Response(JSON.stringify({ ok: true, ts: '1.0001' }));
+    });
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((url, init) => {
+      if (String(url) === 'https://slack.com/api/chat.postMessage') return slackFetch(url, init);
+      // Only the fixture server is reachable; all other network calls fail this test.
+      if (String(url) === `${serverUrl}/api/execute`) return originalFetch(url, init);
+      throw new Error('Unexpected fetch in Slack user-post test');
+    });
+    try {
+      const result = await runToolCommand(
+        ['slack_send', '--as', 'user', '--thread-ts', '1.0000', '--message', 'owner-approved'],
+        {
+          env: {
+            XANGI_TOOL_SERVER: serverUrl,
+            XANGI_CHANNEL_ID: 'COWNER',
+            XANGI_PLATFORM: 'slack',
+          },
+        }
+      );
+      expect(result).toContain('ts: 1.0001');
+      expect(slackFetch).toHaveBeenCalledOnce();
+      expect(result).not.toContain('xoxp-owner-test');
+    } finally {
+      spy.mockRestore();
+      if (previousToken === undefined) delete process.env.SLACK_USER_TOKEN;
+      else process.env.SLACK_USER_TOKEN = previousToken;
+    }
   });
 
   it('returns 400 when command is missing', async () => {

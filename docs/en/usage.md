@@ -197,7 +197,7 @@ Buttons are displayed on response messages.
 
 Set `DISCORD_SHOW_BUTTONS=false` to hide buttons.
 
-Reply suggestions are disabled by default. When enabled, Discord and Slack completed messages show only one `返信候補` button. Opening it reveals suggestions and number buttons only to that user; selecting one continues the same session. Web Chat provides the same collapsed control below each response. Discord's `/replysuggestions mode:on|off|status|default` switches the feature globally. OFF skips prompt injection, so no extra suggestion tokens or generation latency are incurred. Set the platform-specific `*_REPLY_SUGGESTIONS=true` variables to enable the feature at startup, and use `*_REPLY_SUGGESTIONS_COUNT` to change the default count of 3.
+Reply suggestions are disabled by default. When enabled, Discord and Slack completed messages show only one `返信候補` button. Opening it reveals suggestions and number buttons only to that user; selecting one continues the same session. Web Chat provides the same collapsed control below each response. Discord's `/settings item:replysuggestions value:on|off|status|default` switches the feature globally. OFF skips prompt injection, so no extra suggestion tokens or generation latency are incurred. Set the platform-specific `*_REPLY_SUGGESTIONS=true` variables to enable the feature at startup, and use `*_REPLY_SUGGESTIONS_COUNT` to change the default count of 3.
 
 ### Dynamic Timeout Extension
 
@@ -237,6 +237,8 @@ Monitor combines running and input-waiting conversations in Working, with a sepa
 <a id="monitor-card-actions"></a>
 
 Monitor completion and reopening are handled per card, so other cards remain actionable. Successful changes appear immediately; background list refreshes are coalesced. Duplicate operations on the same card and simultaneous bulk completion are prevented.
+
+Completing a running Session with `{ "force": true }` at `POST /api/sessions/:id/close` cancels its context before destroying the runner, only when that Session is current. This also aborts legacy `/api/chat` Local LLM requests and prevents turns still preparing, or late completion callbacks, from saving a normal answer or provider ID. Completing an older Session does not stop a newer Session on the same context. Reopening is immediate, but new submissions return 409 until the old turn has unwound. A 200 close response confirms Session completion, not GPU release on the inference server.
 
 The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
 
@@ -540,11 +542,11 @@ The persistent system prompt does not embed every command example. When the AI n
 | `xangi tool discord_thread_rename --name "title" [--channel <ID>]` | Rename a thread to the specified title; defaults to the current thread. Non-thread channels are rejected. |
 | `xangi tool discord_thread_leave --user <ID> [--channel <ID>]`                   | Remove a user from a thread = drop it from that user's sidebar (defaults to the current thread when `--channel` is omitted) |
 | `xangi tool media_send --channel <ID> --file /path/to/file`                      | Send a file                                                                                                                 |
-| `xangi tool slack_send --channel <id> --message "text" [--thread-ts <ts>]`       | Send a Slack message                                                                                                        |
+| `xangi tool slack_send --channel <id> [--as bot\|user] --message "text" [--thread-ts <ts>]`       | Send a Slack message                                                                                                        |
 | `xangi tool slack_channels [--types public_channel,private_channel] [--limit N]` | List Slack channels                                                                                                         |
 | `xangi tool slack_search --channel <id> --keyword "text" [--count N]`            | Search Slack messages                                                                                                       |
-| `xangi tool slack_edit --channel <id> --message-ts <ts> --content "text"`        | Edit a Slack message                                                                                                        |
-| `xangi tool slack_delete --channel <id> --message-ts <ts>`                       | Delete a Slack message                                                                                                      |
+| `xangi tool slack_edit --channel <id> [--as bot\|user] --message-ts <ts> --content "text"`        | Edit a Slack message                                                                                                        |
+| `xangi tool slack_delete --channel <id> [--as bot\|user] --message-ts <ts>`                       | Delete a Slack message                                                                                                      |
 
 On Slack, when `SLACK_REACTION_DELETE_ENABLED=true` (default) and the Slack App subscribes to the `reaction_added` event with the `reactions:read` scope, an allowed user can delete a bot message by adding a `:wastebasket:` or `:x:` reaction. Customize the reaction names with `SLACK_DELETE_REACTIONS=wastebasket,x`.
 
@@ -586,6 +588,8 @@ xangi tool discord_thread_leave --user 111222333 --channel 1234567890
 xangi tool slack_edit --channel C01234567 --message-ts 1719876543.000100 --content "updated content"
 xangi tool slack_delete --channel C01234567 --message-ts 1719876543.000100
 ```
+
+Use `--as user` only for actions requested by the token owner. See [Slack setup](slack-setup.md#post-as-yourself-optional) for user OAuth configuration and limitations.
 
 ### Tool Server
 
@@ -684,21 +688,36 @@ Runtime settings are saved in `${DATA_DIR}/settings.json` (default: `${WORKSPACE
 | `discordAutoReplyChannels`        | Per-channel mention-free auto-reply settings (`true` / `false`)               | none    |
 | `slackAutoReplyChannels`          | Per-Slack-channel mention-free auto-reply settings (`true` / `false`)         | none    |
 | `discordCompletionNotifyChannels` | Per-channel completion notification overrides (`off` / `message` / `mention`) | none    |
+| `slackThreadModeChannels` | Per-Slack-channel thread reply overrides (`true` / `false`) | none |
 | `discordThreadModeChannels`       | Per-channel Discord thread reply overrides (`true` / `false`)                 | none    |
 
 ### Viewing and Changing Settings
 
-| Command                                          | Description                                                                                                           |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `/settings`                                      | Show current settings                                                                                                 |
-| `/models [backend]`                              | List available models (all allowed backends when omitted)                                                             |
-| `/restart`                                       | Restart the bot only when `.env` has `XANGI_SELF_LIFECYCLE=restart-only`                                              |
-| `/autoreply <on\|off\|default\|status>`            | Configure mention-free auto-reply for this channel (no restart needed, persisted to `settings.json`)                  |
-| `/notify <off\|message\|mention\|default\|status>` | Configure completion notifications for this channel (no restart needed, persisted to `settings.json`)                 |
-| `/respondtobots`                                 | Toggle bot-to-bot reply ON/OFF (whitelist set via `RESPOND_TO_BOTS` env)                                              |
-| `/threadmode <on\|off\|default\|status>`           | Show or toggle this channel's Discord per-message thread reply mode (no restart needed, persisted to `settings.json`) |
-| `/llmmode <agent\|chat\|default\|status>`         | Switch this channel's Local LLM operation mode (persisted to `CHANNEL_OVERRIDES` in `.env`)                           |
-| `/llmeffort <none\|minimal\|low\|medium\|high\|xhigh\|max\|default\|status>` | Switch this channel's Local LLM `reasoning_effort` (persisted to `.env`) |
+Discord, Web, and Slack generate commands, arguments, and help from a shared catalog. `/help` lists currently enabled commands.
+
+| Command | Purpose |
+| --- | --- |
+| `/secret on\|off\|status` | Start, end, or inspect a secret conversation |
+| `/new` / `/stop` / `/retitle` | Start, stop, or retitle a conversation |
+| `/skill [name] [args]` / `/<skill-name> [args]` | List or run skills in the current conversation's Workspace |
+| `/agent list\|status\|set <id>\|reset` | Inspect or change the conversation's Agent; separate from delegated `agent run` work |
+| `/workspace status\|list\|use <name>\|set <name> <path>\|reset` | Inspect or change the working directory |
+| `/backend status\|models\|set\|reset` | Inspect or change backend, model, and effort |
+| `/schedule add\|list\|remove\|toggle` | Manage scheduled work |
+| `/settings [item] [value]` | Show settings or inspect/change a specific setting |
+| `/help` | Show enabled commands |
+| `/autoreply <status\|on\|off\|default>` | Discord/Slack mention-free replies, when enabled |
+| `/threadmode <status\|on\|off\|default>` | Discord/Slack thread replies, when enabled |
+
+Standalone notification, reply-suggestion, bot-response, and Local LLM mode/effort commands are consolidated under `/settings`. Examples: Discord `/settings item:notify value:mention`, Web `/settings llmmode chat`. Items are `notify`, `replysuggestions`, `respondtobots`, `llmmode`, and `llmeffort`; omit the value for status or use `default` to reset. Notifications apply to the selected Discord channel, reply suggestions apply globally, bot responses apply to Discord globally, and Local LLM options apply to the current conversation/channel. The settings screen also allows channel-specific changes. Team browsing/editing lives in Web settings; `/team` is no longer registered.
+
+`/models` becomes `/backend models [type]`. Discord and Web share `/secret on|off|status`; `/restart` is no longer listed. Use the administrative CLI for restarting and the running-task button for extending time. The secret feature and stored settings are retained.
+
+Switching a Web Agent or Workspace creates a new conversation and keeps the old one intact. Switching is rejected while running. An assigned Agent owns its Workspace; use `/agent reset` before choosing an independent Workspace. `/new` retains the current Agent, Workspace, and backend override. Discord Workspace bindings still take effect on the next `/new`.
+
+Skill discovery and execution use the current conversation's Workspace. Direct names normalize to lowercase ASCII letters, digits, and hyphens. Reserved or ambiguous names remain available through `/skill`. Discord collects skills from registered Workspaces at startup and registers direct commands up to its command limit. Newly added or omitted skills remain available through `/skill`.
+
+Slack accepts the same shared catalog as Discord, except `/retitle` because Slack has no independent thread title. Its 12 commands include `/autoreply` and `/threadmode`, which immediately affect Slack reply routing. Native commands require Slack App registrations: remove `/models`, `/restart`, and `/delete` and follow the [Slack setup list](slack-setup.md). Without registrations, ordinary mentions and natural-language requests remain available. Existing Telegram and LINE commands are unchanged.
 
 ### Backend Dynamic Switching
 
@@ -728,9 +747,9 @@ The setting is persisted in `CHANNEL_OVERRIDES` by channel ID and applies to thr
 channel from the next message without restarting xangi.
 `scope:global` (`--scope global` on Slack) updates `AGENT_BACKEND` / `AGENT_MODEL` / `AGENT_EFFORT` and the live default runner together. An effort is saved only when the selected model supports it. Active turns finish on their previous runner; subsequent turns use the new default. Explicit channel overrides remain unchanged.
 
-`/models [backend]` is shared by Discord, Slack, Web, Telegram, and LINE. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
+Discord and Web use `/backend models [type]`; Slack also uses `/backend models [type]`; Telegram and LINE retain `/models [backend]`. Without an argument it checks every backend in `ALLOWED_BACKENDS`; with an argument it checks only that backend. It is read-only and does not change the current backend or model.
 
-`/models` dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, `opencode models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without an independent machine-readable discovery command, such as Claude Code or GitHub Copilot CLI, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
+Model discovery dynamically reads the models available to the current account from each CLI's official discovery interface. It uses Codex `app-server model/list`, `cursor-agent models`, `grok models`, `opencode models`, and Agy 1.1.12 or later `agy --output-format json models`. If an older Agy explicitly rejects `--output-format`, xangi falls back to `agy models` and accepts both tab-delimited and legacy one-column output. Local LLM discovery uses Ollama `/api/tags` or the OpenAI-compatible `/v1/models` endpoint. A backend without an independent machine-readable discovery command, such as Claude Code or GitHub Copilot CLI, is reported as unsupported; xangi does not fill the gap with a hard-coded model list.
 
 In the Web slash-command palette, selecting a backend for `/backend set` loads model choices from the same dynamic discovery result. Selecting a model then shows the effort choices supported by that backend/model combination. Web Project settings use the same model and effort discovery.
 
@@ -743,7 +762,7 @@ xangi tool models --backend codex
 xangi tool models --backend codex --use gpt-5.4 --effort high
 ```
 
-Use `status` to inspect current state or settings. The former settings action `show` is not accepted. `list` still lists registered entries, and `/team show id:` still displays a named Team definition.
+Use `status` to inspect current state or settings. The former settings action `show` is not accepted. `list` still lists registered entries, and Team definitions are available in Web settings or `xangi team show`.
 
 For natural-language setting changes, the agent uses `runtime_settings` rather than executing an arbitrary slash-command string. It accepts structured and validated `status` / `set` / `reset` actions for `backend`, `llmmode`, `autoreply`, `notify`, `threadmode`, `replysuggestions`, and `respondtobots`, then writes through the same persistence path as the native commands. In a Discord thread, pass the parent channel ID via `--channel`.
 
@@ -1620,6 +1639,12 @@ Shared completion-display settings:
 
 ### Web Chat UI
 
+<p>
+  <img src="../images/chat-mobile.png" width="320" alt="Mobile Web Chat discussing a fictional notes app in Japanese">
+</p>
+
+On mobile, use the bottom navigation to switch between features. Messages, history, and reply suggestions in this example are dummy data, not actual AI output. See also the [desktop screenshot](../../README.en.md) and [capture instructions](../readme-screenshots.md).
+
 Ordinary Web UI/API reads and mutations reject foreign Origin headers and do not advertise wildcard CORS. Clients that omit Origin, such as the CLI, continue to work. Extension device ingress retains cross-origin access under its separate Bearer authentication contract. Tool Server command execution and GitHub token issuance are restricted to loopback clients; do not expose these local-only APIs through an external proxy.
 
 Explicit global backend/model/effort changes made through settings survive restart and override the initial setup choice. Arbitrary startup environment values do not override setup. The internal persisted `XANGI_GLOBAL_BACKEND_OVERRIDE` flag distinguishes an explicit settings change.
@@ -1910,6 +1935,7 @@ For hybrid Qwen3 models on local OpenAI-compatible servers (vLLM/SGLang), `LOCAL
 | Variable | Description |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------- |
 | `SLACK_BOT_TOKEN` | Slack Bot Token (xoxb-...) |
+| `SLACK_USER_TOKEN` | Optional user OAuth access token for explicit `--as user` operations |
 | `SLACK_APP_TOKEN` | Slack App Token (xapp-...) |
 | `SLACK_ALLOWED_USER` | Allowed user ID |
 | `SLACK_AUTO_REPLY_CHANNELS` | Channel IDs to respond without mention |
@@ -2101,12 +2127,15 @@ xangi workspace list
 xangi workspace create --name Writing --path /absolute/path/to/docs
 xangi workspace set-path WORKSPACE_ID --path /absolute/path/to/new-docs
 xangi agent create --name Writer --workspace-id WORKSPACE_ID --prompt "Cite sources"
+xangi agent update AGENT_ID --name "Reader" --workspace-id WORKSPACE_ID
 xangi agent list
 xangi team create --name Documents --members-json '[{"agentId":"AGENT_ID","role":"Writing"},{"agentId":"xangi:default","role":"Review"}]' --prompt "Check sources"
 xangi team show Documents
 ```
 
-Use the IDs returned by the preceding commands. An optional `--leader-agent-id ID` selects a separate leader; that agent cannot also be a member. `--max-concurrency` (default 16) and `--serialize-workspaces true|false` (default false) match the UI settings. These commands run inside an xangi conversation, through its live tool server. Delegated workers cannot create these settings. If a later creation fails, already saved items remain; reuse their IDs rather than creating duplicates.
+Use the IDs returned by the preceding commands. An optional `--leader-agent-id ID` selects a separate leader; the same Agent may also fill independent member slots. `--max-concurrency` (default 16) and `--serialize-workspaces true|false` (default false) match the UI settings. These commands run inside an xangi conversation, through its live tool server. Delegated workers cannot create these settings. If a later creation fails, already saved items remain; reuse their IDs rather than creating duplicates.
+
+`agent update AGENT_ID --name NAME --workspace-id WORKSPACE_ID` changes only the supplied name and/or workspace assignment; either option can be used alone. It preserves the ID, instructions, AI settings and ID references from Teams and extensions. Use `default` or `xangi:default` for the default agent. Delegated workers cannot update settings. Choose an existing registered ID from `workspace list`. New sessions and runs use the updated workspace; saved sessions retain their workspace snapshots. No files are moved.
 
 `workspace set-path` changes a non-default workspace path while preserving its ID, Agent references and channel bindings. New sessions use the new path; saved sessions keep their original path, so start a new session to work in the new location. The target must already exist and pass the registration path checks. Files and Git worktrees are not moved or repaired. Configure the default workspace with `WORKSPACE_PATH`.
 
@@ -2128,7 +2157,7 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 Project forms contain a name, shared instructions, a default Agent or Team, and an optional connected channel. Agent forms contain a name, workspace, basic instructions and AI settings.
 
-A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Only runs without an agent accept a caller-selected workspace.
+A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Runs without an agent and self runs with --workspace-id accept a caller-selected workspace.
 
 ### Asking the default agent
 
@@ -2136,7 +2165,11 @@ Settings → Agents lists the default agent with a default badge. Its editor con
 
 `xangi agent list` includes the reserved `xangi:default` target. Use `xangi agent run default --task "question and necessary background"` (or `run xangi:default`) to ask it. It uses the instance's default workspace and AI settings in a new conversation, not the caller's settings or an existing parent's conversation history. Results return through the existing completion delivery and `status` / `wait` commands. Answers are information, not user authorization.
 
-A delegated worker may consult default and retrieve its own answer. It must use `wait` to receive and incorporate the answer before completing its own task. The default consultation cannot delegate further; other nested delegation requires an explicit Team grant. Duplicate requests and the existing concurrency limit also apply. `inter_chat_ask` remains for other xangi instances and requires no changes for this feature.
+A delegated worker may consult default and retrieve its own answer. It must use `wait` to receive and incorporate the answer before completing its own task. The default consultation cannot delegate further; other nested delegation requires an explicit Team grant. Different jobs may use the same Agent concurrently; the concurrency cap includes pending admissions. `inter_chat_ask` remains for other xangi instances and requires no changes for this feature.
+
+Use `agent run self --task TEXT` to start a new session using the parent Agent instructions, effective AI settings and saved workspace. Different jobs may run the same Agent concurrently. The default `--context fresh` passes only instructions and the task. Explicit `--context history` copies at most 200 recent xangi user/assistant entries through the last completed answer; omissions of older messages are labeled and copies over 48000 characters are rejected. It excludes the unfinished turn and provider tool/reasoning state, is not a native fork, and does not synchronize subsequent parent changes. `default` retains its instance-default behavior. Use registered isolated worktrees via self's `--workspace-id ID` for concurrent file editing.
+
+Use a distinct `--request-id KEY` per intended job. Retrying the exact request with the same key returns the existing run (in-progress admission asks for a retry with the same key); changed content or options are rejected. Without a key each call creates a new job.
 
 ### Agent execution settings
 
@@ -2147,7 +2180,7 @@ The local-llm backend exposes Agent (tools enabled)/Chat (conversation only) and
 
 ### Extension favorites
 
-Use “☆ お気に入り” on installed extensions with a UI to add shortcuts to the left navigation rail. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Use “編集” to rename a favorite (up to 80 characters); save an empty name to restore the default. Default labels omit the leading `xangi-`, and extensions have distinct vector icons. Rail labels wrap to two lines and expand on hover or keyboard focus; the mobile More menu wraps the full name. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.
+Use “☆ お気に入り” on installed extensions with a UI to save favorites. Open an extension by selecting its name in the Favorites list. Turn “サイドバー表示” OFF to keep a favorite in that list while hiding it from the left rail and mobile More menu. Existing and new favorites default to ON. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Use “編集” to rename a favorite (up to 80 characters); save an empty name to restore the default. Default labels omit the leading `xangi-`, and extensions have distinct vector icons. Rail labels wrap to two lines and expand on hover or keyboard focus; the mobile More menu wraps the full name. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.
 
 <a id="agent-command-guidance"></a>
 
@@ -2208,11 +2241,13 @@ Discovery lists tools-capable models from the public API; listing does not guara
 
 ### Teams (member groups)
 
+One Agent may occupy multiple independent member slots. Use the `memberId` returned by `team show` in `--assignments-json '[{"memberId":"SLOT_ID","task":"independent work"}]'`. Legacy `agentId` assignments remain valid only when that Agent has one slot. Omitted slot IDs are generated when saving; existing unique Agent IDs remain valid slot IDs.
+
 Create Teams with members and shared instructions in Settings or in conversation. The calling conversation leads unless an optional leader Agent is selected. Subleaders and reporting lines are not configurable.
 
 Agents have basic instructions describing expertise and standing behavior. Legacy Agent role text migrates into these instructions; identical copied Team assignments are cleared while distinct assignments are preserved. The optional Team-specific assignment is separate and is not copied from the Agent. Leave it blank for the caller to decide the current work.
 
-Teams are selected with `team run`, not assigned to channels. Discord `/team list` and `/team show id:` inspect registered Teams. Each Agent may be assigned to zero or one channel across Discord and Slack. Clear the existing assignment before moving it; busy assignments cannot change.
+Teams are selected with `team run`, not assigned to channels. Inspect registered Teams in Web settings or with `xangi team list/show`. Each Agent may be assigned to zero or one channel across Discord and Slack. Clear the existing assignment before moving it; busy assignments cannot change.
 
 The Agent list and editor show the current work channel. The editor can assign or clear a Discord/Slack channel. Clear the current binding before choosing another channel. These actions save immediately and separately from the Agent form. Busy operations are rejected without losing the binding. Duplicate assignment errors identify the current platform and channel ID (a channel reference on Discord). Unknown channel names fall back to IDs.
 
@@ -2247,6 +2282,8 @@ AI title generation runs alongside the conversation with a 60-second deadline th
 
 ### Child agent status checks and result delivery
 
+Monitor integrates direct child requests and Team execution into the existing Working/Completed session cards. Children follow their own conversation lifecycle and use the same close/reopen actions and completed-history time filters. Cards show Team names, parent navigation and delivery status. Parent cards show counts by child state with a collapsed child list; assignment summaries appear only in the selected child details. A child can open its parent even when the parent is outside the visible range. Child success does not mean the parent has finished integration; review results before closing child sessions.
+
 Agent and Team work requested by a scheduled Discord or Slack turn returns to that schedule conversation. It does not mix results into or switch the active interactive conversation at the same destination. Explicitly closing or archiving the schedule history disables automatic continuation. Work requested by a Web schedule returns to the Web conversation created for that schedule.
 
 On Discord, Slack, Web, LINE, and Telegram, child completion resumes result review and the response in the requesting parent session, separately from scheduled execution. Closing, deleting, or switching away from the parent prevents automatic resumption; the result and resumption failure are reported after the retry limit. Older runs without a parent session identity follow the same fallback. When the delivery transport is definitely unavailable, only the saved result is retried, without rerunning the AI. Uncertain delivery is not resent automatically to avoid duplicate posts.
@@ -2273,7 +2310,7 @@ Discord continues to honor thread mode while secret. Threads automatically creat
 
 The Discord slash command requires `mode`, like `/threadmode`. Select `on` (start), `off` (end), or `status` (show current state).
 
-Use `/secret on`, `/secret status`, and `/secret off` in the same Discord, Telegram or LINE conversation. Wait for confirmation before sending private content; never combine the control command and private text. Explicit conversation resets such as `/new` end the mode. Web has a **シークレット** (Secret) button and the same text shortcuts. Complete or delete the conversation to discard it; merely closing a browser tab/pane does not end the server session.
+Use `/secret on`, `/secret status`, and `/secret off` in the same Telegram or LINE conversation. Discord registration and the Web command palette also include `/secret on|off|status`. Wait for confirmation before sending private content; never combine the control command and private text. Explicit conversation resets such as `/new` end the mode. Web has a **シークレット** (Secret) button; `/secret on|off|status` is also available in the palette. Complete or delete the conversation to discard it; merely closing a browser tab/pane does not end the server session.
 
 On Discord, Slack, Telegram and LINE, ending secret mode does not create an empty normal session. A normal session is created when the next ordinary message arrives.
 
@@ -2296,13 +2333,13 @@ References: [Codex CLI](https://developers.openai.com/codex/cli/reference), [Cla
 
 Backend-specific suppression: Copilot uses `--log-level none`, `--no-remote`, and `--no-remote-export`; Antigravity sends `--log-file` to the OS null device; OpenCode sets process-local inline configuration `share: disabled`. These do not disable their session databases or all artifacts. Cursor/Grok have no per-conversation non-persistence switch in the CLI help and official references checked on 2026-10-09; account privacy/ZDR settings remain user-managed. Local LLM server logging remains server-managed. OpenRouter secret requests force `provider.data_collection: deny` and `provider.zdr: true`, even when ordinary settings relax them; unavailable routes fail instead of falling back to retention-enabled routes.
 
-Slack `/secret on` creates a dedicated thread. Reply inside that thread only; channel-level messages are not private. `/secret off/status` refers to the thread started by the same user in that channel. Register `/secret` in the Slack App configuration. Discord registers `/secret` with on/off/status choices; Web includes it in the command palette; Telegram/LINE accept it as a text command.
+Slack `/secret on` creates a dedicated thread. Reply inside that thread only; channel-level messages are not private. `/secret off/status` refers to the thread started by the same user in that channel. Register `/secret` in the Slack App configuration. Discord and Web also register `/secret`; Telegram/LINE text commands and existing Slack registrations remain available.
 
 ### Slack ordinary messages and Japanese requests
 
 A normal message such as `@xangi /secret on` works without Slack slash-command registration. Use an actual bot mention. Continue at the destination of the bot's confirmation: inside its reply thread when thread replies are enabled, otherwise in the channel conversation. This also works when sent inside an existing thread.
 
-Only explicitly handled commands support this path: `/secret on|off|status`, `/new` (also `!new` / `new`), `/stop` (also `!stop` / `stop`), and `!delete [ts]` (bare `delete` without arguments also works). `/delete`, `/models`, `/settings`, `/backend`, `/agent`, `/skill`, and `/restart` require registered Slack slash commands. Mention-prefixed forms of these are ordinary AI input, not the dedicated command. Authorization and bot-response rules still apply.
+Only explicitly handled commands support this path: `/secret on|off|status`, `/new` (also `!new` / `new`), `/stop` (also `!stop` / `stop`), and `!delete [ts]` (bare `delete` without arguments also works). `/settings`, `/backend`, `/agent`, `/workspace`, `/skill`, `/schedule`, `/help`, `/autoreply`, and `/threadmode` require matching Slack App registrations. The retired `/delete`, `/models`, and `/restart` are no longer handled. Mention-prefixed forms of these are ordinary AI input, not the dedicated command. Authorization and bot-response rules still apply.
 
 Standalone Japanese requests also control secret mode: `シークレットにして` or `シークレットモードを開始してください` starts it; `シークレットを終了して` or `シークレットモードを解除してください` ends it; `今シークレット？` or `シークレットの状態を教えて` checks it. Mention the bot on Slack. The same parser applies to Discord, Telegram, LINE, Web, Web chat API and Even Terminal. xangi executes these deterministically without an AI decision. Quoted examples, negations, explanations and requests mixed with other content do not switch the mode. Wait for confirmation before sending content separately; the initial control request may be recorded before the mode starts. Arbitrary paraphrases are not supported.
 
@@ -2310,14 +2347,14 @@ Default and named agents share the model and advanced-settings form and save the
 
 <a id="agent-self-delegation"></a>
 
-Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default, except for explicitly granted one-level Team requests. This restriction is persisted with the run and survives restarts.
+Ordinary conversations may request their own agent in new independent sessions with `run self`; context is fresh unless `--context history` explicitly copies completed xangi conversation messages. An agent started by a self-request cannot delegate further, including consultations with default, except for explicitly granted one-level Team requests. This restriction is persisted with the run and survives restarts.
 
 Shell commands in local-llm and OpenRouter automatically pass the current conversation ID, platform, and agent workspace to the xangi CLI. No manual conversation ID is needed for `xangi agent run`.
 
 
 ### Optional Team leader in Settings
 
-In Settings → Teams → Create/Edit, select a registered Agent in the optional Leader field and save. The default is no designated leader: the caller plans and integrates the work. Leaders and members must be different Agents. Clear the selection and save to restore caller-led behavior for subsequent requests; existing Teams remain unchanged.
+In Settings → Teams → Create/Edit, select a registered Agent in the optional Leader field and save. The default is no designated leader: the caller plans and integrates the work. Leaders and members may reuse the same Agent configuration in separate sessions. Clear the selection and save to restore caller-led behavior for subsequent requests; existing Teams remain unchanged.
 
 For a Team with a configured leader, call `xangi team run TEAM_ID --task TEXT` without member assignments or an explicit grant. The leader uses its own AI settings, instructions and workspace. It may dispatch only that Team's members using `team run --assignments-json`, collect their results, request revisions and integrate the final answer. Caller-led Teams still require complete assignments.
 
@@ -2329,7 +2366,7 @@ Delegated leaders may list only the members needed for each round in `--assignme
 
 Dispatch a registered leader with `xangi agent run LEADER_ID --task TEXT --allow-teams-json '["TEAM_ID"]'`. The grant belongs to that request only. The leader reads `team show`, submits independent assignments with `team run --assignments-json`, and repeatedly uses `team wait` with the same run ID to collect and integrate results. Only one nested Team may run at a time; subsequent work/review/revision batches are allowed within the cumulative limit. If the leader returns while its Team is unfinished, execution waits and resumes the leader with the results. Nested completion does not trigger another leader turn.
 
-Unlisted Teams, parent/leader membership cycles, and further delegation by members (including default consultations) are rejected. Membership cycles are checked again at dispatch. Stop, failure and expiry cancel descendants and prevent queued members from starting. Closed grants cannot be reused; submit a new leader request instead.
+Unlisted Teams and further delegation by members (including default consultations) are rejected. Reusing parent/leader Agent settings starts separate sessions and grants no further delegation. Stop, failure and expiry cancel descendants and prevent queued members from starting. Closed grants cannot be reused; submit a new leader request instead.
 
 The originating conversation's `AGENT_MAX_CONCURRENT_REQUESTS` slots are shared by leaders and nested members; Team aggregation does not consume another slot. At least two slots are required. `--delegation-max-members` caps cumulative member launches, including failed batches (default 64, range 1–256). `--delegation-timeout-ms` sets one absolute deadline from acceptance (default `TIMEOUT_MS` or 3600000 ms, range 1000–36000000). Descendants and later rounds do not reset it. Monetary limits and midstream token-budget enforcement are not supported. These controls apply to xangi requests, not arbitrary shell subprocesses.
 
@@ -2384,7 +2421,12 @@ Codex questions are enabled by default in ordinary Web, Discord and Slack conver
 
 Web shows a dedicated form supporting choices, free text, and cancellation. Pending questions survive a browser reload, but not a server restart. Discord shows each question and an answer button; enter choice numbers or free text in the modal (comma-separated numbers for multiple selection). Slack opens a form for the whole batch with the same input format; closing it cancels the question. After submission, the message retains the questions and answers. Unanswered requests are marked as cancelled or expired. Discord and Slack only accept answers from the user who started the turn. Web uses the existing Web access boundary.
 
-Questions expire after ten minutes, or earlier if the existing runner timeout expires. No answer is preselected. Answers are consumed once, scoped to a conversation and actor, and rejected after cancellation/completion. Question state is in memory only.
+The question deadline is configurable with `AGENT_USER_INPUT_TIMEOUT_MS` (milliseconds, default `600000`, range `1000`–`86400000`; invalid values use the default). For example, `120000` waits two minutes. Restart after changing configuration. The existing execution timeout still applies. By default, when a question expires, the agent receives an explicit system notice that the user is currently unable to respond and continues already authorized work with stated assumptions. Silence is never a selected option, consent, or authorization; only actions requiring explicit approval stay pending. Explicit question cancellation and Stop still cancel execution.
+
+Web Settings → startup settings → question waiting exposes the deadline, timeout action, and a free-text automatic reply. Save and restart to apply. `AGENT_USER_INPUT_TIMEOUT_ACTION=reply` (default) passes the message to AI and continues; `stop` stops without sending a reply. `AGENT_USER_INPUT_TIMEOUT_MESSAGE` accepts up to 4000 characters, including newlines through the Web textarea. Empty values retain the built-in user-unavailable message. A one-line message can also be set directly in the environment. Web persistence uses an internal tagged `json:` encoding to preserve newlines and quotes. Custom messages are labeled as automatic system notices, never as actual user answers or authorization. Each pending question captures its deadline, action and message when it opens.
+
+
+Questions expire at the configured deadline, or earlier if the existing runner timeout expires. No answer is preselected. Answers are consumed once, scoped to a conversation and actor, and rejected after cancellation/completion. Question state is in memory only.
 
 Async Codex questions (`request_user_input_async`) also open the answer form. Answers steer the active turn or start a continuation in the same thread if the provider turn has already ended. The form stays open until answered, cancelled or expired.
 

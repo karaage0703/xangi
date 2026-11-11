@@ -1,3 +1,4 @@
+import { tokenizeCommand, quoteCommandArgument } from '../../src/chat-command-input';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { requestJson } from './api';
 
@@ -37,7 +38,7 @@ function useCommandPalette(
   return useMemo(() => {
     if (!value.startsWith('/')) return { title: '', options: [], done: true };
     const trailingSpace = /\s$/.test(value);
-    const parts = value.trim().split(/\s+/);
+    const parts = tokenizeCommand(value.trim(), true);
     const commandQuery = (parts.shift() || '').replace(/^\//, '').toLowerCase();
     const command = commands.find((candidate) => candidate.name.toLowerCase() === commandQuery);
     if (!command || (parts.length === 0 && !trailingSpace)) {
@@ -113,11 +114,11 @@ function useCommandPalette(
                 name: candidate.name,
                 description: candidate.description || option.description,
                 hint: candidate.value,
-                usage: `${prefix} ${candidate.value} `,
+                usage: `${prefix} ${quoteCommandArgument(candidate.value)} `,
               })),
           };
         }
-        prefix += ` ${choice.value}`;
+        prefix += ` ${quoteCommandArgument(choice.value)}`;
         remaining.shift();
         options = options.slice(1);
         if (options.length === 0) return { title: '', options: [], done: true };

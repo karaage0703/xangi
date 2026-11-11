@@ -228,6 +228,48 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
   },
+  {
+    id: 'xangi-studio',
+    displayName: 'xangi-studio',
+    description: 'PR・資料・原稿を開き、レビューとxangiへの依頼を行う画面。',
+    permissions: [
+      '指定したPR・リポジトリ・資料の読み取りと保存',
+      'AIレビューと会話ログの読み取り',
+      '保存済み成果物を添えたxangiへの依頼と結果の取得',
+      'ローカル原稿の手編集と保存',
+      '利用者の明示操作によるNotionへの保存',
+    ],
+    capabilities: ['review.changes'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-studio',
+  },
+  {
+    id: 'xangi-feed',
+    displayName: 'xangi-feed',
+    description:
+      'RSS・Podcast・論文・YouTubeの新着を読み、Good/Badで好みを育て、xangiで議論します。',
+    permissions: [
+      '登録した公開RSS/Atomフィード・対応するWebページをインターネットから取得',
+      'workspaceの.xangi-feedへ記事・評価・メモ・会話IDを保存',
+      'xangi-searchから記事に関連する記録を取得し、記事の抜粋とともに選択済みAIへ渡して日本語の要点・推薦コメントを自動または手動で生成',
+      '本人の操作時だけxangiに会話を作成し、記事の文脈を送信',
+      '本人の保存依頼時に記事の文脈・要約・メモを利用者の選んだAIへ渡し、保存スキルに従うNotion保存用の会話を作成して結果を記録',
+      '本人の記事追加・本文再取得操作時に公開ページ本文とYouTube公開字幕を取得（動画・音源ファイルは自動取得しない）',
+    ],
+    capabilities: ['xangi-feed.manage'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-feed',
+  },
 ];
 
 export interface ExtensionSetupRequest {

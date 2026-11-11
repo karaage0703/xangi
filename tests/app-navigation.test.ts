@@ -29,6 +29,23 @@ describe('AppNavigation', () => {
     expect(html).toContain('拡張一覧で状態を確認');
   });
 
+  it('hides opted-out favorites and the empty rail group, including mobile links', async () => {
+    const { FavoriteLinks } = await import('../web-ui/src/extensionFavorites.js');
+    const favorites = [
+      { id: 'hidden', displayName: 'Hidden', available: true, showInSidebar: false },
+      { id: 'shown', displayName: 'Shown', available: true, showInSidebar: true },
+    ];
+    const props = { current: 'extensions' as const, moreOpen: false, onMore: () => undefined };
+    const rail = renderToStaticMarkup(createElement(AppNavigation, { ...props, favorites }));
+    const mobile = renderToStaticMarkup(createElement(FavoriteLinks, { favorites }));
+    for (const html of [rail, mobile]) {
+      expect(html).not.toContain('/api/extensions/hidden/ui');
+      expect(html).toContain('/api/extensions/shown/ui');
+    }
+    const empty = renderToStaticMarkup(createElement(AppNavigation, { ...props, favorites: favorites.slice(0, 1) }));
+    expect(empty).not.toContain('app-navigation-favorites');
+  });
+
   it('marks the current destination and exposes the mobile more control', () => {
     const html = renderToStaticMarkup(
       createElement(AppNavigation, {

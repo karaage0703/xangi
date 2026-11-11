@@ -17,6 +17,8 @@ import { RunnerManager } from './runner-manager.js';
 export { prependRuntimeContext, buildRuntimeContextBlock } from './runtime-context.js';
 
 export interface RunOptions {
+  /** Caller cancellation fence for asynchronous runner preparation. */
+  signal?: AbortSignal;
   /** Best-effort suppression of conversation persistence. */
   secret?: boolean;
   /** Select the persistent Codex transport for an incoming LINE conversation. */

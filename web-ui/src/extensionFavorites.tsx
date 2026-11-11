@@ -6,6 +6,7 @@ export interface ExtensionFavorite {
   id: string;
   displayName: string;
   available: boolean;
+  showInSidebar?: boolean;
   defaultDisplayName?: string;
 }
 const changedEvent = 'xangi-extension-favorites-changed';
@@ -47,8 +48,9 @@ export function useExtensionFavorites() {
   }, [refresh]);
   const update = async (
     id: string,
-    action: 'add' | 'remove' | 'up' | 'down' | 'rename',
-    displayName?: string
+    action: 'add' | 'remove' | 'up' | 'down' | 'rename' | 'set-sidebar',
+    displayName?: string,
+    showInSidebar?: boolean
   ) => {
     if (pending.current) return;
     pending.current = true;
@@ -56,7 +58,7 @@ export function useExtensionFavorites() {
     try {
       await requestJson('/api/extension-favorites', {
         method: 'POST',
-        body: JSON.stringify({ id, action, displayName }),
+        body: JSON.stringify({ id, action, displayName, showInSidebar }),
       });
       window.dispatchEvent(new Event(changedEvent));
       await refresh();
@@ -75,22 +77,24 @@ export function useExtensionFavorites() {
 export function FavoriteLinks({ favorites }: { favorites: ExtensionFavorite[] }) {
   return (
     <>
-      {favorites.map((favorite) => (
-        <a
-          className="extension-favorite-link"
-          aria-label={favorite.displayName}
-          key={favorite.id}
-          href={
-            favorite.available
-              ? `/api/extensions/${encodeURIComponent(favorite.id)}/ui`
-              : '/extensions'
-          }
-          title={`${favorite.displayName}${favorite.available ? '' : '（拡張一覧で状態を確認）'}`}
-        >
-          <ExtensionIcon id={favorite.id} />
-          <span>{favorite.displayName}</span>
-        </a>
-      ))}
+      {favorites
+        .filter((favorite) => favorite.showInSidebar !== false)
+        .map((favorite) => (
+          <a
+            className="extension-favorite-link"
+            aria-label={favorite.displayName}
+            key={favorite.id}
+            href={
+              favorite.available
+                ? `/api/extensions/${encodeURIComponent(favorite.id)}/ui`
+                : '/extensions'
+            }
+            title={`${favorite.displayName}${favorite.available ? '' : '（拡張一覧で状態を確認）'}`}
+          >
+            <ExtensionIcon id={favorite.id} />
+            <span>{favorite.displayName}</span>
+          </a>
+        ))}
     </>
   );
 }
