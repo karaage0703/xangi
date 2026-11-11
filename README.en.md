@@ -10,6 +10,12 @@
 
 xangi is an AI assistant that connects Claude Code, Codex, OpenCode, Cursor CLI, Grok CLI, Antigravity CLI, GitHub Copilot CLI, or a Local LLM to Discord, Slack, Telegram, Web Chat, and LINE. Discord is recommended, but xangi can also run with only a browser.
 
+<p>
+  <img src="docs/images/chat-desktop.png" width="640" alt="Desktop Web Chat discussing a fictional notes app, with conversation history on the left and messages and composer on the right">
+</p>
+
+Real Web Chat UI with a fictional notes app discussion (in Japanese). Messages, history, and reply suggestions are dummy data, not actual AI output. See the [usage guide](docs/en/usage.md#web-chat-ui) for the mobile screenshot and the [capture instructions](docs/readme-screenshots.md) to reproduce these screenshots.
+
 ## Key features
 
 - Use your preferred AI agent from Discord, Web Chat, and other chat surfaces
@@ -87,6 +93,8 @@ See the [usage guide](docs/en/usage.md#first-install-without-git) for installati
 
 The [usage guide](docs/en/usage.md) covers chat commands, the terminal CLI, scheduling, Docker, Local LLMs, and environment variables.
 
+Use `/help` for the Discord and Web command list. Run skills with `/skill name` or `/<skill-name>`, and list models with `/backend models`. Discord keeps `/autoreply` and `/threadmode`; other detailed settings are consolidated under `/settings`.
+
 ## Platform setup
 
 - [Discord](docs/en/discord-setup.md)
@@ -149,6 +157,8 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-tasks](https://github.com/karaage0703/xangi-tasks) - Task and category management, with requests to xangi from tasks
 - [xangi-remote-desktop](https://github.com/karaage0703/xangi-remote-desktop) - View and control the same PC’s VNC desktop from a browser
 - [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Japanese input using Chrome speech recognition
+- [xangi-studio](https://github.com/karaage0703/xangi-studio) - Review PRs and documents, and edit drafts
+- [xangi-feed](https://github.com/karaage0703/xangi-feed) - A feed reader for RSS, blogs, papers, podcasts, and YouTube, with article discussions through xangi
 
 ## Related projects
 

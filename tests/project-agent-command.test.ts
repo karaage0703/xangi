@@ -65,13 +65,13 @@ it('discovers all agents without loading their full prompts, and returns persist
   });
   expect(AgentRunStore.fromDataDir(root).get(run.id)?.projectId).toBeUndefined();
 });
-it('rejects unknown agents, duplicate work, other-parent result access and nested delegation', async () => {
+it('allows concurrent work while rejecting unknown agents, other-parent result access and nested delegation', async () => {
   const { writer, reviewer, call, runs } = setup();
   await expect(call({ action: 'run', agent: 'outside', task: 'test' })).rejects.toThrow(
     '見つかりません'
   );
   const run = await call({ action: 'run', agent: reviewer.id, task: 'test' });
-  await expect(call({ action: 'run', agent: reviewer.id, task: 'test' })).rejects.toThrow('実行中');
+  expect((await call({ action: 'run', agent: reviewer.id, task: 'test' })).id).not.toBe(run.id);
   await expect(call({ action: 'status', id: run.id }, 'other-parent')).rejects.toThrow(
     '見つかりません'
   );
@@ -230,7 +230,7 @@ it('discovers and consults default, normalizes aliases, and restricts result acc
   const run = await call({ action: 'run', agent: 'default', task: 'find the existing avatar' });
   expect(start.mock.calls[0][0]).toMatchObject({ agentId: 'xangi:default', workspaceId: 'default' });
   expect(start.mock.calls[0][0].backend).toBeUndefined();
-  await expect(call({ action: 'run', agent: 'xangi:default', task: 'duplicate' })).rejects.toThrow('実行中');
+  expect((await call({ action: 'run', agent: 'xangi:default', task: 'another task' })).id).not.toBe(run.id);
   runs.markSucceeded(run.id, { result: 'avatar path', sessionId: 'provider' });
   expect(await call({ action: 'wait', id: run.id })).toMatchObject({ result: 'avatar path' });
   await expect(call({ action: 'status', id: run.id }, 'unrelated')).rejects.toThrow('見つかりません');
@@ -258,7 +258,7 @@ it.each(['default', 'xangi:default', 'named'])('allows ordinary self-request %s 
   expect(run.selfDelegation).toBe(true);
   expect(`web-chat:${run.appSessionId}`).not.toBe(context);
   expect(AgentRunStore.fromDataDir(root).get(run.id)?.selfDelegation).toBe(true);
-  await expect(call({ action: 'run', agent, task: 'duplicate' }, context)).rejects.toThrow('実行中');
+  expect((await call({ action: 'run', agent, task: 'another task' }, context)).id).not.toBe(run.id);
   for (const next of [agent, 'default', reviewer.id]) {
     await expect(call({ action: 'run', agent: next, task: 'recurse' }, `web-chat:${run.appSessionId}`)).rejects.toThrow('再委譲');
   }
@@ -289,4 +289,70 @@ it('allows a worker to close its own default consultation, but never itself', as
   runs.markFailed(question.id, new Error('unavailable'));
   expect(await call({ action: 'close', id: question.id }, childContext)).toMatchObject({ ok: true });
   await expect(call({ action: 'close', id: child.id }, childContext)).rejects.toThrow('見つかりません');
+});
+
+it('routes three self tasks independently and reuses only explicit retry IDs', async () => {
+  const { call, start, runs } = setup();
+  const children = await Promise.all(['research', 'verify', 'review'].map((task) =>
+    call({ action: 'run', agent: 'self', task, 'request-id': task })
+  ));
+  expect(new Set(children.map((r) => r.id)).size).toBe(3);
+  expect(new Set(children.map((r) => r.appSessionId)).size).toBe(3);
+  expect(start.mock.calls.every(([body]) => body.inheritParent === true)).toBe(true);
+  expect((await call({ action: 'run', agent: 'self', task: 'research', 'request-id': 'research' })).id).toBe(children[0].id);
+  expect(start).toHaveBeenCalledTimes(3);
+  await expect(call({ action: 'run', agent: 'self', task: 'changed', 'request-id': 'research' })).rejects.toThrow('別の依頼');
+  runs.markSucceeded(children[1].id, { result: 'verified', sessionId: 'verify-provider' });
+  runs.markFailed(children[0].id, new Error('research failed'));
+  expect(await call({ action: 'status', id: children[1].id })).toMatchObject({ result: 'verified', status: 'succeeded' });
+  expect(await call({ action: 'status', id: children[0].id })).toMatchObject({ error: 'research failed', status: 'failed' });
+  expect(await call({ action: 'status', id: children[2].id })).toMatchObject({ status: 'queued' });
+});
+
+it('counts pending admissions and releases reservations after a failed start', async () => {
+  const { catalog, runs, parent } = setup();
+  const oldLimit = process.env.AGENT_MAX_CONCURRENT_REQUESTS;
+  process.env.AGENT_MAX_CONCURRENT_REQUESTS = '1';
+  let rejectStart!: (error: Error) => void;
+  const start = vi.fn(() => new Promise<never>((_, reject) => { rejectStart = reject; }));
+  const invoke = (id: string) => executeProjectAgentCommand(
+    { action: 'run', agent: 'self', task: 'task', 'request-id': id }, { channelId: parent }, { catalog, runs, start }
+  );
+  try {
+    const pending = invoke('one');
+    const failure = expect(pending).rejects.toThrow('start failed');
+    await expect(invoke('one')).rejects.toThrow('受付中');
+    await expect(invoke('two')).rejects.toThrow('1件');
+    expect(start).toHaveBeenCalledTimes(1);
+    rejectStart(new Error('start failed'));
+    await failure;
+    const again = invoke('two');
+    const secondFailure = expect(again).rejects.toThrow('second failed');
+    expect(start).toHaveBeenCalledTimes(2);
+    rejectStart(new Error('second failed'));
+    await secondFailure;
+  } finally {
+    if (oldLimit === undefined) delete process.env.AGENT_MAX_CONCURRENT_REQUESTS;
+    else process.env.AGENT_MAX_CONCURRENT_REQUESTS = oldLimit;
+  }
+});
+
+it('validates context mode and limits history copying to self', async () => {
+  const { call, writer, start } = setup();
+  await expect(call({ action: 'run', agent: 'self', task: 't', context: 'fork' })).rejects.toThrow('--context');
+  await expect(call({ action: 'run', agent: writer.id, task: 't', context: 'history' })).rejects.toThrow('self');
+  await call({ action: 'run', agent: 'self', task: 't', context: 'history', 'workspace-id': 'isolated' });
+  expect(start.mock.calls[0][0]).toMatchObject({ contextMode: 'history', workspaceOverride: 'isolated' });
+});
+
+it('keeps retry identity independent of a leader prompt suffix and rejects changed options', async () => {
+  const { call, catalog, reviewer, writer, runs } = setup();
+  const team = catalog.saveTeam({name:'workers',members:[{agentId:writer.id}]});
+  const flags={action:'run',agent:reviewer.id,task:'lead this work','request-id':'leader-retry','allow-teams-json':JSON.stringify([team.id])};
+  const run=await call(flags);
+  // The execution path may add orchestration instructions to the persisted task.
+  // A retry still refers to the original, signed request rather than that prompt.
+  expect((await call(flags)).id).toBe(run.id);
+  await expect(call({...flags,'delegation-max-members':'3'})).rejects.toThrow('別の依頼');
+  expect(runs.list()).toHaveLength(1);
 });

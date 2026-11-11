@@ -619,11 +619,6 @@ function ChatPane({
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState('');
   const [renaming, setRenaming] = useState(false);
-  const [restartConfirmation, setRestartConfirmation] = useState<{
-    input: string;
-    message: string;
-  } | null>(null);
-  const [restarting, setRestarting] = useState(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -784,7 +779,6 @@ function ChatPane({
     setDiscordComposeEnabled(false);
     setRenameDialogOpen(false);
     setRenameError('');
-    setRestartConfirmation(null);
     followBottomRef.current = !linkedMessageId;
     linkedMessageScrolledRef.current = undefined;
     setTimeoutState({});
@@ -1275,13 +1269,19 @@ function ChatPane({
 
   async function executeCommand(input: string) {
     const result = await requestJson<{
-      kind: 'message' | 'skills' | 'chat' | 'action';
+      kind: 'message' | 'skills' | 'chat' | 'action' | 'session';
+      sessionId?: string;
       message?: string;
       displayMessage?: string;
       skipPermissions?: boolean;
-      action?: 'new' | 'retitle' | 'stop' | 'extend' | 'restart';
+      action?: 'new' | 'retitle' | 'stop';
     }>('/api/web-commands', jsonInit('POST', { appSessionId: sessionId, input }));
-    if (result.kind === 'message') {
+    if (result.kind === 'session' && result.sessionId) {
+      setDraft('');
+      setPaletteOpen(false);
+      onSessionChange(result.sessionId);
+      await onSessionsInvalidated();
+    } else if (result.kind === 'message') {
       setDetail((current) =>
         current
           ? {
@@ -1313,36 +1313,6 @@ function ChatPane({
       setDraft('');
       setPaletteOpen(false);
       await stopChat();
-    } else if (result.action === 'extend') {
-      setDraft('');
-      setPaletteOpen(false);
-      await extendTimeout();
-    } else if (result.action === 'restart') {
-      setRestartConfirmation({
-        input,
-        message: result.message || 'xangiを再起動しますか？',
-      });
-    }
-  }
-
-  async function confirmRestart() {
-    const pending = restartConfirmation;
-    if (!pending || restarting) return;
-    setRestarting(true);
-    setError('');
-    try {
-      await requestJson('/api/web-commands', {
-        ...jsonInit('POST', { appSessionId: sessionId, input: pending.input, confirm: true }),
-      });
-      setDraft('');
-      setPaletteOpen(false);
-      setRestartConfirmation(null);
-      setError('再起動を開始しました。再接続を待っています');
-    } catch (cause) {
-      setRestartConfirmation(null);
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setRestarting(false);
     }
   }
 
@@ -2263,19 +2233,6 @@ function ChatPane({
           if (!renaming) setRenameDialogOpen(false);
         }}
         onConfirm={() => void confirmRename()}
-      />
-      <ConfirmDialog
-        open={Boolean(restartConfirmation)}
-        title="xangiを再起動"
-        description={restartConfirmation?.message || 'xangiを再起動しますか？'}
-        confirmLabel="再起動"
-        busyLabel="開始中…"
-        busy={restarting}
-        variant="danger"
-        onCancel={() => {
-          if (!restarting) setRestartConfirmation(null);
-        }}
-        onConfirm={() => void confirmRestart()}
       />
     </section>
   );

@@ -45,19 +45,25 @@ export async function handleInterChatRequest(
     return true;
   }
 
-  if (req.method === 'POST' && url === '/api/inter-chat/ask') {
-    if (!agentRunner) {
+  if (
+    req.method === 'POST' &&
+    ['/api/inter-chat/ask', '/api/inter-chat/submit', '/api/inter-chat/status'].includes(url)
+  ) {
+    if (!agentRunner && url !== '/api/inter-chat/status') {
       jsonResponse(res, 503, { error: 'agent runner is unavailable' });
       return true;
     }
     try {
       const raw = await readBody(req, 72 * 1024);
       const body = raw ? (JSON.parse(raw) as Partial<DirectedHttpRequest>) : {};
+      if (!body || typeof body !== 'object' || Array.isArray(body))
+        throw new Error('body must be an object');
       const result = await processDirectedHttpRequest(
         body,
         req.headers.authorization,
-        agentRunner,
-        workdir
+        agentRunner!,
+        workdir,
+        url.endsWith('/submit') ? 'submit' : url.endsWith('/status') ? 'status' : 'wait'
       );
       jsonResponse(res, result.status, result.body);
     } catch (error) {

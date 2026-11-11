@@ -19,6 +19,13 @@ const nativeFetch=window.fetch;
 window.fetch=async(url,init={})=>{
   if(!String(url).startsWith('/api/'))return nativeFetch(url,init);
   window.__requests.push({url:String(url),method:init.method||'GET',body:init.body});
+  if(String(url).startsWith('/api/web-commands')) {
+    if(init.method==='POST') return json({kind:'session',sessionId:'switched-by-command'});
+    return json({commands:[
+      {name:'workspace',description:'作業場所',usage:'/workspace use <name>',options:[{name:'use',description:'切替',type:'subcommand',options:[{name:'name',description:'作業場所',type:'string',required:true,choices:[{name:'Second workspace',value:'Second workspace'}]}]}]},
+      {name:'demo-skill',description:'直接スキル',usage:'/demo-skill [args]',options:[{name:'args',description:'引数',type:'string'}]}
+    ]});
+  }
   if(String(url).startsWith('/api/workspace/file')) {
     if(init.method==='PUT')return new Promise(resolve=>{window.__releaseSave=()=>{const body=JSON.parse(init.body);resolve(json({path:'report.txt',content:body.content,version:'v2',size:10,mtimeMs:Date.now()}));};});
     return json({path:'report.txt',content:'original',version:'v1',size:8,mtimeMs:Date.now()});
@@ -37,7 +44,7 @@ window.fetch=async(url,init={})=>{
 const plugin={name:'qcd-ui-regression-harness',enforce:'pre',transform(code,id){if(id.split('?')[0].endsWith('/Chat.tsx'))return code+'\nexport { ChatPane };';},configureServer(server){server.middlewares.use(async(req,res,next)=>{
   if(!req.url?.startsWith('/__qcd_ui')){next();return;}
   const workspace=req.url.includes('mode=workspace');
-  const component=workspace?"import {Workspace} from '/src/Workspace.tsx';const component=React.createElement(Workspace);":"import {ChatPane} from '/src/Chat.tsx';const noop=()=>{};const component=React.createElement(ChatPane,{pane:{key:'test',sessionId:'fixture'},active:true,config:{uploadAccept:null,uploadMaxBytes:67108864,allowedBackends:[],completionShowElapsed:true},refreshVersion:1,onFocus:noop,onClose:noop,onSessionChange:noop,onBusyChange:noop,onSessionsInvalidated:async()=>{},onComplete:noop,onAbortReady:noop});";
+  const component=workspace?"import {Workspace} from '/src/Workspace.tsx';const component=React.createElement(Workspace);":"import {ChatPane} from '/src/Chat.tsx';const noop=()=>{};const component=React.createElement(ChatPane,{pane:{key:'test',sessionId:'fixture'},active:true,config:{uploadAccept:null,uploadMaxBytes:67108864,allowedBackends:[],completionShowElapsed:true},refreshVersion:1,onFocus:noop,onClose:noop,onSessionChange:id=>{window.__selectedSession=id;},onBusyChange:noop,onSessionsInvalidated:async()=>{},onComplete:noop,onAbortReady:noop});";
   const html='<!doctype html><html lang="ja"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script>'+mock+'</script><script type="module">import React from "react";import {createRoot} from "react-dom/client";import "/src/styles.css";'+component+'createRoot(document.getElementById("root")).render(component);</script></body></html>';
   res.setHeader('content-type','text/html');res.end(await server.transformIndexHtml(req.url,html));
 });}};
@@ -75,6 +82,17 @@ try{
    assert.equal(await evaluate('window.__requests.filter(r=>r.url.startsWith("/api/sessions/fixture?")).length'),before+1);
    const chatShot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(dir+'chat-'+width+'.png',Buffer.from(chatShot.data,'base64'));
    console.log('PASS R02 in real Chromium, width',width,'100 messages retained; one older-page request; no extra tail request');
+   const typeCommand=async value=>evaluate(`(()=>{const input=document.querySelector('textarea.pane-input');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+   await typeCommand('/');await wait('document.querySelectorAll(".command-option").length===2');
+   assert.match(await evaluate('document.querySelector(".command-palette").textContent'),/demo-skill/);
+   await typeCommand('/workspace use ');await wait('document.querySelector(".command-option")?.textContent.includes("Second workspace")');
+   await evaluate('document.querySelector(".command-option").click()');await wait('document.querySelector(".command-run")');
+   assert.equal(await evaluate('document.querySelector("textarea.pane-input").value'),'/workspace use "Second workspace" ');
+   await evaluate('document.querySelector(".command-run").click()');await wait('window.__selectedSession==="switched-by-command"');
+   assert.equal(await evaluate('JSON.parse(window.__requests.filter(r=>r.method==="POST"&&r.url==="/api/web-commands").at(-1).body).input'),'/workspace use "Second workspace"');
+   assert.equal(await evaluate('document.querySelector("textarea.pane-input").value'),'');
+   console.log('PASS command palette in real Chromium, width',width,'direct skill candidate, quoted workspace selection, session navigation, and cleared draft');
+
  }
  assert.equal(errors.length,0,JSON.stringify(errors));console.log('PASS no browser exceptions');
 }finally{ws?.close();browser.kill();log.end();await vite.close();}

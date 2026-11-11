@@ -113,26 +113,49 @@ xangi operates in Socket Mode (no Webhook required).
 | `channels:history`  | Read public channel history      | For responding without mentions |
 | `groups:history`    | Read private channel history     | For responding without mentions |
 
+### User Token Scopes (Optional)
+
+To act as the token owner, add the scopes for the intended operation under **OAuth & Permissions → User Token Scopes**. These are configured separately from Bot Token Scopes.
+
+| Purpose | User Token Scope | Official Slack API reference |
+| --- | --- | --- |
+| Post messages as yourself | `chat:write` | [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/) |
+| Only when creating a public channel as yourself through the API | `channels:write` | [conversations.create](https://docs.slack.dev/reference/methods/conversations.create/) |
+| Read Slack Lists through the API | `lists:read` | [slackLists.items.list](https://docs.slack.dev/reference/methods/slackLists.items.list/) |
+| Create or update Slack Lists through the API | `lists:write` | [slackLists.create](https://docs.slack.dev/reference/methods/slackLists.create/) / [slackLists.update](https://docs.slack.dev/reference/methods/slackLists.update/) |
+
+For posting as yourself, add `chat:write`. `channels:write` is not required for posting. The channel creation and Slack Lists rows apply when using those APIs separately. Add only the scopes needed for the intended operations, then have the token owner reauthorize the app and obtain a new User OAuth Token after scope changes. See [Step 8](#post-as-yourself-optional) for the posting setup.
+
 After adding or changing scopes/events, reinstall the app from **"Install App"** in the left menu. Without reinstalling, `reaction_added` and `reactions:read` will not take effect.
 
 ## 6. Register Slash Commands (Optional)
 
-1. Click **"Slash Commands"** in the left menu
-2. Create the following commands:
+To use native commands, register these names under **Slash Commands → Create New Command** in Slack App management. xangi derives its handlers, help, and feature gates from the same catalog as Discord. Updating Socket Mode handlers does not create or delete Slack App registrations.
 
-| Command     | Description                                                                       |
-| ----------- | --------------------------------------------------------------------------------- |
-| `/new`      | Start a new session                                                               |
-| `/delete`   | Delete the previous or specified bot message (Usage Hint: `[message-ts-or-link]`) |
-| `/skill`    | List or run a skill (Usage Hint: `[skill-name] [args]`)                           |
-| `/settings` | Show current settings                                                             |
-| `/secret` | Secret mode: `[on|off|status]` |
-| `/models`   | List available models (Usage Hint: `[backend]`)                                   |
-| `/agent` | List/select/clear the channel Agent (Usage Hint: `list\|status\|set <ID>\|reset`) |
-| `/backend`  | Switch this channel's backend immediately (Usage Hint: `status\|set\|reset ...`)  |
-| `/restart`  | Request a graceful xangi restart                                                  |
+| Command | Usage Hint | Purpose |
+| --- | --- | --- |
+| `/secret` | `on\|off\|status` | Secret conversation |
+| `/new` | | New conversation |
+| `/stop` | | Stop execution |
+| `/skill` | `[name] [args]` | List/run skills in the current Workspace |
+| `/settings` | `[item] [value]` | Shared settings |
+| `/agent` | `list\|status\|set <id>\|reset` | Inspect/change the conversation Agent |
+| `/workspace` | `status\|list\|use <name>\|set <name> <path>\|reset` | Inspect/change the workspace |
+| `/backend` | `status\|models [type]\|set <type> [--model model] [--effort effort] [--scope channel\|global]\|reset` | Backend, models, effort |
+| `/schedule` | `add <input>\|list\|remove <id>\|toggle <id>` | Slack schedules |
+| `/help` | | Enabled commands |
+| `/autoreply` | `status\|on\|off\|default` | Mention-free replies |
+| `/threadmode` | `status\|on\|off\|default` | Reply in threads |
 
-> **Note**: Request URL is not needed in Socket Mode.
+`ALLOW_AUTOREPLY_COMMAND` and `ALLOW_THREAD_MODE_COMMAND` apply to both Discord and Slack native registrations. Disabled operations are also omitted from `/help`.
+
+When migrating an existing App, delete its `/models`, `/restart`, and `/delete` registrations and add missing entries above. Use `/backend models`, the administrative CLI, and the existing deletion reactions respectively. Do not register `/team` or `/extend`.
+
+A direct `/<skill-name>` also needs a matching App registration. Use `/skill name args` for unregistered, reserved, or ambiguous names. Execution validates skills against the current conversation's Workspace; direct aliases come from registered Workspaces at startup.
+
+The exception is `/retitle`: Slack threads consist of a parent message and replies, so independent thread-title regeneration is unsupported. [Slack's native command specification](https://docs.slack.dev/interactivity/implementing-slash-commands/) also disallows app commands inside threads and supplies no thread ID. `/new`, Agent, and Workspace settings therefore address the channel and retain existing thread histories/workspaces. If multiple tasks are active, use the stop button in the target thread.
+
+Without new registrations, continue using ordinary mentions and natural-language requests. Mention-prefixed `/backend ...` is still ordinary AI input rather than a dedicated command route.
 
 ## 7. Install to Workspace
 
@@ -164,6 +187,26 @@ SLACK_DELETE_REACTIONS=wastebasket,x
 ```
 
 > When using only Slack, leave the Discord field unconfigured in `xangi settings`.
+
+### Post as yourself (optional)
+
+Normal replies and CLI operations use the bot identity. For an action requested by the token owner, select the saved user identity with `slack_send --as user`. Adding bot scopes alone does not select the owner's identity. This uses the User Token Scope `chat:write`, following Slack's [user token documentation](https://docs.slack.dev/authentication/tokens/#user-tokens) and [chat.postMessage reference](https://docs.slack.dev/reference/methods/chat.postMessage/).
+
+1. Add `chat:write` under **OAuth & Permissions → User Token Scopes** in your Slack App.
+2. The person who will post must reauthorize the app in the target workspace and obtain a **User OAuth Token**, distinct from the Bot User OAuth Token.
+3. Save it in the **本人名義投稿用User OAuthトークン** field of `xangi settings`. The existing private secret store uses file permissions 0600 and never displays saved values. Source installations can also set `SLACK_USER_TOKEN`; environment values take precedence. Do not paste tokens into chat or command-line arguments.
+4. After the next xangi startup, verify the owner-approved content and destination before executing.
+
+```bash
+xangi tool slack_send --as user --channel C01234567 --message "Here is an update"
+xangi tool slack_send --as user --channel C01234567 --thread-ts 1719876543.000100 --message "Thread follow-up"
+```
+
+Use `slack_edit --as user` / `slack_delete --as user` to edit or delete messages posted by that user. Omitting `--as`, or specifying `--as bot`, keeps the bot token. Missing, expired, revoked, or insufficiently scoped user tokens cause an error; xangi never retries the operation as the bot. History and channel lists still use bot permissions and reject `--as`.
+
+There is one configured user per instance. Anyone or any agent able to call its tool-server can act as that user, so use a dedicated instance owned by that person. Select `--as user` only for actions explicitly requested by the owner. The token does not need to enter the AI CLI environment. Normal bot replies and events still require the bot/app tokens.
+
+OAuth callbacks, multi-user linking, and automatic token refresh are outside this feature. Apps with token rotation must refresh and save their access token before expiry; it is loaded on the next xangi startup. The user must also have channel membership and permission to post.
 
 ## 9. Verify It Works
 

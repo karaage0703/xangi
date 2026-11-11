@@ -962,6 +962,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   private readonly sessions = new Map<string, Session>();
   private readonly sessionTtlMs = 60 * 60 * 1000; // 1時間
   private readonly activeAbortControllers = new Map<string, AbortController>();
+  private readonly channelSessionIds = new Map<string, string>();
   /**
    * per-call の構造化添付ファイル収集（channelId キー）。
    * attach 系ツール（send_file）が attachFile コールバック経由で realpath を積み、
@@ -1275,6 +1276,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const channelId = options?.channelId || sessionId;
     const appSid = options?.appSessionId || channelId;
     const session = this.getOrCreateSession(sessionId, appSid);
+    this.channelSessionIds.set(channelId, sessionId);
     session.lastTurnToolNames = [];
     this.resetAttachments(channelId);
     this.resetUsage(channelId);
@@ -1740,8 +1742,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
   }
 
   destroy(channelId: string): boolean {
-    // channelId をセッションIDとして使ってるなら削除
-    this.sessions.delete(channelId);
+    this.cancel(channelId);
+    const sessionId = this.channelSessionIds.get(channelId);
+    this.sessions.delete(sessionId ?? channelId);
+    this.channelSessionIds.delete(channelId);
     return true;
   }
 
@@ -2786,6 +2790,9 @@ The tool execution phase is over. Use tool results in the conversation history t
       if (now - session.updatedAt > this.sessionTtlMs) {
         this.sessions.delete(id);
       }
+    }
+    for (const [channelId, sessionId] of this.channelSessionIds) {
+      if (!this.sessions.has(sessionId)) this.channelSessionIds.delete(channelId);
     }
   }
 }

@@ -13,7 +13,10 @@ import {
   answerUserInput,
   listUserInputs,
   requestUserInput,
+  userInputWaitLabel,
+  userInputTimeoutHint,
   type UserInputCallback,
+  type UserInputResult,
 } from '../user-input.js';
 
 /** A modal per question keeps Discord's five-input limit independent of batch size. */
@@ -25,9 +28,10 @@ export function discordUserInput(
 ): UserInputCallback {
   return async (request, signal) => {
     let message: Message | undefined;
+    let answer: UserInputResult | undefined;
     let id = '';
     try {
-      return await requestUserInput(
+      answer = await requestUserInput(
         `discord:${channelId}`,
         actor,
         request,
@@ -62,17 +66,26 @@ export function discordUserInput(
             )
           );
           message = await send({
-            content: '回答を待っています。各ボタンから回答してください（10分以内）。',
+            content: `回答を待っています。各ボタンから回答してください（${userInputWaitLabel(pending.expiresAt)}以内）。${userInputTimeoutHint(pending.timeoutAction)}`,
             components: rows,
             allowedMentions: { parse: [] },
           });
         }
       );
+      return answer;
     } finally {
       drafts.delete(id);
       if (message)
         await message
-          .edit({ content: '質問の受付を終了しました。', components: [] })
+          .edit({
+            content:
+              answer && 'unavailable' in answer
+                ? '回答期限を過ぎました。今は回答できない状況として、可能な作業を続けます。'
+                : answer && 'timedOut' in answer
+                  ? '回答期限を過ぎたため、設定に従い作業を停止しました。'
+                  : '質問の受付を終了しました。',
+            components: [],
+          })
           .catch(() => undefined);
     }
   };

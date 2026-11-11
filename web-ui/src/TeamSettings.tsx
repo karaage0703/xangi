@@ -10,6 +10,7 @@ import { jsonInit } from './chatPresentation';
 import { ConfirmDialog } from './ConfirmDialog';
 
 interface Member {
+  memberId?: string;
   agentId: string;
   role: string;
   reportsTo?: string;
@@ -28,6 +29,15 @@ interface Agent {
   id: string;
   name: string;
   role?: string;
+}
+// getRandomValues is available on ordinary HTTP/LAN origins too.
+function newMemberId() {
+  return (
+    'member-' +
+    Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) =>
+      n.toString(16).padStart(2, '0')
+    ).join('')
+  );
 }
 export function TeamSettings() {
   const formRef = useCatalogFormFocus();
@@ -190,13 +200,11 @@ export function TeamSettings() {
                 onChange={(e) => setEditing({ ...editing, leaderAgentId: e.target.value })}
               >
                 <option value="">指定なし（呼び出し元が担当）</option>
-                {agents
-                  .filter((a) => !editing.members.some((m) => m.agentId === a.id))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
               </select>
             </label>
             <p id="team-leader-help">
@@ -236,8 +244,10 @@ export function TeamSettings() {
               />
             </label>
             {editing.members.map((m, index) => (
-              <fieldset className="team-member" key={m.agentId}>
-                <legend>{agents.find((a) => a.id === m.agentId)?.name || m.agentId}</legend>
+              <fieldset className="team-member" key={m.memberId || m.agentId}>
+                <legend>
+                  {agents.find((a) => a.id === m.agentId)?.name || m.agentId} · 担当枠 {index + 1}
+                </legend>
                 <label>
                   チーム内の担当（任意）
                   <input
@@ -253,11 +263,7 @@ export function TeamSettings() {
                   onClick={() =>
                     setEditing({
                       ...editing,
-                      members: editing.members
-                        .filter((other) => other.agentId !== m.agentId)
-                        .map((other) =>
-                          other.reportsTo === m.agentId ? { ...other, reportsTo: undefined } : other
-                        ),
+                      members: editing.members.filter((_, i) => i !== index),
                     })
                   }
                 >
@@ -275,26 +281,23 @@ export function TeamSettings() {
                   if (agent)
                     setEditing({
                       ...editing,
-                      members: [...editing.members, { agentId: agent.id, role: '' }],
+                      members: [
+                        ...editing.members,
+                        { memberId: newMemberId(), agentId: agent.id, role: '' },
+                      ],
                     });
                 }}
               >
                 <option value="">Agentを選択（最大64名）</option>
-                {agents
-                  .filter(
-                    (a) =>
-                      a.id !== editing.leaderAgentId &&
-                      !editing.members.some((m) => m.agentId === a.id)
-                  )
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
               </select>
             </label>
             <p>
-              「デフォルト」は普段のxangiのAI設定と既定の作業場所を使います。登録済みエージェントは各自の設定を使い、順番に実行したい場合は上の設定を有効にしてください。
+              同じAgentを複数の担当枠に追加できます。「デフォルト」は普段のxangiのAI設定と既定の作業場所を使います。登録済みエージェントは各自の設定を使い、順番に実行したい場合は上の設定を有効にしてください。
             </p>
             <CatalogFormActions
               creating={!editing.id}

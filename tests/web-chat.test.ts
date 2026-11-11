@@ -1003,6 +1003,36 @@ describe('web-chat HTTP API', () => {
     rmSync(childPath, { recursive: true, force: true });
   });
 
+  it('runs three self children with copied parent settings, optional logged history and monitor links', async () => {
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      expect(response.ok).toBe(true); return response.json();
+    };
+    const {agent} = await post('/api/agents',{name:'Router',prompt:'Parent instruction marker',backend:'codex',model:'caller-model'});
+    const {sessionId} = await post('/api/sessions',{agentId:agent.id});
+    const context = {channelId: WEB_CHAT_CONTEXT_PREFIX+sessionId, platform:'web' as const};
+    mkdirSync(join(testDir,'logs','sessions'),{recursive:true});
+    writeFileSync(join(testDir,'logs','sessions',sessionId+'.jsonl'),[
+      {role:'user',content:'Completed parent requirement'}, {role:'assistant',content:'Completed parent decision'}, {role:'user',content:'Unfinished current turn'}
+    ].map((e,i)=>JSON.stringify({...e,id:String(i),createdAt:new Date().toISOString()})).join('\n'));
+    const runs = await Promise.all(['research','verify','review'].map((task,i) => executeProjectAgentCommand({action:'run',agent:'self',task,context:i===0?'history':'fresh'},context).then(JSON.parse)));
+    expect(new Set(runs.map(r=>r.appSessionId)).size).toBe(3);
+    await vi.waitFor(()=>expect(runs.every(r=>runner.pending.has(WEB_CHAT_CONTEXT_PREFIX+r.appSessionId))).toBe(true));
+    for(const run of runs) {
+      expect(run).toMatchObject({agentId:agent.id,backend:'codex',model:'caller-model',parentAppSessionId:sessionId});
+      const index=runner.callOrder.indexOf(WEB_CHAT_CONTEXT_PREFIX+run.appSessionId);
+      expect(runner.prompts[index]).toContain('Parent instruction marker');
+      if(run.contextMode==='history') {
+        expect(runner.prompts[index]).toContain('Completed parent decision');
+        expect(runner.prompts[index]).not.toContain('Unfinished current turn');
+      } else expect(runner.prompts[index]).not.toContain('Completed parent decision');
+    }
+    const listing=await (await fetch(baseUrl+'/api/sessions?limit=200')).json();
+    for(const run of runs) expect(listing.sessions.find((row:{id:string})=>row.id===run.appSessionId)).toMatchObject({parentAppSessionId:sessionId,agentWork:{runId:run.id,assignment:run.task}});
+    for(const run of runs) runner.release(WEB_CHAT_CONTEXT_PREFIX+run.appSessionId);
+    await Promise.all(runs.map(run=>executeProjectAgentCommand({action:'wait',id:run.id},context)));
+  });
+
   it.each([false, true])('consults default using instance settings and workspace (self=%s)', async (self) => {
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1222,7 +1252,7 @@ describe('web-chat HTTP API', () => {
     expect(runner.pending.size).toBe(0);
     const run=JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'共和周辺','assignments-json':JSON.stringify(assignments)},context));
     await vi.waitFor(()=>expect(runner.pending.size).toBe(3));
-    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(assignments);
+    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(assignments.map(a => ({...a,memberId:a.agentId})));
     expect(runner.prompts.slice(-3).every(p=>p.includes('共和周辺'))).toBe(true);
     for (const prompt of runner.prompts.slice(-3)) {
       expect(prompt).not.toContain('You are the leader');
@@ -2896,6 +2926,22 @@ describe('web-chat HTTP API', () => {
           uiAvailable: true,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
         }),
+        expect.objectContaining({
+          id: 'xangi-studio',
+          capabilities: ['review.changes'],
+          installed: false,
+          uiAvailable: true,
+          actionsAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-studio',
+        }),
+        expect.objectContaining({
+          id: 'xangi-feed',
+          capabilities: ['xangi-feed.manage'],
+          installed: false,
+          uiAvailable: true,
+          actionsAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-feed',
+        }),
       ],
       issues: [],
     });
@@ -2948,6 +2994,8 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-stopwatch' }),
         expect.objectContaining({ id: 'xangi-tasks' }),
         expect.objectContaining({ id: 'xangi-remote-desktop' }),
+        expect.objectContaining({ id: 'xangi-studio' }),
+        expect.objectContaining({ id: 'xangi-feed' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });
@@ -3117,12 +3165,18 @@ process.stdin.on('end', () => server.close());
     expect((await mutate({ id: '../invalid', action: 'remove' })).status).toBe(400);
     writeFileSync(join(process.env.DATA_DIR!, 'extension-favorites.json'), JSON.stringify(['removed', 'other']));
     expect(await (await fetch(url)).json()).toEqual({ favorites: [
-      { id: 'removed', displayName: 'removed', defaultDisplayName: 'removed', available: false },
-      { id: 'other', displayName: 'other', defaultDisplayName: 'other', available: false },
+      { id: 'removed', displayName: 'removed', defaultDisplayName: 'removed', showInSidebar: true, available: false },
+      { id: 'other', displayName: 'other', defaultDisplayName: 'other', showInSidebar: true, available: false },
     ] });
     expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' }, 'https://attacker.example')).status).toBe(403);
     expect((await mutate({ id: 'other', action: 'rename', displayName: 'x'.repeat(81) })).status).toBe(400);
     expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' })).status).toBe(200);
+    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: false }, 'https://attacker.example')).status).toBe(403);
+    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: 'false' })).status).toBe(400);
+    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: false })).status).toBe(200);
+    expect((await (await fetch(url)).json()).favorites[1]).toMatchObject({ id: 'other', displayName: '新しい名前', showInSidebar: false });
+    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: true })).status).toBe(200);
+
     expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('新しい名前');
     expect((await mutate({ id: 'other', action: 'rename', displayName: '' })).status).toBe(200);
     expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('other');
@@ -3203,7 +3257,7 @@ process.stdin.on('end', () => process.exit(0));
       });
       expect(favorite.status).toBe(200);
       expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({ favorites: [
-        { id: 'ui-extension', displayName: 'UI Extension', defaultDisplayName: 'UI Extension', available: true },
+        { id: 'ui-extension', displayName: 'UI Extension', defaultDisplayName: 'UI Extension', showInSidebar: true, available: true },
       ] });
       const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
       expect(page.status).toBe(200);
@@ -3793,17 +3847,12 @@ process.stdin.on('end', () => process.exit(0));
 
     expect(res.status).toBe(200);
     expect(data.commands.find((command) => command.name === 'help')?.usage).toBe('/help');
-    expect(data.commands.find((command) => command.name === 'models')?.usage).toBe(
-      '/models [backend]'
-    );
+    expect(data.commands.find((command) => command.name === 'backend')?.usage).toContain('models');
+    expect(data.commands.some(command => command.name === 'models')).toBe(false);
     expect(data.commands.find((command) => command.name === 'skill')?.description).toContain(
       'スキル'
     );
-    expect(
-      data.commands
-        .find((command) => command.name === 'llmmode')
-        ?.options?.[0].choices?.map((choice) => choice.value)
-    ).toEqual(['status', 'agent', 'chat', 'default']);
+    expect(data.commands.some(command => command.name === 'llmmode')).toBe(false);
 
     const dynamicRes = await fetch(`${baseUrl}/api/web-commands?backend=codex&model=gpt-test`);
     const dynamicData = (await dynamicRes.json()) as typeof data;
@@ -3911,6 +3960,54 @@ process.stdin.on('end', () => process.exit(0));
     expect(run.message).toContain('Arguments: target-file.md');
   });
 
+  it('switches Web workspace and Agent into new conversations and loads skills from the saved workspace', async () => {
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const command = (appSessionId: string, input: string) => post('/api/web-commands', { appSessionId, input });
+    const other = join(testDir, 'command-workspace');
+    mkdirSync(join(other, 'skills', 'only-here'), { recursive: true });
+    writeFileSync(join(other, 'skills', 'only-here', 'SKILL.md'), '---\nname: only-here\ndescription: Workspace skill\n---\n');
+    const workspace = await (await post('/api/workspaces', { name: '別の作業場所', path: other })).json();
+    const original = await (await post('/api/sessions', {})).json();
+    const switchedResponse = await command(original.sessionId, '/workspace use "別の作業場所"');
+    expect(switchedResponse.status).toBe(200);
+    const switched = await switchedResponse.json();
+    expect(switched.kind).toBe('session');
+    expect(switched.sessionId).not.toBe(original.sessionId);
+    expect(getSessionEntry(original.sessionId)?.workspacePath).toBe(testDir);
+    expect(getSessionEntry(switched.sessionId)?.workspacePath).toBe(other);
+    const metadata = await (await fetch(`${baseUrl}/api/web-commands?appSessionId=${switched.sessionId}`)).json();
+    expect(metadata.commands.some((c: { name: string }) => c.name === 'only-here')).toBe(true);
+    const wrongWorkspace = await command(original.sessionId, '/only-here');
+    expect(wrongWorkspace.status).toBe(400);
+    const direct = await (await command(switched.sessionId, '/only-here "two words"')).json();
+    expect(direct).toEqual({ kind: 'chat', displayMessage: '/only-here "two words"', message: 'Run the skill "only-here". Arguments: two words' });
+    const explicit = await (await command(switched.sessionId, '/skill only-here "two words"')).json();
+    expect(explicit.message).toBe(direct.message);
+    const fresh = await (await command(switched.sessionId, '/new')).json();
+    expect(fresh.kind).toBe('session');
+    expect(getSessionEntry(fresh.sessionId)?.workspacePath).toBe(other);
+    const agent = await (await post('/api/agents', { name: '試験担当', prompt: '', workspaceId: workspace.workspace.id })).json();
+    const assigned = await (await command(fresh.sessionId, `/agent set ${agent.agent.id}`)).json();
+    expect(assigned.kind).toBe('session');
+    expect(getSessionEntry(assigned.sessionId)?.selectedAgentId).toBe(agent.agent.id);
+    expect(getSessionEntry(assigned.sessionId)?.workspacePath).toBe(other);
+    const status = await (await command(assigned.sessionId, '/agent status')).json();
+    expect(status.message).toContain('試験担当');
+    const denied = await command(assigned.sessionId, '/workspace reset');
+    expect(denied.status).toBe(400);
+    expect((await denied.json()).error).toContain('/agent reset');
+    const unassigned = await (await command(assigned.sessionId, '/agent reset')).json();
+    expect(unassigned.kind).toBe('session');
+    expect(getSessionEntry(unassigned.sessionId)?.selectedAgentId).toBeUndefined();
+    const newAgent = await (await command(assigned.sessionId, '/new')).json();
+    expect(getSessionEntry(newAgent.sessionId)?.selectedAgentId).toBe(agent.agent.id);
+    const missing = await command(assigned.sessionId, '/agent set nonexistent');
+    expect(missing.status).toBe(400);
+    const models = await (await command(original.sessionId, '/backend models codex')).json();
+    expect(models.kind).toBe('message');
+    expect(models.message).toContain('gpt-test');
+  });
+
   it('POST /api/web-commands returns a visible error for unknown commands', async () => {
     const res = await fetch(`${baseUrl}/api/web-commands`, {
       method: 'POST',
@@ -3920,7 +4017,8 @@ process.stdin.on('end', () => process.exit(0));
     const data = (await res.json()) as { error: string };
 
     expect(res.status).toBe(400);
-    expect(data.error).toBe('Unknown command: /does-not-exist');
+    expect(data.error).toContain('Unknown command: /does-not-exist');
+    expect(data.error).toContain('/help');
   });
 
   it('POST /api/chat enforces a busy lock per appSessionId (returns 409 on concurrent send to same session)', async () => {
@@ -3939,6 +4037,9 @@ process.stdin.on('end', () => process.exit(0));
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(runner.pending.size).toBe(1);
+    const switching = await fetch(`${baseUrl}/api/web-commands`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appSessionId: id, input: '/workspace reset' }) });
+    expect(switching.status).toBe(400);
+    expect((await switching.json()).error).toContain('実行中');
 
     // 同じセッションに 2 本目 → 409
     const concurrent = await fetch(`${baseUrl}/api/chat`, {

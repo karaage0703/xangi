@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFile } from 'child_process';
+
+vi.mock('child_process', () => ({
+  execFile: vi.fn((_file, _args, _options, callback) => {
+    callback(null, { stdout: 'ok', stderr: '' });
+  }),
+}));
+
 import { createScheduleAddHandler, getXangiTools } from '../src/local-llm/xangi-tools.js';
 
 function names(platform?: Parameters<typeof getXangiTools>[0]): string[] {
@@ -60,6 +68,23 @@ describe('Local LLM xangi tools by platform', () => {
     expect(toolNames).not.toContain('discord_send');
     expect(toolNames).not.toContain('web_history');
   });
+
+  it.each(['slack_send', 'slack_edit', 'slack_delete'])(
+    '%s forwards the explicit identity without exposing the user credential to the CLI',
+    async (name) => {
+      process.env.SLACK_USER_TOKEN = 'xoxp-private-owner';
+      const tool = getXangiTools('slack').find((candidate) => candidate.name === name)!;
+      expect(tool.parameters.properties.as.enum).toEqual(['bot', 'user']);
+      await tool.execute(
+        { as: 'user', message: 'hello', content: 'updated', 'message-ts': '1.0001' },
+        { workspace: '/workspace', channelId: 'C123' }
+      );
+      const call = vi.mocked(execFile).mock.calls.at(-1)!;
+      expect(call[1]).toEqual(expect.arrayContaining([name, '--as', 'user']));
+      expect(call[2].env.XANGI_CHANNEL_ID).toBe('C123');
+      expect(call[2].env.SLACK_USER_TOKEN).toBeUndefined();
+    }
+  );
 
   it('Telegram sessions expose only common schedule and system tools', () => {
     const toolNames = names('telegram');

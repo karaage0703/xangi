@@ -27,7 +27,7 @@ async def main():
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             await page.add_init_script(
-                """window.streams=[];window.EventSource=class{constructor(){this.listeners={};window.streams.push(this)}addEventListener(n,f){this.listeners[n]=f}close(){} };window.notify=()=>window.streams.forEach(s=>s.listeners.sessions?.({data:'{}'}));"""
+                """window.streams=[];window.pull=async()=>{const parts=await Promise.all(['open','closed'].map(l=>fetch('/api/sessions?lifecycle='+l).then(r=>r.json())));const d={sessions:parts.flatMap(p=>p.sessions)};window.streams.forEach(s=>s.listeners.sessions?.({data:JSON.stringify(d)}))};window.EventSource=class{constructor(){this.listeners={};window.streams.push(this)}addEventListener(n,f){this.listeners[n]=f;if(n==='sessions')void window.pull()}close(){window.streams=window.streams.filter(s=>s!==this)}};window.notify=()=>{void window.pull()};"""
             )
             now = await page.evaluate("new Date().toISOString()")
             sessions = [

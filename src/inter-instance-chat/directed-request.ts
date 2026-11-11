@@ -1,7 +1,9 @@
-import { randomUUID, timingSafeEqual } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { AgentRunner } from '../agent-runner.js';
 import { runWithBubbleEvents } from '../bubble-events-runner.js';
-import { threadIdFor, turnIdFor } from '../events-emitter.js';
+import { resolveDataDir, threadIdFor, turnIdFor } from '../events-emitter.js';
 import {
   createWebSession,
   ensureSession,
@@ -35,6 +37,40 @@ export interface DirectedHttpResponse {
   text?: string;
   session_id?: string;
   error?: string;
+  status?: 'queued' | 'running' | 'completed' | 'failed';
+}
+
+interface StoredRequest {
+  taskHash: string;
+  response: DirectedHttpResponse;
+}
+
+const activeRequests = new Map<string, Promise<{ status: number; body: DirectedHttpResponse }>>();
+
+function requestPath(requestId: string): string {
+  return join(resolve(resolveDataDir()), 'inter-chat-requests', `${requestId}.json`);
+}
+
+function saveRequest(path: string, record: StoredRequest): void {
+  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temp, JSON.stringify(record), { mode: 0o600 });
+  renameSync(temp, path);
+}
+
+function loadRequest(path: string): StoredRequest | undefined {
+  if (!existsSync(path)) return undefined;
+  const record = JSON.parse(readFileSync(path, 'utf8')) as StoredRequest;
+  if (['queued', 'running'].includes(record.response.status || '') && !activeRequests.has(path)) {
+    record.response = {
+      ...record.response,
+      ok: false,
+      status: 'failed',
+      error: 'Execution interrupted by receiver restart; not automatically retried',
+    };
+    saveRequest(path, record);
+  }
+  return record;
 }
 
 export interface DirectedAgentReply {
@@ -133,7 +169,9 @@ export async function askAgent(
     };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`${target} did not respond within ${Math.ceil(timeoutMs / 1000)} seconds`);
+      throw new Error(
+        `${target}: waiting ended after ${Math.ceil(timeoutMs / 1000)} seconds; execution status is unconfirmed. request_id=${requestId}. Retrieve with inter_chat_status --to ${target} --id ${requestId}; do not resend as a new request.`
+      );
     }
     throw error;
   } finally {
@@ -191,10 +229,11 @@ export async function processDirectedHttpRequest(
   body: Partial<DirectedHttpRequest>,
   authorization: string | undefined,
   agentRunner: AgentRunner,
-  workdir?: string
+  workdir?: string,
+  mode: 'wait' | 'submit' | 'status' = 'wait'
 ): Promise<{ status: number; body: DirectedHttpResponse }> {
   const cfg = getInterChatConfig();
-  const requestId = typeof body.request_id === 'string' ? body.request_id : '';
+  const requestId = typeof body.request_id === 'string' ? body.request_id.toLowerCase() : '';
   const fromInstanceId = typeof body.from === 'string' ? body.from.trim() : '';
   const targetInstanceId = typeof body.to === 'string' ? body.to.trim() : '';
   const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -221,12 +260,45 @@ export async function processDirectedHttpRequest(
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
     return error(400, 'request_id must be a UUID v4');
   }
-  if (!text) return error(400, 'text is required');
+  if (mode !== 'status' && !text) return error(400, 'text is required');
   if (Buffer.byteLength(text, 'utf8') > MAX_HTTP_MESSAGE_BYTES) {
     return error(413, `request is too long (maximum ${MAX_HTTP_MESSAGE_BYTES} UTF-8 bytes)`);
   }
 
-  return withHttpPeerQueue(fromInstanceId, async () => {
+  const path = requestPath(requestId);
+  const taskHash = createHash('sha256').update(text).digest('hex');
+  const existing = loadRequest(path);
+  if (existing) {
+    if (existing.response.to !== fromInstanceId || existing.response.from !== cfg.selfInstanceId) {
+      return error(404, 'request not found');
+    }
+    if (mode !== 'status' && existing.taskHash !== taskHash) {
+      return error(409, 'request_id already belongs to a different task');
+    }
+    if (mode === 'wait' && activeRequests.has(path)) return activeRequests.get(path)!;
+    return {
+      status:
+        mode === 'submit' && ['queued', 'running'].includes(existing.response.status || '')
+          ? 202
+          : 200,
+      body: existing.response,
+    };
+  }
+  if (mode === 'status') return error(404, 'request not found');
+  const record: StoredRequest = {
+    taskHash,
+    response: {
+      ok: true,
+      request_id: requestId,
+      from: cfg.selfInstanceId,
+      to: fromInstanceId,
+      status: 'queued',
+    },
+  };
+  saveRequest(path, record);
+  const execution = withHttpPeerQueue(fromInstanceId, async () => {
+    record.response = { ...record.response, status: 'running' };
+    saveRequest(path, record);
     const appSessionId = persistentPeerSession(fromInstanceId, workdir);
     const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${appSessionId}`;
     ensureSession(contextKey, { platform: 'web' });
@@ -268,6 +340,7 @@ export async function processDirectedHttpRequest(
           request_id: requestId,
           from: cfg.selfInstanceId,
           to: fromInstanceId,
+          status: 'completed' as const,
           text: truncateMessage(result.result, MAX_HTTP_MESSAGE_BYTES),
           session_id: appSessionId,
         },
@@ -281,5 +354,82 @@ export async function processDirectedHttpRequest(
         )
       );
     }
-  });
+  })
+    .then((result) => {
+      record.response = { ...result.body, status: result.body.ok ? 'completed' : 'failed' };
+      saveRequest(path, record);
+      return { ...result, body: record.response };
+    })
+    .catch((caught) => {
+      record.response = {
+        ...record.response,
+        ok: false,
+        status: 'failed',
+        error: truncateMessage(caught instanceof Error ? caught.message : String(caught)),
+      };
+      saveRequest(path, record);
+      return { status: 500, body: record.response };
+    })
+    .finally(() => activeRequests.delete(path));
+  activeRequests.set(path, execution);
+  void execution.catch((caught) => console.error('[inter-chat] failed to persist result', caught));
+  return mode === 'submit' ? { status: 202, body: { ...record.response } } : execution;
+}
+
+/** Submit once or retrieve a saved result; never resubmit on a transport error. */
+export async function exchangeAgentRequest(
+  target: string,
+  requestId: string,
+  text?: string,
+  timeoutMs = 10_000
+): Promise<DirectedHttpResponse> {
+  requestId = requestId.toLowerCase();
+  const cfg = getInterChatConfig();
+  if (!cfg.enabled) throw new Error('inter-instance-chat is disabled');
+  if (!/^[\w.-]+$/.test(target) || target === cfg.selfInstanceId) {
+    throw new Error(`--to must be another exact instance_id. ${AGENT_GUIDANCE}`);
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+    throw new Error('--id must be a UUID v4');
+  }
+  const origin = cfg.peers[target];
+  if (!origin) throw new Error(`${target} is not configured in INTER_INSTANCE_CHAT_PEERS`);
+  if (!cfg.token) throw new Error('INTER_INSTANCE_CHAT_TOKEN is required');
+  if (
+    text !== undefined &&
+    (!text.trim() || Buffer.byteLength(text, 'utf8') > MAX_HTTP_MESSAGE_BYTES)
+  ) {
+    throw new Error(`--text must contain 1 to ${MAX_HTTP_MESSAGE_BYTES} UTF-8 bytes`);
+  }
+  try {
+    const response = await fetch(
+      `${origin}/api/inter-chat/${text === undefined ? 'status' : 'submit'}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: cfg.selfInstanceId,
+          to: target,
+          request_id: requestId,
+          ...(text === undefined ? {} : { text }),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      }
+    );
+    const body = (await response.json()) as DirectedHttpResponse;
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    if (
+      body.request_id !== requestId ||
+      body.from !== target ||
+      body.to !== cfg.selfInstanceId ||
+      !['queued', 'running', 'completed', 'failed'].includes(body.status || '')
+    ) {
+      throw new Error('mismatched or invalid response');
+    }
+    return body;
+  } catch (caught) {
+    throw new Error(
+      `${target}: ${caught instanceof Error ? caught.message : String(caught)}. Acceptance/completion is unconfirmed. request_id=${requestId}. Check inter_chat_status --to ${target} --id ${requestId}; do not resend as a new request.`
+    );
+  }
 }

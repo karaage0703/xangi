@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'dotenv';
 import { SecretStore } from '../src/setup/secret-store.js';
 import {
   updateWebConnectionSetting,
@@ -69,6 +70,58 @@ describe('Web startup settings', () => {
     expect(() => updateWebStartupSetting({ key: 'DISCORD_TOKEN', value: 'leak' })).toThrow(
       '変更できない'
     );
+  });
+
+  it('exposes question deadlines, stop/reply selection, and a free-text reply', () => {
+    const settings = webStartupSettingsSnapshot().flatMap((g) => g.settings);
+    expect(settings.find((s) => s.key === 'AGENT_USER_INPUT_TIMEOUT_MS')).toMatchObject({
+      value: '600000',
+      min: 1000,
+      max: 86400000,
+    });
+    expect(settings.find((s) => s.key === 'AGENT_USER_INPUT_TIMEOUT_ACTION')).toMatchObject({
+      value: 'reply',
+      options: ['reply', 'stop'],
+    });
+    expect(settings.find((s) => s.key === 'AGENT_USER_INPUT_TIMEOUT_MESSAGE')).toMatchObject({
+      type: 'textarea',
+    });
+    updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_ACTION', value: 'stop' });
+    expect(() =>
+      updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_ACTION', value: 'oops' })
+    ).toThrow();
+    expect(() =>
+      updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_MS', value: '0' })
+    ).toThrow();
+  });
+
+  it('round-trips a multiline free-text reply without adding environment variables', async () => {
+    const value =
+      '今は回答できません。\n"引用" と \'単引用\' と `code`、#comment $& \\n\nINJECTED_SETTING=true\u2028末尾\u2029行';
+    updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_MESSAGE', value });
+    expect(
+      webStartupSettingsSnapshot()
+        .flatMap((g) => g.settings)
+        .find((s) => s.key === 'AGENT_USER_INPUT_TIMEOUT_MESSAGE')?.value
+    ).toBe(value);
+    const env = parse(readFileSync(process.env.XANGI_ENV_PATH!));
+    expect(env.INJECTED_SETTING).toBeUndefined();
+    vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MESSAGE', env.AGENT_USER_INPUT_TIMEOUT_MESSAGE);
+    try {
+      const { userInputTimeoutMessage } = await import('../src/user-input.js');
+      expect(userInputTimeoutMessage()).toBe(value);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_MESSAGE', value: '' });
+    expect(
+      webStartupSettingsSnapshot()
+        .flatMap((g) => g.settings)
+        .find((s) => s.key === 'AGENT_USER_INPUT_TIMEOUT_MESSAGE')?.value
+    ).toBe('');
+    expect(() =>
+      updateWebStartupSetting({ key: 'AGENT_USER_INPUT_TIMEOUT_MESSAGE', value: 'a'.repeat(4001) })
+    ).toThrow();
   });
 
   it('reports secret presence without returning values', async () => {

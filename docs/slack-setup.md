@@ -113,26 +113,49 @@ xangi は Socket Mode で動作します（Webhook 不要）。
 | `channels:history`  | パブリックチャンネルの履歴読み取り   | メンションなし応答時              |
 | `groups:history`    | プライベートチャンネルの履歴読み取り | メンションなし応答時              |
 
+### User Token Scopes（任意）
+
+本人名義で操作する場合は、**OAuth & Permissions → User Token Scopes** に用途に応じた権限を追加します。Bot Token Scopes とは別に設定します。
+
+| 用途 | User Token Scope | Slack公式API仕様 |
+| --- | --- | --- |
+| 本人名義のメッセージ投稿 | `chat:write` | [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/) |
+| 本人名義でパブリックチャンネルをAPI作成する場合のみ | `channels:write` | [conversations.create](https://docs.slack.dev/reference/methods/conversations.create/) |
+| Slack ListsのAPI読み取り | `lists:read` | [slackLists.items.list](https://docs.slack.dev/reference/methods/slackLists.items.list/) |
+| Slack ListsのAPI作成・更新 | `lists:write` | [slackLists.create](https://docs.slack.dev/reference/methods/slackLists.create/) / [slackLists.update](https://docs.slack.dev/reference/methods/slackLists.update/) |
+
+本人名義の投稿だけなら `chat:write` を追加します。`channels:write` は投稿の必須権限ではありません。チャンネル作成・Slack Listsの行は、それらのAPIを別途利用する場合の権限です。必要な用途の権限だけを追加し、変更後は本人がアプリを再認可してUser OAuth Tokenを取得し直してください。本人名義投稿の設定手順は[Step 8](#本人名義の投稿任意)を参照してください。
+
 権限やイベントを追加・変更した後は、左メニュー **「Install App」** からアプリをワークスペースへ再インストールしてください。再インストールしないと `reaction_added` や `reactions:read` が有効になりません。
 
 ## 6. スラッシュコマンド登録（オプション）
 
-1. 左メニュー **「Slash Commands」** をクリック
-2. 以下のコマンドを作成：
+Slackのネイティブコマンドを使う場合は、App管理の **Slash Commands → Create New Command** で以下を登録します。xangi側の受付・ヘルプ・有効条件はDiscordと同じ共通定義から作ります。Socket Modeの受信コードを更新するだけでは、Slack App側のコマンド登録は追加・削除されません。
 
-| Command     | Description                                                                 |
-| ----------- | --------------------------------------------------------------------------- |
-| `/new`      | 新しいセッションを開始                                                      |
-| `/delete`   | 直前または指定したbotメッセージを削除（Usage Hint: `[message-ts-or-link]`） |
-| `/skill`    | スキル一覧を表示・実行（Usage Hint: `[スキル名] [引数]`）                   |
-| `/settings` | 現在の設定を表示                                                            |
-| `/secret` | Secret mode: `[on|off|status]` |
-| `/models`   | 利用可能なモデル一覧を表示（Usage Hint: `[backend]`）                       |
-| `/agent` | 担当の一覧・設定・解除（Usage Hint: `list\|status\|set <ID>\|reset`） |
-| `/backend`  | チャンネル／全体のバックエンドを即時切替（Usage Hint: `status\|set <backend> [--model <model>] [--effort <effort>] [--scope channel\|global]\|reset`）  |
-| `/restart`  | xangiのgraceful restartを要求                                               |
+| Command | Usage Hint | 用途 |
+| --- | --- | --- |
+| `/secret` | `on\|off\|status` | シークレット会話 |
+| `/new` | | 新しい会話 |
+| `/stop` | | 実行停止 |
+| `/skill` | `[name] [args]` | 現在のWorkspaceのスキル一覧・実行 |
+| `/settings` | `[item] [value]` | 共通の設定操作 |
+| `/agent` | `list\|status\|set <id>\|reset` | 会話担当の確認・切替 |
+| `/workspace` | `status\|list\|use <name>\|set <name> <path>\|reset` | 作業場所の確認・切替 |
+| `/backend` | `status\|models [type]\|set <type> [--model model] [--effort effort] [--scope channel\|global]\|reset` | AI・モデル・effort |
+| `/schedule` | `add <input>\|list\|remove <id>\|toggle <id>` | Slack向け予定の管理 |
+| `/help` | | 有効な操作の一覧 |
+| `/autoreply` | `status\|on\|off\|default` | メンションなし応答 |
+| `/threadmode` | `status\|on\|off\|default` | 返信をスレッドへ送る設定 |
 
-⚠️ Socket Mode では Request URL は不要です。
+`ALLOW_AUTOREPLY_COMMAND`と`ALLOW_THREAD_MODE_COMMAND`はDiscord・Slack両方のネイティブ登録に適用します。無効化された操作は`/help`にも出しません。
+
+既存Appから移行する場合、`/models`・`/restart`・`/delete`の登録を削除し、不足している上記コマンドを追加してください。モデル一覧は`/backend models`、再起動は管理用CLI、投稿削除は既存の削除リアクションを使います。`/team`・`/extend`は登録しません。
+
+個別スキルは`/<スキル名>`の同名コマンドをApp側にも登録すれば直接実行できます。予約語・衝突する名前や未登録のスキルは`/skill name args`を使います。候補と実行は現在の会話のWorkspaceで検証し、起動時に登録済みWorkspaceから読み込んだaliasだけを直接受付します。
+
+例外は`/retitle`です。Slackのスレッドは親メッセージと返信で構成され、Discordのような独立したスレッド名の再生成には対応しません。また、[Slack公式仕様](https://docs.slack.dev/interactivity/implementing-slash-commands/)ではアプリ独自のネイティブコマンドをスレッド内で呼べず、payloadにもthread IDがありません。そのため`/new`・Workspace・Agent設定はチャンネルを対象にし、既存スレッドの履歴と作業場所は保持します。停止対象が複数ある場合は対象スレッドの停止ボタンを使います。
+
+登録を増やさずに使う場合は従来どおり通常のメンション・自然文依頼を使えます。`@xangi /backend ...`を専用コマンドとして受理する機能は追加していません。
 
 ## 7. ワークスペースにインストール
 
@@ -164,6 +187,26 @@ SLACK_DELETE_REACTIONS=wastebasket,x
 ```
 
 > Slackのみで使用する場合は、`xangi settings`のDiscord欄を未設定のままにします。
+
+### 本人名義の投稿（任意）
+
+通常の返信とCLI操作はBot名義です。本人から依頼された投稿だけ、`slack_send --as user` で保存済みユーザーの名義を選べます。Botの権限追加だけでは本人名義にはなりません。[SlackのUser token仕様](https://docs.slack.dev/authentication/tokens/#user-tokens)と[chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/)に従い、User Token Scopes の `chat:write` を使います。
+
+1. Slack App の **OAuth & Permissions → User Token Scopes** に `chat:write` を追加します。
+2. 投稿する本人が対象ワークスペースでアプリを再認可し、**User OAuth Token** を取得します。Bot User OAuth Token と取り違えないでください。
+3. `xangi settings` の **本人名義投稿用User OAuthトークン** に保存します。既存の専用シークレット領域（ファイル権限0600）を使い、保存済みの値は画面に表示しません。ソース実行では `SLACK_USER_TOKEN` でも指定でき、環境変数の値が優先されます。トークンをチャットやCLI引数に貼り付けないでください。
+4. 次回のxangi起動後、本人が許可した内容・投稿先を確認して実行します。
+
+```bash
+xangi tool slack_send --as user --channel C01234567 --message "お知らせです"
+xangi tool slack_send --as user --channel C01234567 --thread-ts 1719876543.000100 --message "スレッドへの追記"
+```
+
+本人名義で投稿したメッセージの修正・削除にも `slack_edit --as user` / `slack_delete --as user` を使います。`--as` の省略または `--as bot` は従来のBotトークンです。ユーザートークンが未設定・期限切れ・失効・権限不足の場合はエラーとなり、Bot名義へ切り替えて再送しません。履歴やチャンネル一覧は引き続きBot権限を使い、`--as` は受け付けません。
+
+この設定はインスタンスにつき1ユーザーです。tool-serverを呼び出せる利用者・エージェントは、そのユーザー名義で操作できるため、本人の専用インスタンスで利用してください。本人の明示依頼がある操作にだけ `--as user` を指定してください。ユーザートークンをAI CLIの環境変数へ渡す必要はありません。通常のBot返信・イベント受信には引き続きBot/Appトークンが必要です。
+
+OAuthコールバック・複数ユーザー連携・トークン自動更新は扱いません。トークンローテーションを有効にしたアプリでは期限切れ前にアクセストークンを更新して保存し、xangiの次回起動時に読み込みます。対象チャンネルへの参加・投稿権限も本人側で必要です。
 
 ## 9. 動作確認
 

@@ -1,7 +1,41 @@
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import { describe, it, expect } from 'vitest';
-import { formatSkillList, type Skill } from '../src/skills.js';
+import { formatSkillList, loadRegisteredSkillCatalog, type Skill } from '../src/skills.js';
 
 describe('skills', () => {
+  it('collects registration aliases across workspaces while deduplicating the same skill name', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'registered-skills-'));
+    try {
+      const registry = await WorkspaceRegistry.open({
+        dataDir: join(root, 'state'),
+        defaultWorkspacePath: root,
+      });
+      const second = join(root, 'second');
+      mkdirSync(second);
+      await registry.register('second', second);
+      for (const [path, names] of [
+        [root, ['shared', 'first']],
+        [second, ['shared', 'second']],
+      ] as const) {
+        for (const name of names) {
+          mkdirSync(join(path, 'skills', name), { recursive: true });
+          writeFileSync(
+            join(path, 'skills', name, 'SKILL.md'),
+            `---\nname: ${name}\ndescription: Test\n---\n`
+          );
+        }
+      }
+      expect(
+        (await loadRegisteredSkillCatalog(registry)).map((skill) => skill.name).sort()
+      ).toEqual(['first', 'second', 'shared']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   describe('formatSkillList', () => {
     it('should show empty message when no skills', () => {
       const result = formatSkillList([]);

@@ -11,6 +11,7 @@ import { StreamSession } from '../src/stream-session.js';
 import { addToolHistory } from '../src/tool-history.js';
 import { CodexRunner } from '../src/codex-cli.js';
 import { CodexAppServerRunner } from '../src/codex-app-server.js';
+import { requestUserInput, listUserInputs } from '../src/user-input.js';
 
 class Server extends EventEmitter {
   stdin = new PassThrough();
@@ -323,9 +324,13 @@ describe('persistent Codex transport', () => {
     const pending = r.run('hello', opts);
     const rejected = expect(pending).rejects.toThrow('Codex turn interrupted or failed');
     await vi.waitFor(() => expect(server.turns).toBe(1));
-    server.send({ method: 'turn/completed', params: {
-      threadId: server.thread, turn: { id: 'turn-1', status: 'failed' },
-    } });
+    server.send({
+      method: 'turn/completed',
+      params: {
+        threadId: server.thread,
+        turn: { id: 'turn-1', status: 'failed' },
+      },
+    });
     await rejected;
   });
   it('rejects active work on disconnect and starts a new process next time without replay', async () => {
@@ -536,6 +541,45 @@ describe('Codex user questions', () => {
   });
 });
 
+it.each([undefined, '今は回答できません。\n調査結果だけ報告してください。'])(
+  'returns a synchronous timeout notice with message=%s',
+  async (message) => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const result = r.runStream(
+      'ask',
+      { onUserInput: async () => ({ unavailable: true, message }) },
+      opts
+    );
+    void result.catch(() => {});
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send({
+      id: 'timeout-q',
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: server.thread,
+        turnId: 'turn-1',
+        questions: [
+          { id: 'confirm', question: 'Deploy?', options: [{ label: 'Yes' }, { label: 'No' }] },
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(server.requests.find((x) => x.id === 'timeout-q')).toBeDefined());
+    const answer = server.requests.find((x) => x.id === 'timeout-q')!.result.answers.confirm
+      .answers;
+    expect(answer).toHaveLength(1);
+    expect(answer[0]).toContain('[System notice');
+    expect(answer[0]).toContain(message ?? 'unable to respond');
+    expect(answer[0]).toContain('explicit authorization');
+    expect(answer).not.toContain('Yes');
+    expect(answer).not.toContain('No');
+    expect(server.requests.some((x) => x.method === 'turn/interrupt')).toBe(false);
+    server.complete();
+    expect((await result).result).toBe('hello');
+  }
+);
+
 describe('Codex async question delivery', () => {
   function question(turnId = 'turn-1') {
     return {
@@ -639,29 +683,121 @@ describe('Codex async question delivery', () => {
       expect((await result).result).toBe('hello');
     }
   );
-  it.each([false, true])('cancels an async question with providerCompleted=%s', async (completed) => {
-    const r = runner();
-    await r.warm();
-    server.autoComplete = false;
-    let answer!: (v: { cancelled: true }) => void;
-    const result = r.runStream(
-      'ask',
-      {
-        onUserInput: async () =>
-          new Promise<{ cancelled: true }>((resolve) => {
-            answer = resolve;
-          }),
-      },
-      opts
-    );
-    const rejected = expect(result).rejects.toThrow('Request cancelled by user');
-    await vi.waitFor(() => expect(server.turns).toBe(1));
-    server.send(question());
-    if (completed) server.complete();
-    answer({ cancelled: true });
-    await rejected;
-    expect(server.turns).toBe(1);
-  });
+  it.each(['reply', 'stop'])(
+    'handles a completed provider turn with timeout action=%s',
+    async (action) => {
+      const r = runner(10000);
+      await r.warm();
+      server.autoComplete = false;
+      const result = r.runStream(
+        'ask',
+        {
+          onUserInput: (request, signal) =>
+            requestUserInput('web:expiry', 'web', request, signal, async () => {}),
+        },
+        opts
+      );
+      void result.catch(() => {});
+      await vi.waitFor(() => expect(server.turns).toBe(1));
+      vi.useFakeTimers();
+      vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_MS', '1000');
+      vi.stubEnv('AGENT_USER_INPUT_TIMEOUT_ACTION', action);
+      try {
+        server.send(question());
+        expect(listUserInputs('web:expiry', 'web')).toHaveLength(1);
+        server.complete();
+        await vi.advanceTimersByTimeAsync(999);
+        expect(server.turns).toBe(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(server.turns).toBe(action === 'stop' ? 1 : 2);
+        expect(listUserInputs('web:expiry', 'web')).toEqual([]);
+        if (action === 'stop') await expect(result).rejects.toThrow('Request cancelled by user');
+        else {
+          server.complete();
+          expect((await result).result).toContain('hello');
+        }
+      } finally {
+        r.cancel();
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it.each(
+    [false, true].flatMap((completed) =>
+      [undefined, '今は回答できません。\n調査結果を報告して。'].map((message) => ({
+        completed,
+        message,
+      }))
+    )
+  )(
+    'continues with providerCompleted=$completed and message=$message',
+    async ({ completed, message }) => {
+      const r = runner();
+      await r.warm();
+      server.autoComplete = false;
+      let unavailable!: (v: { unavailable: true; message?: string }) => void;
+      const result = r.runStream(
+        'ask',
+        {
+          onUserInput: async () =>
+            new Promise<{ unavailable: true; message?: string }>((resolve) => {
+              unavailable = resolve;
+            }),
+        },
+        opts
+      );
+      void result.catch(() => {});
+      await vi.waitFor(() => expect(server.turns).toBe(1));
+      server.send(question());
+      if (completed) server.complete();
+      unavailable({ unavailable: true, message });
+      await vi.waitFor(() =>
+        expect(
+          server.requests.filter((x) => x.method === (completed ? 'turn/start' : 'turn/steer'))
+        ).toHaveLength(completed ? 2 : 1)
+      );
+      const continuation = server.requests
+        .filter((x) => x.method === (completed ? 'turn/start' : 'turn/steer'))
+        .at(-1)!;
+      const notice = JSON.parse(continuation.params.input[0].text);
+      expect(notice).toMatchObject({ questionItemId: 'async-q', status: 'user_unavailable' });
+      expect(notice).not.toHaveProperty('answers');
+      expect(notice.instruction).toContain(message ?? 'unable to respond');
+      expect(notice.instruction).toContain('explicit authorization');
+      expect(server.requests.some((x) => x.method === 'turn/interrupt')).toBe(false);
+      server.complete();
+      expect((await result).result).toContain('hello');
+    }
+  );
+
+  it.each([false, true])(
+    'cancels an async question with providerCompleted=%s',
+    async (completed) => {
+      const r = runner();
+      await r.warm();
+      server.autoComplete = false;
+      let answer!: (v: { cancelled: true }) => void;
+      const result = r.runStream(
+        'ask',
+        {
+          onUserInput: async () =>
+            new Promise<{ cancelled: true }>((resolve) => {
+              answer = resolve;
+            }),
+        },
+        opts
+      );
+      const rejected = expect(result).rejects.toThrow('Request cancelled by user');
+      await vi.waitFor(() => expect(server.turns).toBe(1));
+      server.send(question());
+      if (completed) server.complete();
+      answer({ cancelled: true });
+      await rejected;
+      expect(server.turns).toBe(1);
+    }
+  );
 });
 
 describe('Codex wrapper timeout events', () => {

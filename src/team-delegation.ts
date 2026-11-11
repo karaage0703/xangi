@@ -32,10 +32,15 @@ export function delegationScopeCount(
   const roots = new Set(all.filter((r) => r.parentContextKey === parent).map((r) => r.id));
   const pending = includePending
     ? [...delegationReservations].filter((key) => {
-        const [owner, id] = JSON.parse(key);
+        const [owner, id, requestId] = JSON.parse(key);
         return (
           owner === parent &&
-          !all.some((r) => r.parentContextKey === parent && r.agentId === id && unfinished(r))
+          !all.some(
+            (r) =>
+              r.parentContextKey === parent &&
+              (requestId ? r.requestId === requestId : r.agentId === id) &&
+              unfinished(r)
+          )
         );
       }).length
     : 0;

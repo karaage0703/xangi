@@ -32,6 +32,40 @@ const calls = {
 };
 
 describe('local LLM cancellation', () => {
+  it.each(['run', 'runStream'] as const)(
+    'destroy aborts %s and removes its provider ID without clearing another session',
+    async (method) => {
+      const chat = vi.fn(async (_messages: LLMMessage[], options: LLMChatOptions) => {
+        expect(options.signal?.aborted).toBe(false);
+        return { content: 'ready', finishReason: 'stop', toolCalls: [] };
+      });
+      const runner = setup(chat);
+      await runner.run('other', { channelId: 'other', sessionId: 'provider-other' });
+      await runner.run('warm', { channelId: 'target', sessionId: 'provider-target' });
+      chat.mockImplementationOnce(async (_messages: LLMMessage[], options: LLMChatOptions) => {
+        expect(runner.destroy('idle')).toBe(true);
+        expect(options.signal!.aborted).toBe(false);
+        runner.destroy('target');
+        expect(options.signal!.aborted).toBe(true);
+        throw new Error('400 Bad Request');
+      });
+      const options = { channelId: 'target', sessionId: 'provider-target' };
+      const pending =
+        method === 'run' ? runner.run('cancel', options) : runner.runStream('cancel', {}, options);
+      await expect(pending).rejects.toThrow('Request cancelled by user');
+      const sessions = (runner as unknown as { sessions: Map<string, unknown> }).sessions;
+      expect(sessions.has('provider-target')).toBe(false);
+      expect(sessions.has('provider-other')).toBe(true);
+      expect(runner.hasRunner('target')).toBe(false);
+      expect(
+        (await runner.run('resume other', { channelId: 'other', sessionId: 'provider-other' }))
+          .result
+      ).toBe('ready');
+      runner.destroy('other');
+      expect(sessions.size).toBe(0);
+    }
+  );
+
   it('rejects an already cancelled tool before any file mutation', async () => {
     const signal = AbortSignal.abort(cancelled());
     await expect(

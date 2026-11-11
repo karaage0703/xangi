@@ -70,3 +70,32 @@ it.each([undefined, null, 1, 'x'.repeat(81), 'line\nbreak', 'tab\tname'])('rejec
   expect(() => parseFavoriteAction({id:'xangi-mail', action:'rename', displayName})).toThrow();
   expect(readFileSync(path, 'utf8')).toBe(before);
 });
+
+it('persists sidebar visibility independently of names, order and membership', () => {
+  const { path, store } = fixture();
+  writeFileSync(path, JSON.stringify(['mail', { id: 'tasks', displayName: 'Tasks' }]));
+  store.update('mail', 'set-sidebar', undefined, false);
+  store.update('mail', 'rename', 'Mail');
+  store.update('mail', 'down');
+  store.update('mail', 'add');
+  const other = new ExtensionFavorites(path);
+  expect(other.list()).toEqual(['tasks', 'mail']);
+  expect(other.entries()[1]).toEqual({ id: 'mail', displayName: 'Mail', showInSidebar: false });
+  other.update('mail', 'rename', '');
+  expect(store.entries()[1]).toEqual({ id: 'mail', showInSidebar: false });
+  other.update('mail', 'set-sidebar', undefined, true);
+  expect(store.entries()[1].showInSidebar).toBe(true);
+  expect(() => store.update('missing', 'set-sidebar', undefined, false)).toThrow();
+});
+it.each([undefined, null, 'false', 0, {}])('rejects invalid sidebar flags without overwriting: %j', (showInSidebar) => {
+  const { path, store } = fixture();
+  store.update('mail', 'add');
+  const before = readFileSync(path, 'utf8');
+  expect(() => parseFavoriteAction({ id: 'mail', action: 'set-sidebar', showInSidebar })).toThrow();
+  expect(readFileSync(path, 'utf8')).toBe(before);
+  writeFileSync(path, JSON.stringify([{ id: 'mail', showInSidebar }]));
+  if (showInSidebar !== undefined) {
+    expect(() => store.update('mail', 'add')).toThrow();
+    expect(readFileSync(path, 'utf8')).toBe(JSON.stringify([{ id: 'mail', showInSidebar }]));
+  }
+});

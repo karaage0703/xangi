@@ -76,6 +76,17 @@ describe('Web runtime settings', () => {
     });
   });
 
+  it('exposes and updates Slack threadmode through the same Web settings API', async () => {
+    resolver = { getChannelOverride: () => undefined, resolve: () => ({ backend: 'codex' }) } as unknown as BackendResolver;
+    config.slack.replyInChannels = ['C123'];
+    expect(webChannelRuntimeSettingsSnapshot('slack', 'C123', config, resolver).threadMode).toEqual({ value: 'inherit', effective: 'off' });
+    await updateWebRuntimeSetting({ name: 'threadmode', action: 'set', value: 'on', platform: 'slack', channelId: 'C123' }, { config, resolver, agentRunner: {} as AgentRunner });
+    expect(webChannelRuntimeSettingsSnapshot('slack', 'C123', config, resolver).threadMode).toEqual({ value: 'on', effective: 'on' });
+    expect(webChannelRuntimeSettingsSnapshot('discord', '123', config, resolver).threadMode).toEqual({ value: 'inherit', effective: 'off' });
+    await updateWebRuntimeSetting({ name: 'threadmode', action: 'reset', platform: 'slack', channelId: 'C123' }, { config, resolver, agentRunner: {} as AgentRunner });
+    expect(webChannelRuntimeSettingsSnapshot('slack', 'C123', config, resolver).threadMode).toEqual({ value: 'inherit', effective: 'off' });
+  });
+
   it('uses the shared dispatcher for immediate settings', async () => {
     const message = await updateWebRuntimeSetting(
       { name: 'replysuggestions', action: 'set', value: 'off' },

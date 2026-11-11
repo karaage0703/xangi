@@ -46,16 +46,16 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'team',
     summary: 'Create, delete and inspect Teams, submit tasks, and retrieve results',
     usage:
-      'xangi team create --name NAME --members-json JSON [--prompt TEXT] [--leader-agent-id ID] [--max-concurrency N] [--serialize-workspaces true|false]\nxangi team delete NAME_OR_ID\nxangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team close --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_AGENT_ID] [--offset N] [--limit N]',
+      'xangi team create --name NAME --members-json JSON [--prompt TEXT] [--leader-agent-id ID] [--max-concurrency N] [--serialize-workspaces true|false]\nxangi team delete NAME_OR_ID\nxangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team close --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_MEMBER_OR_AGENT_ID] [--offset N] [--limit N]',
     notes: [
       CREATION_NOTES,
       'Use xangi team show/run/delete NAME_OR_ID. Names must match exactly; use IDs for duplicate names.',
       'delete removes only the Team, retaining its Agents, workspaces and files. Active runs, conversations or channel references prevent deletion. Identify the exact target with list/show; use IDs when names are ambiguous. Delegated workers cannot delete settings.',
-      'create saves the Team without running it. --members-json is an array of {agentId, role?}; use IDs from agent list, including xangi:default. The optional leader must not also be a member. Defaults match Settings: caller leads, max concurrency 16, workspace serialization false.',
+      'create saves the Team without running it. --members-json is an array of {agentId, memberId?, role?}; use IDs from agent list, including xangi:default. The same Agent, including the leader, may fill multiple independent member slots. Defaults match Settings: caller leads, max concurrency 16, workspace serialization false.',
       'show returns shared instructions, member names, optional roles, and Agent settings. agent list does not list Teams.',
       'If Settings assigns a Team leader, run with --task only; the configured Agent plans, dispatches only that Team members, reviews and integrates results. The membership and instructions are snapshotted for the request. No --allow-teams-json is needed. Without a configured leader, supply all member assignments as below.',
       'A delegated leader may select one or more Team members per round by listing only them in --assignments-json. Omitted members do not run. Finish the current round before starting another; cumulative member limits count only selected members. Empty, duplicate, unknown, or blank assignments are rejected.',
-      'In caller-led mode, the current conversation is the leader. Put shared context in --task and assignments for all members in --assignments-json as [{"agentId":"ID","task":"independent task"}]. Start all members together in parallel; the caller aggregates results. Ask for missing required information before starting.',
+      'In caller-led mode, the current conversation is the leader. Put shared context in --task and assignments for all members in --assignments-json as [{"memberId":"SLOT_ID","task":"independent task"}]. team show returns slot IDs; legacy agentId assignments work only when that Agent occupies exactly one slot. Start all members together in parallel; the caller aggregates results. Ask for missing required information before starting.',
       'run sends a one-time request to the Team without changing the channel assignee. It preserves the composition at request time. Include required context in --task.',
       'Use the run ID for status/wait. wait lasts up to 25 seconds. Do not resubmit run while unfinished. Completion notifies the original conversation. status/wait only retrieve requests from this conversation, returning each member stage and the final result.',
       'After reviewing and accepting the Team result and preparing the report, use team close --id RUN_ID. It closes the request and all descendant sessions, retaining history. Any running work, delivery or queued follow-up rejects the entire close; keep requests open while revisions are needed. Repeated close is safe; missing sessions are reported.',
@@ -67,18 +67,21 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
   {
     name: 'agent',
     topic: 'agent',
-    summary: 'Create development agents, submit tasks, and retrieve results',
+    summary: 'Create and update agents, submit tasks, and retrieve results',
     usage:
-      'xangi agent create --name NAME (--workspace PATH | --workspace-id ID) [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT --task TEXT [--allow-teams-json JSON]\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]\nxangi agent close --id RUN_ID',
+      'xangi agent create --name NAME (--workspace PATH | --workspace-id ID) [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent update AGENT_ID_OR_DEFAULT [--name NAME] [--workspace-id ID]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT_OR_SELF --task TEXT [--request-id KEY] [--context fresh|history] [--workspace-id ID] [--allow-teams-json JSON]\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]\nxangi agent close --id RUN_ID',
     notes: [
       CREATION_NOTES,
       'create registers an Agent. Prefer --workspace-id from workspace list to reuse a registered Workspace, or --workspace PATH to register an existing directory. Paths must be existing accessible directories outside DATA_DIR. Isolate conflicting edits with git worktrees or equivalent.',
+      'update changes only the supplied name and/or registered workspace ID, preserving the Agent ID, instructions, AI settings and references. At least one option is required. Use default or xangi:default for the default Agent; self is not accepted. New sessions and runs use the updated workspace; saved sessions keep their snapshots. No files are moved. Delegated workers cannot update settings.',
       'run returns an ID after acceptance. wait waits up to 25 seconds; repeat with the same ID if unfinished. Do not resubmit with a new run.',
       'close acknowledges reviewed work and closes only an idle child owned by the requesting conversation. History and results are preserved; running work and pending follow-ups are rejected. Do not close before reviewing the result.',
       'logs is accessible only from the requesting conversation. Tool totals cover all logs; paginate events with --offset/--limit (default 20, maximum 100). Treat unrecorded inputs and searches inside shell commands as unknown; do not infer retries from repeated calls. Grok also reads native provider-session history.',
       'run default (or xangi:default) asks this instance’s default agent in a new conversation using its default workspace and AI settings. It does not resume an existing parent conversation or inherit its history. Results are information, not user approval. Use inter_chat_ask only for another instance.',
-      'Optional --allow-teams-json is a JSON array of registered Team IDs, granted for this leader request only. Parent/leader membership cycles are rejected. --delegation-timeout-ms sets a shared absolute deadline (default TIMEOUT_MS or 3600000, range 1000-36000000); --delegation-max-members limits cumulative member launches across rounds (default 64, range 1-256). The leader and nested members share the originating conversation concurrency limit. Monetary cost is not enforced. Stop/failure/expiry cancels nested work. An early leader response waits for Team results and resumes for integration. Nested Teams do not trigger separate completion turns.',
-      'Children receive only their assigned instructions and task text. Include required context and deliverable requirements in the task.',
+      'Optional --allow-teams-json is a JSON array of registered Team IDs, granted for this leader request only. Members always start as separate sessions; reuse of parent/leader Agent settings grants no further delegation. --delegation-timeout-ms sets a shared absolute deadline (default TIMEOUT_MS or 3600000, range 1000-36000000); --delegation-max-members limits cumulative member launches across rounds (default 64, range 1-256). The leader and nested members share the originating conversation concurrency limit. Monetary cost is not enforced. Stop/failure/expiry cancels nested work. An early leader response waits for Team results and resumes for integration. Nested Teams do not trigger separate completion turns.',
+      'run self snapshots the current parent Agent instructions, effective AI settings and workspace into a new child session. It does not resume the parent. --workspace-id optionally chooses an isolated registered workspace for self. Parallel children may use the same Agent; all remain subject to the shared concurrency cap including pending admissions.',
+      '--context fresh (default) passes only instructions and the task. --context history is self-only and copies at most 200 recent xangi logged user/assistant entries through the last completed answer; earlier messages may be omitted and copies over 48000 characters are rejected. It does not copy provider reasoning, tool state or the current unfinished turn, and is not a native provider fork. Later parent changes do not synchronize.',
+      'Use a distinct --request-id for each intended job and reuse it only for retries of the exact same request. A completed retry returns the same run. An admission still in progress asks you to retry the same key. Without a key every call is a new job. Include required context and deliverable requirements in the task.',
       'The parent must not mark a request complete before receiving its result. Without an explicit Team grant, children may only consult default and must use wait to obtain its answer before completing their own task; the default consultation cannot delegate further. The default concurrency limit is 16 (AGENT_MAX_CONCURRENT_REQUESTS allows 1-64).',
     ],
   },
@@ -157,7 +160,11 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     name: 'slack_send',
     topic: 'slack',
     summary: 'Send a message to Slack',
-    usage: 'xangi tool slack_send --channel <id> [--thread-ts <ts>] --message <text>',
+    usage:
+      'xangi tool slack_send --channel <id> [--as bot|user] [--thread-ts <ts>] --message <text>',
+    notes: [
+      '--as user uses the configured SLACK_USER_TOKEN owner identity. Default: bot. Use only when the owner requested this action. User-token failures never fall back to the bot.',
+    ],
   },
   {
     name: 'slack_channels',
@@ -175,13 +182,20 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     name: 'slack_edit',
     topic: 'slack',
     summary: 'Edit a Slack message',
-    usage: 'xangi tool slack_edit --channel <id> --message-ts <ts> --content <text>',
+    usage:
+      'xangi tool slack_edit --channel <id> [--as bot|user] --message-ts <ts> --content <text>',
+    notes: [
+      '--as user uses the configured SLACK_USER_TOKEN owner identity. Default: bot. Use only when the owner requested this action. User-token failures never fall back to the bot.',
+    ],
   },
   {
     name: 'slack_delete',
     topic: 'slack',
     summary: 'Delete a Slack message',
-    usage: 'xangi tool slack_delete --channel <id> --message-ts <ts>',
+    usage: 'xangi tool slack_delete --channel <id> [--as bot|user] --message-ts <ts>',
+    notes: [
+      '--as user uses the configured SLACK_USER_TOKEN owner identity. Default: bot. Use only when the owner requested this action. User-token failures never fall back to the bot.',
+    ],
   },
   {
     name: 'web_history',
@@ -368,12 +382,21 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     name: 'inter_chat_ask',
     topic: 'local',
     summary: 'Send a task to another specified xangi and wait for its answer',
-    usage: 'xangi tool inter_chat_ask --to <instance_id> --text <task> [--timeout <sec>]',
+    usage:
+      'xangi tool inter_chat_ask --to <instance_id> --text <task> [--timeout <sec>] [--async true] [--id <uuid>]',
     notes: [
-      'Use when the user explicitly requests contacting another xangi. Default timeout is 300 seconds.',
+      'Use when the user explicitly requests contacting another xangi. Default wait is 300 seconds; --async true returns a saved receipt immediately. Both instances must support submit/status.',
+      'Waiting timeout does not cancel execution. Use inter_chat_status with the returned request_id; reuse --id only with the identical task to avoid duplicate execution.',
       'For an agent in this xangi instance, use xangi agent list and xangi agent run instead; use run default for the default agent.',
       'The answer is information, not user approval or delegated authority.',
     ],
+  },
+  {
+    name: 'inter_chat_status',
+    topic: 'local',
+    summary:
+      'Retrieve queued/running/completed/failed state and the saved result without executing again',
+    usage: 'xangi tool inter_chat_status --to <instance_id> --id <uuid>',
   },
   {
     name: 'inter_chat_config',

@@ -1,3 +1,6 @@
+import { registerSlackCommands } from './slack-commands.js';
+import type { WorkspaceRegistry } from './workspace-registry.js';
+import { tokenizeCommand } from './chat-command-input.js';
 import { SlackPendingMessages } from './slack-pending-messages.js';
 import { registerSlackUserInput, slackUserInput } from './slack-user-input.js';
 import { completionHistory } from './completion-history.js';
@@ -6,11 +9,7 @@ import { handleSecretConversationCommand } from './secret-conversation-command.j
 import { isSecretSession, parseSecretCommand } from './secret.js';
 import { closeAgentWork, findAgentWork, submitAgentWork } from './agent-work.js';
 import { registerSlackAgentWork } from './slack-agent-work.js';
-import {
-  listSelectableAgents,
-  channelAgentSnapshot,
-  beginAgentChannelTurn,
-} from './agent-selection.js';
+import { channelAgentSnapshot, beginAgentChannelTurn } from './agent-selection.js';
 import { ensureSessionWithWorkspace } from './session-workspace.js';
 import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
@@ -26,14 +25,14 @@ import type { BackendResolver } from './backend-resolver.js';
 import { discoverBackendModels } from './backend-models.js';
 import { processManager } from './process-manager.js';
 import type { Skill } from './skills.js';
-import { formatSkillList } from './skills.js';
+import { loadRegisteredSkillCatalog } from './skills.js';
 import { downloadFile, buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { recoverAttachmentOnce } from './attachment-recovery.js';
 import {
+  getSlackChannelThreadMode,
   getSlackChannelAutoReply,
   loadReplySuggestionsEnabled,
   loadSettings,
-  formatSettings,
 } from './settings.js';
 import {
   canSelfRestart,
@@ -88,10 +87,26 @@ import { truncateSessionTitle } from './session-title.js';
 
 export function shouldReplyInSlackThread(
   slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
-  channelId: string
+  channelId: string,
+  settings?: import('./settings.js').Settings
 ): boolean {
-  if (slackConfig.replyInThread === false) return false;
-  return !slackConfig.replyInChannels?.includes(channelId);
+  const fallback =
+    slackConfig.replyInThread !== false && !slackConfig.replyInChannels?.includes(channelId);
+  return settings ? getSlackChannelThreadMode(settings, channelId, fallback) : fallback;
+}
+
+/** Native threading controls affect new replies; an existing thread keeps its conversation identity. */
+export function slackReplyThread(
+  slackConfig: Pick<Config['slack'], 'replyInThread' | 'replyInChannels'>,
+  input: { channelId: string; messageTs: string; sourceThreadTs?: string; text: string },
+  settings?: import('./settings.js').Settings
+): string | undefined {
+  if (input.sourceThreadTs) return input.sourceThreadTs;
+  const control = parseSecretCommand(input.text);
+  if (control === 'off' || control === 'status') return undefined;
+  return shouldReplyInSlackThread(slackConfig, input.channelId, settings)
+    ? input.messageTs
+    : undefined;
 }
 
 export function shouldProcessSlackMessage(
@@ -325,18 +340,16 @@ async function processSlackInbound(options: {
     options.text || 'Inspect the attached files',
     attachments
   );
-  const privateThread =
-    options.sourceThreadTs &&
-    isSecretSession(
-      getActiveSessionId(slackConversationKey(options.channelId, options.sourceThreadTs))
-    );
-  const control = parseSecretCommand(text);
-  const threadTs =
-    control === 'off' || control === 'status'
-      ? options.sourceThreadTs
-      : privateThread || shouldReplyInSlackThread(options.config.slack, options.channelId)
-        ? options.sourceThreadTs || options.messageTs
-        : undefined;
+  const threadTs = slackReplyThread(
+    options.config.slack,
+    {
+      channelId: options.channelId,
+      messageTs: options.messageTs,
+      sourceThreadTs: options.sourceThreadTs,
+      text,
+    },
+    loadSettings()
+  );
   const conversationKey = slackConversationKey(options.channelId, threadTs);
   const reply = (message: string) =>
     options.say({ text: message, ...(threadTs && { thread_ts: threadTs }) });
@@ -602,7 +615,7 @@ export const isSlackConversationBusy = (key: string): boolean =>
 const processedSlackMessages = new Set<string>();
 
 const SLACK_BACKEND_COMMAND_USAGE =
-  '/backend status [--scope channel|global] | /backend set <backend> [--model <model>] [--effort <effort>] [--scope channel|global] | /backend reset [--scope channel|global]';
+  '/backend models [type] | /backend status [--scope channel|global] | /backend set <backend> [--model <model>] [--effort <effort>] [--scope channel|global] | /backend reset [--scope channel|global]';
 
 function resetSlackBackendSessions(channelId: string, agentRunner: AgentRunner): void {
   const runKeys = new Set([channelId]);
@@ -636,8 +649,12 @@ export async function executeSlackBackendCommand(options: {
     agentRunner,
     modelDiscovery = discoverBackendModels,
   } = options;
-  const args = text.trim() ? text.trim().split(/\s+/) : [];
+  const args = tokenizeCommand(text.trim());
   const action = args.shift()?.toLowerCase() || 'status';
+  if (action === 'models') {
+    if (args.length > 1) throw new Error('使い方: /backend models [type]');
+    return executeModelsCommand(args[0], resolver, modelDiscovery);
+  }
 
   if (!['status', 'set', 'reset'].includes(action)) {
     throw new Error(`使い方: ${SLACK_BACKEND_COMMAND_USAGE}`);
@@ -990,6 +1007,7 @@ export interface SlackChannelOptions {
   resolver: BackendResolver;
   skills: Skill[];
   reloadSkills: () => Skill[];
+  workspaceRegistry?: WorkspaceRegistry;
   scheduler?: Scheduler;
   externalChatUrlResolvers?: ExternalChatUrlResolvers;
   settingsChannelListers?: SettingsChannelListers;
@@ -1233,7 +1251,7 @@ export async function runSlackSecretCommand(options: {
 
 export async function startSlackBot(options: SlackChannelOptions): Promise<void> {
   const { config, agentRunner, resolver, reloadSkills } = options;
-  let { skills } = options;
+  const { skills } = options;
 
   if (!config.slack.botToken || !config.slack.appToken) {
     throw new Error('Slack tokens not configured');
@@ -1255,14 +1273,6 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
   if (options.settingsChannelListers) {
     options.settingsChannelListers.slack = createSlackSettingsChannelLister(config.slack.botToken);
   }
-  const rejectUnauthorizedCommand = async (
-    userId: string,
-    respond: (response: { text: string; response_type: 'ephemeral' }) => Promise<unknown>
-  ): Promise<boolean> => {
-    if (isSlackUserAllowed(config.slack.allowedUsers, userId)) return false;
-    await respond({ text: '許可されていないユーザーです', response_type: 'ephemeral' });
-    return true;
-  };
 
   if (options.externalChatUrlResolvers) {
     options.externalChatUrlResolvers.slack = async ({ contextKey, platformMessageId }) => {
@@ -1676,152 +1686,41 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     });
   });
 
-  // Slack slash payloads have no thread timestamp. Create a dedicated thread and
-  // retain only its routing key, so channel-level messages never silently mix in.
   const secretThreads = new Map<string, string>();
-  app.command('/secret', async ({ command, ack, respond, client }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-    await runSlackSecretCommand({ command, respond, client, agentRunner, secretThreads });
-  });
-
-  // /new コマンド
-  app.command('/new', async ({ command, ack, respond }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    sessions.delete(command.channel_id);
-    closeActiveSession(command.channel_id, 'new');
-    agentRunner.destroy?.(command.channel_id);
-    await respond({ text: '🆕 新しいセッションを開始しました' });
-  });
-
-  // /delete コマンド（Botメッセージを削除）
-  // /delete → 直前のメッセージ
-  // /delete <ts> → 指定のメッセージ（tsまたはメッセージリンクから抽出）
-  app.command('/delete', async ({ command, ack, respond, client }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    const result = await deleteMessage(client, command.channel_id, command.text.trim());
-    await respond({ text: result, response_type: 'ephemeral' });
-  });
-
-  // /skill コマンド
-  app.command('/skill', async ({ command, ack, respond, client }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    const text = command.text.trim();
-    const args = text ? text.split(/\s+/) : [];
-    const skillName = args[0];
-    const skillArgs = args.slice(1).join(' ');
-
-    if (!skillName) {
-      skills = reloadSkills();
-      await respond({ text: formatSkillList(skills) });
-      return;
-    }
-
-    await processSlackSkillCommand(
-      command.channel_id,
-      skillName,
-      skillArgs,
-      command.trigger_id,
-      client,
-      agentRunner,
-      config
-    );
-  });
-
-  // /settings コマンド
-  app.command('/settings', async ({ command, ack, respond }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    const settings = loadSettings();
-    await respond({ text: formatSettings(settings) });
-  });
-
-  // /models [backend] コマンド
-  app.command('/models', async ({ command, ack, respond }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    try {
-      const result = await executeModelsCommand(command.text.trim() || undefined, resolver);
-      await respond({
-        text: sliceByBytes(markdownToSlackMrkdwn(result), SLACK_MAX_TEXT_BYTES),
-        response_type: 'ephemeral',
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'モデル一覧の取得に失敗しました';
-      await respond({ text: message, response_type: 'ephemeral' });
-    }
-  });
-
-  app.command('/agent', async ({ command, ack, respond }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-    try {
-      const [action = 'status', id, ...extra] = command.text.trim().split(/\s+/).filter(Boolean);
-      if (
-        !['list', 'status', 'set', 'reset'].includes(action) ||
-        extra.length ||
-        (action !== 'set' && id)
-      )
-        throw new Error('/agent list | status | set <ID> | reset');
-      const result =
-        action === 'list'
-          ? listSelectableAgents()
-              .map((a) => `${a.name}: ${a.id}`)
-              .join('\n') || '登録済みのエージェントはありません'
-          : await executeRuntimeSettingsCommand(
-              {
-                name: 'agent',
-                action,
-                value: id,
-                platform: 'slack',
-                channelId: command.channel_id,
-              },
-              { config, resolver, agentRunner }
-            );
-      await respond({ text: result, response_type: 'ephemeral' });
-    } catch (error) {
-      await respond({
-        text: error instanceof Error ? error.message : String(error),
-        response_type: 'ephemeral',
-      });
-    }
-  });
-
-  // /backend status|set|reset コマンド
-  app.command('/backend', async ({ command, ack, respond }) => {
-    await ack();
-    if (await rejectUnauthorizedCommand(command.user_id, respond)) return;
-
-    try {
-      const result = await executeSlackBackendCommand({
-        text: command.text,
-        channelId: command.channel_id,
-        resolver,
-        agentRunner,
-      });
-      await respond({ text: result, response_type: 'ephemeral' });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'バックエンド設定に失敗しました';
-      await respond({ text: `❌ ${message}`, response_type: 'ephemeral' });
-    }
-  });
-
-  // /restart コマンド
-  app.command('/restart', async ({ command, ack, respond }) => {
-    await handleSlackRestartCommand({
-      userId: command.user_id,
-      allowedUsers: config.slack.allowedUsers,
-      ack,
-      respond,
-    });
+  registerSlackCommands(app, {
+    config,
+    resolver,
+    agentRunner,
+    registry: options.workspaceRegistry,
+    scheduler: options.scheduler,
+    registrationSkills: options.workspaceRegistry
+      ? await loadRegisteredSkillCatalog(options.workspaceRegistry)
+      : skills,
+    fallbackSkills: reloadSkills,
+    secret: (command, respond, client) =>
+      runSlackSecretCommand({ command, respond, client, agentRunner, secretThreads }),
+    runSkill: (channel, skill, args, triggerId, client) =>
+      processSlackSkillCommand(channel, skill, args, triggerId, client, agentRunner, config),
+    newConversation: (channel) => {
+      sessions.delete(channel);
+      closeActiveSession(channel, 'new');
+      agentRunner.destroy?.(channel);
+    },
+    stopConversation: async (channel) => {
+      const active = [...busySlackConversations].filter(
+        (key) => key === channel || key.startsWith(`${channel}:`)
+      );
+      if (active.length > 1)
+        return '実行中の会話が複数あります。対象スレッドの停止ボタンを使ってください。';
+      const key = active[0] || channel;
+      const work = findAgentWork('slack', key);
+      const executionKey = work ? `web-chat:${work.appSessionId}` : key;
+      const managed = await processManager.stopAndWait(executionKey);
+      const stopped = managed || agentRunner.cancel?.(executionKey) || false;
+      return stopped ? 'タスクを停止しました。' : '実行中のタスクはありません。';
+    },
+    backend: (channelId, text) =>
+      executeSlackBackendCommand({ channelId, text, resolver, agentRunner }),
   });
 
   await startPlatformWithRetry('Slack', () => app.start());

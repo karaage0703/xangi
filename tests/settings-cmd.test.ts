@@ -19,6 +19,7 @@ describe('secret settings UI', () => {
     roots.push(root);
     const store = new SecretStore(join(root, 'secrets.json'));
     await store.set('DISCORD_TOKEN', 'existing-discord-secret');
+    await store.set('SLACK_USER_TOKEN', 'xoxp-existing-secret');
     const server = await startSecretSettingsServer({ store, timeoutMs: 5_000 });
     servers.push(server);
 
@@ -30,6 +31,8 @@ describe('secret settings UI', () => {
     expect(html).toContain('Discord');
     expect(html).toContain('DISCORD_ALLOWED_USER');
     expect(html).toContain('SLACK_ALLOWED_USER');
+    expect(html).toContain('name="SLACK_USER_TOKEN"');
+    expect(html).not.toContain('xoxp-existing-secret');
     expect(html).toContain('LINE_ALLOWED_USER');
     expect(html).toContain('TELEGRAM_ALLOWED_USER');
     expect(html).toContain('許可ユーザーID');
@@ -48,6 +51,7 @@ describe('secret settings UI', () => {
         DISCORD_TOKEN: '',
         DISCORD_ALLOWED_USER: '123456789012345678, 987654321098765432',
         SLACK_BOT_TOKEN: 'xoxb-new-secret',
+        SLACK_USER_TOKEN: 'xoxp-new-secret',
         SLACK_APP_TOKEN: 'xapp-new-secret',
         SLACK_ALLOWED_USER: 'U01234567, W01234567',
         LINE_ALLOWED_USER: 'U0123456789abcdef0123456789abcdef',
@@ -55,12 +59,13 @@ describe('secret settings UI', () => {
       }),
     });
     expect(response.status).toBe(200);
-    expect(await server.completion).toBe(6);
+    expect(await server.completion).toBe(7);
     expect(await store.get('DISCORD_TOKEN')).toBe('existing-discord-secret');
     expect(await store.get('DISCORD_ALLOWED_USER')).toBe(
       '123456789012345678,987654321098765432'
     );
     expect(await store.get('SLACK_BOT_TOKEN')).toBe('xoxb-new-secret');
+    expect(await store.get('SLACK_USER_TOKEN')).toBe('xoxp-new-secret');
     expect(await store.get('SLACK_APP_TOKEN')).toBe('xapp-new-secret');
     expect(await store.get('SLACK_ALLOWED_USER')).toBe('U01234567,W01234567');
     expect(await store.get('LINE_ALLOWED_USER')).toBe('U0123456789abcdef0123456789abcdef');
@@ -68,6 +73,8 @@ describe('secret settings UI', () => {
   });
 
   it.each([
+    ['SLACK_USER_TOKEN', 'xoxb-not-a-user-token'],
+    ['SLACK_USER_TOKEN', 'xapp-not-a-user-token'],
     ['DISCORD_ALLOWED_USER', 'not-a-user'],
     ['SLACK_ALLOWED_USER', 'C01234567'],
     ['LINE_ALLOWED_USER', 'not-a-line-user'],

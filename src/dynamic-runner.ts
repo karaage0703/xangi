@@ -322,6 +322,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     options?: RunOptions
   ): Promise<RunResult> {
     if (!this.initializedDefaultRunner) await this.defaultRunnerReady;
+    options?.signal?.throwIfAborted();
     const control = handleSecretCommand(options);
     if (control) {
       if (options?.channelId) this.destroy(options.channelId);
@@ -381,6 +382,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       onComplete: undefined,
     };
     try {
+      runOptions?.signal?.throwIfAborted();
       const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
         runner.runStream(
           enrichedPrompt,

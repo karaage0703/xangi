@@ -3,6 +3,7 @@ import { slackApi } from '../src/cli/slack-api.js';
 
 const originalFetch = globalThis.fetch;
 const originalToken = process.env.SLACK_BOT_TOKEN;
+const originalUserToken = process.env.SLACK_USER_TOKEN;
 const originalChannel = process.env.XANGI_CHANNEL_ID;
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -16,6 +17,7 @@ describe('slackApi', () => {
   beforeEach(() => {
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
     delete process.env.XANGI_CHANNEL_ID;
+    process.env.SLACK_USER_TOKEN = 'xoxp-test-user';
   });
 
   afterEach(() => {
@@ -30,6 +32,8 @@ describe('slackApi', () => {
     } else {
       process.env.XANGI_CHANNEL_ID = originalChannel;
     }
+    if (originalUserToken === undefined) delete process.env.SLACK_USER_TOKEN;
+    else process.env.SLACK_USER_TOKEN = originalUserToken;
     vi.restoreAllMocks();
   });
 
@@ -55,6 +59,112 @@ describe('slackApi', () => {
       channel: 'C123',
       text: 'hello',
       thread_ts: '1.0000',
+    });
+  });
+
+  it.each([
+    ['slack_send', { message: 'hello', 'thread-ts': '1.0000' }, 'chat.postMessage'],
+    ['slack_edit', { content: 'updated', 'message-ts': '1.0001' }, 'chat.update'],
+    ['slack_delete', { 'message-ts': '1.0001' }, 'chat.delete'],
+  ])('%s uses the user token only when explicitly selected', async (command, flags, method) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+    delete process.env.SLACK_BOT_TOKEN;
+
+    await slackApi(command, { ...flags, channel: 'C123', as: 'user' });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`https://slack.com/api/${method}`);
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer xoxp-test-user' });
+    const body = JSON.parse(String(init?.body));
+    expect(body.channel).toBe('C123');
+    expect(body).not.toHaveProperty('as_user');
+    expect(body).not.toHaveProperty('username');
+    if (command === 'slack_send') expect(body.thread_ts).toBe('1.0000');
+    else expect(body.ts).toBe('1.0001');
+  });
+
+  it.each(['slack_send', 'slack_edit', 'slack_delete'])(
+    '%s rejects unknown identities before sending',
+    async (command) => {
+      const fetchMock = vi.fn<typeof fetch>();
+      globalThis.fetch = fetchMock;
+      await expect(
+        slackApi(command, {
+          channel: 'C123',
+          message: 'hi',
+          content: 'hi',
+          'message-ts': '1',
+          as: 'typo',
+        })
+      ).rejects.toThrow('--as must be bot or user');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([undefined, 'xoxb-wrong-token', 'xapp-wrong-token', 'xoxe-1-refresh-token'])(
+    'rejects missing or non-user token %s without bot fallback',
+    async (token) => {
+      if (token === undefined) delete process.env.SLACK_USER_TOKEN;
+      else process.env.SLACK_USER_TOKEN = token;
+      const fetchMock = vi.fn<typeof fetch>();
+      globalThis.fetch = fetchMock;
+      await expect(
+        slackApi('slack_send', {
+          channel: 'C123',
+          message: 'hi',
+          as: 'user',
+        })
+      ).rejects.toThrow('SLACK_USER_TOKEN');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('accepts a rotated user access token', async () => {
+    process.env.SLACK_USER_TOKEN = 'xoxe.xoxp-1-user-access';
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+    await slackApi('slack_send', { channel: 'C123', message: 'hi', as: 'user' });
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: 'Bearer xoxe.xoxp-1-user-access',
+    });
+  });
+
+  it.each(['token_revoked', 'invalid_auth', 'missing_scope', 'token_expired'])(
+    'does not retry as bot after user-token failure %s',
+    async (error) => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: false, error }));
+      globalThis.fetch = fetchMock;
+      await expect(
+        slackApi('slack_send', {
+          channel: 'C123',
+          message: 'hi',
+          as: 'user',
+        })
+      ).rejects.toThrow(error);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+        Authorization: 'Bearer xoxp-test-user',
+      });
+    }
+  );
+
+  it.each(['slack_channels', 'slack_search'])(
+    '%s rejects an identity flag rather than silently ignoring it',
+    async (command) => {
+      const fetchMock = vi.fn<typeof fetch>();
+      globalThis.fetch = fetchMock;
+      await expect(slackApi(command, { as: 'user' })).rejects.toThrow('--as is only supported');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('explicit bot identity keeps using the bot token', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+    await slackApi('slack_send', { channel: 'C123', message: 'hi', as: 'bot' });
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: 'Bearer xoxb-test-token',
     });
   });
 

@@ -27,6 +27,10 @@ export interface AgentRun {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
+  teamMemberId?: string;
+  requestId?: string;
+  requestSignature?: string;
+  contextMode?: 'fresh' | 'history';
   /** Self-requests cannot consult default; an explicit Team grant is separate. */
   selfDelegation?: boolean;
   teamDelegation?: TeamDelegationPolicy;
@@ -88,6 +92,10 @@ export interface CreateAgentRunInput {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
+  teamMemberId?: string;
+  requestId?: string;
+  requestSignature?: string;
+  contextMode?: 'fresh' | 'history';
   /** Self-requests cannot consult default; an explicit Team grant is separate. */
   selfDelegation?: boolean;
   teamDelegation?: TeamDelegationPolicy;
@@ -149,6 +157,10 @@ export class AgentRunStore {
       teamId: input.teamId,
       teamTurnId: input.teamTurnId,
       teamPhase: input.teamPhase,
+      teamMemberId: input.teamMemberId,
+      requestId: input.requestId,
+      requestSignature: input.requestSignature,
+      contextMode: input.contextMode,
       selfDelegation: input.selfDelegation === true,
       teamDelegation: input.teamDelegation && structuredClone(input.teamDelegation),
       delegationRootId: input.delegationRootId,

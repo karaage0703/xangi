@@ -381,9 +381,9 @@ describe('runtime_settings', () => {
     await expect(
       executeRuntimeSettingsCommand(
         {
-          name: 'threadmode',
+          name: 'notify',
           action: 'set',
-          value: 'on',
+          value: 'mention',
           channelId: 'C123',
           platform: 'slack',
         },

@@ -8,6 +8,7 @@ export interface Settings {
   slackAutoReplyChannels?: Record<string, boolean>;
   discordCompletionNotifyChannels?: Record<string, DiscordCompletionNotifyMode>;
   discordThreadModeChannels?: Record<string, boolean>;
+  slackThreadModeChannels?: Record<string, boolean>;
 }
 
 const DEFAULT_SETTINGS: Settings = {};
@@ -108,6 +109,7 @@ export function loadSettings(): Settings {
     const discordThreadModeChannels = normalizeDiscordThreadModeChannels(
       parsed.discordThreadModeChannels
     );
+    const slackThreadModeChannels = normalizeSlackBooleanChannels(parsed.slackThreadModeChannels);
     cachedSettings = {
       ...(typeof parsed.replySuggestionsEnabled === 'boolean' && {
         replySuggestionsEnabled: parsed.replySuggestionsEnabled,
@@ -116,6 +118,7 @@ export function loadSettings(): Settings {
       ...(slackAutoReplyChannels && { slackAutoReplyChannels }),
       ...(discordCompletionNotifyChannels && { discordCompletionNotifyChannels }),
       ...(discordThreadModeChannels && { discordThreadModeChannels }),
+      ...(slackThreadModeChannels && { slackThreadModeChannels }),
     };
     return { ...cachedSettings };
   } catch {
@@ -161,6 +164,7 @@ export function formatSettings(settings: Settings): string {
     `- Slackメンションなし応答チャンネル設定: ${slackAutoReplyChannels}件`,
     `- Discord完了通知チャンネル設定: ${completionNotifyChannels}件`,
     `- Discordスレッドモードチャンネル設定: ${threadModeChannels}件`,
+    `- Slackスレッドモードチャンネル設定: ${Object.keys(settings.slackThreadModeChannels ?? {}).length}件`,
   ];
   return lines.join('\n');
 }
@@ -236,4 +240,12 @@ export function getChannelThreadMode(
 export function clearSettingsCache(): void {
   cachedSettings = null;
   settingsPath = null;
+}
+
+export function getSlackChannelThreadMode(
+  settings: Settings,
+  channelId: string,
+  defaultEnabled: boolean
+): boolean {
+  return settings.slackThreadModeChannels?.[channelId] ?? defaultEnabled;
 }

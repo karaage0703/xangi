@@ -4,8 +4,10 @@ import {
   answerUserInput,
   listUserInputs,
   requestUserInput,
+  userInputWaitLabel,
+  userInputTimeoutHint,
   type UserInputCallback,
-  type UserInputAnswer,
+  type UserInputResult,
 } from './user-input.js';
 export function slackUserInput(
   client: WebClient,
@@ -16,17 +18,20 @@ export function slackUserInput(
   const scope = `slack:${channel}:${thread || ''}`;
   return async (request, signal) => {
     let ts: string | undefined;
-    let answer: UserInputAnswer | undefined;
+    let answer: UserInputResult | undefined;
     try {
       answer = await requestUserInput(scope, actor, request, signal, async (pending) => {
         const result = await client.chat.postMessage({
           channel,
           thread_ts: thread,
-          text: '回答を待っています（10分以内）',
+          text: `回答を待っています（${userInputWaitLabel(pending.expiresAt)}以内）。${userInputTimeoutHint(pending.timeoutAction)}`,
           blocks: [
             {
               type: 'section',
-              text: { type: 'plain_text', text: '質問があります。回答フォームを開いてください。' },
+              text: {
+                type: 'plain_text',
+                text: `質問があります。回答フォームを開いてください（${userInputWaitLabel(pending.expiresAt)}以内）。${userInputTimeoutHint(pending.timeoutAction)}`,
+              },
             },
             {
               type: 'actions',
@@ -46,11 +51,15 @@ export function slackUserInput(
       return answer;
     } finally {
       const status =
-        answer && !('cancelled' in answer)
+        answer && 'answers' in answer
           ? '回答を受け付けました。'
-          : '質問を取り消したか、受付時間が終了しました。';
+          : answer && 'unavailable' in answer
+            ? '回答期限を過ぎました。今は回答できない状況として、可能な作業を続けます。'
+            : answer && 'timedOut' in answer
+              ? '回答期限を過ぎたため、設定に従い作業を停止しました。'
+              : '質問を取り消したか、受付時間が終了しました。';
       const summaries = request.questions.map((q) =>
-        `${q.question}\n${answer && !('cancelled' in answer) ? `回答: ${answer.answers[q.id].join('、')}` : '未回答'}`.slice(
+        `${q.question}\n${answer && 'answers' in answer ? `回答: ${answer.answers[q.id].join('、')}` : '未回答'}`.slice(
           0,
           3000
         )

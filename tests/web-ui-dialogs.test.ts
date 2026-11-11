@@ -42,7 +42,7 @@ describe('Web UI dialogs', () => {
     expect(dialogSource).toContain('export function TextInputDialog');
     expect(chatSource).toContain('title="メッセージを削除"');
     expect(chatSource).toContain('title="セッション名を変更"');
-    expect(chatSource).toContain('title="xangiを再起動"');
+    expect(chatSource).not.toContain('title="xangiを再起動"');
     expect(chatSource).toContain('title="応答中のペインを閉じる"');
     expect(chatSource).toContain('setError(result.rejected.map');
     expect(schedulesSource).toContain('title="スケジュールを削除"');

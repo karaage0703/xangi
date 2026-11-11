@@ -107,7 +107,7 @@ async function send(
   text: string,
   files?: unknown[],
   eventName = 'message',
-  threadTs = 'thread'
+  threadTs: string | null = 'thread'
 ) {
   await mocked.events.get(eventName)!({
     event: {
@@ -116,7 +116,7 @@ async function send(
       ts,
       text,
       files,
-      thread_ts: threadTs,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
       channel_type: 'channel',
     },
     client: mocked.client,
@@ -226,7 +226,7 @@ describe('Slack inbound pending-message integration', () => {
     config.slack.replyInThread = false;
     const release = reserveConversation('channel')!;
     try {
-      await send('channel-post', 'チャンネルへの依頼');
+      await send('channel-post', 'チャンネルへの依頼', undefined, 'message', null);
       expect(receipts()).toHaveLength(1);
       expect(receipts()[0][0].thread_ts).toBeUndefined();
       release();

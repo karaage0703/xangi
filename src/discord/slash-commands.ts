@@ -1,8 +1,16 @@
+import { handleSecretConversationCommand } from '../secret-conversation-command.js';
+import { executeChatSettings } from '../chat-command-settings.js';
+import {
+  getChatCommands,
+  commandHelp,
+  skillCommandAliases,
+  skillCommandPrompt,
+} from '../chat-commands.js';
+import type { ChatCommandOption } from '../chat-commands.js';
 import { PENDING_MESSAGE_PREFIX } from './pending-messages.js';
 import { handleQuestionInteraction } from './user-input.js';
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
-import { handleSecretConversationCommand } from '../secret-conversation-command.js';
-import { channelAgent, listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
+import { channelAgent, listSelectableAgents } from '../agent-selection.js';
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
@@ -11,26 +19,15 @@ import {
   MessageFlags,
 } from 'discord.js';
 import type { ButtonInteraction } from 'discord.js';
-import {
-  type Config,
-  type AgentBackend,
-  type EffortLevel,
-  type DiscordCompletionNotifyMode,
-} from '../config.js';
-import {
-  LOCAL_LLM_REASONING_EFFORTS,
-  type LocalLlmReasoningEffort,
-} from '../local-llm/reasoning-effort.js';
+import { type Config, type AgentBackend, type EffortLevel } from '../config.js';
 import { getBackendDisplayName, type AgentRunner, type RunResult } from '../agent-runner.js';
 import { getSupportedEffortLevelsForModel } from '../backend-effort.js';
 import type { BackendResolver } from '../backend-resolver.js';
 import type { DynamicRunnerManager } from '../dynamic-runner.js';
 import { formatAgentErrorForUser } from '../errors.js';
 import { processManager } from '../process-manager.js';
-import { requestProcessRestart } from '../restart-process.js';
 import { loadSkills, formatSkillList, type Skill } from '../skills.js';
-import { loadReplySuggestionsEnabled, loadSettings, formatSettings } from '../settings.js';
-import { canSelfRestart, getSelfLifecyclePermission } from '../self-lifecycle.js';
+import { loadReplySuggestionsEnabled } from '../settings.js';
 import {
   getSession,
   setSession,
@@ -114,16 +111,6 @@ export async function respondWithDiscordTurnHistory(
 const DISCORD_APPLICATION_COMMAND_LIMIT = 100;
 const DISCORD_MODEL_DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 
-/** スキル名を Discord コマンド名に変換（小文字英数字とハイフンのみ、最大32文字） */
-function skillCommandName(skillName: string): string {
-  return skillName
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 32);
-}
-
 /** スケジュール一覧をDiscord向けに分割する */
 function splitScheduleContent(content: string, maxLength: number): string[] {
   const sep = '\n' + SCHEDULE_SEPARATOR + '\n';
@@ -156,400 +143,46 @@ export function buildSlashCommands(
   config: Config,
   skills: Skill[]
 ): ReturnType<SlashCommandBuilder['toJSON']>[] {
-  const commands: ReturnType<SlashCommandBuilder['toJSON']>[] = [
-    new SlashCommandBuilder().setName('new').setDescription('新しいセッションを開始する').toJSON(),
-    new SlashCommandBuilder()
-      .setName('secret')
-      .setDescription('極力ログを残さない会話を開始・終了・確認する')
-      .addStringOption((option) =>
-        option
-          .setName('mode')
-          .setDescription('シークレットモード')
-          .setRequired(true)
-          .addChoices(
-            { name: 'on (開始)', value: 'on' },
-            { name: 'off (終了)', value: 'off' },
-            { name: 'status (現在の設定を表示)', value: 'status' }
-          )
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('retitle')
-      .setDescription('現在のスレッドタイトルをAIで再生成する')
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('workspace')
-      .setDescription('このチャンネルのワークスペースを設定する')
-      .addSubcommand((sub) => sub.setName('status').setDescription('現在の設定を表示する'))
-      .addSubcommand((sub) => sub.setName('list').setDescription('登録済み一覧を表示する'))
-      .addSubcommand((sub) =>
-        sub
-          .setName('use')
-          .setDescription('登録済みworkspaceへ切り替える')
-          .addStringOption((opt) =>
-            opt
-              .setName('name')
-              .setDescription('登録済み表示名')
-              .setRequired(true)
-              .setAutocomplete(true)
-          )
-      )
-      .addSubcommand((sub) =>
-        sub
-          .setName('set')
-          .setDescription('任意の絶対パスを登録して設定する')
-          .addStringOption((opt) => opt.setName('name').setDescription('表示名').setRequired(true))
-          .addStringOption((opt) =>
-            opt.setName('path').setDescription('既存directoryの絶対パス').setRequired(true)
-          )
-      )
-      .addSubcommand((sub) => sub.setName('reset').setDescription('defaultへ戻す'))
-      .toJSON(),
-    new SlashCommandBuilder().setName('stop').setDescription('実行中のタスクを停止する').toJSON(),
-    new SlashCommandBuilder()
-      .setName('skill')
-      .setDescription('利用可能なスキルを表示・実行する')
-      .addStringOption((option) =>
-        option.setName('name').setDescription('スキル名').setRequired(false).setAutocomplete(true)
-      )
-      .addStringOption((option) => option.setName('args').setDescription('引数').setRequired(false))
-      .toJSON(),
-    new SlashCommandBuilder().setName('settings').setDescription('現在の設定を表示する').toJSON(),
-    new SlashCommandBuilder()
-      .setName('models')
-      .setDescription('利用可能なモデル一覧を表示する')
-      .addStringOption((option) =>
-        option
-          .setName('backend')
-          .setDescription('バックエンド（省略時はすべて）')
-          .setRequired(false)
-          .setAutocomplete(true)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('replysuggestions')
-      .setDescription('回答候補の全体ON/OFFを設定する')
-      .addStringOption((option) =>
-        option
-          .setName('mode')
-          .setDescription('回答候補モード')
-          .setRequired(true)
-          .addChoices(
-            { name: 'status (現在の設定を表示)', value: 'status' },
-            { name: 'on (全プラットフォームで生成)', value: 'on' },
-            { name: 'off (生成せずトークンを使わない)', value: 'off' },
-            { name: 'default (起動時設定に戻す)', value: 'default' }
-          )
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('notify')
-      .setDescription('このチャンネルの完了通知を設定する')
-      .addStringOption((option) =>
-        option
-          .setName('mode')
-          .setDescription('通知モード')
-          .setRequired(true)
-          .addChoices(
-            { name: 'status (現在の設定を表示)', value: 'status' },
-            { name: 'default (起動時設定に戻す)', value: 'default' },
-            { name: 'off (通知しない)', value: 'off' },
-            { name: 'message (完了メッセージのみ)', value: 'message' },
-            { name: 'mention (依頼者にメンション)', value: 'mention' }
-          )
-      )
-      .toJSON(),
-    new SlashCommandBuilder().setName('restart').setDescription('ボットを再起動する').toJSON(),
-    new SlashCommandBuilder()
-      .setName('schedule')
-      .setDescription('スケジュール管理')
-      .addSubcommand((sub) =>
-        sub
-          .setName('add')
-          .setDescription('スケジュールを追加')
-          .addStringOption((opt) =>
-            opt
-              .setName('input')
-              .setDescription('例: "30分後 ミーティング" / "毎日 9:00 おはよう"')
-              .setRequired(true)
-          )
-      )
-      .addSubcommand((sub) => sub.setName('list').setDescription('スケジュール一覧を表示'))
-      .addSubcommand((sub) =>
-        sub
-          .setName('remove')
-          .setDescription('スケジュールを削除')
-          .addStringOption((opt) =>
-            opt.setName('id').setDescription('スケジュールID').setRequired(true)
-          )
-      )
-      .addSubcommand((sub) =>
-        sub
-          .setName('toggle')
-          .setDescription('スケジュールの有効/無効を切り替え')
-          .addStringOption((opt) =>
-            opt.setName('id').setDescription('スケジュールID').setRequired(true)
-          )
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('agent')
-      .setDescription('チャンネルの担当エージェントを設定')
-      .addSubcommand((sub) => sub.setName('list').setDescription('登録済みの担当を表示'))
-      .addSubcommand((sub) => sub.setName('status').setDescription('現在の担当を表示'))
-      .addSubcommand((sub) =>
-        sub
-          .setName('set')
-          .setDescription('担当を設定して新しいセッションに切り替え')
-          .addStringOption((opt) =>
-            opt
-              .setName('id')
-              .setDescription('担当エージェント（名前またはIDで検索）')
-              .setRequired(true)
-              .setAutocomplete(true)
-          )
-      )
-      .addSubcommand((sub) => sub.setName('reset').setDescription('担当を解除して個別設定に戻す'))
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('team')
-      .setDescription('登録済みチームを確認')
-      .addSubcommand((sub) => sub.setName('list').setDescription('登録済みのチームを表示'))
-      .addSubcommand((sub) =>
-        sub
-          .setName('show')
-          .setDescription('チームの内容を表示')
-          .addStringOption((opt) =>
-            opt.setName('id').setDescription('チームID').setRequired(true).setAutocomplete(true)
-          )
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName('backend')
-      .setDescription('バックエンド/モデルの切り替え')
-      .addSubcommand((sub) =>
-        sub
-          .setName('status')
-          .setDescription('現在のバックエンド設定を表示')
-          .addStringOption((opt) =>
-            opt
-              .setName('scope')
-              .setDescription('設定範囲（省略時はこのチャンネル）')
-              .addChoices(
-                { name: 'このチャンネル', value: 'channel' },
-                { name: '全体の既定値', value: 'global' }
-              )
-          )
-      )
-      .addSubcommand((sub) =>
-        sub
-          .setName('set')
-          .setDescription('バックエンド/モデルを設定')
-          .addStringOption((opt) =>
-            opt
-              .setName('type')
-              .setDescription('バックエンド名')
-              .setRequired(true)
-              .setAutocomplete(true)
-          )
-          .addStringOption((opt) =>
-            opt.setName('model').setDescription('モデル名').setAutocomplete(true)
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName('effort')
-              .setDescription('effortレベル（対応バックエンド用）')
-              .setAutocomplete(true)
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName('scope')
-              .setDescription('設定範囲（省略時はこのチャンネル）')
-              .addChoices(
-                { name: 'このチャンネル', value: 'channel' },
-                { name: '全体の既定値', value: 'global' }
-              )
-          )
-      )
-      .addSubcommand((sub) =>
-        sub
-          .setName('reset')
-          .setDescription('デフォルトに戻す')
-          .addStringOption((opt) =>
-            opt
-              .setName('scope')
-              .setDescription('設定範囲（省略時はこのチャンネル）')
-              .addChoices(
-                { name: 'このチャンネル', value: 'channel' },
-                { name: '全体のモデル指定を解除', value: 'global' }
-              )
-          )
-      )
-      .toJSON(),
-  ];
-
-  // ALLOW_AUTOREPLY_COMMAND=true の場合のみコマンドを登録
-  if (config.discord.allowAutoreplyCommand) {
-    commands.push(
-      new SlashCommandBuilder()
-        .setName('autoreply')
-        .setDescription('このチャンネルのメンションなし応答を設定')
-        .addStringOption((option) =>
-          option
-            .setName('mode')
-            .setDescription('メンションなし応答モード')
-            .setRequired(true)
-            .addChoices(
-              { name: 'status (現在の設定を表示)', value: 'status' },
-              { name: 'on (メンションなしで応答)', value: 'on' },
-              { name: 'off (メンションなし応答を無効)', value: 'off' },
-              { name: 'default (チャンネル設定を削除)', value: 'default' }
-            )
-        )
-        .toJSON()
-    );
-  }
-
-  // ALLOW_RESPOND_TO_BOTS_COMMAND=true の場合のみコマンドを登録
-  if (config.discord.allowRespondToBotsCommand) {
-    commands.push(
-      new SlashCommandBuilder()
-        .setName('respondtobots')
-        .setDescription(
-          'bot メッセージへの応答を ON/OFF 切替 (反応対象は RESPOND_TO_BOTS 環境変数)'
-        )
-        .toJSON()
-    );
-  }
-
-  // ALLOW_THREAD_MODE_COMMAND=true の場合のみコマンドを登録
-  if (config.discord.allowThreadModeCommand) {
-    commands.push(
-      new SlashCommandBuilder()
-        .setName('threadmode')
-        .setDescription('Discord の発言ごとスレッド返信モードを切替')
-        .addStringOption((option) =>
-          option
-            .setName('mode')
-            .setDescription('スレッドモード')
-            .setRequired(true)
-            .addChoices(
-              { name: 'status (現在の設定を表示)', value: 'status' },
-              { name: 'on (発言ごとにスレッド返信)', value: 'on' },
-              { name: 'off (チャンネル直下に返信)', value: 'off' },
-              { name: 'default (チャンネル設定を削除)', value: 'default' }
-            )
-        )
-        .toJSON()
-    );
-  }
-
-  // ALLOW_LLM_MODE_COMMAND=true の場合のみコマンドを登録（Local LLM 動作モード切替）
-  if (config.discord.allowLlmModeCommand) {
-    commands.push(
-      new SlashCommandBuilder()
-        .setName('llmmode')
-        .setDescription('このチャンネルの Local LLM 動作モードを切替 (agent/chat/default/status)')
-        .addStringOption((option) =>
-          option
-            .setName('mode')
-            .setDescription('モード')
-            .setRequired(true)
-            .addChoices(
-              { name: 'agent (全機能ON、複雑タスク向け)', value: 'agent' },
-              { name: 'chat (全機能OFF、純粋会話)', value: 'chat' },
-              { name: 'default (チャンネル override 削除、起動時値に戻す)', value: 'default' },
-              { name: 'status (現在の設定を表示)', value: 'status' }
-            )
-        )
-        .toJSON()
-    );
-  }
-
-  if (config.discord.allowLlmEffortCommand) {
-    commands.push(
-      new SlashCommandBuilder()
-        .setName('llmeffort')
-        .setDescription('このチャンネルの Local LLM reasoning effort を切替')
-        .addStringOption((option) =>
-          option
-            .setName('level')
-            .setDescription('reasoning effort')
-            .setRequired(true)
-            .addChoices(
-              { name: 'status (現在の設定を表示)', value: 'status' },
-              { name: 'default (チャンネル設定を削除)', value: 'default' },
-              ...LOCAL_LLM_REASONING_EFFORTS.map((effort) => ({
-                name: effort,
-                value: effort,
-              }))
-            )
-        )
-        .toJSON()
-    );
-  }
-
-  // 各スキルを個別のスラッシュコマンドとして追加
-  let skippedSkillCommands = 0;
-  for (const skill of skills) {
-    if (commands.length >= DISCORD_APPLICATION_COMMAND_LIMIT) {
-      skippedSkillCommands += 1;
-      continue;
+  const addString = (
+    builder: import('discord.js').SlashCommandStringOption,
+    option: ChatCommandOption
+  ) => {
+    builder
+      .setName(option.name)
+      .setDescription(option.description)
+      .setRequired(option.required ?? false);
+    if (option.choices?.length)
+      builder.addChoices(...option.choices.map(({ name, value }) => ({ name, value })));
+    else if (option.autocomplete) builder.setAutocomplete(true);
+    return builder;
+  };
+  const commands = getChatCommands('discord', config).map((definition) => {
+    const builder = new SlashCommandBuilder()
+      .setName(definition.name)
+      .setDescription(definition.description);
+    for (const option of definition.options ?? []) {
+      if (option.type === 'subcommand')
+        builder.addSubcommand((sub) => {
+          sub.setName(option.name).setDescription(option.description);
+          for (const child of option.options ?? [])
+            sub.addStringOption((string) => addString(string, child));
+          return sub;
+        });
+      else builder.addStringOption((string) => addString(string, option));
     }
-
-    // Discordコマンド名は小文字英数字とハイフンのみ（最大32文字）
-    const cmdName = skillCommandName(skill.name);
-
-    if (cmdName) {
-      commands.push(
-        new SlashCommandBuilder()
-          .setName(cmdName)
-          .setDescription(skill.description.slice(0, 100) || `${skill.name}スキルを実行`)
-          .addStringOption((option) =>
-            option.setName('args').setDescription('引数（任意）').setRequired(false)
-          )
-          .toJSON()
-      );
-    }
-  }
-  if (skippedSkillCommands > 0) {
-    console.warn(
-      `[xangi] Skipped ${skippedSkillCommands} skill slash command(s) to stay within Discord's ${DISCORD_APPLICATION_COMMAND_LIMIT} command limit. Use /skill for omitted skills.`
+    return builder.toJSON();
+  });
+  for (const [name, skill] of skillCommandAliases(skills)) {
+    if (commands.length >= DISCORD_APPLICATION_COMMAND_LIMIT) break;
+    commands.push(
+      new SlashCommandBuilder()
+        .setName(name)
+        .setDescription(skill.description.slice(0, 100) || `${skill.name}スキルを実行`)
+        .addStringOption((option) => option.setName('args').setDescription('引数'))
+        .toJSON()
     );
   }
-
-  const disabledCommands = new Set<string>(['skip']);
-  if (config.features?.workspaceSwitching === false) {
-    disabledCommands.add('workspace');
-    disabledCommands.add('agent');
-    disabledCommands.add('team');
-  }
-  if (config.features?.runtimeSettings === false) {
-    for (const name of [
-      'agent',
-      'team',
-      'settings',
-      'replysuggestions',
-      'notify',
-      'autoreply',
-      'respondtobots',
-      'threadmode',
-      'llmmode',
-      'llmeffort',
-    ]) {
-      disabledCommands.add(name);
-    }
-  }
-  if (config.features?.backendSwitching === false) {
-    disabledCommands.add('agent');
-    disabledCommands.add('team');
-    disabledCommands.add('backend');
-    disabledCommands.add('models');
-  }
-  if (config.features?.lifecycle === false) disabledCommands.add('restart');
-  if (config.scheduler?.enabled === false) disabledCommands.add('schedule');
-
-  return commands.filter((command) => !disabledCommands.has(command.name));
+  return commands;
 }
 
 interface DiscordAutocompleteChoice {
@@ -639,18 +272,8 @@ export async function getDiscordAutocompleteChoices(
   skills: Skill[],
   resolver: BackendResolver,
   discoverModels: typeof discoverBackendModels = discoverBackendModels,
-  listAgents: typeof listSelectableAgents = listSelectableAgents,
-  listTeams: typeof listSelectableTeams = listSelectableTeams
+  listAgents: typeof listSelectableAgents = listSelectableAgents
 ): Promise<DiscordAutocompleteChoice[]> {
-  if (input.commandName === 'team' && input.focusedName === 'id') {
-    return filterAutocompleteChoices(
-      listTeams().map((team) => ({
-        name: `${team.name} (${team.id})`.slice(0, 100),
-        value: team.id,
-      })),
-      input.focusedValue
-    );
-  }
   if (input.commandName === 'agent' && input.focusedName === 'id') {
     return filterAutocompleteChoices(
       listAgents().map((agent) => ({
@@ -671,10 +294,7 @@ export async function getDiscordAutocompleteChoices(
     );
   }
 
-  if (
-    (input.commandName === 'backend' && input.focusedName === 'type') ||
-    (input.commandName === 'models' && input.focusedName === 'backend')
-  ) {
+  if (input.commandName === 'backend' && input.focusedName === 'type') {
     return filterAutocompleteChoices(
       resolver.getSelectableBackends().map((backend) => ({
         name: getBackendDisplayName(backend),
@@ -743,8 +363,7 @@ async function handleAutocomplete(
     await interaction.respond(choices);
     return;
   }
-  const backendOptionName = interaction.commandName === 'models' ? 'backend' : 'type';
-  const backend = interaction.options.getString(backendOptionName) as AgentBackend | null;
+  const backend = interaction.options.getString('type') as AgentBackend | null;
   const model = interaction.options.getString('model') ?? undefined;
   const choices = await getDiscordAutocompleteChoices(
     {
@@ -769,7 +388,8 @@ export async function handleSkillCommand(
   channelId: string,
   settingsChannelId: string,
   skillName: string,
-  workspaceRegistry?: WorkspaceRegistry
+  workspaceRegistry?: WorkspaceRegistry,
+  fallbackWorkdir = process.env.WORKSPACE_PATH || process.cwd()
 ) {
   const args = interaction.options.getString('args') || '';
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -787,17 +407,20 @@ export async function handleSkillCommand(
   await interaction.deferReply();
 
   try {
-    let prompt = `[プラットフォーム: Discord]\n[チャンネルID: ${channelId}]\nRun the skill "${skillName}". ${args ? `Arguments: ${args}` : ''}`;
-    if (replySuggestionsEnabled) {
-      prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
-    }
-
+    let prompt: string;
     const { appSessionId, workspace } = await ensureSessionWithWorkspace({
       registry: workspaceRegistry,
       platform: 'discord',
       contextKey: channelId,
       bindingKey: settingsChannelId,
     });
+    const skill = loadSkills(workspace?.path || fallbackWorkdir).find(
+      (candidate) => candidate.name === skillName
+    );
+    if (!skill) throw new Error(`スキル \`${skillName}\` は現在のWorkspaceにありません`);
+    prompt = `[プラットフォーム: Discord]\n[チャンネルID: ${channelId}]\n${skillCommandPrompt(skill, args)}`;
+    if (replySuggestionsEnabled)
+      prompt = appendReplySuggestionInstruction(prompt, replySuggestionCount);
     const sessionId = getSession(channelId);
     const eventCtx = {
       threadId: threadIdFor('discord', channelId),
@@ -1084,11 +707,38 @@ export function createInteractionHandler(
     agentRunner,
     scheduler,
     workdir,
-    skillsRef,
     workspaceRegistry,
     discoverModels = discoverBackendModels,
     onReplySuggestion,
   } = deps;
+
+  const commandSkills = async (
+    interaction: ChatInputCommandInteraction | AutocompleteInteraction
+  ): Promise<Skill[]> => {
+    const bindingKey = resolveDiscordSettingsChannelId(
+      interaction.channelId,
+      (interaction.channel ?? {}) as { isThread?: () => boolean; parentId?: string | null }
+    );
+    const activeId = getActiveSessionId(interaction.channelId);
+    const entry = activeId ? getSessionEntry(activeId) : undefined;
+    let path = workdir;
+    if (workspaceRegistry) {
+      const workspace = entry?.workspacePath
+        ? await workspaceRegistry.resolveSnapshot(
+            entry.workspaceId || 'default',
+            entry.workspacePath
+          )
+        : entry?.workspaceId
+          ? await workspaceRegistry.resolveById(entry.workspaceId)
+          : channelAgent('discord', bindingKey)
+            ? await workspaceRegistry.resolveById(
+                channelAgent('discord', bindingKey)!.workspaceId || 'default'
+              )
+            : await workspaceRegistry.resolve('discord', bindingKey);
+      path = workspace.path;
+    }
+    return loadSkills(path);
+  };
 
   const autocompleteDiscoverModels = createDiscordModelDiscoveryCache(discoverModels);
   if (config.features?.backendSwitching !== false) {
@@ -1107,24 +757,26 @@ export function createInteractionHandler(
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
       if (
-        interaction.commandName === 'workspace' &&
-        (config.features?.workspaceSwitching === false ||
-          (!config.discord.allowedUsers?.includes('*') &&
-            !config.discord.allowedUsers?.includes(interaction.user.id)))
+        (!config.discord.allowedUsers?.includes('*') &&
+          !config.discord.allowedUsers?.includes(interaction.user.id)) ||
+        !getChatCommands('discord', config).some(
+          (command) => command.name === interaction.commandName
+        )
       ) {
         await interaction.respond([]);
         return;
       }
-      if (
-        ['backend', 'models'].includes(interaction.commandName) &&
-        config.features?.backendSwitching === false
-      ) {
+      let skills: Skill[] = [];
+      try {
+        if (interaction.commandName === 'skill') skills = await commandSkills(interaction);
+      } catch (error) {
+        console.warn('[skills] Cannot resolve autocomplete workspace:', error);
         await interaction.respond([]);
         return;
       }
       await handleAutocomplete(
         interaction,
-        skillsRef.current,
+        skills,
         resolver,
         autocompleteDiscoverModels,
         workspaceRegistry
@@ -1304,50 +956,35 @@ export function createInteractionHandler(
 
     if (!interaction.isChatInputCommand()) return;
 
-    const commandFeatureEnabled =
-      !['workspace'].includes(interaction.commandName) ||
-      config.features?.workspaceSwitching !== false;
-    const runtimeCommandEnabled =
-      ![
-        'agent',
-        'team',
-        'settings',
-        'replysuggestions',
-        'notify',
-        'autoreply',
-        'respondtobots',
-        'threadmode',
-        'llmmode',
-        'llmeffort',
-      ].includes(interaction.commandName) || config.features?.runtimeSettings !== false;
-    const backendCommandEnabled =
-      !['backend', 'models'].includes(interaction.commandName) ||
-      config.features?.backendSwitching !== false;
-    const lifecycleCommandEnabled =
-      interaction.commandName !== 'restart' || config.features?.lifecycle !== false;
-    const schedulerCommandEnabled =
-      interaction.commandName !== 'schedule' || config.scheduler.enabled;
-    if (
-      interaction.commandName === 'skip' ||
-      !commandFeatureEnabled ||
-      !runtimeCommandEnabled ||
-      !backendCommandEnabled ||
-      !lifecycleCommandEnabled ||
-      !schedulerCommandEnabled
-    ) {
-      await interaction.reply({
-        content: 'この機能は管理者により無効化されています',
-        ephemeral: true,
-      });
-      return;
-    }
-
     // 許可リストチェック（"*" で全員許可）
     if (
       !config.discord.allowedUsers?.includes('*') &&
       !config.discord.allowedUsers?.includes(interaction.user.id)
     ) {
       await interaction.reply({ content: '許可されていないユーザーです', ephemeral: true });
+      return;
+    }
+
+    const availableCommands = getChatCommands('discord', config);
+    let currentSkills: Skill[] = [];
+    try {
+      if (
+        interaction.commandName === 'skill' ||
+        !availableCommands.some((command) => command.name === interaction.commandName)
+      )
+        currentSkills = await commandSkills(interaction);
+    } catch (error) {
+      await interaction.reply({ content: formatAgentErrorForUser(error), ephemeral: true });
+      return;
+    }
+    if (
+      !availableCommands.some((command) => command.name === interaction.commandName) &&
+      !skillCommandAliases(currentSkills).has(interaction.commandName)
+    ) {
+      await interaction.reply({
+        content: 'このコマンドは利用できません。/help で一覧を確認してください。',
+        ephemeral: true,
+      });
       return;
     }
 
@@ -1559,48 +1196,50 @@ export function createInteractionHandler(
       return;
     }
 
+    if (interaction.commandName === 'help') {
+      await interaction.reply({ content: commandHelp('discord', config), ephemeral: true });
+      return;
+    }
+
     if (interaction.commandName === 'settings') {
-      const settings = loadSettings();
-      await interaction.reply(formatSettings(settings));
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const message = await executeChatSettings(
+          interaction.options.getString('item') || undefined,
+          interaction.options.getString('value') || undefined,
+          { platform: 'discord', channelId: settingsChannelId },
+          { config, resolver, agentRunner, modelDiscovery: autocompleteDiscoverModels }
+        );
+        const chunks = splitDiscordMessage(message, DISCORD_SAFE_LENGTH);
+        await interaction.editReply({ content: chunks[0] });
+        for (const content of chunks.slice(1))
+          await interaction.followUp({ content, ephemeral: true });
+      } catch (error) {
+        await interaction.editReply({
+          content: error instanceof Error ? error.message : String(error),
+        });
+      }
       return;
     }
 
-    if (interaction.commandName === 'notify') {
-      const mode = interaction.options.getString('mode', true) as
-        DiscordCompletionNotifyMode | 'default' | 'status';
-      await replyWithRuntimeSetting('notify', mode);
-      return;
-    }
-
-    if (interaction.commandName === 'agent' || interaction.commandName === 'team') {
-      const isTeam = interaction.commandName === 'team';
+    if (interaction.commandName === 'agent') {
       try {
         const action = interaction.options.getSubcommand();
         const result =
           action === 'list'
-            ? (isTeam ? listSelectableTeams() : listSelectableAgents())
-                .map((a) => `${a.name}: ${a.id}`)
-                .join('\n') ||
-              (isTeam ? '登録済みのチームはありません' : '登録済みのエージェントはありません')
-            : isTeam
-              ? (() => {
-                  if (action !== 'show') throw new Error('Teamのチャンネル設定は廃止しました');
-                  const team = listSelectableTeams().find(
-                    (t) => t.id === interaction.options.getString('id')
-                  );
-                  if (!team) throw new Error('チームが見つかりません');
-                  return `${team.name}\n${team.members.map((m) => m.agentId).join('\n')}`;
-                })()
-              : await executeRuntimeSettingsCommand(
-                  {
-                    name: isTeam ? 'team' : 'agent',
-                    action,
-                    value: interaction.options.getString('id') || undefined,
-                    platform: 'discord',
-                    channelId: settingsChannelId,
-                  },
-                  { config, resolver, agentRunner }
-                );
+            ? listSelectableAgents()
+                .map((agent) => `${agent.name}: ${agent.id}`)
+                .join('\n') || '登録済みのエージェントはありません'
+            : await executeRuntimeSettingsCommand(
+                {
+                  name: 'agent',
+                  action,
+                  value: interaction.options.getString('id') || undefined,
+                  platform: 'discord',
+                  channelId: settingsChannelId,
+                },
+                { config, resolver, agentRunner }
+              );
         await interaction.reply({ content: result, ephemeral: true });
       } catch (error) {
         await interaction.reply({
@@ -1614,6 +1253,12 @@ export function createInteractionHandler(
       await interaction.deferReply();
       try {
         const sub = interaction.options.getSubcommand();
+        if (sub === 'models') {
+          await interaction.editReply(
+            await executeModelsCommand(interaction.options.getString('type') || undefined, resolver)
+          );
+          return;
+        }
         const backendValue =
           sub === 'set' ? (interaction.options.getString('type', true) as AgentBackend) : undefined;
         const modelValue =
@@ -1644,16 +1289,6 @@ export function createInteractionHandler(
       return;
     }
 
-    if (interaction.commandName === 'models') {
-      await interaction.deferReply();
-      const backend = interaction.options.getString('backend') ?? undefined;
-      const content = await executeModelsCommand(backend, resolver);
-      const chunks = splitDiscordMessage(content, DISCORD_SAFE_LENGTH);
-      await interaction.editReply(chunks[0]);
-      for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
-      return;
-    }
-
     if (interaction.commandName === 'autoreply') {
       if (await rejectDisabledCommand(config.discord.allowAutoreplyCommand)) return;
       const mode = interaction.options.getString('mode', true) as
@@ -1667,94 +1302,12 @@ export function createInteractionHandler(
       return;
     }
 
-    if (interaction.commandName === 'replysuggestions') {
-      const mode = interaction.options.getString('mode', true) as
-        'status' | 'on' | 'off' | 'default';
-      await replyWithRuntimeSetting('replysuggestions', mode);
-      return;
-    }
-
-    if (interaction.commandName === 'respondtobots') {
-      if (await rejectDisabledCommand(config.discord.allowRespondToBotsCommand)) return;
-      await interaction.reply(
-        await executeRuntimeSettingsCommand(
-          {
-            name: 'respondtobots',
-            action: 'set',
-            value: config.discord.respondToBotsEnabled ? 'off' : 'on',
-            channelId: settingsChannelId,
-            platform: 'discord',
-          },
-          { config, resolver }
-        )
-      );
-      return;
-    }
-
     if (interaction.commandName === 'threadmode') {
       if (await rejectDisabledCommand(config.discord.allowThreadModeCommand)) return;
 
       const mode = interaction.options.getString('mode', true) as
         'status' | 'on' | 'off' | 'default';
       await replyWithRuntimeSetting('threadmode', mode);
-      return;
-    }
-
-    if (interaction.commandName === 'llmmode') {
-      if (await rejectDisabledCommand(config.discord.allowLlmModeCommand)) return;
-      const mode = interaction.options.getString('mode', true) as
-        'agent' | 'chat' | 'default' | 'status';
-      await replyWithRuntimeSetting('llmmode', mode);
-      return;
-    }
-
-    if (interaction.commandName === 'llmeffort') {
-      if (await rejectDisabledCommand(config.discord.allowLlmEffortCommand)) return;
-      const level = interaction.options.getString('level', true) as
-        LocalLlmReasoningEffort | 'default' | 'status';
-      const override = resolver.getChannelOverride(settingsChannelId);
-      const startupDefaultRaw = process.env.LOCAL_LLM_REASONING_EFFORT?.trim().toLowerCase();
-      const startupDefault = LOCAL_LLM_REASONING_EFFORTS.includes(
-        startupDefaultRaw as LocalLlmReasoningEffort
-      )
-        ? (startupDefaultRaw as LocalLlmReasoningEffort)
-        : undefined;
-
-      if (level === 'status') {
-        const current = override?.localLlmReasoningEffort ?? startupDefault;
-        const source = override?.localLlmReasoningEffort
-          ? 'チャンネル設定'
-          : startupDefault
-            ? '起動時デフォルト'
-            : 'providerデフォルト';
-        await interaction.reply(
-          `Local LLM reasoning effort: \`${current || '未指定'}\`（${source}）`
-        );
-        return;
-      }
-
-      resolver.setChannelLocalLlmReasoningEffort(
-        settingsChannelId,
-        level === 'default' ? null : level
-      );
-      await interaction.reply(
-        level === 'default'
-          ? `Local LLM reasoning effort のチャンネル設定を削除しました。次の送信から \`${startupDefault || 'providerデフォルト'}\` を使います。`
-          : `Local LLM reasoning effort を \`${level}\` に設定しました。次の送信から適用されます。`
-      );
-      return;
-    }
-
-    if (interaction.commandName === 'restart') {
-      const selfLifecycle = getSelfLifecyclePermission();
-      if (!canSelfRestart(selfLifecycle)) {
-        await interaction.reply(
-          '⚠️ 自己再起動が無効です。管理者が `.env` の `XANGI_SELF_LIFECYCLE=restart-only` を設定し、xangi を再起動してください。'
-        );
-        return;
-      }
-      await interaction.reply('🔄 再起動します...');
-      requestProcessRestart(1000);
       return;
     }
 
@@ -1765,9 +1318,15 @@ export function createInteractionHandler(
 
     if (interaction.commandName === 'skill') {
       const skillName = interaction.options.getString('name');
-      skillsRef.current = loadSkills(workdir);
       if (!skillName) {
-        await interaction.reply(formatSkillList(skillsRef.current));
+        await interaction.reply(formatSkillList(currentSkills));
+        return;
+      }
+      if (!currentSkills.some((skill) => skill.name === skillName)) {
+        await interaction.reply({
+          content: `スキル \`${skillName}\` は現在のWorkspaceにありません`,
+          ephemeral: true,
+        });
         return;
       }
       await handleSkillCommand(
@@ -1777,15 +1336,14 @@ export function createInteractionHandler(
         channelId,
         settingsChannelId,
         skillName,
-        workspaceRegistry
+        workspaceRegistry,
+        workdir
       );
       return;
     }
 
-    // 個別スキルコマンドの処理
-    const matchedSkill = skillsRef.current.find(
-      (s) => skillCommandName(s.name) === interaction.commandName
-    );
+    // Resolve direct aliases against this conversation's effective workspace.
+    const matchedSkill = skillCommandAliases(currentSkills).get(interaction.commandName);
 
     if (matchedSkill) {
       await handleSkillCommand(
@@ -1795,7 +1353,8 @@ export function createInteractionHandler(
         channelId,
         settingsChannelId,
         matchedSkill.name,
-        workspaceRegistry
+        workspaceRegistry,
+        workdir
       );
       return;
     }

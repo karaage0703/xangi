@@ -1,3 +1,4 @@
+import { randomUUID, createHash } from 'node:crypto';
 import { agentRunBusy, closeAgentRun } from './agent-work.js';
 import {
   delegationScopeCount,
@@ -10,6 +11,7 @@ import {
   DEFAULT_TEAM_AGENT_ID,
   DEFAULT_TEAM_CONCURRENCY,
   validateTeamAssignments,
+  teamMemberId,
 } from './teams.js';
 import {
   removeRegisteredAgent,
@@ -18,6 +20,7 @@ import {
 } from './agent-selection.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ProjectCatalog } from './project-catalog.js';
+import { normalizeName } from './web-projects.js';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
 import { getActiveSessionId, getSessionEntry, webAppSessionId } from './sessions.js';
 import { resolveRunningSession } from './running-session-context.js';
@@ -122,7 +125,12 @@ export async function executeProjectAgentCommand(
       )
     : undefined;
   const action = flags.action || 'list';
-  const agentId = flags.agent === 'default' ? DEFAULT_TEAM_AGENT_ID : flags.agent;
+  const inheritParent = flags.agent === 'self';
+  const agentId = inheritParent
+    ? session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID
+    : flags.agent === 'default'
+      ? DEFAULT_TEAM_AGENT_ID
+      : flags.agent;
   const callerRun = parent
     ? runs.list().find((r) => r.parentContextKey && r.appSessionId === webAppSessionId(parent))
     : undefined;
@@ -170,6 +178,45 @@ export async function executeProjectAgentCommand(
     return JSON.stringify({ ok: true });
   }
   if (!parent) throw new Error('現在の会話が必要です');
+  if (action === 'update') {
+    if (
+      Object.keys(flags).some((key) => !['action', 'agent', 'name', 'workspace-id'].includes(key))
+    )
+      throw new Error('update は --name と --workspace-id のみ変更できます');
+    if (!agentId?.trim() || flags.agent === 'self')
+      throw new Error('Agent ID を指定してください（default も指定可能）');
+    if (agentId !== DEFAULT_TEAM_AGENT_ID && !catalog.agent(agentId))
+      throw new Error('エージェントが見つかりません');
+    if (flags.name === undefined && flags['workspace-id'] === undefined)
+      throw new Error('--name または --workspace-id は必須です');
+    // Validate before awaiting workspace resolution or writing any settings.
+    const input: { name?: string; workspaceId?: string } = {};
+    if (flags.name !== undefined) {
+      const name = normalizeName(flags.name);
+      input.name = name;
+      if (
+        catalog
+          .teamAgents()
+          .some(
+            (agent) =>
+              agent.id !== agentId && agent.name.toLocaleLowerCase() === name.toLocaleLowerCase()
+          )
+      )
+        throw new Error('同じ名前のエージェントが既にあります');
+    }
+    if (flags['workspace-id'] !== undefined) {
+      if (dependencies.workspaceSwitching === false)
+        throw new Error('workspace switching is disabled');
+      if (!workspaces) throw new Error('Workspace registry is unavailable');
+      if (!flags['workspace-id'].trim()) throw new Error('--workspace-id を指定してください');
+      input.workspaceId = (await workspaces.resolveById(flags['workspace-id'].trim())).id;
+    }
+    const agent =
+      agentId === DEFAULT_TEAM_AGENT_ID
+        ? catalog.saveDefaultAgent(input)
+        : catalog.saveAgent(input, agentId);
+    return JSON.stringify({ agent, existingSessionsPreserved: true });
+  }
   if (action === 'create') {
     if (!workspaces) throw new Error('Workspace registry is unavailable');
     if (dependencies.workspaceSwitching === false)
@@ -227,8 +274,21 @@ export async function executeProjectAgentCommand(
     return JSON.stringify(run);
   }
   if (action !== 'run')
-    throw new Error('action must be create, list, delete, run, status, wait, logs or close');
+    throw new Error(
+      'action must be create, update, list, delete, run, status, wait, logs or close'
+    );
   if (!flags.task?.trim()) throw new Error('--task is required');
+  if (flags.context && !['fresh', 'history'].includes(flags.context))
+    throw new Error(
+      '--context は fresh または history です。historyはxangi保存済み会話のコピーで、providerの完全なforkではありません'
+    );
+  if (flags.context === 'history' && !inheritParent)
+    throw new Error('--context history は self のみ指定できます');
+  if (inheritParent && !session) throw new Error('selfには親セッションが必要です');
+  if (flags['workspace-id'] && dependencies.workspaceSwitching === false)
+    throw new Error('workspace switching is disabled');
+  if (flags['workspace-id'] && !inheritParent)
+    throw new Error('実行時の --workspace-id は self のみ指定できます');
   const target =
     agentId === DEFAULT_TEAM_AGENT_ID ? catalog.defaultAgent() : catalog.agent(agentId || '');
   if (!target) throw new Error('エージェントが見つかりません');
@@ -244,31 +304,50 @@ export async function executeProjectAgentCommand(
     )
       throw new Error('--allow-teams-json は登録済みTeam IDの配列で指定してください');
     const ancestorAgentIds = [agentId!, session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID];
-    if (
-      ids.some((id) => catalog.team(id)!.members.some((m) => ancestorAgentIds.includes(m.agentId)))
-    )
-      throw new Error('委譲先Teamにリーダー自身または親の担当を含めることはできません');
     teamDelegation = teamGrant(flags, ids as string[], ancestorAgentIds);
   }
   const selfDelegation =
     !callerRun && !!session && agentId === (session.selectedAgentId || DEFAULT_TEAM_AGENT_ID);
-  const running = runs
+  const requestId = flags['request-id'] || randomUUID();
+  if (!/^[\w:.-]{1,128}$/.test(requestId))
+    throw new Error('--request-id は128文字以内の英数字・_ : . -で指定してください');
+  const requestSignature = createHash('sha256')
+    .update(
+      JSON.stringify(
+        Object.entries(flags)
+          .filter(([key]) => key !== 'request-id')
+          .sort(([a], [b]) => a.localeCompare(b))
+      )
+    )
+    .digest('hex');
+  const previous = runs
     .list()
-    .filter((r) => r.parentContextKey === parent && ['queued', 'running'].includes(r.status));
-  const reservation = JSON.stringify([parent, agentId]);
-  const reservedForParent = [...reservations].filter((key) => {
-    const [owner, id] = JSON.parse(key);
-    return owner === parent && !running.some((r) => r.agentId === id);
-  }).length;
-  if (delegationScopeCount(runs, parent, false) + reservedForParent >= delegationLimit())
+    .find((r) => r.parentContextKey === parent && r.requestId === requestId);
+  if (previous) {
+    if (
+      previous.agentId !== agentId ||
+      (previous.requestSignature
+        ? previous.requestSignature !== requestSignature
+        : previous.task !== flags.task.trim())
+    )
+      throw new Error('同じrequest-idを別の依頼には使えません');
+    return JSON.stringify(previous);
+  }
+  const reservation = JSON.stringify([parent, 'agent-request', requestId]);
+  if (reservations.has(reservation))
+    throw new Error('このrequest-idは受付中です。同じIDで再確認してください');
+  if (delegationScopeCount(runs, parent) >= delegationLimit())
     throw new Error(`同時に依頼できる担当は${delegationLimit()}件までです。結果を待ってください`);
-  if (reservations.has(reservation) || running.some((r) => r.agentId === agentId))
-    throw new Error('この担当への依頼は実行中です');
   reservations.add(reservation);
   try {
     const execution = catalog.execution(undefined, agentId)!;
     const run = await start({
       task: flags.task,
+      requestId,
+      requestSignature,
+      contextMode: flags.context || 'fresh',
+      inheritParent,
+      workspaceOverride: flags['workspace-id'],
       instruction: execution.prompt,
       backend: execution.backend,
       model: execution.model,
@@ -388,6 +467,7 @@ export async function executeTeamCommand(
       serializeWorkspaces: team.serializeWorkspaces ?? false,
       members: team.members.map((member) => ({
         ...member,
+        memberId: teamMemberId(member),
         agent: agents.find((agent) => agent.id === member.agentId),
       })),
     });
@@ -443,7 +523,12 @@ export async function executeTeamCommand(
     if (action === 'logs') {
       const page = logPageOptions(flags);
       const selected = flags.member
-        ? members.filter((member) => member.id === flags.member || member.agentId === flags.member)
+        ? members.filter(
+            (member) =>
+              member.id === flags.member ||
+              member.teamMemberId === flags.member ||
+              member.agentId === flags.member
+          )
         : members;
       if (flags.member && !selected.length)
         throw new Error('このTeam依頼のメンバーが見つかりません');
@@ -451,6 +536,7 @@ export async function executeTeamCommand(
       for (const member of selected)
         logs.push({
           name: snapshot?.agents.find((agent) => agent.id === member.agentId)?.name,
+          memberId: member.teamMemberId,
           ...(await inspectAgentRunLogs(member, page)),
         });
       return JSON.stringify({ id: run.id, status: run.status, members: logs });
@@ -460,8 +546,13 @@ export async function executeTeamCommand(
       members: members.map((member) => ({
         id: member.id,
         agentId: member.agentId,
+        memberId: member.teamMemberId,
         name: snapshot?.agents.find((agent) => agent.id === member.agentId)?.name,
-        role: snapshot?.members.find((entry) => entry.agentId === member.agentId)?.role,
+        role: snapshot?.members.find((entry) =>
+          member.teamMemberId
+            ? teamMemberId(entry) === member.teamMemberId
+            : entry.agentId === member.agentId
+        )?.role,
         phase: member.teamPhase,
         status: member.status,
         result: member.result,
@@ -488,8 +579,6 @@ export async function executeTeamCommand(
     const policy = callerRun.teamDelegation!;
     if (!policy.teamIds.includes(team.id)) throw new Error('このTeamへの委譲は許可されていません');
     if (Date.now() >= policy.deadline) throw new Error('委譲の共通期限を過ぎています');
-    if (team.members.some((m) => policy.ancestorAgentIds.includes(m.agentId)))
-      throw new Error('リーダー自身または親への循環委譲はできません');
     const previous = delegatedRuns(runs, callerRun.id);
     if (previous.some(unfinished))
       throw new Error('委譲先の作業が実行中です。結果を待ってください');
@@ -508,13 +597,17 @@ export async function executeTeamCommand(
         )
       : undefined;
   // Keep the leader's full grant intact; only this batch receives the selected snapshot.
-  const selectedIds = new Set(assignments?.map((assignment) => assignment.agentId));
+  const selectedIds = new Set(assignments?.map((assignment) => assignment.memberId));
   const batchSnapshot = callerRun
     ? {
         ...snapshot,
         leaderAgentId: undefined,
-        members: snapshot.members.filter((member) => selectedIds.has(member.agentId)),
-        agents: snapshot.agents.filter((agent) => selectedIds.has(agent.id)),
+        members: snapshot.members.filter((member) => selectedIds.has(teamMemberId(member))),
+        agents: snapshot.agents.filter((agent) =>
+          snapshot.members.some(
+            (member) => selectedIds.has(teamMemberId(member)) && member.agentId === agent.id
+          )
+        ),
       }
     : undefined;
   if (callerRun) {
@@ -532,8 +625,6 @@ export async function executeTeamCommand(
       webAppSessionId(parent)
   );
   const ancestors = [team.leaderAgentId!, session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID];
-  if (startsLeader && team.members.some((m) => ancestors.includes(m.agentId)))
-    throw new Error('リーダー自身または親への循環委譲はできません');
   const grant = startsLeader ? teamGrant(flags, [team.id], ancestors) : undefined;
   if (team.leadership !== 'caller' && session?.selectedAgentId === agentId)
     throw new Error('自分以外のTeamを指定してください');
@@ -544,8 +635,11 @@ export async function executeTeamCommand(
   if (reservations.has(reservation) || running.some((run) => run.agentId === agentId))
     throw new Error('このTeamへの依頼は実行中です');
   const reserved = [...reservations].filter((key) => {
-    const [owner, id] = JSON.parse(key);
-    return owner === parent && !running.some((r) => r.agentId === id);
+    const [owner, id, requestId] = JSON.parse(key);
+    return (
+      owner === parent &&
+      !running.some((r) => (requestId ? r.requestId === requestId : r.agentId === id))
+    );
   }).length;
   if (!callerRun && delegationScopeCount(runs, parent, false) + reserved >= delegationLimit())
     throw new Error(`同時に依頼できる担当は${delegationLimit()}件までです。結果を待ってください`);

@@ -16,6 +16,8 @@ import {
 import { initSessions, createWebSession } from '../src/sessions.js';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 
+import { formatXangiCmdHelp } from '../src/cli/xangi-cmd-help.js';
+
 import { XANGI_COMMANDS_COMMON } from '../src/prompts/xangi-commands-common.js';
 
 const exec = promisify(execFile);
@@ -60,6 +62,10 @@ it('routes management CRUD through the CLI and preserves the injected launcher u
       let body = '';
       for await (const chunk of req) body += chunk;
       const payload = JSON.parse(body);
+      if (payload.command === 'help') {
+        res.end(JSON.stringify({ ok: true, result: formatXangiCmdHelp(payload.flags.topic) }));
+        return;
+      }
       expect(['agent', 'team', 'workspace']).toContain(payload.command);
       expect(payload.context.channelId).toBe(channelId);
       const result = await (
@@ -124,6 +130,33 @@ it('routes management CRUD through the CLI and preserves the injected launcher u
       workspaceId: registered.workspace.id,
       prompt: '出典を示す',
     });
+    const renamed = await call('update', writingAgent.agent.id, '--name', '情報整理');
+    expect(renamed.agent).toMatchObject({
+      id: writingAgent.agent.id,
+      name: '情報整理',
+      prompt: '出典を示す',
+      workspaceId: registered.workspace.id,
+    });
+    const reassigned = await call('update', writingAgent.agent.id, '--workspace-id', 'default');
+    expect(reassigned.agent).toMatchObject({
+      id: writingAgent.agent.id,
+      name: '情報整理',
+      workspaceId: 'default',
+    });
+    await call('update', writingAgent.agent.id, '--workspace-id', registered.workspace.id);
+    expect(
+      (await call('list')).agents.find((a: { id: string }) => a.id === writingAgent.agent.id).name
+    ).toBe('情報整理');
+    await expect(call('update', writingAgent.agent.id)).rejects.toThrow();
+    await expect(call('update', 'missing', '--name', 'New')).rejects.toThrow();
+    expect((await call('update', 'default', '--name', 'Assistant')).agent.id).toBe('xangi:default');
+    expect(
+      await runCliInProcess(
+        ['agent', 'update', writingAgent.agent.id, '--name', 'Unapplied', '--help'],
+        env
+      )
+    ).toContain('xangi agent update');
+    expect(catalog.agent(writingAgent.agent.id)?.name).toBe('情報整理');
     const nextPath = join(root, 'next');
     mkdirSync(nextPath);
     const updated = await workspaceCall('set-path', registered.workspace.id, '--path', nextPath);
@@ -206,9 +239,7 @@ it('routes management CRUD through the CLI and preserves the injected launcher u
         '--name',
         '不正チーム',
         '--members-json',
-        '[{"agentId":"xangi:default"}]',
-        '--leader-agent-id',
-        'xangi:default'
+        '[{"agentId":"xangi:default","memberId":"same"},{"agentId":"xangi:default","memberId":"same"}]'
       )
     ).rejects.toThrow();
     expect(catalog.teams()).toHaveLength(2);

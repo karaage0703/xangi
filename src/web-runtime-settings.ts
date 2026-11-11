@@ -13,6 +13,7 @@ import {
   getChannelAutoReply,
   getChannelCompletionNotifyMode,
   getChannelThreadMode,
+  getSlackChannelThreadMode,
   getReplySuggestionsEnabled,
   getSlackChannelAutoReply,
   loadSettings,
@@ -104,7 +105,9 @@ export function webChannelRuntimeSettingsSnapshot(
       ? 'chat'
       : 'agent';
   const notifyOverride = settings.discordCompletionNotifyChannels?.[channelId];
-  const threadModeOverride = settings.discordThreadModeChannels?.[channelId];
+  const threadModeOverride = (
+    platform === 'discord' ? settings.discordThreadModeChannels : settings.slackThreadModeChannels
+  )?.[channelId];
   const workspaceBinding = workspaceRegistry?.getBinding(platform, channelId);
   const workspace = workspaceRegistry?.getById(
     agent?.workspaceId || workspaceBinding || defaultAgentWorkspaceId()
@@ -150,6 +153,21 @@ export function webChannelRuntimeSettingsSnapshot(
           : 'inherit',
       effective: autoReplyEffective ? 'on' : 'off',
     },
+    threadMode: {
+      value: threadModeOverride === undefined ? 'inherit' : threadModeOverride ? 'on' : 'off',
+      effective: (
+        platform === 'discord'
+          ? getChannelThreadMode(settings, channelId, config.discord.replyInThread ?? false)
+          : getSlackChannelThreadMode(
+              settings,
+              channelId,
+              config.slack.replyInThread !== false &&
+                !config.slack.replyInChannels?.includes(channelId)
+            )
+      )
+        ? 'on'
+        : 'off',
+    },
     ...(platform === 'discord'
       ? {
           notify: {
@@ -159,16 +177,6 @@ export function webChannelRuntimeSettingsSnapshot(
               channelId,
               config.discord.completionNotifyMode ?? 'message'
             ),
-          },
-          threadMode: {
-            value: threadModeOverride === undefined ? 'inherit' : threadModeOverride ? 'on' : 'off',
-            effective: getChannelThreadMode(
-              settings,
-              channelId,
-              config.discord.replyInThread ?? false
-            )
-              ? 'on'
-              : 'off',
           },
         }
       : {}),

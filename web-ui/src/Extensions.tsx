@@ -162,7 +162,7 @@ export function Extensions() {
         <section className="extension-favorites" aria-labelledby="extension-favorites-title">
           <h2 id="extension-favorites-title">お気に入り</h2>
           <p>
-            左メニューから拡張を開けます。スマホでは「その他」に表示します。表示名・登録・表示順は端末間で共通です。
+            お気に入りの名前から拡張を開けます。「サイドバー表示」をONにすると左メニュー（スマホでは「その他」）にも表示します。設定は端末間で共通です。
           </p>
           {favorites.error ? <p role="alert">{favorites.error}</p> : null}
           {favorites.loading ? (
@@ -176,7 +176,15 @@ export function Extensions() {
                   <div className="extension-favorite-identity">
                     <ExtensionIcon id={favorite.id} />
                     <div>
-                      <span>{favorite.displayName}</span>
+                      <a
+                        href={
+                          favorite.available
+                            ? `/api/extensions/${encodeURIComponent(favorite.id)}/ui`
+                            : '/extensions'
+                        }
+                      >
+                        {favorite.displayName}
+                      </a>
                       <small>{favorite.id}</small>
                       {!favorite.available ? <small>利用できません</small> : null}
                     </div>
@@ -216,6 +224,22 @@ export function Extensions() {
                     </form>
                   ) : null}
                   <div className="extension-favorite-controls">
+                    <button
+                      type="button"
+                      aria-label={`${favorite.displayName}のサイドバー表示`}
+                      aria-pressed={favorite.showInSidebar !== false}
+                      disabled={favorites.saving}
+                      onClick={() =>
+                        void favorites.update(
+                          favorite.id,
+                          'set-sidebar',
+                          undefined,
+                          favorite.showInSidebar === false
+                        )
+                      }
+                    >
+                      サイドバー表示: {favorite.showInSidebar !== false ? 'ON' : 'OFF'}
+                    </button>
                     <button
                       type="button"
                       disabled={favorites.saving}

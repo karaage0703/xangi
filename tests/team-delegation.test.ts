@@ -67,7 +67,7 @@ function setup() {
     ).then(JSON.parse);
   return { catalog, runs, leader, member, team, start, deps, launch, dispatch };
 }
-it('grants permission to one leader request and rejects unlisted teams, cycles, and further delegation', async () => {
+it('grants one leader request, permits repeated Agent settings, and rejects unlisted teams and further delegation', async () => {
   const f = setup();
   const leader = await f.launch();
   expect(leader.teamDelegation.teamIds).toEqual([f.team.id]);
@@ -87,7 +87,8 @@ it('grants permission to one leader request and rejects unlisted teams, cycles, 
   ).rejects.toThrow('再委譲');
   f.runs.markSucceeded(child.id, { result: 'Done', sessionId: '' });
   f.catalog.saveTeam({ members: [{ agentId: f.leader.id }] }, f.team.id);
-  await expect(f.dispatch(leader.appSessionId)).rejects.toThrow('循環');
+  const sameConfigBatch = await f.dispatch(leader.appSessionId);
+  expect(sameConfigBatch.delegationRootId).toBe(leader.id);
 });
 it('does not allow a delegated leader to create or replace Team settings', async () => {
   const f = setup();
@@ -201,7 +202,7 @@ it('rejects invalid grants and preserves unprivileged child behavior', async () 
   await expect(f.launch({ 'allow-teams-json': '["missing"]' })).rejects.toThrow('登録済み');
   await expect(f.launch({ 'delegation-max-members': '0' })).rejects.toThrow('累計');
   f.catalog.saveTeam({ members: [{ agentId: 'xangi:default' }] }, f.team.id);
-  await expect(f.launch()).rejects.toThrow('親');
+  expect((await f.launch()).teamDelegation.teamIds).toContain(f.team.id);
   const unprivileged = await f.launch({ 'allow-teams-json': '' });
   await expect(f.dispatch(unprivileged.appSessionId)).rejects.toThrow('再委譲');
 });

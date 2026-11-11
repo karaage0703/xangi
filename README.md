@@ -10,6 +10,12 @@
 
 Claude Code、Codex、OpenCode、Cursor CLI、Grok CLI、Antigravity CLI、GitHub Copilot CLI、Local LLMを、Discord、Slack、Telegram、Web Chat、LINEから使えるAIアシスタントです。Discordを推奨しますが、ブラウザだけでも利用できます。
 
+<p>
+  <img src="docs/images/chat-desktop.png" width="640" alt="架空のノートアプリについて相談するWeb ChatのPC画面。左に会話一覧、右に会話と入力欄">
+</p>
+
+架空のノートアプリの相談を使ったWeb Chatの実画面です。会話・履歴・返信候補はすべてダミーデータで、実際のAI出力ではありません。モバイルの画面例は[使い方ガイド](docs/usage.md#webチャットui)、再撮影は[撮影手順](docs/readme-screenshots.md)をご覧ください。
+
 ## 主な機能
 
 - 好きなAIエージェントをDiscordやWeb Chatなどから利用
@@ -87,6 +93,8 @@ xangi doctor
 
 チャットコマンド、Terminal CLI、スケジューラー、Docker、Local LLM、環境変数の詳細は[使い方ガイド](docs/usage.md)にまとめています。
 
+DiscordとWebの操作一覧は`/help`で確認できます。スキルは`/skill 名前`または`/スキル名`、モデル一覧は`/backend models`です。Discordの`/autoreply`と`/threadmode`は維持し、その他の細かな設定は`/settings`にまとめています。
+
 ## プラットフォーム設定
 
 - [Discord](docs/discord-setup.md)
@@ -149,6 +157,8 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 - [xangi-tasks](https://github.com/karaage0703/xangi-tasks) - タスク整理・カテゴリ管理と、タスクからxangiへの仕事の依頼
 - [xangi-remote-desktop](https://github.com/karaage0703/xangi-remote-desktop) - 同じPCのVNC画面をブラウザから閲覧・操作
 - [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Chromeの音声認識で日本語入力
+- [xangi-studio](https://github.com/karaage0703/xangi-studio) - PR・資料のレビューと原稿の編集
+- [xangi-feed](https://github.com/karaage0703/xangi-feed) - RSS・ブログ・論文・Podcast・YouTubeをまとめて読み、記事についてxangiと話せるフィードリーダー
 
 ## 関連プロジェクト
 

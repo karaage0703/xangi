@@ -27,9 +27,12 @@ async function runXangiCmd(args: string[], env?: Record<string, string>): Promis
   );
 
   try {
+    const commandEnv = { ...process.env, ...env };
+    // The tool-server owns this credential; the CLI only forwards the identity flag.
+    delete commandEnv.SLACK_USER_TOKEN;
     const { stdout, stderr } = await execFile('node', [cmdPath, ...args], {
       timeout: CMD_TIMEOUT_MS,
-      env: { ...process.env, ...env },
+      env: commandEnv,
     });
     const output = [stdout, stderr].filter(Boolean).join('\n').trim();
     return { success: true, output };
@@ -543,6 +546,12 @@ const slackSendHandler: ToolHandler = {
   parameters: {
     type: 'object',
     properties: {
+      as: {
+        type: 'string',
+        enum: ['bot', 'user'],
+        description:
+          'Default bot. Use user only when the token owner requested this action; acts as the configured Slack user.',
+      },
       channel: {
         type: 'string',
         description: 'Slack channel ID (defaults to the current channel)',
@@ -552,7 +561,7 @@ const slackSendHandler: ToolHandler = {
     },
     required: ['message'],
   },
-  execute: commandExecutor('slack_send', ['message', 'channel', 'thread-ts'], true),
+  execute: commandExecutor('slack_send', ['message', 'channel', 'thread-ts', 'as'], true),
 };
 
 const slackChannelsHandler: ToolHandler = {
@@ -599,6 +608,12 @@ const slackEditHandler: ToolHandler = {
   parameters: {
     type: 'object',
     properties: {
+      as: {
+        type: 'string',
+        enum: ['bot', 'user'],
+        description:
+          'Default bot. Use user only when the token owner requested this action; acts as the configured Slack user.',
+      },
       channel: {
         type: 'string',
         description: 'Slack channel ID (defaults to the current channel)',
@@ -608,7 +623,7 @@ const slackEditHandler: ToolHandler = {
     },
     required: ['message-ts', 'content'],
   },
-  execute: commandExecutor('slack_edit', ['message-ts', 'content', 'channel'], true),
+  execute: commandExecutor('slack_edit', ['message-ts', 'content', 'channel', 'as'], true),
 };
 
 const slackDeleteHandler: ToolHandler = {
@@ -617,6 +632,12 @@ const slackDeleteHandler: ToolHandler = {
   parameters: {
     type: 'object',
     properties: {
+      as: {
+        type: 'string',
+        enum: ['bot', 'user'],
+        description:
+          'Default bot. Use user only when the token owner requested this action; acts as the configured Slack user.',
+      },
       channel: {
         type: 'string',
         description: 'Slack channel ID (defaults to the current channel)',
@@ -625,7 +646,7 @@ const slackDeleteHandler: ToolHandler = {
     },
     required: ['message-ts'],
   },
-  execute: commandExecutor('slack_delete', ['message-ts', 'channel'], true),
+  execute: commandExecutor('slack_delete', ['message-ts', 'channel', 'as'], true),
 };
 
 // ─── Export ─────────────────────────────────────────────────────────
