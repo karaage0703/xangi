@@ -1199,6 +1199,7 @@ ${delegatedTeam.prompt}`
         title: storedTitle && !hasInternalPromptMetadata(storedTitle) ? storedTitle : '',
         platform: s.platform,
         scope: s.scope,
+        canReopen: s.scope !== 'scheduler' && !isSecretSession(s.id),
         executionOrigin: sessionExecutionOrigin(s),
         parentAppSessionId: s.parentAppSessionId || runBySession.get(s.id)?.parentAppSessionId,
         contextKey: s.contextKey,
@@ -3551,6 +3552,7 @@ ${delegatedTeam.prompt}`
             entry?.projectId && (entry.platform === 'discord' || entry.platform === 'slack')
           ),
           lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
+          canReopen: Boolean(entry && entry.scope !== 'scheduler' && !isSecretSession(entry.id)),
           isActive:
             activity?.active === true || Boolean(entry && conversationBusy(entry.contextKey)),
           activity,

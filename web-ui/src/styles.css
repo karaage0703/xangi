@@ -3980,6 +3980,7 @@ video.media-preview {
 
 .resume-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -7845,4 +7846,25 @@ video.media-preview {
 .monitor-assignment p {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.chat-undo {
+  position: static;
+  transform: none;
+  width: auto;
+  margin: 8px 12px;
+  flex-shrink: 0;
+  z-index: auto;
+}
+
+.chat-undo span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.chat-undo button,
+.resume-bar button {
+  min-height: 44px;
 }
