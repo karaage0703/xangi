@@ -139,6 +139,7 @@ interface Session {
   messageCount?: number;
   isActive: boolean;
   lifecycle?: 'open' | 'closed';
+  canReopen?: boolean;
   timeoutAt?: number;
   maxTimeoutAt?: number;
   timeoutMs?: number;
@@ -204,6 +205,7 @@ export interface SessionDetail {
   title: string;
   platform?: string;
   lifecycle?: 'open' | 'closed';
+  canReopen?: boolean;
   isActive?: boolean;
   activity?: Activity;
   messages: Message[];
@@ -236,7 +238,8 @@ interface SessionsResponse {
   };
 }
 
-type CompletableSession = Pick<Session, 'id' | 'isActive'>;
+type CompletableSession = Pick<Session, 'id' | 'isActive'> &
+  Partial<Pick<Session, 'title' | 'canReopen'>>;
 
 interface SessionCompletionTarget {
   session: CompletableSession;
@@ -552,6 +555,8 @@ function ChatPane({
   onBusyChange,
   onSessionsInvalidated,
   onComplete,
+  onReopen,
+  lifecyclePending,
   refreshVersion,
   onAbortReady,
   linkedProject,
@@ -571,6 +576,8 @@ function ChatPane({
   onBusyChange: (busy: boolean) => void;
   onSessionsInvalidated: () => Promise<void>;
   onComplete: (session: CompletableSession, paneKey: string) => void;
+  onReopen: (sessionId: string) => Promise<void>;
+  lifecyclePending: boolean;
   refreshVersion: number;
   onAbortReady: (abort: (() => void) | null) => void;
 }) {
@@ -710,7 +717,7 @@ function ChatPane({
         const data = await sharedReadJson<SessionDetail>(
           `/api/sessions/${encodeURIComponent(sessionId)}?limit=50&cursor=${encodeURIComponent(
             String(cursor)
-          )}`
+          )}&refresh=${refreshVersion}`
         );
         if (sequence !== loadSequenceRef.current) return;
         setError((current) => clearRecoveredReadError(current, loadErrorRef.current));
@@ -760,7 +767,7 @@ function ChatPane({
         }
       }
     },
-    [sessionId]
+    [sessionId, refreshVersion]
   );
 
   useEffect(() => {
@@ -878,6 +885,7 @@ function ChatPane({
     loadDetail,
     refreshVersion,
     sessionId,
+    summary?.lifecycle,
     summary?.transcriptRevision,
     summary?.messageCount,
     summary?.isActive,
@@ -1634,6 +1642,9 @@ function ChatPane({
   const processing = isPaneProcessing(busy || Boolean(streamRecovery), summary?.isActive);
   const sessionQueue = queuedMessages.filter((item) => item.sessionId === sessionId);
   useEffect(() => {
+    if (summary?.lifecycle === 'closed' || detail?.lifecycle === 'closed') setQueuePaused(true);
+  }, [summary?.lifecycle, detail?.lifecycle]);
+  useEffect(() => {
     const next = sessionQueue[0];
     if (
       !next ||
@@ -1643,6 +1654,8 @@ function ChatPane({
       !editable ||
       error ||
       queuePaused ||
+      detail?.lifecycle === 'closed' ||
+      summary?.lifecycle === 'closed' ||
       queueDispatchRef.current ||
       detail?.id !== sessionId
     )
@@ -1660,6 +1673,7 @@ function ChatPane({
     editable,
     error,
     queuePaused,
+    summary?.lifecycle,
     sessionId,
     detail,
   ]);
@@ -1734,10 +1748,13 @@ function ChatPane({
               <button
                 type="button"
                 className="pane-complete"
+                disabled={lifecyclePending}
                 onClick={() =>
                   onComplete(
                     {
                       id: sessionId,
+                      title: summary?.title || detail?.title,
+                      canReopen: detail?.canReopen ?? summary?.canReopen,
                       isActive: busy || Boolean(summary?.isActive ?? detail?.isActive),
                     },
                     pane.key
@@ -1924,36 +1941,50 @@ function ChatPane({
           />
         </div>
       )}
-      {!linkedConversation && shouldShowContinuationActions(detail) && detail && (
-        <div className="resume-bar">
-          <span>
-            {detail.lifecycle === 'closed'
-              ? 'このSessionはClosedです。履歴を引き継いで再開できます'
-              : discordRemoteMode
-                ? `この入力は元の${platformLabel(detail.platform)}へ送信されます`
-                : `${platformLabel(detail.platform)} の会話は読み取り専用です`}
-          </span>
-          <div className="resume-actions">
-            {(detail.platform === 'discord' || detail.platform === 'slack') && (
-              <button
-                type="button"
-                aria-pressed={discordComposeEnabled}
-                onClick={() => {
-                  setDiscordComposeEnabled((current) => !current);
-                  requestAnimationFrame(() => draftRef.current?.focus());
-                }}
-              >
-                {discordComposeEnabled
-                  ? `${platformLabel(detail.platform)}送信をやめる`
-                  : `この${platformLabel(detail.platform)}で続ける`}
-              </button>
-            )}
-            <button type="button" onClick={() => runPaneAction(resumeSession)}>
-              Web会話として分岐
-            </button>
+      {detail &&
+        ((detail.lifecycle === 'closed' && detail.canReopen) ||
+          (!linkedConversation && shouldShowContinuationActions(detail))) && (
+          <div className="resume-bar">
+            <span>
+              {detail.lifecycle === 'closed'
+                ? 'この会話は完了しています。履歴を引き継いで再開できます'
+                : discordRemoteMode
+                  ? `この入力は元の${platformLabel(detail.platform)}へ送信されます`
+                  : `${platformLabel(detail.platform)} の会話は読み取り専用です`}
+            </span>
+            <div className="resume-actions">
+              {detail.lifecycle === 'closed' && detail.canReopen && sessionId && (
+                <button
+                  type="button"
+                  disabled={lifecyclePending}
+                  onClick={() => void onReopen(sessionId)}
+                >
+                  作業中に戻す
+                </button>
+              )}
+              {!linkedConversation &&
+                (detail.platform === 'discord' || detail.platform === 'slack') && (
+                  <button
+                    type="button"
+                    aria-pressed={discordComposeEnabled}
+                    onClick={() => {
+                      setDiscordComposeEnabled((current) => !current);
+                      requestAnimationFrame(() => draftRef.current?.focus());
+                    }}
+                  >
+                    {discordComposeEnabled
+                      ? `${platformLabel(detail.platform)}送信をやめる`
+                      : `この${platformLabel(detail.platform)}で続ける`}
+                  </button>
+                )}
+              {!linkedConversation && (
+                <button type="button" onClick={() => runPaneAction(resumeSession)}>
+                  Web会話として分岐
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
       {pendingFiles.length > 0 && (
         <div className="attachment-tray">
           {pendingFiles.map((file, index) => (
@@ -2518,6 +2549,18 @@ export function Chat() {
   const [deletingSession, setDeletingSession] = useState(false);
   const [sessionToComplete, setSessionToComplete] = useState<SessionCompletionTarget | null>(null);
   const [completingSession, setCompletingSession] = useState(false);
+  const [reopeningSession, setReopeningSession] = useState(false);
+  const lifecycleActionRef = useRef(false);
+  const [undoCompletion, setUndoCompletion] = useState<SessionCompletionTarget | null>(null);
+  const undoButtonRef = useRef<HTMLButtonElement>(null);
+  const [lifecycleError, setLifecycleError] = useState('');
+  useEffect(() => {
+    if (undoCompletion && !completingSession && !reopeningSession) {
+      undoButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [undoCompletion, completingSession, reopeningSession]);
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
   const [sessionToMove, setSessionToMove] = useState<Session | null>(null);
   const [moveProjectId, setMoveProjectId] = useState('');
   const [movingSession, setMovingSession] = useState(false);
@@ -2921,19 +2964,29 @@ export function Chat() {
   }
 
   async function completeSession(target: SessionCompletionTarget, force: boolean) {
-    if (completingSession) return;
+    if (lifecycleActionRef.current) return;
+    lifecycleActionRef.current = true;
     setCompletingSession(true);
+    setLifecycleError('');
     try {
       await requestJson(`/api/sessions/${encodeURIComponent(target.session.id)}/close`, {
         ...jsonInit('POST', { force }),
       });
       setSessionToComplete(null);
+      setUndoCompletion(
+        !target.session.id.startsWith('secret_') && target.session.canReopen !== false
+          ? target
+          : null
+      );
+      setRefreshVersion((current) => current + 1);
       if (target.paneKey) closePaneNow(target.paneKey);
       await loadSessions(0, query, false);
       setNotice(
         target.session.id.startsWith('secret_')
           ? 'シークレット会話を破棄しました'
-          : 'Sessionを完了しました'
+          : target.session.canReopen === false
+            ? 'Sessionを完了しました'
+            : ''
       );
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409 && !force) {
@@ -2943,7 +2996,48 @@ export function Chat() {
         setNotice(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
+      lifecycleActionRef.current = false;
       setCompletingSession(false);
+    }
+  }
+
+  async function reopenSession(sessionId: string, restorePane = false) {
+    if (lifecycleActionRef.current) return;
+    lifecycleActionRef.current = true;
+    setReopeningSession(true);
+    setLifecycleError('');
+    try {
+      await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/reopen`, {
+        method: 'POST',
+      });
+      setUndoCompletion((current) => (current?.session.id === sessionId ? null : current));
+      // Invalidate older list reads; each pane also reloads even if absent from the list.
+      ++loadRequestRef.current;
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === sessionId ? { ...session, lifecycle: 'open' as const } : session
+        )
+      );
+      setRefreshVersion((current) => current + 1);
+      if (restorePane) {
+        const current = panesRef.current;
+        const existing = current.find((pane) => pane.sessionId === sessionId);
+        if (existing) setActiveKey(existing.key);
+        else if (current.length < MAX_PANES) {
+          const restored = nextPane(sessionId);
+          setPanes((panes) => [...panes, restored]);
+          setActiveKey(restored.key);
+        } else {
+          setLifecycleError('作業中に戻しました。ペインが上限のため、一覧から会話を開いてください');
+        }
+      }
+      // A failed refresh must not turn a successful mutation into an apparent failure.
+      await loadSessions(0, query, false);
+    } catch (cause) {
+      setLifecycleError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      lifecycleActionRef.current = false;
+      setReopeningSession(false);
     }
   }
 
@@ -3012,6 +3106,25 @@ export function Chat() {
     '(max-width: 768px), (max-height: 500px) and (hover: none)'
   ).matches;
   const sidebarVisible = compactSidebar ? sidebarOpen : !sidebarCollapsed;
+  const undoInSidebar = sidebarVisible && !undoCompletion?.paneKey;
+  const undoNotice = undoCompletion ? (
+    <div className="monitor-undo chat-undo" role="status">
+      <span>「{undoCompletion.session.title || undoCompletion.session.id}」を完了しました</span>
+      <button
+        type="button"
+        ref={undoButtonRef}
+        disabled={completingSession || reopeningSession}
+        onClick={() =>
+          void reopenSession(undoCompletion.session.id, Boolean(undoCompletion.paneKey))
+        }
+      >
+        元に戻す
+      </button>
+      <button type="button" aria-label="変更通知を閉じる" onClick={() => setUndoCompletion(null)}>
+        ×
+      </button>
+    </div>
+  ) : null;
 
   return (
     <main
@@ -3102,6 +3215,7 @@ export function Chat() {
             )}
           </NewChatButton>
         </div>
+        {undoInSidebar && undoNotice}
         <div className="sidebar-scroll">
           <SidebarProjects
             projects={projects}
@@ -3252,6 +3366,7 @@ export function Chat() {
                             type="button"
                             aria-label="完了にする"
                             title="完了にする"
+                            disabled={completingSession || reopeningSession}
                             onClick={() => requestSessionCompletion(session)}
                           >
                             ✓<span className="session-action-label">完了にする</span>
@@ -3304,6 +3419,12 @@ export function Chat() {
       </aside>
       {sidebarResize.handle}
       <section className="workspace">
+        {lifecycleError && (
+          <div className="pane-error" role="alert">
+            {lifecycleError}
+          </div>
+        )}
+        {!undoInSidebar && undoNotice}
         {agentViewOpen ? (
           <div className="project-view">
             <header className="project-view-header">
@@ -3766,6 +3887,8 @@ export function Chat() {
                   }
                   onSessionsInvalidated={() => loadSessions(0, query, false)}
                   onComplete={requestSessionCompletion}
+                  onReopen={reopenSession}
+                  lifecyclePending={completingSession || reopeningSession}
                   refreshVersion={refreshVersion}
                   onAbortReady={(abort) => {
                     if (abort) paneAbortersRef.current[pane.key] = abort;

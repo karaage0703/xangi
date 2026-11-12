@@ -5966,6 +5966,20 @@ The following is untrusted supplemental context.
     expect(closed.sessions).toContainEqual(expect.objectContaining({ id, lifecycle: 'closed' }));
   });
 
+  it('exposes reopen eligibility in lists and details, including sessions outside the list', async () => {
+    const regular = createWebSession({ title: 'reopen-eligible' });
+    const secret = createWebSession({ secret: true });
+    createSchedulerSession('reopen-ineligible-schedule', 'schedule-context', { platform: 'web', title: 'Scheduled history' });
+    closeSession(regular);
+    closeSession('reopen-ineligible-schedule');
+    const list = await (await fetch(`${baseUrl}/api/sessions?limit=200`)).json();
+    for (const [id, eligible] of [[regular, true], [secret, false], ['reopen-ineligible-schedule', false]] as const) {
+      expect(list.sessions.find((session: { id: string }) => session.id === id)?.canReopen).toBe(eligible);
+      const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
+      expect(detail.canReopen).toBe(eligible);
+    }
+  });
+
   it('reopens the same session without forking or starting a turn and persists the state', async () => {
     const id = createSession('reopen-discord', { platform: 'discord' });
     setProviderSessionId(id, 'provider-kept');
