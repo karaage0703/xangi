@@ -1,3 +1,4 @@
+import { MarkdownPreferencesProvider } from './MarkdownPreferences';
 import { lazy, Suspense } from 'react';
 const Chat = lazy(() => import('./Chat').then((m) => ({ default: m.Chat })));
 const Monitor = lazy(() => import('./Monitor').then((m) => ({ default: m.Monitor })));
@@ -20,8 +21,10 @@ export function App() {
             ? Settings
             : Chat;
   return (
-    <Suspense fallback={<div role="status">読み込み中…</div>}>
-      <Page />
-    </Suspense>
+    <MarkdownPreferencesProvider>
+      <Suspense fallback={<div role="status">読み込み中…</div>}>
+        <Page />
+      </Suspense>
+    </MarkdownPreferencesProvider>
   );
 }

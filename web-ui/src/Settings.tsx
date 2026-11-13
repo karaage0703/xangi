@@ -8,6 +8,7 @@ import {
 import { TeamSettings } from './TeamSettings';
 import { useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
+import { MarkdownDisplaySettings } from './MarkdownPreferences';
 import { getJson, getJsonWithTimeout, requestJson } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DirectoryPicker } from './DirectoryPicker';
@@ -234,7 +235,7 @@ export function Settings() {
   useEffect(() => {
     const focusSection = () => {
       const id = window.location.hash.slice(1);
-      if (id !== 'agents' && id !== 'teams' && id !== 'workspaces') return;
+      if (id !== 'display' && id !== 'agents' && id !== 'teams' && id !== 'workspaces') return;
       const section = document.getElementById(id);
       section?.scrollIntoView({ block: 'start' });
       section?.focus({ preventScroll: true });
@@ -518,11 +519,16 @@ export function Settings() {
           <h1>設定</h1>
           <p>ランタイム設定と起動設定をまとめ、反映されるタイミングを明記します。</p>
           <nav className="settings-section-links" aria-label="設定項目">
+            <a href="#display">表示</a>
             <a href="#workspaces">ワークスペース</a>
             <a href="#agents">エージェント</a>
             <a href="#teams">チーム</a>
           </nav>
         </header>
+
+        <div className="settings-sections">
+          <MarkdownDisplaySettings />
+        </div>
 
         {loading ? <p className="settings-status">設定を読み込んでいます…</p> : null}
         {error ? (

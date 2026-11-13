@@ -1,8 +1,90 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import MarkdownBody from '../web-ui/src/MarkdownBody.js';
+import {
+  MarkdownDisplaySettings,
+  MarkdownPreferencesProvider,
+} from '../web-ui/src/MarkdownPreferences.js';
+
+afterEach(() => vi.unstubAllGlobals());
+
+function renderWithPreference(content: string, stored: string | null) {
+  vi.stubGlobal('window', { localStorage: { getItem: () => stored } });
+  return renderToStaticMarkup(
+    createElement(MarkdownPreferencesProvider, {
+      children: createElement(MarkdownBody, { content }),
+    })
+  );
+}
+
+describe('MarkdownBody line breaks', () => {
+  it('renders a single newline as a hard break by default', () => {
+    const html = renderToStaticMarkup(createElement(MarkdownBody, { content: '一行目\n二行目' }));
+    expect(html).toBe('<p>一行目<br/>\n二行目</p>');
+  });
+
+  it.each([null, 'true', 'invalid'])('defaults to hard breaks for stored value %s', (stored) => {
+    expect(renderWithPreference('one\ntwo', stored)).toBe('<p>one<br/>\ntwo</p>');
+  });
+
+  it('restores standard soft breaks when disabled', () => {
+    expect(renderWithPreference('one\ntwo', 'false')).toBe('<p>one\ntwo</p>');
+  });
+
+  it('defaults to enabled when browser storage is unavailable', () => {
+    vi.stubGlobal('window', {
+      get localStorage() {
+        throw new Error('Storage is blocked');
+      },
+    });
+    const html = renderToStaticMarkup(
+      createElement(MarkdownPreferencesProvider, {
+        children: createElement(MarkdownBody, { content: 'one\ntwo' }),
+      })
+    );
+    expect(html).toBe('<p>one<br/>\ntwo</p>');
+  });
+
+  it.each(['\n', '\r\n', '\r'])('supports line ending %j', (ending) => {
+    expect(renderWithPreference(`one${ending}two`, null)).toBe('<p>one<br/>\ntwo</p>');
+  });
+
+  it.each(['true', 'false'])('preserves explicit breaks and paragraphs in mode %s', (stored) => {
+    expect(renderWithPreference('one  \ntwo\\\nthree\n\nfour', stored)).toBe(
+      '<p>one<br/>\ntwo<br/>\nthree</p>\n<p>four</p>'
+    );
+  });
+
+  it.each(['true', 'false'])(
+    'preserves fenced/indented code and inline code in mode %s',
+    (stored) => {
+      const html = renderWithPreference('```txt\na\nb\n```\n\n    c\n    d\n\n`e\nf`', stored);
+      expect(html).toContain('<code class="language-txt">a\nb\n</code>');
+      expect(html).toContain('<pre><code>c\nd\n</code>');
+      expect(html).toContain('<code>e f</code>');
+      expect(html).not.toContain('<br/>');
+    }
+  );
+
+  it('keeps GFM tables and converts continuation lines inside lists and quotes', () => {
+    const html = renderWithPreference(
+      '| a | b |\n| - | - |\n| c | d |\n\n- one\n  two\n\n> three\n> four',
+      null
+    );
+    expect(html).toContain('<table>');
+    expect(html).toContain('<li>one<br/>\ntwo</li>');
+    expect(html).toContain('<p>three<br/>\nfour</p>');
+  });
+
+  it('offers a labeled setting independently of runtime API availability', () => {
+    const html = renderToStaticMarkup(createElement(MarkdownDisplaySettings));
+    expect(html).toContain('for="markdown-breaks-setting"');
+    expect(html).toContain('aria-describedby="markdown-breaks-description"');
+    expect(html).toContain('<option value="on" selected="">ON</option>');
+  });
+});
 
 describe('MarkdownBody code blocks', () => {
   it('keeps the copy button outside the horizontally scrolling pre element', () => {
