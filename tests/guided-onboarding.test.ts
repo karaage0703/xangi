@@ -65,6 +65,19 @@ describe('guided setup backend preflight', () => {
     expect(buildGuidedLaunchArgs(backend, 'setup prompt')).toEqual(['-i', 'setup prompt']);
   });
 
+  it('launches GitHub Copilot with an interactive initial prompt for setup and rescue', () => {
+    const backend = {
+      id: 'github-copilot' as const,
+      label: 'GitHub Copilot',
+      command: 'copilot',
+      executable: '/usr/local/bin/copilot',
+      version: '1.0.105',
+      authGuide: 'copilot /login',
+    };
+    const prompt = 'Setup / rescue: 日本語, "quotes", and\nmultiple lines';
+    expect(buildGuidedLaunchArgs(backend, prompt)).toEqual(['-i', prompt]);
+  });
+
   it('keeps the event loop responsive while a real CLI version probe is running', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-async-version-'));
     roots.push(root);

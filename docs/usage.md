@@ -462,6 +462,8 @@ xangi uninstall --purge --yes
 
 ```
 
+GitHub Copilot CLIを選んだ場合、`setup`と`rescue`は`copilot -i "<prompt>"`で初期プロンプトを渡し、対話を継続します。
+
 `xangi setup` は最初にPATH上のCodex、OpenCode、Claude Code、Cursor Agent、Grok CLI、Antigravityをルールベースで検出し、`--version`が成功した候補だけを表示します。候補が複数なら利用するAIを選び、0件なら独立したAIツールセットアップを案内して終了します。Local LLMは通常利用できますが、ファイル操作を伴う初回オンボーディング役には選びません。
 
 AIコーディングツールだけをセットアップする場合は、xangiをインストールせずに次のワンライナーを実行できます。

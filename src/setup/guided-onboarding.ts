@@ -393,7 +393,7 @@ export function buildGuidedLaunchArgs(
       ...(env.AGENT_MODEL ? ['--model', env.AGENT_MODEL] : []),
       prompt,
     ];
-  } else if (selected.id === 'antigravity') {
+  } else if (selected.id === 'antigravity' || selected.id === 'github-copilot') {
     return ['-i', prompt];
   }
   return [prompt];
