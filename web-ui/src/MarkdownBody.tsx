@@ -1,10 +1,13 @@
 import { Children, isValidElement, memo, ReactNode, useState } from 'react';
 import Markdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+import { useMarkdownPreferences } from './MarkdownPreferences';
 import { copyText } from './MessageContent';
 import { workspaceTargetFromHref, workspaceViewerUrl } from './workspace-navigation';
 
 const REMARK_PLUGINS = [remarkGfm];
+const REMARK_PLUGINS_WITH_BREAKS = [remarkGfm, remarkBreaks];
 
 function markdownUrlTransform(value: string): string {
   return workspaceTargetFromHref(value) ? value : defaultUrlTransform(value);
@@ -50,10 +53,11 @@ const MarkdownBody = memo(function MarkdownBody({
   sourcePath?: string;
   workspaceId?: string;
 }) {
+  const { lineBreaks } = useMarkdownPreferences();
   return (
     <Markdown
       skipHtml
-      remarkPlugins={REMARK_PLUGINS}
+      remarkPlugins={lineBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS}
       urlTransform={markdownUrlTransform}
       components={{
         a({ href, children, title, className }) {
