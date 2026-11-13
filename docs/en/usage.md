@@ -457,6 +457,8 @@ xangi uninstall --purge --yes
 
 ```
 
+When GitHub Copilot CLI is selected, `setup` and `rescue` pass the initial prompt with `copilot -i "<prompt>"` and keep the session interactive.
+
 `xangi setup` first detects Codex, OpenCode, Claude Code, Cursor Agent, Grok CLI, and Antigravity on `PATH` using deterministic executable and `--version` checks. It asks which detected agent to use, or points to the independent AI tool setup and exits when none are available. Local LLM remains available for normal xangi use, but is not selected to perform the file-editing first-run onboarding.
 
 To set up only an AI coding tool without installing xangi, run this one-liner:

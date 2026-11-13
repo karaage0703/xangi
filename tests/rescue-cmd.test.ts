@@ -39,6 +39,51 @@ async function fixture() {
 }
 
 describe('xangi rescue', () => {
+  it('passes an interactive prompt to the Copilot executable and cleans up instructions', async () => {
+    const { homeDir, layout, workspace, codex } = await fixture();
+    const copilot = join(dirname(codex), 'copilot');
+    const capture = join(homeDir, 'launch.json');
+    await writeFile(
+      copilot,
+      [
+        '#!' + process.execPath,
+        "const fs = require('node:fs');",
+        'const args = process.argv.slice(2);',
+        'const instructionPath = args.at(-1).match(/After the user answers, read (.+) and follow/)[1];',
+        `fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ args, cwd: process.cwd(), instructionPath, instructions: fs.readFileSync(instructionPath, 'utf8') }));`,
+        "process.exit(args.length === 2 && args[0] === '-i' ? 0 : 2);",
+      ].join('\n'),
+      { mode: 0o700 }
+    );
+    await writeFile(
+      layout.configFile,
+      JSON.stringify({
+        backend: 'github-copilot',
+        backendExecutable: copilot,
+        workspacePath: workspace,
+        webChatEnabled: true,
+        webChatAccess: 'local',
+      })
+    );
+    const result = await rescueCmd({
+      layout,
+      homeDir,
+      launcherCommand: 'xangi',
+      documentationRoot: homeDir,
+      installationKind: 'managed',
+      pathEnv: dirname(copilot),
+      canExecute: async (path) => path === copilot,
+      version: () => '1.0.105',
+      authStatus: () => true,
+    });
+    const launched = JSON.parse(await readFile(capture, 'utf8'));
+    expect(result).toContain('Copilot');
+    expect(launched.args).toEqual(['-i', expect.stringContaining('Ask the user in Japanese')]);
+    expect(launched.cwd).toBe(workspace);
+    expect(launched.instructions).toContain(layout.configFile);
+    await expect(readFile(launched.instructionPath, 'utf8')).rejects.toThrow();
+  });
+
   it('uses the configured AI and gives it local diagnostic paths and repair authority', async () => {
     const { homeDir, layout, workspace, codex, claude } = await fixture();
     const launch = vi.fn(async () => 0);
