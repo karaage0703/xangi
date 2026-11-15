@@ -1864,6 +1864,10 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 ### Antigravity CLI（`AGENT_BACKEND=antigravity` 時）
 
+Agy 1.5.7以降は、実行モードが未保存の場合、対応アカウントではヘッドレス実行もAutoで始まります。従来のDefaultを維持するには、`ANTIGRAVITY_MODE`を未指定にし、xangiと同じOSユーザーでAgyの `/config` → Agent Mode → Default を選びます（`agentMode: ""` が保存されます）。更新後は無人実行の代表タスクで権限の挙動を確認してください。`SKIP_PERMISSIONS=true`でも、保護対象コマンドや管理者ポリシーによる承認要件がなくなるわけではありません。
+
+Gemini 4 Hydrogen (XHigh) が `/models antigravity` に出る環境では、そのモデルID（`gemini-4-hydrogen-xhigh`）を選ぶことでXHighを利用できます。Antigravityの独立したeffort設定には `xhigh` を指定せず、effortは未指定にしてください。
+
 タイムアウトの共通エラー通知は短文とし、途中回答を含めません。Discordの通常応答は途中回答を明示的に添え、2,000文字を超える場合は「…（以下省略）」を表示します。Telegramの通常応答は途中回答を分割して送ります。スケジュールやその他のコマンドの共通エラー通知は短文のみです。途中回答とJSONの生出力はErrorの通常のログ出力・JSON化には含めません。stderrの未知の `AGY_ERROR.reason` は診断用に保持するだけで、終了理由や再試行禁止とはみなしません。
 
 Agy 1.5.0以降のprint timeoutは終了コード3の失敗として扱い、自動再試行しません。JSON / stream-jsonの `finished_reason: print_timeout` を通常エラーと区別し、返された途中回答と未完了の通知を一緒に表示します。最終本文が空のstreamでは受信済みの差分を残します。`AGY_ERROR` の `reason` と検証済み診断情報（終了タスク名が本文に含まれる場合はその情報も）を保持します。途中回答はチャット側の表示上限に従います。失敗した会話IDは診断用に保持しますが、新しいチャンネルの会話として自動登録・再開しません。
@@ -1900,7 +1904,7 @@ help確認が5秒でtimeoutした場合はSIGTERMを送り、さらに1秒後に
 
 headless実行はMCP初期化完了後に`init`イベントを返します。`Streaming`ログの後、`init`前で長く待つ場合はAgyログとMCP serverの起動状態を確認してください。
 
-`ANTIGRAVITY_MODE=accept-edits|auto|plan` でAgyの実行モードを明示できます。未指定時はAgyの設定を引き継ぎます。設定はバックエンドによらず起動時に検証・正規化し、不正値は警告して未指定扱いにします。`XANGI_CONFIG_STRICT=true` なら起動時にエラーにします。既存のhelp確認で `--mode` の対応も調べ、一時的な失敗では同じリクエスト内でhelpだけを1回再確認します。各確認は5秒で打ち切り、終了しないhelpプロセスは停止してから再試行します。未対応が確定した場合、2回とも確認に失敗した場合、Stopされた場合は実プロンプトを開始しません。実プロンプトを再送することはありません。Agy 1.3.2以降の `--dangerously-skip-permissions` はツールの承認だけを省略し、計画を自動承認しません。無人実行で計画レビューを避けたい場合は `ANTIGRAVITY_MODE=accept-edits` を選びます。`auto` は追加承認が必要な場合があり、`plan` はArtifact Review設定に従います。`auto` のツール審査を利用する場合は `SKIP_PERMISSIONS=false` も設定してください。`true` のままならモードによらず従来どおりツール承認を省略します。
+`ANTIGRAVITY_MODE=accept-edits|auto|plan` でAgyの実行モードを明示できます。未指定時はAgyの設定を引き継ぎます。設定はバックエンドによらず起動時に検証・正規化し、不正値は警告して未指定扱いにします。`XANGI_CONFIG_STRICT=true` なら起動時にエラーにします。既存のhelp確認で `--mode` の対応も調べ、一時的な失敗では同じリクエスト内でhelpだけを1回再確認します。各確認は5秒で打ち切り、終了しないhelpプロセスは停止してから再試行します。未対応が確定した場合、2回とも確認に失敗した場合、Stopされた場合は実プロンプトを開始しません。実プロンプトを再送することはありません。Agy 1.3.2以降の `--dangerously-skip-permissions` はツールの承認だけを省略し、計画を自動承認しません。無人実行で計画レビューを避けたい場合は `ANTIGRAVITY_MODE=accept-edits` を選びます。`auto` は追加承認が必要な場合があり、`plan` はArtifact Review設定に従います。`auto` のツール審査を利用する場合は `SKIP_PERMISSIONS=false` も設定してください。`true` では承認省略フラグを渡しますが、Agy 1.5.2以降の保護対象や管理者ポリシーの制約は残ります。
 
 Agy 1.4.3では、空のartifact情報によって通常ファイルの書き込み・編集が拒否される問題と、空ファイル作成の失敗が修正されています。旧版との互換性と他のartifact-pathエラーへの備えとして、xangiのworkspace書き込みガイダンスと一度だけのリカバリは維持します。
 
