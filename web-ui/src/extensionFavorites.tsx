@@ -10,11 +10,49 @@ export interface ExtensionFavorite {
   defaultDisplayName?: string;
 }
 const changedEvent = 'xangi-extension-favorites-changed';
+const cacheKey = 'xangi-extension-favorites-v1';
+const cacheLifetime = 30 * 60 * 1000;
+function cachedFavorites(): ExtensionFavorite[] | undefined {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+    if (
+      !cached ||
+      !Number.isFinite(cached.savedAt) ||
+      Date.now() - cached.savedAt > cacheLifetime ||
+      cached.savedAt > Date.now() ||
+      !Array.isArray(cached.favorites)
+    )
+      return;
+    if (
+      !cached.favorites.every(
+        (item: ExtensionFavorite) =>
+          item &&
+          typeof item.id === 'string' &&
+          /^[a-zA-Z0-9._-]+$/.test(item.id) &&
+          typeof item.displayName === 'string' &&
+          typeof item.available === 'boolean' &&
+          (item.showInSidebar === undefined || typeof item.showInSidebar === 'boolean')
+      )
+    )
+      return;
+    return cached.favorites;
+  } catch {
+    return;
+  }
+}
+function cacheFavorites(favorites: ExtensionFavorite[]) {
+  try {
+    sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), favorites }));
+  } catch {
+    // Storage can be disabled; navigation still works with the live response.
+  }
+}
 
 export function useExtensionFavorites() {
-  const [favorites, setFavorites] = useState<ExtensionFavorite[]>([]);
+  const [cached] = useState(cachedFavorites);
+  const [favorites, setFavorites] = useState<ExtensionFavorite[]>(cached || []);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cached === undefined);
   const [saving, setSaving] = useState(false);
   const generation = useRef(0);
   const pending = useRef(false);
@@ -23,6 +61,7 @@ export function useExtensionFavorites() {
     try {
       const result = await getJson<{ favorites: ExtensionFavorite[] }>('/api/extension-favorites');
       if (current === generation.current) {
+        cacheFavorites(result.favorites);
         setFavorites(result.favorites);
         setError('');
       }
@@ -85,9 +124,7 @@ export function FavoriteLinks({ favorites }: { favorites: ExtensionFavorite[] })
             aria-label={favorite.displayName}
             key={favorite.id}
             href={
-              favorite.available
-                ? `/api/extensions/${encodeURIComponent(favorite.id)}/ui`
-                : '/extensions'
+              favorite.available ? `/extensions/${encodeURIComponent(favorite.id)}` : '/extensions'
             }
             title={`${favorite.displayName}${favorite.available ? '' : '（拡張一覧で状態を確認）'}`}
           >

@@ -179,7 +179,7 @@ export function Extensions() {
                       <a
                         href={
                           favorite.available
-                            ? `/api/extensions/${encodeURIComponent(favorite.id)}/ui`
+                            ? `/extensions/${encodeURIComponent(favorite.id)}`
                             : '/extensions'
                         }
                       >
@@ -423,9 +423,7 @@ export function Extensions() {
                         className="extension-open"
                         type="button"
                         onClick={() =>
-                          window.location.assign(
-                            `/api/extensions/${encodeURIComponent(extension.id)}/ui`
-                          )
+                          window.location.assign(`/extensions/${encodeURIComponent(extension.id)}`)
                         }
                         disabled={
                           !extension.actionsAvailable || !extension.healthy || Boolean(actionId)

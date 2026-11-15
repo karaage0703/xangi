@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { cliInvocation, prepareWorkerConfig, workerInstallLayout } from './install.js';
+import { formatWorkerConnectionStatus } from './diagnostics.js';
 
 const service = 'xangi-worker.service';
 
@@ -102,7 +103,7 @@ export function manageLinuxWorker(
       state.SubState === 'running' &&
       Number(state.MainPID) > 0
     ) {
-      return `Remote worker is running (PID ${state.MainPID}, ${layout.configPath})`;
+      return `Remote worker is running (PID ${state.MainPID}, ${layout.configPath})${formatWorkerConnectionStatus(join(layout.root, 'worker-status.json'), Number(state.MainPID))}`;
     }
     return `Remote worker is not running (${state.ActiveState}/${state.SubState}). See journalctl --user -u ${service}`;
   }
@@ -113,6 +114,7 @@ export function manageLinuxWorker(
     // Remove only worker-owned files, preserving unrelated files in an overridden directory.
     rmSync(layout.configPath, { force: true });
     rmSync(layout.tokenPath, { force: true });
+    rmSync(join(layout.root, 'worker-status.json'), { force: true });
     return 'Remote worker uninstalled';
   }
   if (!existsSync(layout.configPath)) throw new Error('worker is not installed');

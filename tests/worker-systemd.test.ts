@@ -135,6 +135,29 @@ describe('Linux/WSL2 worker management', () => {
     await expect(workerCmd('status', {})).resolves.toContain('running (PID 123');
   });
 
+  it('shows only connection status belonging to the running PID', () => {
+    installed();
+    const path = join(root, 'worker', 'worker-status.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        pid: 123,
+        state: 'disconnected',
+        updatedAt: '2026-11-15T00:00:00Z',
+        lastError: 'ECONNREFUSED',
+        nextRetryAt: '2026-11-15T00:00:03Z',
+        cli: '/app/old/dist/cli.js',
+        node: '/app/old/node',
+      })
+    );
+    expect(manageLinuxWorker('status')).toContain('Gateway: disconnected');
+    expect(manageLinuxWorker('status')).toContain('ECONNREFUSED');
+    state = 'LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=456';
+    expect(manageLinuxWorker('status')).toContain('Gateway: unknown');
+    state = 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0';
+    expect(manageLinuxWorker('status')).not.toContain('Gateway: disconnected');
+  });
+
   it('propagates restart failures', () => {
     installed();
     failure = 'restart';

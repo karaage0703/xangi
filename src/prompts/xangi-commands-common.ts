@@ -12,6 +12,8 @@ export function buildXangiCommandsCommon(triggerEnabled: boolean): string {
 
 Before using models / runtime_settings / system_restart${triggerEnabled ? ' / trigger' : ''}, read ${instanceCliCommand} tool help <command> and follow the displayed usage and precautions. For other operations (including workspace/agent/team creation), consult help; never guess arguments.
 
+Build extensions: ${instanceCliCommand} extension create
+
 ## Scheduling
 
 For reminders or requests such as "send this in one minute", read ${instanceCliCommand} tool help schedule_add and register the task. Omit the destination when scheduling for the current conversation. Verify the result before confirming registration; report the actual error on failure.

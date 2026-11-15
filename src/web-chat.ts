@@ -181,7 +181,11 @@ import {
   parsePublicGitHubRepositoryUrl,
   preparePublicGitHubExtension,
 } from './extension-repository.js';
-import { loadExtensionManifest, resolveExtensionAgentBackend } from './extensions.js';
+import {
+  listExtensions,
+  loadExtensionManifest,
+  resolveExtensionAgentBackend,
+} from './extensions.js';
 import { createExtensionUpdateRequest } from './extension-update.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
 import { AgentRunError, AgentRunStore, type AgentRun } from './agent-runs.js';
@@ -2025,6 +2029,7 @@ ${delegatedTeam.prompt}`
       url === '/workspace/' ||
       url === '/extensions' ||
       url === '/extensions/' ||
+      /^\/extensions\/[^/]+\/?$/.test(url) ||
       url === '/settings' ||
       url === '/settings/' ||
       /^\/chat\/[^/]+\/?$/.test(url)
@@ -2514,20 +2519,27 @@ ${delegatedTeam.prompt}`
     if (url === '/api/extension-favorites' && req.method === 'GET') {
       try {
         const entries = extensionFavorites.entries();
-        const ids = entries.map((entry) => entry.id);
-        const catalog = ids.length ? await listDevelopmentExtensionCatalog() : undefined;
-        const favorites = entries.map(({ id, displayName, showInSidebar }) => {
-          const entry = catalog?.extensions.find((candidate) => candidate.id === id);
-          return {
-            id,
-            displayName: displayName || defaultExtensionName(entry?.displayName || id),
-            defaultDisplayName: defaultExtensionName(entry?.displayName || id),
-            showInSidebar: showInSidebar !== false,
-            available: Boolean(
-              entry?.installed && entry.uiAvailable && entry.healthy && entry.actionsAvailable
-            ),
-          };
-        });
+        // Navigation only needs installed UI metadata. Running every extension's status
+        // action here made the rail wait for the slowest extension on every page.
+        const linked = entries.length ? await listExtensions() : [];
+        const favorites = await Promise.all(
+          entries.map(async ({ id, displayName, showInSidebar }) => {
+            const item = linked.find((candidate) => candidate.id === id);
+            const manifest = item
+              ? await loadExtensionManifest(item.manifestPath, { requireEntrypoint: false }).catch(
+                  () => undefined
+                )
+              : undefined;
+            const valid = manifest?.id === id;
+            return {
+              id,
+              displayName: displayName || defaultExtensionName(valid ? manifest.displayName : id),
+              defaultDisplayName: defaultExtensionName(valid ? manifest.displayName : id),
+              showInSidebar: showInSidebar !== false,
+              available: Boolean(valid && manifest.ui),
+            };
+          })
+        );
         sendJson(res, 200, { favorites }, { 'Cache-Control': 'no-store' });
       } catch (error) {
         sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });

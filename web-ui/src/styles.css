@@ -6722,6 +6722,7 @@ video.media-preview {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
   gap: 4px;
 }
 .app-navigation-favorites a {
@@ -6845,7 +6846,7 @@ video.media-preview {
   overflow-wrap: anywhere;
   min-width: 0;
 }
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
   .app-navigation-favorites {
     display: none;
   }
@@ -7867,4 +7868,32 @@ video.media-preview {
 .chat-undo button,
 .resume-bar button {
   min-height: 44px;
+}
+
+.app-navigation-favorites::-webkit-scrollbar {
+  display: none;
+}
+.extension-view {
+  height: 100dvh;
+  padding-left: var(--app-rail-width);
+}
+.extension-frame {
+  position: relative;
+  height: 100%;
+}
+.extension-frame > p {
+  position: absolute;
+  inset: 12px auto auto 12px;
+}
+.extension-frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .extension-view {
+    padding-left: 0;
+    padding-bottom: calc(var(--app-mobile-nav-height) + var(--safe-bottom));
+  }
 }

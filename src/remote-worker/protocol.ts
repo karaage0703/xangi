@@ -10,6 +10,7 @@ export interface WorkerHello {
   platform: NodeJS.Platform;
   arch: string;
   capabilities: WorkerCapability[];
+  supportsWelcome?: boolean;
 }
 
 export interface WorkerRequest {
@@ -27,5 +28,10 @@ export interface WorkerResponse {
   error?: string;
 }
 
-export type GatewayMessage = WorkerRequest;
+export interface WorkerWelcome {
+  type: 'welcome';
+  protocol: number;
+}
+
+export type GatewayMessage = WorkerRequest | WorkerWelcome;
 export type NodeMessage = WorkerHello | WorkerResponse;

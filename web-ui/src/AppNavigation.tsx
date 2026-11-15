@@ -23,7 +23,7 @@ export const DESTINATIONS: Array<{
     icon: 'workspace',
     placement: 'primary',
   },
-  { id: 'monitor', href: '/monitor', label: '監視', icon: 'monitor', placement: 'primary' },
+  { id: 'monitor', href: '/monitor', label: 'モニター', icon: 'monitor', placement: 'primary' },
   {
     id: 'schedules',
     href: '/schedules',
@@ -66,8 +66,8 @@ export function NavigationIcon({ icon }: { icon: AppSurface | 'more' | 'close' }
   if (icon === 'settings') {
     return (
       <>
+        <path d="M10 3h4l.6 2.4 1.5.9 2.4-.7 2 3.5-1.8 1.7v1.8l1.8 1.7-2 3.5-2.4-.7-1.5.9L14 21h-4l-.6-2.4-1.5-.9-2.4.7-2-3.5 1.8-1.7v-1.8L3.5 9.7l2-3.5 2.4.7 1.5-.9Z" />
         <circle cx="12" cy="12" r="3" />
-        <path d="M12 3.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m14.5-6-1.5 1.5m-9 9L6 18m12 0-1.5-1.5m-9-9L6 6" />
       </>
     );
   }

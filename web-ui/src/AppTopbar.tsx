@@ -4,7 +4,13 @@ import { AppNavigation, DESTINATIONS, NavigationIcon, type AppSurface } from './
 import { ThemeControl, useThemePreference } from './ThemeSelect';
 import { HistoryControls } from './HistoryControls';
 
-export function AppTopbar({ current }: { current: AppSurface }) {
+export function AppTopbar({
+  current,
+  includeFrameHistory = false,
+}: {
+  current: AppSurface;
+  includeFrameHistory?: boolean;
+}) {
   const { favorites, error: favoritesError } = useExtensionFavorites();
   const [moreOpen, setMoreOpen] = useState(false);
   const [themePreference, setThemePreference] = useThemePreference();
@@ -22,7 +28,7 @@ export function AppTopbar({ current }: { current: AppSurface }) {
     <>
       <header className="app-topbar">
         <div className="app-page-navigation">
-          <HistoryControls />
+          <HistoryControls includeFrameHistory={includeFrameHistory} />
           <a className="brand" href="/" aria-label="xangi チャット">
             <span aria-hidden="true">x</span>
           </a>
@@ -66,7 +72,13 @@ export function AppTopbar({ current }: { current: AppSurface }) {
                 </svg>
               </button>
             </div>
-            <nav className="app-more-links" aria-label="その他の機能">
+            <nav
+              className="app-more-links"
+              aria-label="その他の機能"
+              onClick={(event) => {
+                if ((event.target as Element).closest('a')) setMoreOpen(false);
+              }}
+            >
               {DESTINATIONS.filter((destination) => destination.placement === 'secondary').map(
                 (destination) => (
                   <a

@@ -7,6 +7,10 @@ This document explains the architecture and design philosophy of xangi.
 
 Documentation ownership: keep commands, configuration examples, and user-facing limits in the [usage guide](usage.md). Keep architecture, persistence, and design rationale here. Search existing explanations before editing and link to the owning section instead of copying it. Apply the same division to both language editions.
 
+See the [extension development guide](extension-development.md) for extension responsibilities, AI execution policy, current contracts, and compatibility.
+
+See the [extension UI guide](extension-ui.md) for same-origin iframe appearance hints, theme propagation, and domain-specific presentation.
+
 ## Overview
 
 xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
@@ -1246,6 +1250,8 @@ For details (environment variable reference, Docker operation methods, etc.), se
 
 ## Extension Points
 
+- The parent xangi process owns the extension registry. With `XANGI_TOOL_SERVER`, CLI `link / list / unlink` use the fixed `extension_registry` tool against that parent. Child workspace `DATA_DIR` and `XANGI_EXTENSIONS_FILE` do not override it, and connection failures never fall back locally. The CLI resolves relative manifests to absolute paths, which the parent validates. Only offline setup without a tool server retains local registry access. Existing storage paths, extension startup workspaces, and extension data scope remain unchanged.
+
 ### Adding a New Chat Platform
 
 1. Add client initialization code (see `src/line.ts` for a minimal `http.createServer`-based webhook implementation)
@@ -1298,7 +1304,9 @@ See [Agent execution settings](usage.md#agent-execution-settings).
 
 ### Extension favorites persistence
 
-`ExtensionFavorites` atomically replaces `DATA_DIR/extension-favorites.json`, an ordered array of objects with `id` and optional `displayName` and `showInSidebar`. The boolean sidebar flag defaults to visible when omitted. Hidden entries remain available as links in the Favorites list. Legacy ID-string arrays remain readable and migrate on the next mutation. `GET /api/extension-favorites` resolves current catalog names and availability. Same-host guarded `POST` applies add/remove/up/down/rename/set-sidebar operations to the latest file instead of accepting a stale replacement array. Additions require an installed extension with a UI; missing entries remain removable. Corrupt files fail without being overwritten. Devices share host settings, refreshed on mount, focus, and local change events. Names accept up to 80 characters on one line; an empty name restores the default with the leading `xangi-` removed. The UI shares small SVG icons, with a generic fallback for unknown extensions. Favorites do not alter runtime state or permissions.
+The favorites GET reads installed manifest names and UI declarations without waiting for every extension status action. The client keeps a 30-minute display cache in sessionStorage for the same tab and refreshes it on mount/focus, retaining entries after read failures. `/extensions/:id` renders shared app navigation around an iframe backed by the existing authenticated proxy. The host supplies appearance hints without deleting extension-owned controls; extensions choose their own presentation. Back/Forward use native browser history including iframe entries, and remain usable while displaying an extension because the parent Navigation API cannot report child-frame history boundaries.
+
+`ExtensionFavorites` atomically replaces `DATA_DIR/extension-favorites.json`, an ordered array of objects with `id` and optional `displayName` and `showInSidebar`. The boolean sidebar flag defaults to visible when omitted. Hidden entries remain available as links in the Favorites list. Legacy ID-string arrays remain readable and migrate on the next mutation. `GET /api/extension-favorites` resolves installed manifest names and UI registration. Same-host guarded `POST` applies add/remove/up/down/rename/set-sidebar operations to the latest file instead of accepting a stale replacement array. Additions require an installed extension with a UI; missing entries remain removable. Corrupt files fail without being overwritten. Devices share host settings, refreshed on mount, focus, and local change events. Names accept up to 80 characters on one line; an empty name restores the default with the leading `xangi-` removed. The UI shares small SVG icons, with a generic fallback for unknown extensions. Favorites do not alter runtime state or permissions.
 
 
 ### External inbox Agent settings

@@ -1,11 +1,8 @@
-import {
-  linkExtension,
-  listExtensions,
-  unlinkExtension,
-  type ExtensionAction,
-} from '../extensions.js';
-import { defaultExtensionsFile } from '../extensions.js';
+import { resolve } from 'node:path';
+import type { ExtensionAction } from '../extensions.js';
+import { executeExtensionRegistryCommand } from '../extension-registry-command.js';
 import { runToolCommand } from './tool-command.js';
+import { EXTENSION_CREATE_HELP, extensionDevelopmentPrompt } from '../extension-development.js';
 
 const ACTIONS = new Set<ExtensionAction>([
   'start',
@@ -17,6 +14,7 @@ const ACTIONS = new Set<ExtensionAction>([
 ]);
 const MUTATING_ACTIONS = new Set(['start', 'stop', 'restart']);
 const EXTENSION_HELP = `Usage:
+  xangi extension create             Print the AI development guide and template location
   xangi extension list
   xangi extension <start|stop|restart> <ID>
   xangi extension <start|stop|restart> --all
@@ -27,14 +25,20 @@ const EXTENSION_HELP = `Usage:
 
 Options:
   --help, -h  Show this help without running an action
-  --all       Explicitly select every linked extension for start, stop, or restart`;
+  --all       Explicitly select every linked extension for start, stop, or restart
+
+With XANGI_TOOL_SERVER, all registry and runtime operations target that xangi instance.
+Without it, link/unlink/list use the local registry for offline setup only.
+Connection failures never fall back to a workspace registry.`;
 
 export async function extensionCmd(
   action: string,
   positionals: string[],
   flags: Record<string, string | boolean>
 ): Promise<string> {
-  if (flags.help === true || flags.help === 'true') return EXTENSION_HELP;
+  if (flags.help === true || flags.help === 'true') {
+    return action === 'create' ? EXTENSION_CREATE_HELP : EXTENSION_HELP;
+  }
   const all = flags.all === true || flags.all === 'true';
   if (all && positionals[0]) {
     throw new Error('xangi extension accepts either an ID or --all, not both');
@@ -45,31 +49,36 @@ export async function extensionCmd(
   if (MUTATING_ACTIONS.has(action) && !positionals[0] && !all) {
     throw new Error(`xangi extension ${action} requires an ID or explicit --all`);
   }
-  if (action === 'link') {
-    const manifestPath = positionals[0];
-    if (!manifestPath) throw new Error('xangi extension link requires a manifest path');
-    const linked = await linkExtension(manifestPath, { autostart: flags.autostart !== 'false' });
-    return `Linked ${linked.id} (${linked.autostart ? 'autostart' : 'manual start'})`;
+  if (action === 'create') {
+    if (positionals.length || Object.keys(flags).some((key) => !['help', 'h'].includes(key))) {
+      throw new Error(
+        'extension create only prints guidance; use --help for usage. It accepts no destination or feature flags.'
+      );
+    }
+    return extensionDevelopmentPrompt();
   }
-  if (action === 'unlink') {
-    const id = positionals[0];
-    if (!id) throw new Error('xangi extension unlink requires an id');
-    return (await unlinkExtension(id)) ? `Unlinked ${id}` : `${id} is not linked`;
-  }
-  const linked = await listExtensions();
-  if (action === 'list') {
-    return linked.length
-      ? linked
-          .map(
-            (item) =>
-              `${item.id}\t${item.enabled ? 'enabled' : 'disabled'}\t${item.autostart ? 'autostart' : 'manual'}\t${item.manifestPath}`
-          )
-          .join('\n')
-      : `No extensions linked (${defaultExtensionsFile()})`;
+  if (['link', 'unlink', 'list'].includes(action)) {
+    const registryFlags: Record<string, string> = { action };
+    if (action === 'link') {
+      if (!positionals[0]) throw new Error('xangi extension link requires a manifest path');
+      // Resolve relative paths in the caller's cwd, not in the host's workspace.
+      registryFlags.manifest = resolve(positionals[0]);
+      registryFlags.autostart = String(flags.autostart ?? 'true');
+    } else if (action === 'unlink') {
+      if (!positionals[0]) throw new Error('xangi extension unlink requires an id');
+      registryFlags.id = positionals[0];
+    }
+    if (process.env.XANGI_TOOL_SERVER) {
+      return runToolCommand([
+        'extension_registry',
+        ...Object.entries(registryFlags).flatMap(([key, value]) => [`--${key}`, value]),
+      ]);
+    }
+    return executeExtensionRegistryCommand(registryFlags);
   }
   if (!ACTIONS.has(action as ExtensionAction)) {
     throw new Error(
-      'Usage: xangi extension <link|unlink|list|start|stop|restart|status|doctor|update>'
+      'Usage: xangi extension <create|link|unlink|list|start|stop|restart|status|doctor|update>'
     );
   }
   if (!process.env.XANGI_TOOL_SERVER) {

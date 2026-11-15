@@ -3,6 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { arch, cpus, freemem, hostname, platform, totalmem } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import WebSocket from 'ws';
+import { WorkerDiagnostics, closeReason, connectionError } from './diagnostics.js';
 import {
   REMOTE_WORKER_PROTOCOL,
   type GatewayMessage,
@@ -188,9 +189,13 @@ export class RemoteWorkerNode {
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = false;
 
-  constructor(private readonly config: RemoteWorkerNodeConfig) {}
+  constructor(
+    private readonly config: RemoteWorkerNodeConfig,
+    private readonly diagnostics = new WorkerDiagnostics()
+  ) {}
 
   start(): void {
+    if (this.socket || this.reconnectTimer) return;
     this.stopped = false;
     this.connect();
   }
@@ -198,34 +203,81 @@ export class RemoteWorkerNode {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.diagnostics.update('stopped');
     this.socket?.close(1000, 'worker stopping');
   }
 
+  private retry(fields: { lastError?: string; closeCode?: number } = {}): void {
+    if (this.stopped) return;
+    const delay = this.config.reconnectMs ?? 3_000;
+    this.diagnostics.update('disconnected', {
+      ...fields,
+      nextRetryAt: new Date(Date.now() + delay).toISOString(),
+    });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
   private connect(): void {
-    const socket = new WebSocket(this.config.gatewayUrl, { handshakeTimeout: 10_000 });
+    this.diagnostics.update('connecting');
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.config.gatewayUrl, { handshakeTimeout: 10_000 });
+    } catch (error) {
+      this.retry({ lastError: connectionError(error) });
+      return;
+    }
     this.socket = socket;
+    let confirmed = false;
+    const confirm = () => {
+      if (!confirmed && !this.stopped) {
+        confirmed = true;
+        this.diagnostics.update('connected');
+      }
+    };
     socket.on('open', () => {
-      socket.send(
-        JSON.stringify({
-          type: 'hello',
-          protocol: REMOTE_WORKER_PROTOCOL,
-          workerId: this.config.workerId,
-          token: readToken(this.config.tokenFile),
-          platform: platform(),
-          arch: arch(),
-          capabilities: workerCapabilities(),
-        })
-      );
+      if (this.stopped) return;
+      try {
+        this.diagnostics.update('awaiting-confirmation');
+        socket.send(
+          JSON.stringify({
+            type: 'hello',
+            supportsWelcome: true,
+            protocol: REMOTE_WORKER_PROTOCOL,
+            workerId: this.config.workerId,
+            token: readToken(this.config.tokenFile),
+            platform: platform(),
+            arch: arch(),
+            capabilities: workerCapabilities(),
+          })
+        );
+      } catch {
+        this.diagnostics.update('disconnected', {
+          lastError: 'worker hello failed (check local token file)',
+        });
+        socket.terminate();
+      }
     });
     socket.on('message', async (data) => {
+      if (this.stopped) return;
       let message: GatewayMessage;
       try {
         message = JSON.parse(data.toString()) as GatewayMessage;
+        if (message.type === 'welcome' && message.protocol === REMOTE_WORKER_PROTOCOL) {
+          confirm();
+          return;
+        }
         if (message.type !== 'request') throw new Error('invalid gateway message');
+        // Older gateways confirm authentication by sending a request.
+        confirm();
         const result = await executeWorkerMethod(message.method, message.params, this.config);
         socket.send(JSON.stringify({ type: 'response', id: message.id, ok: true, result }));
       } catch (error) {
-        const id = typeof message! === 'object' && message! ? message!.id : 'unknown';
+        const id =
+          typeof message! === 'object' && message! && 'id' in message! ? message!.id : 'unknown';
         const response: WorkerResponse = {
           type: 'response',
           id,
@@ -235,11 +287,16 @@ export class RemoteWorkerNode {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(response));
       }
     });
-    socket.on('error', () => undefined);
-    socket.on('close', () => {
-      if (!this.stopped) {
-        this.reconnectTimer = setTimeout(() => this.connect(), this.config.reconnectMs ?? 3_000);
-      }
+    socket.on('error', (error) => {
+      if (!this.stopped)
+        this.diagnostics.update('disconnected', { lastError: connectionError(error) });
+    });
+    socket.on('close', (code, reason) => {
+      this.socket = undefined;
+      this.retry({
+        closeCode: code,
+        ...(reason.length ? { lastError: closeReason(reason.toString()) } : {}),
+      });
     });
   }
 }

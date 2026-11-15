@@ -1,5 +1,7 @@
 import { RemoteWorkerNode, loadRemoteWorkerNodeConfig } from '../remote-worker/node.js';
 import { platform } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { WorkerDiagnostics } from '../remote-worker/diagnostics.js';
 import { installLinuxWorker, manageLinuxWorker } from '../remote-worker/systemd.js';
 import {
   completeMacWorkerRestart,
@@ -34,7 +36,10 @@ export async function workerCmd(
   }
   const configPath = typeof flags.config === 'string' ? flags.config : '';
   if (!configPath) throw new Error('xangi worker run requires --config');
-  const node = new RemoteWorkerNode(loadRemoteWorkerNodeConfig(configPath));
+  const node = new RemoteWorkerNode(
+    loadRemoteWorkerNodeConfig(configPath),
+    new WorkerDiagnostics(join(dirname(resolve(configPath)), 'worker-status.json'))
+  );
   node.start();
   const shutdown = () => {
     node.stop();

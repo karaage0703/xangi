@@ -145,6 +145,8 @@ docker compose up xangi-gpu -d --build
 
 ## 拡張機能
 
+拡張機能は、専用の操作やサービスをxangiの会話・画面・起動管理へ接続するソフトウェアです。画面、AI、デバイス連携、データ管理などを必要に応じて組み合わせられます。既存のツールと作業手順で足りる場合はスキルだけでも実現できます。
+
 Web UIの「設定」では全ランタイム設定と日常運用向けの起動設定を、反映タイミング付きで変更できます。チャンネル固有設定は名前で選び、保存値と実効値を確認できます。対応する全AIエージェントCLIのログイン状態・versionを一覧し、確認後に公式自己更新を実行できます。APIキーは値を再表示しない書き込み専用入力から既存のローカル秘密情報ストアへ保存できます。「拡張」からは外部機能を追加・管理できます。詳しくは[使い方ガイド](docs/usage.md#webチャットui)と[Extension連携](docs/usage.md#extension連携)を参照してください。
 
 - [xangi-search](https://github.com/karaage0703/xangi-search) - ワークスペースを検索する拡張機能
@@ -168,6 +170,8 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 
 - [使い方ガイド](docs/usage.md) - コマンド、設定、Docker、Local LLM、複数instance、トラブルシューティング
 - [設計ドキュメント](docs/design.md) - アーキテクチャ、コンポーネント、データフロー
+- [拡張開発ガイド](docs/extension-development.md) - 作成コマンドと選択式テンプレート、設計思想、AIとの開発、接続契約、互換性
+- [拡張UI開発ガイド（推奨）](docs/extension-ui.md): 配色・文字・テーマ・操作状態・用途別の例外。
 - [外部イベントストリーム](docs/events.md) - SSEとdevice入力API
 - [インスタンス間チャット](docs/inter-instance-chat.md) - 認証付きHTTPによる別マシン対応の指名問い合わせ
 

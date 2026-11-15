@@ -20,11 +20,18 @@ describe('AppNavigation', () => {
   });
 
   it('renders saved shortcuts in order and sends unavailable entries to the catalog', () => {
-    const html = renderToStaticMarkup(createElement(AppNavigation, {
-      current: 'extensions', moreOpen: false, onMore: () => undefined,
-      favorites: [{ id: 'studio', displayName: 'Studio', available: true }, { id: 'gone', displayName: 'Gone', available: false }],
-    }));
-    expect(html).toContain('href="/api/extensions/studio/ui"');
+    const html = renderToStaticMarkup(
+      createElement(AppNavigation, {
+        current: 'extensions',
+        moreOpen: false,
+        onMore: () => undefined,
+        favorites: [
+          { id: 'studio', displayName: 'Studio', available: true },
+          { id: 'gone', displayName: 'Gone', available: false },
+        ],
+      })
+    );
+    expect(html).toContain('href="/extensions/studio"');
     expect(html.indexOf('Studio')).toBeLessThan(html.indexOf('Gone'));
     expect(html).toContain('拡張一覧で状態を確認');
   });
@@ -39,10 +46,12 @@ describe('AppNavigation', () => {
     const rail = renderToStaticMarkup(createElement(AppNavigation, { ...props, favorites }));
     const mobile = renderToStaticMarkup(createElement(FavoriteLinks, { favorites }));
     for (const html of [rail, mobile]) {
-      expect(html).not.toContain('/api/extensions/hidden/ui');
-      expect(html).toContain('/api/extensions/shown/ui');
+      expect(html).not.toContain('/extensions/hidden');
+      expect(html).toContain('/extensions/shown');
     }
-    const empty = renderToStaticMarkup(createElement(AppNavigation, { ...props, favorites: favorites.slice(0, 1) }));
+    const empty = renderToStaticMarkup(
+      createElement(AppNavigation, { ...props, favorites: favorites.slice(0, 1) })
+    );
     expect(empty).not.toContain('app-navigation-favorites');
   });
 

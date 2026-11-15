@@ -247,6 +247,9 @@ export class RemoteWorkerGateway {
         workerId = message.workerId;
         this.workers.get(workerId)?.socket.close(1008, 'replaced by new connection');
         this.workers.set(workerId, { hello: message, socket });
+        if (message.supportsWelcome === true) {
+          socket.send(JSON.stringify({ type: 'welcome', protocol: REMOTE_WORKER_PROTOCOL }));
+        }
         return;
       }
       if (

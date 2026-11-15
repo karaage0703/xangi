@@ -354,7 +354,24 @@ exit 0
     expect(restartCalls).toContain(`bootstrap gui/${process.getuid()} ${layout.plistPath}`);
     expect(restartCalls.at(-1)).toBe(`remove ${handoffLabel}`);
 
+    const statusPath = join(layout.root, 'worker-status.json');
+    writeFileSync(
+      statusPath,
+      JSON.stringify({
+        pid: 123,
+        state: 'disconnected',
+        updatedAt: '2026-11-15T00:00:00Z',
+        lastError: 'ECONNREFUSED',
+        cli: '/app/old/cli.js',
+        node: '/app/old/node',
+      })
+    );
+    expect(manageMacWorker('status')).toContain('Gateway: disconnected');
+    expect(manageMacWorker('status')).toContain('Running CLI: /app/old/cli.js');
+    writeFileSync(statusPath, JSON.stringify({ pid: 456, state: 'connected' }));
+    expect(manageMacWorker('status')).toContain('Gateway: unknown');
     writeFileSync(launchctlState, 'inactive');
+    expect(manageMacWorker('status')).not.toContain('Gateway: connected');
     expect(manageMacWorker('start')).toContain('started');
     expect(readFileSync(launchctlLog, 'utf8')).toContain(
       `kickstart -k gui/${process.getuid()}/dev.xangi.worker`

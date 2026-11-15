@@ -143,6 +143,7 @@ Usage:
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
   xangi settings
+  xangi extension create              Load the AI development guide and template
   xangi extension <link|unlink|list|start|stop|restart|status|doctor|update> [ID|MANIFEST]
   xangi extension <start|stop|restart> --all
   xangi worker install --pair CODE [--workspace PATH]
@@ -539,7 +540,9 @@ export async function run(argv = process.argv): Promise<void> {
         console.log(await runToolCommand(['help', command]));
         break;
       case 'extension':
-        console.log(await extensionCmd('help', [], { help: true }));
+        console.log(
+          await extensionCmd(argv[3] === 'create' ? 'create' : 'help', [], { help: true })
+        );
         break;
       case 'service':
         console.log(await serviceCmd('help', {}));
@@ -558,6 +561,13 @@ export async function run(argv = process.argv): Promise<void> {
       default:
         printHelp();
     }
+    return;
+  }
+  // Loading managed environment files can initialize persistent settings.
+  // A guidance-only command must return before that initialization.
+  if (command === 'extension' && argv[3] === 'create') {
+    const parsed = parseArgs(argv);
+    console.log(await extensionCmd('create', parsed.positionals.slice(1), parsed.flags));
     return;
   }
   // Service commands select their target before loading application settings.

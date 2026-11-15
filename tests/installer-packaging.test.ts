@@ -23,6 +23,19 @@ async function createFixture(): Promise<{ project: string; output: string; nodeB
   await mkdir(join(project, 'dist'), { recursive: true });
   await mkdir(join(project, 'bin'), { recursive: true });
   await mkdir(join(project, 'docs', 'en'), { recursive: true });
+  await mkdir(join(project, 'packages', 'extension-template'), { recursive: true });
+  await writeFile(
+    join(project, 'packages', 'extension-template', 'README.md'),
+    'separate product\n'
+  );
+  await writeFile(
+    join(project, 'packages', 'extension-template', '.env'),
+    'TEMPLATE_SECRET=not-shipped\n'
+  );
+  await writeFile(
+    join(project, 'packages', 'extension-template', 'local-data.json'),
+    '{"private":true}\n'
+  );
   await mkdir(join(project, 'web'), { recursive: true });
   await mkdir(join(project, 'web', 'node_modules'), { recursive: true });
   await mkdir(join(project, 'node_modules', 'prod-pkg'), { recursive: true });
@@ -210,6 +223,8 @@ describe('packaging/build-bundle.sh', () => {
     expect(entries).toContain(`${root}/docs/usage.md`);
     expect(entries).toContain(`${root}/docs/discord-setup.md`);
     expect(entries).toContain(`${root}/docs/en/usage.md`);
+    expect(entries.some((entry) => entry.startsWith(`${root}/packages/`))).toBe(false);
+    expect(entries.some((entry) => entry.startsWith(`${root}/templates/`))).toBe(false);
     expect(entries).toContain(`${root}/package.json`);
     expect(entries).toContain(`${root}/package-lock.json`);
     expect(entries).toContain(`${root}/node_modules/prod-pkg/index.js`);
@@ -231,7 +246,9 @@ describe('packaging/build-bundle.sh', () => {
     await expect(
       readFile(join(unpacked, root, 'runtime', 'bin', 'node'), 'utf8')
     ).resolves.toContain('fixture-node');
-    expect((await stat(join(unpacked, root, 'bin', 'xangi-antigravity-statusline'))).mode & 0o111).toBe(0o111);
+    expect(
+      (await stat(join(unpacked, root, 'bin', 'xangi-antigravity-statusline'))).mode & 0o111
+    ).toBe(0o111);
     const canonical = join(unpacked, root, 'bin', 'xangi');
     await expect(readFile(canonical, 'utf8')).resolves.toContain('#!/bin/sh');
     const shim = join(unpacked, root, 'bin', 'xangi-cmd');
