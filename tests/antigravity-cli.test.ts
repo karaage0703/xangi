@@ -672,6 +672,13 @@ describe('AntigravityRunner', () => {
     expect(args).not.toContain('--effort');
   });
 
+  it('uses the Hydrogen XHigh model ID without sending a redundant effort flag', async () => {
+    const model = 'gemini-4-hydrogen-xhigh';
+    const { args } = await getSpawnArgs(new AntigravityRunner({ model }), 'run');
+    expect(args[args.indexOf('--model') + 1]).toBe(model);
+    expect(args).not.toContain('--effort');
+  });
+
   it('passes account hiding env by default', async () => {
     const runner = new AntigravityRunner({});
     const { env } = await getSpawnArgs(runner, 'run');
