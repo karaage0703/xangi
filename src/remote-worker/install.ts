@@ -12,6 +12,7 @@ import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { formatWorkerConnectionStatus } from './diagnostics.js';
 
 interface PairingPayload {
   version: 1;
@@ -300,7 +301,7 @@ export function manageMacWorker(
   if (action === 'status') {
     const result = spawnSync('launchctl', ['print', service], { encoding: 'utf8' });
     return result.status === 0 && workerProcessIsRunning(result.stdout)
-      ? `Remote worker is running (${layout.configPath})`
+      ? `Remote worker is running (${layout.configPath})${formatWorkerConnectionStatus(join(layout.root, 'worker-status.json'), Number(/^\s*pid = ([1-9]\d*)\s*$/m.exec(result.stdout)?.[1]))}`
       : result.status === 0
         ? `Remote worker is registered but not running (see ${layout.stderrPath})`
         : 'Remote worker is stopped';

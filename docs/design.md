@@ -6,6 +6,10 @@ xangiのアーキテクチャと設計思想について説明します。
 
 操作方法・設定例・利用時の制限は[使い方](usage.md)にまとめます。この資料には内部構造・保存形式・設計理由を記載し、同じ説明を両方に複製しません。更新時は既存の説明を検索し、必要な箇所からリンクで参照します。日本語版と英語版は、それぞれ同じ役割にそろえます。
 
+拡張作者向けの責任分担、AI実行の方針、現行契約と互換性は[拡張開発ガイド](extension-development.md)を参照してください。
+
+同一originのiframeへの表示属性・テーマ伝達と、用途別の表示方針は[拡張UI開発ガイド（推奨）](extension-ui.md)を参照してください。
+
 ## 概要
 
 xangiは「AI CLI（Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
@@ -1248,6 +1252,8 @@ src/
 
 ## 拡張ポイント
 
+- 拡張registryの所有者はxangi親process。CLIの`link / list / unlink`は`XANGI_TOOL_SERVER`がある場合、`extension_registry`固定tool経由で親のregistryを操作する。子workspaceの`DATA_DIR`や`XANGI_EXTENSIONS_FILE`では上書きできず、接続失敗時のローカルfallbackも行わない。相対manifestはCLI側で絶対pathにし、親は絶対pathだけを受け付ける。tool serverがないオフラインセットアップのみ従来のローカルregistryを使う。保存先の移行や拡張の起動workspace・データ範囲の変更は行わない。
+
 ### 新しいチャットプラットフォーム追加
 
 1. クライアント初期化コードを追加（参考: `src/line.ts` は `http.createServer` ベースで Webhook を待ち受ける最小構成）
@@ -1300,7 +1306,9 @@ Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agen
 
 ### 拡張お気に入りの保存
 
-`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ`id`と任意の`displayName`・`showInSidebar`を持つ順序付き配列をatomic renameで保存する。旧形式のID文字列配列も読み込み、次の更新時に新形式で保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動・表示名変更・`set-sidebar`による表示切替を行う。`showInSidebar`は真偽値のみ受け付け、省略時は表示する。非表示でもお気に入り一覧に残り、名前から開ける。表示名は80文字以内の1行とし、空欄で標準名に戻す。標準名は先頭の`xangi-`を省略する。アイコンはUI側の小さなSVGを共有し、未定義の拡張には共通アイコンを使う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
+お気に入りのGETは登録済みmanifestの名前とUI定義を読み、全拡張の稼働確認を待たない。クライアントは同じタブのsessionStorageに30分の表示キャッシュを持ち、mount/focus時の再取得で更新する。取得失敗時は直前の項目を保持する。`/extensions/:id`は本体ナビゲーションと既存の認証付きプロキシを使うiframeを表示する。本体は拡張のボタンを削除せず、埋め込み表示のヒントを渡し、重複の表示は拡張側で選べる。本体の戻る/進むはiframeを含むブラウザ標準履歴を使い、子フレームの履歴を親のNavigation APIだけでは判定できないため、拡張表示中は操作可能にする。
+
+`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ`id`と任意の`displayName`・`showInSidebar`を持つ順序付き配列をatomic renameで保存する。旧形式のID文字列配列も読み込み、次の更新時に新形式で保存する。`GET /api/extension-favorites`は登録済みmanifestから表示名と画面の登録有無を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動・表示名変更・`set-sidebar`による表示切替を行う。`showInSidebar`は真偽値のみ受け付け、省略時は表示する。非表示でもお気に入り一覧に残り、名前から開ける。表示名は80文字以内の1行とし、空欄で標準名に戻す。標準名は先頭の`xangi-`を省略する。アイコンはUI側の小さなSVGを共有し、未定義の拡張には共通アイコンを使う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
 
 
 ### 外部入力のAgent設定

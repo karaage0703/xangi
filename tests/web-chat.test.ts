@@ -3185,8 +3185,10 @@ process.stdin.on('end', () => server.close());
   });
 
   it('proxies a declared extension UI and its same-origin service requests', async () => {
+    let healthRequests = 0;
     const upstream = createServer(async (request, response) => {
       if (request.url === '/health') {
+        healthRequests++;
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ service: 'ui-extension' }));
         return;
@@ -3256,9 +3258,14 @@ process.stdin.on('end', () => process.exit(0));
         body: JSON.stringify({ id: 'ui-extension', action: 'add' }),
       });
       expect(favorite.status).toBe(200);
+      const healthBeforeFavorites = healthRequests;
       expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({ favorites: [
         { id: 'ui-extension', displayName: 'UI Extension', defaultDisplayName: 'UI Extension', showInSidebar: true, available: true },
       ] });
+      expect(healthRequests).toBe(healthBeforeFavorites);
+      const shell = await fetch(`${baseUrl}/extensions/ui-extension`);
+      expect(shell.status).toBe(200);
+      expect(shell.headers.get('content-type')).toContain('text/html');
       const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
       expect(page.status).toBe(200);
       expect(page.headers.get('content-security-policy')).toContain("connect-src 'self'");

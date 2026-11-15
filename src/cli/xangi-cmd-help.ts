@@ -322,6 +322,17 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     ],
   },
   {
+    name: 'extension_registry',
+    topic: 'extension',
+    summary: 'Manage the current xangi instance extension registry',
+    usage:
+      'xangi tool extension_registry --action <list|link|unlink> [--manifest <absolute-path>] [--id <extension-id>] [--autostart <true|false>]',
+    notes: [
+      'Uses the parent xangi registry regardless of the calling agent workspace. Prefer xangi extension list/link/unlink.',
+      'link registers without starting; unlink removes registration without stopping. Use extension_uninstall for verified stop and removal.',
+    ],
+  },
+  {
     name: 'extension_request',
     topic: 'extension',
     summary: 'Call a managed extension API without exposing credentials',

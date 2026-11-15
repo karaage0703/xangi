@@ -33,6 +33,13 @@ describe('buildXangiCommands', () => {
     expect(prompt).not.toContain('./bin/xangi service start');
   });
 
+  it('拡張開発は現在instanceのガイド取得へ案内し、詳細は常駐させない', () => {
+    const prompt = buildXangiCommands('web');
+    expect(prompt).toContain(`${instanceCliCommand} extension create`);
+    expect(prompt).toContain('Build extensions:');
+    expect(prompt).not.toContain('# Composable xangi extension template');
+  });
+
   it('長時間処理の存続確認だけを常駐し、コマンド契約はhelpへ移す', () => {
     expect(XANGI_COMMANDS_COMMON).toContain("workspace's persistence method");
     expect(XANGI_COMMANDS_COMMON).toContain(`read ${instanceCliCommand} tool help <command>`);

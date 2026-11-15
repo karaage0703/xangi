@@ -17,6 +17,14 @@ xangi worker status
 
 On macOS, `worker install` stores the credential and configuration with mode 0600 and installs `dev.xangi.worker` as a launchd agent. It starts only worker mode, not the model, Web UI, chat platforms, or scheduler. Use `xangi worker start|stop|restart|status|uninstall` to manage it.
 
+`worker status` also shows the Gateway state reported by the same worker PID, status update time, last confirmed connection, last error, close code, next retry time, and running CLI/Node paths. It reads `worker-status.json` beside the worker configuration (mode 0600). Missing, unreadable, or different-PID status is reported as `unknown`; stopped processes do not display a stale connection state.
+
+`connected` records an authentication acceptance notice or a request from the Gateway. Opening a WebSocket alone is `awaiting-confirmation`. Older gateways do not send acceptance notices, so confirmation waits for the first request. There is no periodic heartbeat check yet: this state does not guarantee current responsiveness. Use Gateway `info` to check an actual response.
+
+Connection transitions and retry times are logged as JSON to macOS `worker.log` or the Linux/WSL2 journal. Tokens, URLs, raw errors, and arbitrary peer close reasons are withheld; known error categories, HTTP status codes, known close reasons, and close codes are retained. Status storage failures are logged without stopping the worker.
+
+Updating the app does not refresh an existing worker launch configuration. Check the running CLI path and run `worker restart` from the updated CLI; restarting from an old CLI can register the old version again. Pairing credentials are preserved. Existing workers need a restart with the new code before these diagnostics become available.
+
 Manual configuration remains available. Configure the Gateway with a registration file and a dedicated listener. Token files must use mode 0600 on Unix systems. The remote-worker listener is separate from xangi's internal tool server.
 
 ```dotenv

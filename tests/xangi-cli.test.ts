@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -276,7 +277,52 @@ exit 0
   ])('shows extension help without contacting the runtime for %s %s', async (...args) => {
     const stdout = await runCliInProcess(args, { XANGI_TOOL_SERVER: serverUrl });
     expect(stdout).toContain('xangi extension <start|stop|restart> --all');
+    expect(stdout).toContain('xangi extension create');
     expect(requests).toHaveLength(0);
+  });
+
+  it('loads the extension development prompt without reading the registry or contacting the host', async () => {
+    const stdout = await runCliInProcess(['extension', 'create'], {
+      XANGI_TOOL_SERVER: serverUrl,
+      XANGI_EXTENSIONS_FILE: '/missing-fixture-directory/extensions.json',
+    });
+    expect(stdout).toContain('Template publication target:');
+    expect(stdout).toContain('ui,device,ai');
+    expect(stdout).toContain("Continue the user's current request");
+    expect(requests).toHaveLength(0);
+  });
+
+  it('shows create-specific help and rejects file creation arguments', async () => {
+    expect(await runCliInProcess(['extension', 'create', '--help'])).toContain(
+      'does not create files'
+    );
+    await expect(
+      runCliInProcess(['extension', 'create', '--output', '/fixture-target'])
+    ).rejects.toThrow('only prints guidance');
+    await expect(runCliInProcess(['extension', 'create', 'fixture-name'])).rejects.toThrow(
+      'only prints guidance'
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it('does not initialize managed settings when printing the development guide', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'extension-create-readonly-'));
+    try {
+      const stdout = await runCliInProcess(['extension', 'create'], {
+        XANGI_SKIP_ENV_FILE: 'false',
+        XANGI_INSTALLATION_KIND: 'managed',
+        XDG_CONFIG_HOME: join(root, 'configuration'),
+        XDG_STATE_HOME: join(root, 'state'),
+        XANGI_EXTENSIONS_FILE: join(root, 'registry', 'extensions.json'),
+      });
+      expect(stdout).toContain('Template publication target:');
+      expect(() => readFileSync(join(root, 'registry', 'extensions.json'))).toThrow();
+      expect(() => readFileSync(join(root, 'configuration', 'xangi', 'config.json'))).toThrow();
+      expect(readdirSync(root)).toEqual([]);
+      expect(requests).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each(['start', 'stop', 'restart'])(
@@ -788,7 +834,7 @@ exit 0
     expect(result.code).toBe(0);
     expect(result.stderr).toContain('session: sess-1');
     expect(result.stdout).toContain('assistant reply');
-    expect(requests.find(r => r.url?.startsWith('/api/messages'))?.url).toContain('after=100');
+    expect(requests.find((r) => r.url?.startsWith('/api/messages'))?.url).toContain('after=100');
     const prompt = requests.find((r) => r.url === '/api/prompt');
     expect(prompt?.body).toEqual({ text: 'hello', provider: 'codex', sessionId: 'sess-1' });
   });

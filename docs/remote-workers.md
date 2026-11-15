@@ -90,6 +90,14 @@ Mac側の例です。`gatewayUrl`にはMacから到達できるxangi hostのTail
 xangi worker run --config /absolute/path/to/worker.json
 ```
 
+`worker status`はプロセスの稼働状態に加え、同じPIDのworkerが保存したGateway状態、状態更新時刻、最終接続確認、直近エラー、切断コード、次の再試行時刻、実行中CLIとNodeのpathを表示します。状態は設定ファイルと同じdirectoryの`worker-status.json`へmode 0600で保存します。古いworker・状態ファイル欠損・PID不一致では`unknown`を表示します。停止中のプロセスについて古い接続状態を表示しません。
+
+`connected`はGatewayの認証受理通知、または認証後の要求を受けた時点の記録です。WebSocketを開いただけでは`awaiting-confirmation`です。古いGatewayは受理通知を返さないため、最初の要求まで確認待ちになります。定期的な死活監視はまだ行わないので、`connected`も現在の応答可能性を保証しません。必要ならGateway側から`info`で応答を確認してください。
+
+接続・切断・再試行はMacの`worker.log`、Linux/WSL2のjournalにJSONで記録します。token、接続先URL、生のエラー文・任意の切断理由は記録せず、既知のエラー分類・HTTP status・既知の切断理由と切断コードを残します。状態ファイルの保存に失敗してもworkerの接続処理は継続し、保存失敗をログへ記録します。
+
+アプリ更新だけでは既存workerの起動設定は更新されません。実行中CLIのpathを確認し、更新後のCLIから`worker restart`を実行してください。古いCLIからのrestartは古い版を再登録し得ます。再ペアリングは不要です。今回の診断表示は既存workerにも自動適用されず、新コードでのworker再起動が必要です。
+
 nodeは切断後に自動再接続します。`worker install`を使ったMacではlaunchdもprocess終了後に再起動します。
 
 ## Agent tools

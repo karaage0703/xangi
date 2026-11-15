@@ -11,8 +11,12 @@ const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
 ];
 
 function storedTheme(): ThemePreference {
-  const value = window.localStorage.getItem(STORAGE_KEY);
-  return value === 'light' || value === 'dark' ? value : 'system';
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEY);
+    return value === 'light' || value === 'dark' ? value : 'system';
+  } catch {
+    return 'system';
+  }
 }
 
 function applyTheme(preference: ThemePreference): void {
@@ -50,6 +54,14 @@ export function useThemePreference(): [ThemePreference, (preference: ThemePrefer
   const [preference, setPreference] = useState<ThemePreference>(storedTheme);
 
   useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY || event.key === null) setPreference(storedTheme());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  useEffect(() => {
     applyTheme(preference);
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onChange = () => {
@@ -60,7 +72,11 @@ export function useThemePreference(): [ThemePreference, (preference: ThemePrefer
   }, [preference]);
 
   const choosePreference = useCallback((next: ThemePreference) => {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    try {
+      window.localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      // Keep this document usable when preference storage is unavailable.
+    }
     setPreference(next);
   }, []);
 

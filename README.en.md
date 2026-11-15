@@ -145,6 +145,8 @@ See [Docker deployment](docs/en/usage.md#docker-deployment) for details.
 
 ## Extensions
 
+Extensions connect specialized operations or services to xangi conversations, UI, and process management. Combine UI, AI, device connections, and data management as needed. A skill alone is enough when existing tools and procedures already meet the goal.
+
 Use Settings in the Web UI for every runtime control and the common non-secret startup settings, each with explicit apply timing. Select per-channel settings by name and inspect both saved and effective values. The page lists login status and version for every supported AI-agent CLI and can run its official self-update after confirmation. Write-only API-key inputs save to the existing local secret store without redisplaying stored values. Add or manage external capabilities from Extensions. See the [usage guide](docs/en/usage.md#web-chat-ui) and [Extension Integration](docs/en/usage.md#extension-integration) for details.
 
 - [xangi-search](https://github.com/karaage0703/xangi-search) - An extension for searching your workspace
@@ -168,6 +170,8 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 
 - [Usage guide](docs/en/usage.md) - Commands, configuration, Docker, Local LLMs, multiple instances, and troubleshooting
 - [Design document](docs/en/design.md) - Architecture, components, and data flow
+- [Extension development guide](docs/en/extension-development.md) - Creation command, composable template, design principles, development with AI, integration contracts, and compatibility
+- [Extension UI guide (recommendations)](docs/en/extension-ui.md): surfaces, typography, themes, states, and domain exceptions.
 - [External event stream](docs/en/events.md) - SSE and device input APIs
 - [Inter-instance chat](docs/en/inter-instance-chat.md) - Authenticated directed requests across machines
 

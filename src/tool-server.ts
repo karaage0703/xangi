@@ -41,6 +41,7 @@ import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
 import type { Scheduler } from './scheduler.js';
 import { listExtensions, runExtensionAction, type ExtensionAction } from './extensions.js';
 import { executeExtensionRequest } from './extension-request.js';
+import { executeExtensionRegistryCommand } from './extension-registry-command.js';
 import { updateExtension } from './extension-update.js';
 import { finalizeDevelopmentExtensionUninstall } from './extension-catalog.js';
 import { executeProgressCardCommand } from './progress-card-command.js';
@@ -190,6 +191,8 @@ async function executeCommand(
     return await interChatToolCmd(command, flags);
   } else if (command === 'remote_worker') {
     return executeRemoteWorkerCommand(remoteWorkerGateway, flags);
+  } else if (command === 'extension_registry') {
+    return executeExtensionRegistryCommand(flags);
   } else if (command === 'extension_runtime') {
     if (!runtimeConfig) {
       throw new ValidationError('extension_runtime is not available on this instance');
