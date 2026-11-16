@@ -138,4 +138,27 @@ describe('Telegram HTML formatting', () => {
     expect(longAnswer[0].parseMode).toBe('HTML');
     expect(formatTelegramChunk('x'.repeat(4097)).parseMode).toBeUndefined();
   });
+
+  it('drops fence-only chunks that Telegram would reject as empty text', () => {
+    // A single 9,000 character code line makes the splitter emit an opening fence alone.
+    const chunks = telegramTextChunks('```\n' + 'a'.repeat(9_000) + '\n```');
+
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.every((chunk) => telegramHtmlVisibleLength(chunk.text) > 0)).toBe(true);
+    expect(chunks.every((chunk) => chunk.text !== '<pre></pre>')).toBe(true);
+    expect(
+      chunks
+        .map((chunk) => chunk.plainText)
+        .join('')
+        .split('a').length - 1
+    ).toBe(9_000);
+  });
+
+  it('falls back to plain text when HTML has no visible characters', () => {
+    const chunk = formatTelegramChunk('```\n```');
+
+    expect(chunk.parseMode).toBeUndefined();
+    expect(chunk.text).toBe('```\n```');
+    expect(telegramHtmlVisibleLength(chunk.text)).toBeGreaterThan(0);
+  });
 });

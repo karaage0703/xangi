@@ -231,8 +231,12 @@ export function telegramTextChunks(
       .map((plainText) => {
         const source = definitionsSource ? `${plainText}\n\n${definitionsSource}` : plainText;
         const html = renderRoot(parser.parse(source) as Root, context, false);
-        if (!html) return undefined;
-        return telegramHtmlVisibleLength(html) <= 4096
+        const visibleLength = telegramHtmlVisibleLength(html);
+        // フェンスの開閉行だけが残った断片は可視文字が 0 になる。
+        // Telegram はそのようなメッセージを 400 (`message text is empty`) で拒否し、
+        // 送信ループがそこで止まって以降の本文がすべて届かなくなるため落とす。
+        if (visibleLength === 0) return undefined;
+        return visibleLength <= 4096
           ? { text: html, plainText, parseMode: 'HTML' as const }
           : { text: plainText, plainText };
       })
@@ -270,8 +274,11 @@ export function formatTelegramChunk(
   if (format === 'plain') return { text: plainText, plainText };
   try {
     const html = markdownToTelegramHtml(plainText);
-    return telegramHtmlVisibleLength(html) <= 4096
-      ? { text: html || escapeTelegramHtml(plainText), plainText, parseMode: 'HTML' }
+    const visibleLength = telegramHtmlVisibleLength(html);
+    // 可視文字が無い HTML (`<pre></pre>` 等) は Telegram に拒否されるので本文へ戻す。
+    if (visibleLength === 0) return { text: plainText, plainText };
+    return visibleLength <= 4096
+      ? { text: html, plainText, parseMode: 'HTML' }
       : { text: plainText, plainText };
   } catch {
     return { text: plainText, plainText };
