@@ -30,11 +30,12 @@ export interface UpdaterOptions {
 export interface UpdateOptions {
   onProgress?: (message: string) => void;
   allowDowngrade?: boolean;
-  /** Re-activate an already-current release when provisioning its OS service. */
+  /** Install only: activate the release and provision its OS service, even if already current. */
   forceActivate?: boolean;
 }
 
 export interface UpdateResult {
+  changed: boolean;
   version: string;
   previousVersion?: string;
 }
@@ -117,7 +118,7 @@ export class Updater {
         (await pathExists(currentTarget))
       ) {
         options.onProgress?.(`xangi is already up to date (${manifest.version}).`);
-        return { version: manifest.version };
+        return { version: manifest.version, changed: false };
       }
 
       options.onProgress?.(`Downloading xangi ${manifest.version}...`);
@@ -171,6 +172,7 @@ export class Updater {
 
       return {
         version: manifest.version,
+        changed: true,
         ...(currentVersion && currentTarget !== targetPath
           ? { previousVersion: currentVersion }
           : {}),

@@ -60,11 +60,24 @@ export async function updateCmd(
   flags: InstallerFlags,
   dependencies: ManagedCommandDependencies = {}
 ): Promise<string> {
+  if (
+    Object.keys(flags).some(
+      (key) => !['managed', 'manifest', 'public-key', 'allow-downgrade'].includes(key)
+    )
+  ) {
+    throw new Error('Unknown update option. Use xangi update --help.');
+  }
+  const runtime = await resolveManagedRuntime(flags, dependencies);
   const result = await executeManagedUpdate(flags, {
     ...dependencies,
+    ...runtime,
+    forceActivate: false,
     onProgress: dependencies.onProgress ?? ((message) => console.error(message)),
   });
-  return `Updated xangi to ${result.version}${result.previousVersion ? ` (previous ${result.previousVersion})` : ''}`;
+  if (!result.changed)
+    return `xangi is already up to date (${result.version}). No update was applied.`;
+  const launcher = join(runtime.layout.appRoot, 'bin', 'xangi').replaceAll("'", "'\\''");
+  return `Updated xangi to ${result.version}${result.previousVersion ? ` (previous ${result.previousVersion})` : ''}\nTo apply the update, run \`xangi restart\`. No components were restarted.\nTo restart now, tell xangi "restart now" (「再起動して」).\nManaged launcher: '${launcher}' restart`;
 }
 
 export async function executeManagedUpdate(

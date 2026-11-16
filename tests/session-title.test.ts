@@ -29,7 +29,7 @@ describe('stripPromptMetadata', () => {
     const input =
       '[プラットフォーム: Discord]\n' +
       '[チャンネル: #dev_xangi (ID: 1469726038291386523)]\n' +
-      '[発言者: からあげ (ID: 865948822738567178)]\n' +
+      '[発言者: からあげ (ID: 111111111111111111)]\n' +
       '[現在時刻: 2026/4/26 15:06:50(日)]\n' +
       'こんにちは、テストです';
     expect(stripPromptMetadata(input)).toBe('こんにちは、テストです');

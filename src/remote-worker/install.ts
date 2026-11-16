@@ -191,9 +191,9 @@ function launchctlDomain(): string {
   return `gui/${process.getuid()}`;
 }
 
-export function cliInvocation(): { command: string; args: string[] } {
+export function cliInvocation(allowOverride = true): { command: string; args: string[] } {
   const override = process.env.XANGI_WORKER_CLI;
-  if (override) return { command: resolve(override), args: [] };
+  if (allowOverride && override) return { command: resolve(override), args: [] };
   if (!process.argv[1]) throw new Error('cannot resolve the xangi CLI executable');
   const entry = resolve(process.argv[1]);
   const args = entry.endsWith('.ts')
@@ -394,4 +394,19 @@ export function completeMacWorkerRestart(handoffLabel: string, requesterPid?: nu
 
 export function readInstalledWorkerConfig(): string {
   return readFileSync(workerInstallLayout().configPath, 'utf8');
+}
+
+/** Only call from a supervisor job outside the worker/app process tree. */
+export function restartMacWorkerNow(invocation = cliInvocation()): string {
+  const layout = workerInstallLayout();
+  if (!existsSync(layout.configPath)) throw new Error('worker is not installed');
+  mkdirSync(dirname(layout.plistPath), { recursive: true });
+  writeFileSync(
+    layout.plistPath,
+    renderWorkerLaunchAgent(layout, invocation.command, invocation.args),
+    { mode: 0o644 }
+  );
+  const domain = launchctlDomain();
+  replaceLaunchctlService(domain, `${domain}/${layout.label}`, layout.plistPath);
+  return 'Remote worker launchd registration replaced';
 }

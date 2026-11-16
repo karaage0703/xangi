@@ -133,7 +133,7 @@ describe('Updater', () => {
 
     const result = await updater.update(manifest());
 
-    expect(result).toEqual({ version: '2.0.0', previousVersion: '1.0.0' });
+    expect(result).toEqual({ version: '2.0.0', previousVersion: '1.0.0', changed: true });
     expect(events).toEqual(['download', expect.stringMatching(/^extract:2\.0\.0-/)]);
     expect(await readlink(layout.currentLink)).toBe(versionPath(layout, '2.0.0'));
     expect(await readlink(join(layout.appRoot, 'previous'))).toBe(versionPath(layout, '1.0.0'));
@@ -151,13 +151,22 @@ describe('Updater', () => {
 
     await updater.update(manifest());
     const eventsAfterInstall = [...events];
-    await expect(updater.update(manifest())).resolves.toEqual({ version: '2.0.0' });
+    await expect(updater.update(manifest())).resolves.toEqual({ version: '2.0.0', changed: false });
 
     expect(events).toEqual(eventsAfterInstall);
     expect(await readlink(layout.currentLink)).toBe(versionPath(layout, '2.0.0'));
     expect(await readlink(join(layout.appRoot, 'previous'))).toBe(versionPath(layout, '1.0.0'));
     expect((await readdir(layout.versionsDir)).sort()).toEqual(['0.9.0', '1.0.0', '2.0.0']);
     await expectPersonalDataUnchanged(personalFiles);
+  });
+
+  it('install forceActivate provisions an already-current release and checks health', async () => {
+    const { layout } = await fixture();
+    const { updater, events } = createUpdater(layout);
+    await updater.update(manifest());
+    await updater.update(manifest(), { forceActivate: true });
+    expect(events.slice(-2)).toEqual(['restart', 'health']);
+    expect((await readdir(layout.versionsDir)).sort()).toEqual(['1.0.0', '2.0.0']);
   });
 
   it('hash検証失敗では展開・current切替・service restartを行わない', async () => {
@@ -268,20 +277,31 @@ describe('Updater', () => {
     });
     await expect(updater.update(manifest())).rejects.toBeInstanceOf(UpdateInProgressError);
     releaseDownload?.(artifact);
-    await expect(first).resolves.toEqual({ version: '2.0.0', previousVersion: '1.0.0' });
+    await expect(first).resolves.toEqual({
+      version: '2.0.0',
+      previousVersion: '1.0.0',
+      changed: true,
+    });
     expect(await readdir(layout.appRoot)).not.toContain('update.lock.lease');
   });
 
   it('R22 retains assets from the running version through two non-activating updates', async () => {
-    const {layout}=await fixture();const {updater}=createUpdater(layout);
-    await updater.update(manifest());await updater.update(manifest({version:'3.0.0'}));
-    expect(await readFile(join(versionPath(layout,'1.0.0'),'release.txt'),'utf8')).toBe('old release');
+    const { layout } = await fixture();
+    const { updater } = createUpdater(layout);
+    await updater.update(manifest());
+    await updater.update(manifest({ version: '3.0.0' }));
+    expect(await readFile(join(versionPath(layout, '1.0.0'), 'release.txt'), 'utf8')).toBe(
+      'old release'
+    );
   });
   it('R31 recovers a stale lease left by an exited updater', async () => {
-    const {layout}=await fixture();const {utimes}=await import('node:fs/promises');
-    await mkdir(layout.updateLock+'.lease');const old=new Date(Date.now()-120_000);await utimes(layout.updateLock+'.lease',old,old);
-    const {updater}=createUpdater(layout);await expect(updater.update(manifest())).resolves.toMatchObject({version:'2.0.0'});
+    const { layout } = await fixture();
+    const { utimes } = await import('node:fs/promises');
+    await mkdir(layout.updateLock + '.lease');
+    const old = new Date(Date.now() - 120_000);
+    await utimes(layout.updateLock + '.lease', old, old);
+    const { updater } = createUpdater(layout);
+    await expect(updater.update(manifest())).resolves.toMatchObject({ version: '2.0.0' });
     expect(await readdir(layout.appRoot)).not.toContain('update.lock.lease');
   });
-
 });

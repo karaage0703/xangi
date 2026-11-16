@@ -6,6 +6,7 @@ Detailed usage guide for xangi.
 
 ## Table of Contents
 
+- [AI Service Terms](#ai-service-terms)
 - [Basic Usage](#basic-usage)
 - [Platform-specific message handling](#platform-specific-message-handling)
 - [Channel Topic Injection](#channel-topic-injection)
@@ -29,6 +30,17 @@ Detailed usage guide for xangi.
 - [Session Retention](#session-retention)
 - [Options](#options)
 - [Troubleshooting](#troubleshooting)
+
+## AI Service Terms
+
+AI service terms vary by provider, service, subscription plan, and authentication method (such as a subscription login or an API key). Before using a service through xangi, check that your intended use, including integration with external tools and automated execution, complies with the latest terms and official guidance. These can change, so review them as needed after setup as well.
+
+Examples of official reference pages are listed below. Check the terms and policies that apply to the service you use.
+
+- [Anthropic: Legal center](https://www.anthropic.com/legal)
+- [OpenAI: Terms & policies](https://openai.com/policies/)
+- Google Antigravity: [Terms of Service](https://antigravity.google/terms) / [FAQ](https://antigravity.google/docs/faq)
+- [Google: Gemini API Additional Terms of Service](https://ai.google.dev/gemini-api/terms)
 
 ## Basic Usage
 
@@ -446,8 +458,8 @@ xangi --version
 # Update from the signed release channel saved by the installer
 xangi update
 
-# Explicitly restart the service when you are ready to activate the update
-xangi service restart
+# Restart the running local app and worker without updating
+xangi restart
 
 # Remove the managed app while retaining workspace, settings, tokens, and history
 xangi uninstall
@@ -479,9 +491,19 @@ There is no browser UI that replaces AI onboarding. Token entry alone uses the l
 
 In a checkout, `./bin/xangi update` first refuses uncommitted changes, detached HEAD, and a branch without an upstream, then runs `git pull --ff-only`, `npm ci`, and `npm run build`. Use `./bin/xangi update --managed` to explicitly invoke the signed managed updater from a checkout.
 
-Managed `xangi update` reports checking, downloading, verification, extraction, and switching progress on stderr, with the final result on stdout.
+Managed `xangi update` verifies the signed release and artifact hash, switches current, and completes synchronously. It never automatically restarts the app or worker, and tells you to run `xangi restart` to apply the update. It also explains that you can tell xangi “restart now” in the conversation; the guidance itself does not authorize a restart. An already-current release is reported as unchanged without claiming a new update. It also prints the managed launcher’s absolute path so a checkout caller can restart the correct installation. Update requires no OS job, service/worker status inspection, or running app health probe. Older versions are retained because running processes may still reference them. Service activation, health checks, and rollback on activation failure remain exclusive to `xangi install`.
 
-`xangi update --help` (or `-h`) describes the update behavior and available options for both checkout and managed installations, including that the service is not restarted automatically. Run `xangi service restart` explicitly when you are ready to activate the update.
+`xangi restart` targets the managed app, or only the invoking checkout’s PM2 app, plus the locally installed worker. Missing or stopped components are skipped and remain stopped. It does not control other checkout apps, other machines, or external services. Managed worker launch settings use Node and CLI paths under `app/current`, avoiding a pin to `versions/<version>`. Pairing credentials are retained.
+
+`restart` hands off to an independent helper. macOS uses launchd. Linux/WSL2 managed restarts and running systemd workers use `systemd-run --user`. A Linux checkout with only a running PM2 app registers a uniquely named temporary helper with its existing PM2 daemon, without adding a systemd user manager requirement. Restart skips without creating a job when every target is stopped or absent. Receipts show the supervisor and selection reason. Submission failures never silently fall back; an uninspectable worker is also rejected.
+
+The PM2 daemon manages the helper as a separate app, rather than a detached child of the target. Automatic retries are disabled and app replacement targets only the app name. The helper persists result/log and releases its lock before deleting only its own unique name. If cleanup fails, inspect the log and `pm2 delete` only that stopped helper. Avoid `pm2 save` while the helper is running. Recovery across a PM2 daemon shutdown or host reboot is outside this job's scope.
+
+For restart, `accepted (not completed)` and exit 0 mean acceptance only. Use the printed `xangi restart status <job-id>` command (with `--managed` for managed operations) using the same installation/checkout launcher to see state and failure details. Status exits 0 for completed, 1 for failed, and 2 for accepted/running. From an external terminal, `xangi restart --wait` or `xangi restart status <job-id> --wait` waits up to five minutes and returns the final exit code. A wait timeout returns 2 without cancelling the helper. App/worker child callers must use the default receipt because restart may terminate them. TTY detection cannot establish parent ownership, so waiting is explicit. Update has no `--wait` option.
+
+Restart final state also persists in `result.json` (`state`: `accepted`, `running`, `completed`, `failed`; `exitCode`) and `output.log`. Submission failures make the calling CLI exit nonzero; failures after acceptance produce a failed helper result. OS running state, application health, and Gateway reconnection are separate checks. Use `xangi worker status` and Gateway `remote_worker --action list`; connection status without a heartbeat is unknown.
+
+After a successful build, checkout update tells you to run `xangi restart` to apply the update; it never invokes restart, including through the updated launcher. At unchanged HEAD it still retries dependency installation/build for recovery, reports that HEAD is unchanged and dependencies/build were refreshed, and suggests manual restart only if those changes need applying. Pull, dependency, or build failures print no success guidance. Checkout HEAD is not automatically rolled back, allowing a retry from the failed state. `xangi update --help` (or `-h`) describes these behaviors and options. App-only `service restart` and worker-only `worker restart` remain available.
 
 `xangi --version` (`xangi -V` and `xangi version` are aliases) prints the active signed release for a managed installation, or the Git tag or commit for a checkout.
 
@@ -903,7 +925,7 @@ The above response is sent as two separate messages to Discord or Slack. When ac
 
 `/restart` and `xangi tool system_restart` are low-level operations that ask the running xangi process to gracefully shut down. The external supervisor, such as Docker, pm2, or systemd, is responsible for starting xangi again.
 
-To restart the xangi instance handling the current conversation, call `xangi tool system_restart` directly instead of delegating a delayed restart to a child process or scheduler. A successful response means that the restart request was accepted; confirm completion from the new process status, start time, and startup log. To operate a different clone, run that clone's `./bin/xangi service restart` directly and wait for completion.
+To restart only the app handling the current conversation, call `xangi tool system_restart` directly. To restart both the app and local worker, use `xangi restart`. A successful response means that the restart request was accepted; confirm completion from the new process status, start time, and startup log. To operate a different clone, run that clone's `./bin/xangi service restart` directly and wait for completion.
 
 Self restart permission is configured by the administrator in `.env` with `XANGI_SELF_LIFECYCLE`. It is not a runtime setting that the AI changes. Shutdown cannot be guaranteed from inside xangi itself, so stopping xangi is handled by the external lifecycle manager such as Docker, pm2, or systemd.
 
@@ -2413,7 +2435,7 @@ Managed macOS installations store advanced settings in `~/Library/Application Su
 
 When `runtime.env` has no `WEB_CHAT_PORT`, install/update or service startup persists a valid inherited `WEB_CHAT_PORT` there so subsequent service restarts use the same port. Existing saved values are never replaced. Release-local `.env` and LaunchAgent files themselves are not imported; put advanced settings in `runtime.env`.
 
-`doctor` reports the health URL and settings file. For checkouts it reads the same target checkout `.env` as `service start/restart`, using dotenv syntax and falling back to port 18888. The caller's `XANGI_ENV_PATH` and `WEB_CHAT_PORT` do not select the diagnostic endpoint. Managed install/update re-reads settings after service startup, including ports saved during startup.
+`doctor` reports the health URL and settings file. For checkouts it reads the same target checkout `.env` as `service start/restart`, using dotenv syntax and falling back to port 18888. The caller's `XANGI_ENV_PATH` and `WEB_CHAT_PORT` do not select the diagnostic endpoint. Managed install re-reads settings after service startup, including ports saved during startup. Update does not start services or check app health.
 
 Setup-owned values in `xangi.json` (backend, configured model, workspace, Web Chat enablement/access) and the managed state path override `runtime.env`. Other advanced settings come from `runtime.env`. Connection credentials remain in `config/secrets.json`; channel settings remain in `state/settings.json`. Stored secrets fill only environment variables that do not already have a value.
 

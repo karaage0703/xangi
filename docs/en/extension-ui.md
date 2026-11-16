@@ -4,11 +4,28 @@ These recommendations and examples help people and AI start building without unn
 
 When nothing has been specified, the host's `web-ui/src/styles.css`, `ThemeSelect.tsx`, and the template offer starting points. Reuse the parts that help.
 
+## Recommended UI typography and density
+
+Choose sizes by the element’s role and its hierarchy relative to nearby text; do not bulk-convert by selector names. Preserve the monitor’s established 9–14px compact hierarchy, 20px screen title and 24px metrics. Favorite labels use 12px. Feed list titles use 16px with 14px summaries; Tasks editing text uses 14px on desktop and 16px on mobile. Do not apply the general 16px long-form size to every preview or editing pane.
+
+Use the host file browser as the default density reference, so lists and controls stay consistent across screens. Follow the host extension guide for names and icons without renaming existing IDs. These are recommended defaults for new and maintained UI; user preferences and task-specific presentation take priority. No exception approval or mandatory SDK is required.
+
+- List text, buttons, navigation and ordinary labels: 13px (`--xangi-font-ui`).
+- Supporting descriptions and dates: 12px (`--xangi-font-caption`); short counts and badges: 11px (`--xangi-font-micro`). Keep primary information readable.
+- Screen title: 18px (`--xangi-font-heading`); section heading: 16px (`--xangi-font-section`). Keep large promotional headings out of work areas.
+- Reading content, including articles, mail, Markdown and conversations: 16px with 1.6–1.75 line height (`--xangi-font-reading`). Content headings can use 24/18/16px.
+- Code and file editors: 13px monospace (`--xangi-font-code`); prominent chart values: 24px (`--xangi-font-metric`).
+
+Use the same Inter, system sans-serif and Japanese Noto Sans JP fallback order. Preserve browser text enlargement. Each extension owns the same named CSS variables and works standalone; the parent iframe must not force fonts onto every descendant. Preserve imported report HTML and external preview typography.
+
+Keep existing layout, functions and reading order. Use 4px spacing increments, quiet neutral surfaces, blue actions, thin borders and 6–8px radii where appropriate. Mobile inputs stay at 16px and touch targets around 44px independently of text size. Screen titles normally stay 18px on desktop and mobile; do not shrink long-form text solely for narrow screens.
+
+Check computed styles, long labels, scrolling, focus, input and back navigation at desktop/mobile widths in light/dark themes, both embedded and standalone. Report device conditions that remain unverified.
+
 ## Visual starting points
 
 - A neutral light palette might use canvas `#f7f6f3`, surface `#fff`, text `#37352f`, and border `#d8d7d4`; dark counterparts might be `#202020`, `#191919`, `#efefed`, and `#40403d`. Matching these colors is optional.
 - The host's blue is one action-color example. Light `#155f9f` and dark `#8dc6f3` can provide readable text/button combinations. Brand and user-selected colors are equally valid. Accessibility measures such as 4.5:1 for normal text and 3:1 for control boundaries/focus help assess actual combinations.
-- System sans-serif with Japanese fallbacks, body text around 14–16px at 1.5–1.75 line-height, page titles around 20–22px, and content headings around 24–28px and 18–20px are useful starting points. Code and telemetry may benefit from monospace and tabular numbers.
 - A 4px spacing scale, roughly 16px outer padding on phones and 24px on desktop, 6–8px radii, and quiet borders are examples to adjust for density and working area.
 - Distinguishable hover, focus-visible, disabled, pending, and error states help users act confidently. Touch targets around 44px, labels, explanations, and status text independent of color are useful considerations.
 

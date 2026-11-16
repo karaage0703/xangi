@@ -1,5 +1,17 @@
 /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
 :root {
+  /* xangi filer typography: UI, secondary, counts, headings, reading, code. */
+  --xangi-font-ui: 13px;
+  --xangi-font-caption: 12px;
+  --xangi-font-micro: 11px;
+  --xangi-font-heading: 18px;
+  --xangi-font-section: 16px;
+  --xangi-font-reading: 16px;
+  --xangi-font-code: 13px;
+  --xangi-font-metric: 24px;
+  --xangi-font-family:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans JP', sans-serif;
+
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -127,7 +139,7 @@ textarea:focus-visible {
 .confirm-dialog h2,
 .session-project-dialog h2 {
   margin: 0 0 10px;
-  font-size: 18px;
+  font-size: var(--xangi-font-heading);
   line-height: 1.35;
 }
 
@@ -145,7 +157,7 @@ textarea:focus-visible {
   gap: 8px;
   margin-top: 16px;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .confirm-dialog-field input {
@@ -212,7 +224,7 @@ textarea:focus-visible {
   display: grid;
   gap: 6px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
@@ -228,7 +240,7 @@ textarea:focus-visible {
 
 .session-project-dialog-body small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 400;
   line-height: 1.5;
 }
@@ -373,7 +385,7 @@ textarea:focus-visible {
 
 .brand {
   color: var(--ink);
-  font-size: 18px;
+  font-size: var(--xangi-font-heading);
   font-weight: 750;
   text-decoration: none;
 }
@@ -402,7 +414,7 @@ textarea:focus-visible {
 .load-more,
 .resume-bar button,
 .command-run {
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .button {
@@ -435,7 +447,7 @@ button:disabled {
   outline: 0;
   background: var(--surface);
   padding: 7px 9px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .sidebar-actions {
@@ -449,7 +461,7 @@ button:disabled {
   padding-inline: 10px;
   color: var(--accent-ink);
   background: var(--accent-tint);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   white-space: nowrap;
 }
 
@@ -515,7 +527,7 @@ button:disabled {
   min-height: 36px;
   padding: 6px 0;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .project-view-new {
@@ -603,7 +615,7 @@ button:disabled {
 
 .project-view-copy small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .project-view-edit {
@@ -611,7 +623,7 @@ button:disabled {
   border-radius: 5px !important;
   padding: 6px 8px;
   color: var(--ink-muted) !important;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .project-view-edit:hover {
@@ -626,7 +638,7 @@ button:disabled {
 
 .project-form label > span {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 650;
 }
 
@@ -645,7 +657,7 @@ button:disabled {
 }
 
 .project-form button {
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .catalog-filter input[type='search'],
@@ -674,20 +686,20 @@ button:disabled {
 .project-model-settings legend {
   padding: 0 5px;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
 .project-model-status {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1.45;
 }
 
 .project-empty {
   margin: 0;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1.45;
 }
 
@@ -724,7 +736,7 @@ button:disabled {
 .project-form p {
   margin: 0;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1.45;
 }
 
@@ -783,13 +795,13 @@ button:disabled {
 }
 
 .workspace-manager-heading h2 {
-  font-size: 18px;
+  font-size: var(--xangi-font-section);
 }
 
 .workspace-manager-heading p {
   margin-top: 4px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .workspace-register-form {
@@ -808,7 +820,7 @@ button:disabled {
 
 .workspace-register-form label > span {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 650;
 }
 
@@ -892,13 +904,13 @@ button:disabled {
 
 .directory-picker h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--xangi-font-heading);
 }
 
 .directory-picker p,
 .directory-picker-path label {
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .directory-picker-path {
@@ -991,13 +1003,13 @@ button:disabled {
 }
 
 .workspace-manager-copy strong {
-  font-size: 14px;
+  font-size: var(--xangi-font-ui);
   font-weight: 550;
 }
 
 .workspace-manager-copy small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .workspace-unregister:not(:disabled) {
@@ -1032,7 +1044,7 @@ button:disabled {
 .session-group h2 {
   margin: 14px 8px 5px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 500;
 }
 
@@ -1102,7 +1114,7 @@ button:disabled {
 
 .session-copy strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1119,7 +1131,7 @@ button:disabled {
   justify-content: space-between;
   gap: 6px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .session-copy small > span:first-child {
@@ -1211,7 +1223,7 @@ button:disabled {
 .sidebar-links a {
   color: var(--ink-muted);
   padding: 7px 8px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   text-decoration: none;
 }
 
@@ -1315,7 +1327,7 @@ button:disabled {
 
 .workspace-file-controls select,
 .workspace-file-controls button {
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 400;
 }
 
@@ -1360,7 +1372,7 @@ button:disabled {
   border-radius: 10px;
   color: var(--accent-ink);
   background: var(--surface);
-  font-size: 20px;
+  font-size: var(--xangi-font-heading);
   line-height: 1;
 }
 
@@ -1464,7 +1476,7 @@ button:disabled {
   gap: 8px;
   border-radius: 6px;
   padding: 7px 8px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   text-align: left;
 }
 
@@ -1521,7 +1533,7 @@ button:disabled {
 .settings-kicker {
   margin: 0 0 8px;
   color: var(--accent-ink);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1529,7 +1541,7 @@ button:disabled {
 
 .settings-header h1 {
   margin: 0;
-  font-size: clamp(26px, 4vw, 36px);
+  font-size: var(--xangi-font-heading);
   font-weight: 720;
   line-height: 1.12;
 }
@@ -1537,7 +1549,7 @@ button:disabled {
 .settings-header p:not(.settings-kicker) {
   margin: 10px 0 0;
   color: var(--ink-secondary);
-  font-size: 14px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.7;
 }
 
@@ -1588,7 +1600,7 @@ details.settings-card[open] > summary::before {
 
 .settings-card-heading h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--xangi-font-section);
   line-height: 1.4;
 }
 
@@ -1597,7 +1609,7 @@ details.settings-card[open] > summary::before {
 .settings-startup > p {
   margin: 6px 0 0;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.6;
 }
 
@@ -1607,7 +1619,7 @@ details.settings-card[open] > summary::before {
   padding: 4px 8px;
   color: var(--ink-secondary);
   background: var(--surface-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -1630,7 +1642,7 @@ details.settings-card[open] > summary::before {
   min-width: 0;
   gap: 7px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
@@ -1665,7 +1677,7 @@ details.settings-card[open] > summary::before {
   padding: 9px 16px;
   color: var(--surface);
   background: var(--accent);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 650;
   white-space: nowrap;
   cursor: pointer;
@@ -1696,7 +1708,7 @@ details.settings-card[open] > summary::before {
 
 .settings-row label {
   color: var(--ink);
-  font-size: 14px;
+  font-size: var(--xangi-font-ui);
   font-weight: 680;
 }
 
@@ -1704,7 +1716,7 @@ details.settings-card[open] > summary::before {
   display: block;
   margin-top: 5px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1.5;
 }
 
@@ -1724,7 +1736,7 @@ details.settings-card[open] > summary::before {
   gap: 12px;
   margin-top: 8px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .settings-channel-status button {
@@ -1761,7 +1773,7 @@ details.settings-card[open] > summary::before {
   min-width: 0;
   gap: 7px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
@@ -1774,12 +1786,12 @@ details.settings-card[open] > summary::before {
 
 .settings-runtime-grid .settings-apply-badge {
   padding: 2px 6px;
-  font-size: 9px;
+  font-size: var(--xangi-font-micro);
 }
 
 .settings-runtime-grid small {
   color: var(--ink-muted);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   font-weight: 500;
 }
 
@@ -1845,7 +1857,7 @@ details.settings-card[open] > summary::before {
   padding: 4px 8px;
   color: var(--accent-ink);
   background: var(--surface);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   font-weight: 700;
   cursor: pointer;
 }
@@ -1867,14 +1879,14 @@ details.settings-card[open] > summary::before {
 
 .settings-auth-status strong {
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .settings-auth-status small {
   overflow: hidden;
   margin-top: 3px;
   color: var(--ink-muted);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1885,7 +1897,7 @@ details.settings-card[open] > summary::before {
   padding: 4px 8px;
   color: var(--ink-secondary);
   background: var(--surface);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -1903,14 +1915,14 @@ details.settings-card[open] > summary::before {
 
 .settings-connection-groups h3 {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .settings-secret-row {
   border-top: 1px solid var(--hairline);
   padding: 12px 0;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .settings-secret-label {
@@ -1923,7 +1935,7 @@ details.settings-card[open] > summary::before {
 
 .settings-secret-row strong {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .settings-secret-row strong.configured {
@@ -1945,7 +1957,7 @@ details.settings-card[open] > summary::before {
   padding: 7px 9px;
   color: var(--ink);
   background: var(--surface-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .settings-secret-control button {
@@ -1955,7 +1967,7 @@ details.settings-card[open] > summary::before {
   padding: 7px 11px;
   color: var(--ink-secondary);
   background: var(--surface);
-  font-size: 12px;
+  font-size: var(--xangi-font-ui);
   font-weight: 650;
   cursor: pointer;
 }
@@ -1986,20 +1998,20 @@ details.settings-card[open] > summary::before {
 
 .settings-startup-row label {
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 680;
 }
 
 .settings-startup-row p {
   margin: 4px 0;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   line-height: 1.5;
 }
 
 .settings-startup-row code {
   color: var(--ink-muted);
-  font-size: 10px;
+  font-size: var(--xangi-font-code);
 }
 
 .settings-startup-control {
@@ -2024,7 +2036,7 @@ details.settings-card[open] > summary::before {
   padding: 8px 12px;
   color: var(--ink-secondary);
   background: var(--surface);
-  font-size: 12px;
+  font-size: var(--xangi-font-ui);
   font-weight: 650;
   cursor: pointer;
 }
@@ -2040,7 +2052,7 @@ details.settings-card[open] > summary::before {
   padding: 10px 12px;
   color: var(--ink-secondary);
   background: var(--surface);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .settings-status.error {
@@ -2117,7 +2129,7 @@ details.settings-card[open] > summary::before {
 .extensions-kicker {
   margin: 0 0 8px;
   color: var(--accent-ink);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2125,7 +2137,7 @@ details.settings-card[open] > summary::before {
 
 .extensions-header h1 {
   margin: 0;
-  font-size: clamp(26px, 4vw, 36px);
+  font-size: var(--xangi-font-heading);
   font-weight: 720;
   line-height: 1.12;
   overflow-wrap: anywhere;
@@ -2135,7 +2147,7 @@ details.settings-card[open] > summary::before {
   max-width: 620px;
   margin: 10px 0 0;
   color: var(--ink-secondary);
-  font-size: 14px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.7;
 }
 
@@ -2148,7 +2160,7 @@ details.settings-card[open] > summary::before {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 9px 16px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 650;
   white-space: nowrap;
   cursor: pointer;
@@ -2180,14 +2192,14 @@ details.settings-card[open] > summary::before {
 
 .extension-repository h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--xangi-font-section);
   line-height: 1.4;
 }
 
 .extension-repository p {
   margin: 7px 0 0;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.6;
 }
 
@@ -2200,7 +2212,7 @@ details.settings-card[open] > summary::before {
   display: block;
   margin-bottom: 7px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
@@ -2313,13 +2325,13 @@ details.settings-card[open] > summary::before {
 
 .extensions-empty h2 {
   margin: 0 0 6px;
-  font-size: 16px;
+  font-size: var(--xangi-font-section);
 }
 
 .extensions-empty p {
   margin: 0;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.6;
 }
 
@@ -2356,7 +2368,7 @@ details.settings-card[open] > summary::before {
 .extension-title-row h2 {
   min-width: 0;
   margin: 0;
-  font-size: 18px;
+  font-size: var(--xangi-font-section);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -2367,7 +2379,7 @@ details.settings-card[open] > summary::before {
   padding: 4px 8px;
   color: var(--ink-muted);
   background: var(--surface-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 650;
   white-space: nowrap;
 }
@@ -2381,7 +2393,7 @@ details.settings-card[open] > summary::before {
 .extension-description {
   margin: 8px 0 0;
   color: var(--ink-secondary);
-  font-size: 14px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.6;
 }
 
@@ -2397,7 +2409,7 @@ details.settings-card[open] > summary::before {
   display: flex;
   min-width: 0;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .extension-meta dt {
@@ -2422,7 +2434,7 @@ details.settings-card[open] > summary::before {
   border-top: 1px solid var(--hairline);
   padding-top: 14px;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .extension-permissions > span {
@@ -2439,7 +2451,7 @@ details.settings-card[open] > summary::before {
 .extension-detail {
   margin: 12px 0 0;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -2498,7 +2510,7 @@ details.settings-card[open] > summary::before {
   padding: 5px 9px;
   color: var(--ink-muted);
   background: var(--surface);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   white-space: nowrap;
 }
 
@@ -2560,7 +2572,7 @@ details.settings-card[open] > summary::before {
   align-items: center;
   min-width: 0;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   color: var(--ink-secondary);
 }
 
@@ -2578,7 +2590,7 @@ details.settings-card[open] > summary::before {
   min-width: 0;
   min-height: 34px;
   padding: 4px 28px 4px 8px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 600;
 }
 
@@ -2594,7 +2606,7 @@ details.settings-card[open] > summary::before {
 
 .workspace-display-options {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .workspace-display-options summary {
@@ -2659,7 +2671,7 @@ details.settings-card[open] > summary::before {
   color: var(--ink-secondary);
   background: transparent;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .workspace-breadcrumbs button:hover {
@@ -2680,7 +2692,7 @@ details.settings-card[open] > summary::before {
 }
 
 .workspace-file-controls label {
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   color: var(--ink-secondary);
 }
 
@@ -2688,7 +2700,7 @@ details.settings-card[open] > summary::before {
 .workspace-file-controls button {
   min-height: 34px;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 .workspace-file-controls button {
@@ -2732,7 +2744,7 @@ details.settings-card[open] > summary::before {
 .workspace-link-target {
   overflow-wrap: anywhere;
   color: var(--ink-subtle);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
 }
 
 .workspace-file-icon {
@@ -2754,7 +2766,7 @@ details.settings-card[open] > summary::before {
 .workspace-file-name {
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2762,21 +2774,21 @@ details.settings-card[open] > summary::before {
 .workspace-file-tags {
   overflow: hidden;
   color: var(--accent-ink);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-file-size {
   color: var(--ink-subtle);
-  font-size: 10px;
+  font-size: var(--xangi-font-micro);
   white-space: nowrap;
 }
 
 .workspace-file-empty {
   margin: 16px 8px;
   color: var(--ink-subtle);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   line-height: 1.5;
 }
 
@@ -2832,14 +2844,14 @@ details.settings-card[open] > summary::before {
 
 .workspace-editor-file strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--xangi-font-code);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-editor-file small {
   color: var(--ink-subtle);
-  font-size: 10px;
+  font-size: var(--xangi-font-code);
 }
 
 .workspace-editor-actions,
@@ -2856,7 +2868,7 @@ details.settings-card[open] > summary::before {
 .workspace-editor-actions .button,
 .workspace-editor-tabs button,
 .workspace-line-numbers-option {
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   font-weight: 500;
 }
 
@@ -2918,7 +2930,7 @@ details.settings-card[open] > summary::before {
   padding: 8px 14px;
   color: #8a2929;
   background: #fff4f4;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   line-height: 1.45;
 }
 
@@ -2960,7 +2972,7 @@ details.settings-card[open] > summary::before {
 .workspace-editor,
 .workspace-line-numbers {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: 13px;
+  font-size: var(--xangi-font-code);
   line-height: 1.65;
 }
 
@@ -2985,7 +2997,7 @@ details.settings-card[open] > summary::before {
   overflow: auto;
   padding: 34px clamp(24px, 6vw, 88px) 64px;
   color: var(--ink);
-  font-size: 16px;
+  font-size: var(--xangi-font-reading);
   line-height: 1.75;
 }
 
@@ -2996,21 +3008,21 @@ details.settings-card[open] > summary::before {
 
 .workspace-markdown-preview h1 {
   margin: 0 0 28px;
-  font-size: 30px;
+  font-size: var(--xangi-font-metric);
   line-height: 1.25;
   letter-spacing: -0.6px;
 }
 
 .workspace-markdown-preview h2 {
   margin: 36px 0 12px;
-  font-size: 24px;
+  font-size: var(--xangi-font-heading);
   line-height: 1.35;
   letter-spacing: -0.35px;
 }
 
 .workspace-markdown-preview h3 {
   margin: 28px 0 10px;
-  font-size: 19px;
+  font-size: var(--xangi-font-section);
   line-height: 1.45;
 }
 
@@ -3034,7 +3046,7 @@ details.settings-card[open] > summary::before {
 
 .workspace-markdown-preview table {
   width: 100%;
-  font-size: 14px;
+  font-size: var(--xangi-font-reading);
   line-height: 1.5;
 }
 
@@ -3073,18 +3085,18 @@ details.settings-card[open] > summary::before {
 }
 
 .workspace-editor-empty > span {
-  font-size: 28px;
+  font-size: var(--xangi-font-code);
 }
 
 .workspace-editor-empty h2 {
   margin: 8px 0 3px;
   color: var(--ink-secondary);
-  font-size: 16px;
+  font-size: var(--xangi-font-reading);
 }
 
 .workspace-editor-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--xangi-font-code);
 }
 
 .panes-toolbar {
@@ -3097,14 +3109,14 @@ details.settings-card[open] > summary::before {
 
 .pane-count {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .add-pane {
   margin-left: auto;
   border-color: var(--border);
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .notice,
@@ -3112,7 +3124,7 @@ details.settings-card[open] > summary::before {
   color: #9f2f2f;
   background: #fdebec;
   padding: 7px 12px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .upload-progress {
@@ -3122,7 +3134,7 @@ details.settings-card[open] > summary::before {
   padding: 9px 12px;
   color: var(--ink-secondary);
   background: var(--surface-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .upload-progress-label {
@@ -3219,7 +3231,7 @@ details.settings-card[open] > summary::before {
   overflow: auto;
   padding: 6px 10px;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   overflow-wrap: anywhere;
 }
 
@@ -3244,7 +3256,7 @@ details.settings-card[open] > summary::before {
   overflow: hidden;
   border: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 500;
   text-align: left;
   text-overflow: ellipsis;
@@ -3304,7 +3316,7 @@ details.settings-card[open] > summary::before {
 }
 
 .project-context-chip strong {
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 650;
 }
 
@@ -3335,7 +3347,7 @@ details.settings-card[open] > summary::before {
   padding: 4px 8px;
   color: var(--ink-secondary);
   background: var(--surface);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1;
   cursor: pointer;
   white-space: nowrap;
@@ -3390,7 +3402,7 @@ details.settings-card[open] > summary::before {
   min-height: 32px;
   padding: 6px 8px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   cursor: pointer;
   list-style-position: inside;
 }
@@ -3452,7 +3464,7 @@ details.settings-card[open] > summary::before {
 
 .message-tools strong {
   overflow: hidden;
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3512,7 +3524,7 @@ details.settings-card[open] > summary::before {
   border-color: var(--border);
   padding: 6px 10px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .message {
@@ -3720,7 +3732,7 @@ video.media-preview {
 .html-artifact > header strong {
   overflow: hidden;
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3799,7 +3811,7 @@ video.media-preview {
 
 .html-artifact-dialog > header strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3812,7 +3824,7 @@ video.media-preview {
   background: var(--surface);
   padding: 6px 10px;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
   cursor: pointer;
 }
@@ -3863,7 +3875,7 @@ video.media-preview {
 
 .reply-suggestions > button {
   color: var(--accent-ink);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .reply-suggestions ol {
@@ -3971,7 +3983,7 @@ video.media-preview {
   background: var(--surface-muted);
   padding: 8px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .resume-bar > span {
@@ -4219,7 +4231,7 @@ video.media-preview {
 .command-palette > p {
   margin: 4px 7px 7px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .command-option {
@@ -4241,7 +4253,7 @@ video.media-preview {
 }
 
 .command-option span {
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 650;
 }
 
@@ -4263,7 +4275,7 @@ video.media-preview {
 .command-error {
   padding: 9px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .command-error {
@@ -5284,7 +5296,7 @@ video.media-preview {
   padding: 10px 12px;
   color: var(--ink-secondary);
   background: var(--accent-tint);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.5;
 }
 
@@ -5335,7 +5347,7 @@ video.media-preview {
 
 .schedule-create label > span {
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   font-weight: 600;
 }
 
@@ -5375,7 +5387,7 @@ video.media-preview {
 
 .schedule-create small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
   line-height: 1.45;
 }
 
@@ -5426,7 +5438,7 @@ video.media-preview {
   color: var(--ink-muted);
   background: transparent;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
   white-space: nowrap;
 }
 
@@ -5487,7 +5499,7 @@ video.media-preview {
   margin: 7px 0 9px;
   overflow: hidden;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 1.5;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
@@ -5500,7 +5512,7 @@ video.media-preview {
   flex-wrap: wrap;
   gap: 5px 12px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 .schedule-row-meta span {
@@ -5578,7 +5590,7 @@ video.media-preview {
   color: var(--ink-muted);
   background: transparent;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 
 .schedule-run:hover {
@@ -5606,7 +5618,7 @@ video.media-preview {
   border-bottom: 1px solid var(--hairline);
   padding: 24px 2px;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
 }
 
 @media (max-width: 900px) {
@@ -5787,7 +5799,7 @@ video.media-preview {
     border-radius: 5px;
     background: transparent;
     padding: 7px 9px;
-    font-size: 11px;
+    font-size: var(--xangi-font-micro);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -5864,7 +5876,7 @@ video.media-preview {
   }
 
   .pane-input {
-    font-size: 16px;
+    font-size: var(--xangi-font-reading);
   }
 
   .pane-input-area {
@@ -6135,7 +6147,7 @@ video.media-preview {
   }
 
   .project-view-header h1 {
-    font-size: 24px;
+    font-size: var(--xangi-font-metric);
   }
 
   .workspace-file-controls select,
@@ -6164,7 +6176,7 @@ video.media-preview {
     min-height: 32px;
     flex: 0 0 auto;
     padding: 4px 8px;
-    font-size: 13px;
+    font-size: var(--xangi-font-ui);
   }
 
   .workspace-editor-actions > .button {
@@ -6172,7 +6184,7 @@ video.media-preview {
     min-width: auto;
     min-height: 32px;
     padding: 5px 9px;
-    font-size: 13px;
+    font-size: var(--xangi-font-ui);
   }
 
   .workspace-editor-tabs button::after,
@@ -6193,11 +6205,11 @@ video.media-preview {
     padding-right: max(14px, var(--safe-right));
     padding-bottom: max(26px, var(--safe-bottom));
     padding-left: max(14px, var(--safe-left));
-    font-size: 16px;
+    font-size: var(--xangi-font-reading);
   }
 
   .workspace-line-numbers {
-    font-size: 16px;
+    font-size: var(--xangi-font-reading);
   }
 
   .workspace-markdown-preview {
@@ -6205,20 +6217,20 @@ video.media-preview {
     padding-right: max(16px, var(--safe-right));
     padding-bottom: max(32px, var(--safe-bottom));
     padding-left: max(16px, var(--safe-left));
-    font-size: 15px;
+    font-size: var(--xangi-font-reading);
   }
 
   .workspace-markdown-preview h1 {
-    font-size: 22px;
+    font-size: var(--xangi-font-metric);
   }
 
   .workspace-markdown-preview h2 {
     margin-top: 28px;
-    font-size: 18px;
+    font-size: var(--xangi-font-heading);
   }
 
   .workspace-markdown-preview h3 {
-    font-size: 16px;
+    font-size: var(--xangi-font-section);
   }
 
   .schedules-content {
@@ -6321,7 +6333,7 @@ video.media-preview {
   }
 
   .app-page-navigation .app-navigation a {
-    font-size: 12px;
+    font-size: var(--xangi-font-caption);
   }
 
   .schedule-list-heading {
@@ -6551,7 +6563,7 @@ video.media-preview {
   .theme-control--sheet h3 {
     margin: 0;
     color: var(--ink-secondary);
-    font-size: 13px;
+    font-size: var(--xangi-font-ui);
     font-weight: 650;
   }
 
@@ -6571,7 +6583,7 @@ video.media-preview {
     border: 1px solid var(--border);
     border-radius: 7px;
     padding: 5px 3px;
-    font-size: 11px;
+    font-size: var(--xangi-font-micro);
     white-space: nowrap;
   }
 
@@ -6611,7 +6623,7 @@ video.media-preview {
   display: grid;
   gap: 6px;
   padding: 8px 14px;
-  font-size: 12px;
+  font-size: var(--xangi-font-caption);
 }
 .new-conversation-agent label {
   display: grid;
@@ -6727,6 +6739,7 @@ video.media-preview {
 }
 .app-navigation-favorites a {
   flex-shrink: 0;
+  font-size: var(--xangi-font-caption);
 }
 .app-navigation-favorites a span {
   flex-shrink: 0;
@@ -6804,7 +6817,7 @@ video.media-preview {
 }
 .extension-favorites h2 {
   margin: 0 0 8px;
-  font-size: 18px;
+  font-size: var(--xangi-font-section);
 }
 .extension-favorites p {
   color: var(--ink-secondary);
@@ -7195,7 +7208,7 @@ video.media-preview {
 }
 .new-chat-control > button,
 .new-chat-menu > summary {
-  font-size: 13px;
+  font-size: var(--xangi-font-ui);
   line-height: 20px;
 }
 .new-chat-control > button {
@@ -7264,7 +7277,7 @@ video.media-preview {
   border-radius: 4px;
   color: var(--ink);
   background: var(--surface-subtle);
-  font-size: 11px;
+  font-size: var(--xangi-font-micro);
 }
 
 @media (max-width: 768px), (max-height: 500px) and (hover: none) {
@@ -7604,7 +7617,7 @@ video.media-preview {
     height: calc(100dvh - var(--app-mobile-nav-height) - var(--safe-bottom));
   }
   .sidebar .search {
-    font-size: 16px;
+    font-size: var(--xangi-font-reading);
   }
   .sidebar .session-row {
     grid-template-columns: minmax(0, 1fr) 44px;
@@ -7692,7 +7705,7 @@ video.media-preview {
   margin: 12px 0;
 }
 .settings-configured-note {
-  font-size: 0.85rem;
+  font-size: var(--xangi-font-ui);
   color: var(--ink-secondary);
 }
 .settings-configured-list {
@@ -7718,7 +7731,7 @@ video.media-preview {
 }
 .settings-configured-name span,
 .settings-configured-name small {
-  font-size: 0.8rem;
+  font-size: var(--xangi-font-ui);
 }
 .settings-configured-list dl {
   display: grid;
@@ -7727,7 +7740,7 @@ video.media-preview {
   margin: 0;
 }
 .settings-configured-list dt {
-  font-size: 0.8rem;
+  font-size: var(--xangi-font-ui);
   color: var(--ink-secondary);
 }
 .settings-configured-list dd {
@@ -7896,4 +7909,24 @@ video.media-preview {
     padding-left: 0;
     padding-bottom: calc(var(--app-mobile-nav-height) + var(--safe-bottom));
   }
+}
+
+/* Shared filer density. Keep article/report contents and editor geometry local. */
+body {
+  font-family: var(--xangi-font-family);
+  font-size: var(--xangi-font-ui);
+}
+
+@media (max-width: 768px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  textarea,
+  select {
+    font-size: var(--xangi-font-reading);
+  }
+}
+
+/* Monitor keeps its established compact hierarchy; its inherited text used to be 16px. */
+
+.monitor-page {
+  font-size: 16px;
 }

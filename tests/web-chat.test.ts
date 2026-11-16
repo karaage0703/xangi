@@ -9,7 +9,11 @@ import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
 import { runTeamTurn } from '../src/team-runner.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
-import { executeProjectAgentCommand, executeTeamCommand, executeWorkspaceCommand } from '../src/project-agent-command.js';
+import {
+  executeProjectAgentCommand,
+  executeTeamCommand,
+  executeWorkspaceCommand,
+} from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../src/session-workspace.js';
@@ -387,7 +391,7 @@ describe('web-chat HTTP API', () => {
   let webConfig: Config;
   const previousCheckInterval = process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
   beforeEach(async () => {
-    process.env.AGENT_PARENT_CHECK_INTERVAL_MS = "1000";
+    process.env.AGENT_PARENT_CHECK_INTERVAL_MS = '1000';
     clearSessions();
     testDir = mkdtempSync(join(tmpdir(), 'web-chat-test-'));
     process.env.WORKSPACE_PATH = testDir;
@@ -431,7 +435,15 @@ describe('web-chat HTTP API', () => {
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
     initSettings(process.env.DATA_DIR!);
-    webConfig = {features: {}, discord: {}, slack: {}, web: {}, scheduler: {}, completion: {}, sessionTitle: {}} as Config;
+    webConfig = {
+      features: {},
+      discord: {},
+      slack: {},
+      web: {},
+      scheduler: {},
+      completion: {},
+      sessionTitle: {},
+    } as Config;
     webServer = startWebChat({
       config: webConfig,
       agentRunner: runner,
@@ -453,18 +465,21 @@ describe('web-chat HTTP API', () => {
         backend,
         source: 'web-chat test discovery',
         status: 'available',
-        models: backend === 'openrouter' ? [
-          { id: 'vendor/a', supportedEfforts: ['low', 'high', 'max'] },
-          { id: 'vendor/b', supportedEfforts: ['low', 'medium', 'high'] },
-          { id: 'vendor/no-effort', supportedEfforts: [] },
-        ] : [
-          {
-            id: 'gpt-test',
-            displayName: 'GPT Test',
-            isDefault: true,
-            supportedEfforts: ['high', 'xhigh', 'ultra'],
-          },
-        ],
+        models:
+          backend === 'openrouter'
+            ? [
+                { id: 'vendor/a', supportedEfforts: ['low', 'high', 'max'] },
+                { id: 'vendor/b', supportedEfforts: ['low', 'medium', 'high'] },
+                { id: 'vendor/no-effort', supportedEfforts: [] },
+              ]
+            : [
+                {
+                  id: 'gpt-test',
+                  displayName: 'GPT Test',
+                  isDefault: true,
+                  supportedEfforts: ['high', 'xhigh', 'ultra'],
+                },
+              ],
       }),
       extensionUpdateRequest: async (id) => ({
         id,
@@ -508,27 +523,49 @@ describe('web-chat HTTP API', () => {
 
   it('persists explicit automation and inherits it through parent sessions without trusting titles', async () => {
     const create = async (body: Record<string, unknown>) => {
-      const response = await fetch(`${baseUrl}/api/sessions`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      const response = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       expect(response.status).toBe(200);
       return (await response.json()).sessionId as string;
     };
     const manual = await create({});
     updateSessionTitle(manual, 'Mail: メールチェック');
-    const automatic = await create({executionOrigin: 'automation'});
-    const child = await create({parentAppSessionId: automatic, executionOrigin: 'manual'});
-    const grandchild = await create({parentAppSessionId: child});
+    const automatic = await create({ executionOrigin: 'automation' });
+    const child = await create({ parentAppSessionId: automatic, executionOrigin: 'manual' });
+    const grandchild = await create({ parentAppSessionId: child });
     const entries = (await (await fetch(`${baseUrl}/api/sessions`)).json()).sessions;
-    expect(entries.find((entry: {id: string}) => entry.id === manual)).toMatchObject({executionOrigin: 'manual', scope: 'interactive'});
+    expect(entries.find((entry: { id: string }) => entry.id === manual)).toMatchObject({
+      executionOrigin: 'manual',
+      scope: 'interactive',
+    });
     for (const id of [automatic, child, grandchild]) {
-      expect(entries.find((entry: {id: string}) => entry.id === id)).toMatchObject({executionOrigin: 'automation', scope: 'interactive'});
+      expect(entries.find((entry: { id: string }) => entry.id === id)).toMatchObject({
+        executionOrigin: 'automation',
+        scope: 'interactive',
+      });
     }
     initSessions(testDir);
-    expect(getSessionEntry(grandchild)).toMatchObject({executionOrigin: 'automation', parentAppSessionId: child});
+    expect(getSessionEntry(grandchild)).toMatchObject({
+      executionOrigin: 'automation',
+      parentAppSessionId: child,
+    });
   });
 
   it('rejects invalid execution origins and unknown parents', async () => {
-    for (const body of [{executionOrigin: 'cron'}, {executionOrigin: ['automation']}, {parentAppSessionId: 'missing'}, {parentAppSessionId: 1}]) {
-      const response = await fetch(`${baseUrl}/api/sessions`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    for (const body of [
+      { executionOrigin: 'cron' },
+      { executionOrigin: ['automation'] },
+      { parentAppSessionId: 'missing' },
+      { parentAppSessionId: 1 },
+    ]) {
+      const response = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       expect(response.status).toBe(400);
     }
   });
@@ -537,20 +574,42 @@ describe('web-chat HTTP API', () => {
     const sessionId = createWebSession({});
     const otherSessionId = createWebSession({});
     const controller = new AbortController();
-    const request = normalizeQuestions([{ id: 'q', question: 'Pick', options: [{ label: 'A' }] }], 'codex');
-    const answer = requestUserInput(`web:${sessionId}`, 'web', request, controller.signal, async () => {});
+    const request = normalizeQuestions(
+      [{ id: 'q', question: 'Pick', options: [{ label: 'A' }] }],
+      'codex'
+    );
+    const answer = requestUserInput(
+      `web:${sessionId}`,
+      'web',
+      request,
+      controller.signal,
+      async () => {}
+    );
     try {
       const pending = await (await fetch(`${baseUrl}/api/user-input/${sessionId}`)).json();
       expect(pending.questions).toHaveLength(1);
-      const body = JSON.stringify({ id: pending.questions[0].id, answer: { answers: { q: ['A'] } } });
-      const send = (id: string, origin?: string) => fetch(`${baseUrl}/api/user-input/${id}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body });
+      const body = JSON.stringify({
+        id: pending.questions[0].id,
+        answer: { answers: { q: ['A'] } },
+      });
+      const send = (id: string, origin?: string) =>
+        fetch(`${baseUrl}/api/user-input/${id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+          body,
+        });
       expect((await send(sessionId, 'https://other.invalid')).status).toBe(403);
       expect((await send(otherSessionId)).status).toBe(409);
       expect((await send(sessionId)).status).toBe(200);
       expect(await answer).toEqual({ answers: { q: ['A'] } });
       expect((await send(sessionId)).status).toBe(409);
-      expect((await (await fetch(`${baseUrl}/api/user-input/${sessionId}`)).json()).questions).toEqual([]);
-    } finally { controller.abort(); await answer; }
+      expect(
+        (await (await fetch(`${baseUrl}/api/user-input/${sessionId}`)).json()).questions
+      ).toEqual([]);
+    } finally {
+      controller.abort();
+      await answer;
+    }
   });
 
   it('serves channel names for the settings selector while keeping IDs as values', async () => {
@@ -571,45 +630,91 @@ describe('web-chat HTTP API', () => {
   it('saves and resets channel workspaces with persistence, platform isolation and origin checks', async () => {
     const path = join(testDir, 'channel-workspace');
     mkdirSync(path);
-    const post = (body: unknown, origin?: string) => fetch(`${baseUrl}/api/runtime-settings`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(origin ? { origin } : {}) },
-      body: JSON.stringify(body),
-    });
+    const post = (body: unknown, origin?: string) =>
+      fetch(`${baseUrl}/api/runtime-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(origin ? { origin } : {}) },
+        body: JSON.stringify(body),
+      });
     const created = await fetch(`${baseUrl}/api/workspaces`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: '開発工房', path }),
     });
     expect(created.status).toBe(201);
     const { workspace } = await created.json();
-    const input = { name: 'workspace', platform: 'discord', channelId: 'workspace-channel', action: 'set', value: workspace.id };
-    const snapshot = async (platform = 'discord') => (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=${platform}&channelId=workspace-channel`)).json();
+    const input = {
+      name: 'workspace',
+      platform: 'discord',
+      channelId: 'workspace-channel',
+      action: 'set',
+      value: workspace.id,
+    };
+    const snapshot = async (platform = 'discord') =>
+      (
+        await fetch(
+          `${baseUrl}/api/runtime-settings/channel?platform=${platform}&channelId=workspace-channel`
+        )
+      ).json();
     expect((await post(input, 'https://other.invalid')).status).toBe(403);
     expect((await snapshot()).workspace.value).toBe('inherit');
     expect((await post(input)).status).toBe(200);
-    expect((await snapshot()).workspace).toMatchObject({ enabled: true, value: workspace.id, effective: { id: workspace.id, name: '開発工房', path: realpathSync(path) } });
-    const reopened = await WorkspaceRegistry.open({ dataDir: process.env.DATA_DIR!, defaultWorkspacePath: testDir });
+    expect((await snapshot()).workspace).toMatchObject({
+      enabled: true,
+      value: workspace.id,
+      effective: { id: workspace.id, name: '開発工房', path: realpathSync(path) },
+    });
+    const reopened = await WorkspaceRegistry.open({
+      dataDir: process.env.DATA_DIR!,
+      defaultWorkspacePath: testDir,
+    });
     expect(reopened.getBinding('discord', 'workspace-channel')).toBe(workspace.id);
     expect((await snapshot('slack')).workspace.value).toBe('inherit');
     expect((await post({ ...input, value: 'missing' })).status).toBe(400);
     expect((await snapshot()).workspace.value).toBe(workspace.id);
     expect((await post({ ...input, action: 'reset' })).status).toBe(200);
-    expect((await snapshot()).workspace).toMatchObject({ value: 'inherit', effective: { id: 'default' } });
+    expect((await snapshot()).workspace).toMatchObject({
+      value: 'inherit',
+      effective: { id: 'default' },
+    });
   });
 
   it('shows an assigned agent workspace and rejects individual workspace mutations', async () => {
-    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+    const post = (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const path = join(testDir, 'agent-workspace');
     mkdirSync(path);
-    const { workspace } = await (await post('/api/workspaces', { name: 'Agent work', path })).json();
-    const { agent } = await (await post('/api/agents', { name: 'Worker', workspaceId: workspace.id })).json();
-    const binding = { name: 'agent', action: 'set', platform: 'discord', channelId: 'workspace-agent', value: agent.id };
+    const { workspace } = await (
+      await post('/api/workspaces', { name: 'Agent work', path })
+    ).json();
+    const { agent } = await (
+      await post('/api/agents', { name: 'Worker', workspaceId: workspace.id })
+    ).json();
+    const binding = {
+      name: 'agent',
+      action: 'set',
+      platform: 'discord',
+      channelId: 'workspace-agent',
+      value: agent.id,
+    };
     expect((await post('/api/runtime-settings', binding)).status).toBe(200);
-    const snapshot = await (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=workspace-agent`)).json();
+    const snapshot = await (
+      await fetch(
+        `${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=workspace-agent`
+      )
+    ).json();
     expect(snapshot.workspace).toMatchObject({ value: 'inherit', effective: { id: workspace.id } });
     for (const action of ['set', 'reset']) {
-      const response = await post('/api/runtime-settings', { ...binding, name: 'workspace', action, value: 'default' });
+      const response = await post('/api/runtime-settings', {
+        ...binding,
+        name: 'workspace',
+        action,
+        value: 'default',
+      });
       expect(response.status).toBe(400);
       expect((await response.json()).error).toContain('担当を解除');
     }
@@ -617,13 +722,19 @@ describe('web-chat HTTP API', () => {
 
   it('serves the configured-channel overview separately from initial settings', async () => {
     resolver.setChannelOverride('C123', { backend: 'codex', model: 'saved-model', effort: 'high' });
-    const response = await fetch(`${baseUrl}/api/runtime-settings/configured-channels?platform=slack`);
+    const response = await fetch(
+      `${baseUrl}/api/runtime-settings/configured-channels?platform=slack`
+    );
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect((await response.json()).channels).toEqual([{
-      id: 'C123', name: '#general', nameAvailable: true,
-      override: { backend: 'codex', model: 'saved-model', effort: 'high' },
-    }]);
+    expect((await response.json()).channels).toEqual([
+      {
+        id: 'C123',
+        name: '#general',
+        nameAvailable: true,
+        override: { backend: 'codex', model: 'saved-model', effort: 'high' },
+      },
+    ]);
     const invalid = await fetch(`${baseUrl}/api/runtime-settings/configured-channels?platform=web`);
     expect(invalid.status).toBe(400);
   });
@@ -651,7 +762,7 @@ describe('web-chat HTTP API', () => {
 
   afterEach(async () => {
     webServer?.closeAllConnections();
-    if (webServer) await new Promise<void>(resolve => webServer.close(() => resolve()));
+    if (webServer) await new Promise<void>((resolve) => webServer.close(() => resolve()));
     if (previousCheckInterval === undefined) delete process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
     else process.env.AGENT_PARENT_CHECK_INTERVAL_MS = previousCheckInterval;
     await stopManagedExtensions();
@@ -680,29 +791,55 @@ describe('web-chat HTTP API', () => {
   it('switches Web chat through natural-language requests and returns the resulting session', async () => {
     const created = await fetch(`${baseUrl}/api/sessions`, { method: 'POST' });
     let { sessionId } = await created.json();
-    for (const [message, expected] of [['シークレットにして', true], ['今シークレット？', true], ['シークレットを終了して', false]] as const) {
-      const response = await fetch(`${baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appSessionId: sessionId, message }) });
+    for (const [message, expected] of [
+      ['シークレットにして', true],
+      ['今シークレット？', true],
+      ['シークレットを終了して', false],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ appSessionId: sessionId, message }),
+      });
       const text = await response.text();
       expect(text).toContain('event: secret');
-      const data = JSON.parse(text.split('\n').find(line => line.startsWith('data: '))!.slice(6));
-      expect(data.secret).toBe(expected); sessionId = data.appSessionId;
+      const data = JSON.parse(
+        text
+          .split('\n')
+          .find((line) => line.startsWith('data: '))!
+          .slice(6)
+      );
+      expect(data.secret).toBe(expected);
+      sessionId = data.appSessionId;
       expect(Boolean(getSessionEntry(sessionId)?.secret)).toBe(expected);
     }
   });
 
   it('keeps secret Web sessions out of persistent storage and forgets on close', async () => {
-    const created = await fetch(`${baseUrl}/api/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: true }) });
+    const created = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: true }),
+    });
     const { sessionId } = await created.json();
     expect(sessionId).toMatch(/^secret_/);
     logPrompt(testDir, sessionId, 'PRIVATE-WEB-MARKER');
-    const repeat = await fetch(`${baseUrl}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appSessionId: sessionId, message: '/secret on' }) });
+    const repeat = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appSessionId: sessionId, message: '/secret on' }),
+    });
     expect(await repeat.text()).toContain(`"appSessionId":"${sessionId}"`);
     expect(readSessionMessages(testDir, sessionId)[0].content).toBe('PRIVATE-WEB-MARKER');
     const response = await fetch(`${baseUrl}/api/sessions/${sessionId}`);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect((await response.json()).messages[0].content).toBe('PRIVATE-WEB-MARKER');
     expect(readFileSync(join(testDir, 'sessions.json'), 'utf8')).not.toContain(sessionId);
-    const closed = await fetch(`${baseUrl}/api/sessions/${sessionId}/close`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const closed = await fetch(`${baseUrl}/api/sessions/${sessionId}/close`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
     expect(closed.status).toBe(200);
     expect(getSessionEntry(sessionId)).toBeUndefined();
     expect(readSessionMessages(testDir, sessionId)).toEqual([]);
@@ -799,7 +936,10 @@ describe('web-chat HTTP API', () => {
         })
       ).json();
     const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
-    const { workspace } = await post('/api/workspaces', { name: 'Review workspace', path: childPath });
+    const { workspace } = await post('/api/workspaces', {
+      name: 'Review workspace',
+      path: childPath,
+    });
     const { agent } = await post('/api/agents', {
       name: 'Review specialist',
       role: 'Review code',
@@ -812,16 +952,24 @@ describe('web-chat HTTP API', () => {
       prompt: 'Shared requirements',
     });
     const { sessionId } = await post('/api/sessions', { projectId: project.id });
-    const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+    const context = {
+      channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`,
+      platform: 'web' as const,
+    };
     const list = JSON.parse(await executeProjectAgentCommand({ action: 'list' }, context));
-    expect(list.agents.find((entry: { id: string }) => entry.id === agent.id)).toMatchObject({ id: agent.id, description: 'Review code' });
+    expect(list.agents.find((entry: { id: string }) => entry.id === agent.id)).toMatchObject({
+      id: agent.id,
+      description: 'Review code',
+    });
     const run = JSON.parse(
       await executeProjectAgentCommand(
         { action: 'run', agent: agent.id, task: 'Inspect this patch' },
         context
       )
     );
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
     expect(runner.prompts.at(-1)).not.toContain('Shared requirements');
     expect(runner.prompts.at(-1)).toContain('Check edge cases');
     expect(runner.prompts.at(-1)).toContain('Inspect this patch');
@@ -837,25 +985,47 @@ describe('web-chat HTTP API', () => {
       selectedAgentId: agent.id,
       workspacePath: realpathSync(childPath),
     });
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
-    runner.callbacks.get(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)?.onToolUse?.('Write', {file_path:'agent-result.html'});
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
+    runner.callbacks
+      .get(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)
+      ?.onToolUse?.('Write', { file_path: 'agent-result.html' });
     writeFileSync(join(childPath, 'agent-result.html'), '<h1>Delegated result</h1>');
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     expect(
       JSON.parse(await executeProjectAgentCommand({ action: 'wait', id: run.id }, context))
     ).toMatchObject({ status: 'succeeded', result: 'ok', parentContextKey: context.channelId });
-    const history = await (await fetch(`${baseUrl}/api/sessions/${run.appSessionId}/turn-history`)).json();
-    expect(history.history).toEqual(expect.arrayContaining([expect.objectContaining({fileChanges: expect.objectContaining({files: [expect.objectContaining({path: 'agent-result.html', workspaceId: workspace.id})]})})]));
+    const history = await (
+      await fetch(`${baseUrl}/api/sessions/${run.appSessionId}/turn-history`)
+    ).json();
+    expect(history.history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fileChanges: expect.objectContaining({
+            files: [
+              expect.objectContaining({ path: 'agent-result.html', workspaceId: workspace.id }),
+            ],
+          }),
+        }),
+      ])
+    );
     rmSync(childPath, { recursive: true, force: true });
   });
 
   it('validates OpenRouter effort on create and model-only edits before saving', async () => {
     resolver.isBackendSelectable = () => true;
-    const send = (path: string, body: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {
-      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+    const send = (path: string, body: unknown, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const create = await send('/api/agents', {
-      name: 'Router', backend: 'openrouter', model: 'vendor/a', localLlmReasoningEffort: 'max',
+      name: 'Router',
+      backend: 'openrouter',
+      model: 'vendor/a',
+      localLlmReasoningEffort: 'max',
     });
     expect(create.status).toBe(201);
     const { agent } = await create.json();
@@ -870,41 +1040,111 @@ describe('web-chat HTTP API', () => {
       expect(response.status).toBe(400);
     }
     const saved = await (await fetch(`${baseUrl}/api/agents`)).json();
-    expect(saved.agents.find((a: {id: string}) => a.id === agent.id)).toMatchObject({model: 'vendor/a', localLlmReasoningEffort: 'max'});
-    const cleared = await send(`/api/agents/${agent.id}`, {model: 'vendor/b', localLlmReasoningEffort: null}, 'PATCH');
+    expect(saved.agents.find((a: { id: string }) => a.id === agent.id)).toMatchObject({
+      model: 'vendor/a',
+      localLlmReasoningEffort: 'max',
+    });
+    const cleared = await send(
+      `/api/agents/${agent.id}`,
+      { model: 'vendor/b', localLlmReasoningEffort: null },
+      'PATCH'
+    );
     expect(cleared.status).toBe(200);
     expect((await cleared.json()).agent.localLlmReasoningEffort).toBeUndefined();
-    expect((await send('/api/agents', {name: 'Invalid', backend: 'openrouter', model: 'vendor/a', localLlmReasoningEffort: 'medium'})).status).toBe(400);
-    expect((await send('/api/agents', {name: 'Default', backend: 'openrouter', model: 'vendor/no-effort'})).status).toBe(201);
+    expect(
+      (
+        await send('/api/agents', {
+          name: 'Invalid',
+          backend: 'openrouter',
+          model: 'vendor/a',
+          localLlmReasoningEffort: 'medium',
+        })
+      ).status
+    ).toBe(400);
+    expect(
+      (
+        await send('/api/agents', {
+          name: 'Default',
+          backend: 'openrouter',
+          model: 'vendor/no-effort',
+        })
+      ).status
+    ).toBe(201);
   });
 
   it('creates Teams, rejects channel Team settings and enforces unique Agent assignments', async () => {
-    const send = (path: string, body: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {
-      method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    const send = (path: string, body: unknown, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent: a } = await (
+      await send('/api/agents', { name: 'Leader', backend: 'codex' })
+    ).json();
+    const { agent: b } = await (
+      await send('/api/agents', { name: 'Member', backend: 'codex' })
+    ).json();
+    const choices = await (await fetch(`${baseUrl}/api/teams`)).json();
+    expect(choices.agents[0]).toMatchObject({ id: 'xangi:default', workspaceId: 'default' });
+    const created = await send('/api/teams', {
+      leadership: 'caller',
+      name: 'Engineering',
+      members: [
+        { agentId: 'xangi:default', role: 'lead' },
+        { agentId: a.id, role: 'review' },
+        { agentId: b.id, role: 'implement' },
+      ],
     });
-    const {agent:a} = await (await send('/api/agents',{name:'Leader',backend:'codex'})).json();
-    const {agent:b} = await (await send('/api/agents',{name:'Member',backend:'codex'})).json();
-    const choices=await (await fetch(`${baseUrl}/api/teams`)).json();
-    expect(choices.agents[0]).toMatchObject({id:'xangi:default',workspaceId:'default'});
-    const created = await send('/api/teams',{leadership:'caller',name:'Engineering',members:[{agentId:'xangi:default',role:'lead'},{agentId:a.id,role:'review'},{agentId:b.id,role:'implement'}]});
     expect(created.status).toBe(201);
-    const {team} = await created.json();
+    const { team } = await created.json();
     expect((await (await fetch(`${baseUrl}/api/teams`)).json()).teams).toHaveLength(1);
-    expect((await send(`/api/teams/${team.id}`,{members:[{agentId:a.id,role:'lead',reportsTo:b.id},{agentId:b.id,role:'work',reportsTo:a.id}]},'PATCH')).status).toBe(400);
-    expect((await send(`/api/agents/${a.id}`,{},'DELETE')).status).toBe(409);
-    const binding = {name:'team',platform:'discord',channelId:'test-channel',action:'set',value:team.id};
-    const saved = await send('/api/runtime-settings',binding);
+    expect(
+      (
+        await send(
+          `/api/teams/${team.id}`,
+          {
+            members: [
+              { agentId: a.id, role: 'lead', reportsTo: b.id },
+              { agentId: b.id, role: 'work', reportsTo: a.id },
+            ],
+          },
+          'PATCH'
+        )
+      ).status
+    ).toBe(400);
+    expect((await send(`/api/agents/${a.id}`, {}, 'DELETE')).status).toBe(409);
+    const binding = {
+      name: 'team',
+      platform: 'discord',
+      channelId: 'test-channel',
+      action: 'set',
+      value: team.id,
+    };
+    const saved = await send('/api/runtime-settings', binding);
     expect(saved.status).toBe(400);
     expect((await saved.json()).error).toContain('廃止');
-    const agentBinding = {...binding,name:'agent',value:a.id};
-    expect((await send('/api/runtime-settings',agentBinding)).status).toBe(200);
-    expect((await send('/api/runtime-settings',{...agentBinding,platform:'slack',channelId:'other'})).status).toBe(400);
-    const snapshot=await (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=test-channel`)).json();
+    const agentBinding = { ...binding, name: 'agent', value: a.id };
+    expect((await send('/api/runtime-settings', agentBinding)).status).toBe(200);
+    expect(
+      (
+        await send('/api/runtime-settings', {
+          ...agentBinding,
+          platform: 'slack',
+          channelId: 'other',
+        })
+      ).status
+    ).toBe(400);
+    const snapshot = await (
+      await fetch(`${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=test-channel`)
+    ).json();
     expect(snapshot.team).toBeNull();
     expect(snapshot.agent.id).toBe(a.id);
-    expect((await send('/api/runtime-settings',{...agentBinding,action:'reset'})).status).toBe(200);
-    expect((await send(`/api/teams/${team.id}`,{},'DELETE')).status).toBe(200);
-    expect((await send(`/api/agents/${a.id}`,{},'DELETE')).status).toBe(200);
+    expect((await send('/api/runtime-settings', { ...agentBinding, action: 'reset' })).status).toBe(
+      200
+    );
+    expect((await send(`/api/teams/${team.id}`, {}, 'DELETE')).status).toBe(200);
+    expect((await send(`/api/agents/${a.id}`, {}, 'DELETE')).status).toBe(200);
   });
 
   it.each(['/api/device/inbox', '/api/pet/inbox', '/api/terminal/inbox'])(
@@ -912,7 +1152,9 @@ describe('web-chat HTTP API', () => {
     async (endpoint) => {
       const post = async (path: string, body: unknown, method = 'POST') => {
         const response = await fetch(`${baseUrl}${path}`, {
-          method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
         });
         expect(response.ok).toBe(true);
         return response.json();
@@ -922,41 +1164,63 @@ describe('web-chat HTTP API', () => {
       mkdirSync(agentPath);
       const { workspace } = await post('/api/workspaces', { name: 'Inbox', path: agentPath });
       const { agent } = await post('/api/agents', {
-        name: 'Inbox agent', backend: 'local-llm', model: 'gpt-test',
-        localLlmMode: 'chat', localLlmReasoningEffort: 'low',
-        prompt: 'Agent instruction marker', workspaceId: workspace.id,
+        name: 'Inbox agent',
+        backend: 'local-llm',
+        model: 'gpt-test',
+        localLlmMode: 'chat',
+        localLlmReasoningEffort: 'low',
+        prompt: 'Agent instruction marker',
+        workspaceId: workspace.id,
       });
       const { project } = await post('/api/projects', {
         name: 'Inbox project',
         prompt: 'Project instruction marker',
       });
-      for (const selection of [{ agentId: agent.id }, { projectId: project.id, agentId: agent.id }]) {
+      for (const selection of [
+        { agentId: agent.id },
+        { projectId: project.id, agentId: agent.id },
+      ]) {
         const { sessionId } = await post('/api/sessions', selection);
         const before = runner.options.length;
         await post(endpoint, { appSessionId: sessionId, text: 'Hello from avatar' });
         await vi.waitFor(() => expect(runner.options.length).toBe(before + 1));
         expect(runner.options.at(-1)).toMatchObject({
-          appSessionId: sessionId, defaultBackend: 'local-llm', defaultModel: 'gpt-test',
-          defaultLocalLlmMode: 'chat', defaultLocalLlmReasoningEffort: 'low',
+          appSessionId: sessionId,
+          defaultBackend: 'local-llm',
+          defaultModel: 'gpt-test',
+          defaultLocalLlmMode: 'chat',
+          defaultLocalLlmReasoningEffort: 'low',
           workdir: realpathSync(agentPath),
         });
         expect(runner.prompts.at(-1)).toContain('Agent instruction marker');
         expect(runner.prompts.at(-1)).toContain('Hello from avatar');
-        if ('projectId' in selection) expect(runner.prompts.at(-1)).toContain('Project instruction marker');
+        if ('projectId' in selection)
+          expect(runner.prompts.at(-1)).toContain('Project instruction marker');
         runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
         await vi.waitFor(() => expect(getSessionEntry(sessionId)?.messageCount).toBe(1));
       }
       // An existing conversation must pick up changed model/mode/prompt/workspace too.
       const { sessionId } = await post('/api/sessions', { agentId: agent.id });
-      await post(`/api/agents/${agent.id}`, {
-        backend: 'codex', model: 'gpt-test', effort: 'high',
-        localLlmMode: null, localLlmReasoningEffort: null,
-        prompt: 'Changed instruction marker', workspaceId: 'default',
-      }, 'PATCH');
+      await post(
+        `/api/agents/${agent.id}`,
+        {
+          backend: 'codex',
+          model: 'gpt-test',
+          effort: 'high',
+          localLlmMode: null,
+          localLlmReasoningEffort: null,
+          prompt: 'Changed instruction marker',
+          workspaceId: 'default',
+        },
+        'PATCH'
+      );
       const before = runner.options.length;
       await post(endpoint, { appSessionId: sessionId, text: 'Changed settings' });
       await vi.waitFor(() => expect(runner.options.length).toBe(before + 1));
-      expect(runner.options.at(-1)).toMatchObject({ defaultBackend: 'codex', defaultEffort: 'high' });
+      expect(runner.options.at(-1)).toMatchObject({
+        defaultBackend: 'codex',
+        defaultEffort: 'high',
+      });
       expect(runner.options.at(-1)?.defaultLocalLlmMode).toBeUndefined();
       expect(runner.options.at(-1)?.workdir).not.toBe(realpathSync(agentPath));
       expect(runner.prompts.at(-1)).toContain('Changed instruction marker');
@@ -968,36 +1232,95 @@ describe('web-chat HTTP API', () => {
 
   it('runs direct conversations and delegated Local LLM work in the selected agent workspace', async () => {
     const post = async (path: string, body: unknown, method = 'POST') => {
-      const response = await fetch(`${baseUrl}${path}`, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      const response = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       expect(response.ok).toBe(true);
       return response.json();
     };
-    resolver.isBackendSelectable = (backend) => ['codex','claude-code','local-llm'].includes(backend);
+    resolver.isBackendSelectable = (backend) =>
+      ['codex', 'claude-code', 'local-llm'].includes(backend);
     const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
-    const {workspace} = await post('/api/workspaces',{name:'Child',path:childPath});
-    const {agent} = await post('/api/agents',{name:'Child', backend:'local-llm',model:'gpt-test',workspaceId:workspace.id,localLlmMode:'chat',localLlmReasoningEffort:'low'});
-    const {project} = await post('/api/projects',{name:'Team', agentIds:[agent.id]});
-    const {sessionId:parent} = await post('/api/sessions',{projectId:project.id,workspaceId:'default'});
-    const {sessionId} = await post('/api/sessions',{agentId:agent.id,workspaceId:'default'});
+    const { workspace } = await post('/api/workspaces', { name: 'Child', path: childPath });
+    const { agent } = await post('/api/agents', {
+      name: 'Child',
+      backend: 'local-llm',
+      model: 'gpt-test',
+      workspaceId: workspace.id,
+      localLlmMode: 'chat',
+      localLlmReasoningEffort: 'low',
+    });
+    const { project } = await post('/api/projects', { name: 'Team', agentIds: [agent.id] });
+    const { sessionId: parent } = await post('/api/sessions', {
+      projectId: project.id,
+      workspaceId: 'default',
+    });
+    const { sessionId } = await post('/api/sessions', {
+      agentId: agent.id,
+      workspaceId: 'default',
+    });
     expect(getSessionEntry(sessionId)?.workspacePath).toBe(realpathSync(childPath));
-    const send = fetch(`${baseUrl}/api/chat`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({appSessionId:sessionId,message:'hello'})});
-    await vi.waitFor(() => expect(runner.options.some((o) => o?.appSessionId===sessionId)).toBe(true));
-    expect(runner.options.find((o)=>o?.appSessionId===sessionId)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'chat',defaultLocalLlmReasoningEffort:'low'});
-    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`); await readSSEUntilDone((await send).body);
-    const context={channelId:`${WEB_CHAT_CONTEXT_PREFIX}${parent}`};
-    const run=JSON.parse(await executeProjectAgentCommand({action:'run',agent:agent.id,task:'work'},context));
-    expect(run).toMatchObject({workspaceId:workspace.id,localLlmMode:'chat',localLlmReasoningEffort:'low'});
-    expect(runner.options.at(-1)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'chat',defaultLocalLlmReasoningEffort:'low'});
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: sessionId, message: 'hello' }),
+    });
+    await vi.waitFor(() =>
+      expect(runner.options.some((o) => o?.appSessionId === sessionId)).toBe(true)
+    );
+    expect(runner.options.find((o) => o?.appSessionId === sessionId)).toMatchObject({
+      workdir: realpathSync(childPath),
+      defaultLocalLlmMode: 'chat',
+      defaultLocalLlmReasoningEffort: 'low',
+    });
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+    await readSSEUntilDone((await send).body);
+    const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${parent}` };
+    const run = JSON.parse(
+      await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'work' }, context)
+    );
+    expect(run).toMatchObject({
+      workspaceId: workspace.id,
+      localLlmMode: 'chat',
+      localLlmReasoningEffort: 'low',
+    });
+    expect(runner.options.at(-1)).toMatchObject({
+      workdir: realpathSync(childPath),
+      defaultLocalLlmMode: 'chat',
+      defaultLocalLlmReasoningEffort: 'low',
+    });
     expect(getSessionEntry(parent)?.workspacePath).not.toBe(realpathSync(childPath));
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
-    await executeProjectAgentCommand({action:'wait',id:run.id},context);
-    await post(`/api/agents/${agent.id}`,{localLlmMode:'agent',localLlmReasoningEffort:'high'},'PATCH');
-    const changed=await post('/api/agent-runs',{agentId:agent.id,workspaceId:'default',task:'again'});
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${changed.run.appSessionId}`)).toBe(true));
-    expect(runner.options.at(-1)).toMatchObject({workdir:realpathSync(childPath),defaultLocalLlmMode:'agent',defaultLocalLlmReasoningEffort:'high'});
+    await executeProjectAgentCommand({ action: 'wait', id: run.id }, context);
+    await post(
+      `/api/agents/${agent.id}`,
+      { localLlmMode: 'agent', localLlmReasoningEffort: 'high' },
+      'PATCH'
+    );
+    const changed = await post('/api/agent-runs', {
+      agentId: agent.id,
+      workspaceId: 'default',
+      task: 'again',
+    });
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${changed.run.appSessionId}`)).toBe(true)
+    );
+    expect(runner.options.at(-1)).toMatchObject({
+      workdir: realpathSync(childPath),
+      defaultLocalLlmMode: 'agent',
+      defaultLocalLlmReasoningEffort: 'high',
+    });
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${changed.run.appSessionId}`);
-    const invalid = await fetch(`${baseUrl}/api/agents/${agent.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({workspaceId:'missing'})});
+    const invalid = await fetch(`${baseUrl}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'missing' }),
+    });
     expect(invalid.status).toBe(400);
     expect((await invalid.json()).error).toContain('workspace');
     rmSync(childPath, { recursive: true, force: true });
@@ -1005,62 +1328,143 @@ describe('web-chat HTTP API', () => {
 
   it('runs three self children with copied parent settings, optional logged history and monitor links', async () => {
     const post = async (path: string, body: unknown) => {
-      const response = await fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      expect(response.ok).toBe(true); return response.json();
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.ok).toBe(true);
+      return response.json();
     };
-    const {agent} = await post('/api/agents',{name:'Router',prompt:'Parent instruction marker',backend:'codex',model:'caller-model'});
-    const {sessionId} = await post('/api/sessions',{agentId:agent.id});
-    const context = {channelId: WEB_CHAT_CONTEXT_PREFIX+sessionId, platform:'web' as const};
-    mkdirSync(join(testDir,'logs','sessions'),{recursive:true});
-    writeFileSync(join(testDir,'logs','sessions',sessionId+'.jsonl'),[
-      {role:'user',content:'Completed parent requirement'}, {role:'assistant',content:'Completed parent decision'}, {role:'user',content:'Unfinished current turn'}
-    ].map((e,i)=>JSON.stringify({...e,id:String(i),createdAt:new Date().toISOString()})).join('\n'));
-    const runs = await Promise.all(['research','verify','review'].map((task,i) => executeProjectAgentCommand({action:'run',agent:'self',task,context:i===0?'history':'fresh'},context).then(JSON.parse)));
-    expect(new Set(runs.map(r=>r.appSessionId)).size).toBe(3);
-    await vi.waitFor(()=>expect(runs.every(r=>runner.pending.has(WEB_CHAT_CONTEXT_PREFIX+r.appSessionId))).toBe(true));
-    for(const run of runs) {
-      expect(run).toMatchObject({agentId:agent.id,backend:'codex',model:'caller-model',parentAppSessionId:sessionId});
-      const index=runner.callOrder.indexOf(WEB_CHAT_CONTEXT_PREFIX+run.appSessionId);
+    const { agent } = await post('/api/agents', {
+      name: 'Router',
+      prompt: 'Parent instruction marker',
+      backend: 'codex',
+      model: 'caller-model',
+    });
+    const { sessionId } = await post('/api/sessions', { agentId: agent.id });
+    const context = { channelId: WEB_CHAT_CONTEXT_PREFIX + sessionId, platform: 'web' as const };
+    mkdirSync(join(testDir, 'logs', 'sessions'), { recursive: true });
+    writeFileSync(
+      join(testDir, 'logs', 'sessions', sessionId + '.jsonl'),
+      [
+        { role: 'user', content: 'Completed parent requirement' },
+        { role: 'assistant', content: 'Completed parent decision' },
+        { role: 'user', content: 'Unfinished current turn' },
+      ]
+        .map((e, i) => JSON.stringify({ ...e, id: String(i), createdAt: new Date().toISOString() }))
+        .join('\n')
+    );
+    const runs = await Promise.all(
+      ['research', 'verify', 'review'].map((task, i) =>
+        executeProjectAgentCommand(
+          { action: 'run', agent: 'self', task, context: i === 0 ? 'history' : 'fresh' },
+          context
+        ).then(JSON.parse)
+      )
+    );
+    expect(new Set(runs.map((r) => r.appSessionId)).size).toBe(3);
+    await vi.waitFor(() =>
+      expect(runs.every((r) => runner.pending.has(WEB_CHAT_CONTEXT_PREFIX + r.appSessionId))).toBe(
+        true
+      )
+    );
+    for (const run of runs) {
+      expect(run).toMatchObject({
+        agentId: agent.id,
+        backend: 'codex',
+        model: 'caller-model',
+        parentAppSessionId: sessionId,
+      });
+      const index = runner.callOrder.indexOf(WEB_CHAT_CONTEXT_PREFIX + run.appSessionId);
       expect(runner.prompts[index]).toContain('Parent instruction marker');
-      if(run.contextMode==='history') {
+      if (run.contextMode === 'history') {
         expect(runner.prompts[index]).toContain('Completed parent decision');
         expect(runner.prompts[index]).not.toContain('Unfinished current turn');
       } else expect(runner.prompts[index]).not.toContain('Completed parent decision');
     }
-    const listing=await (await fetch(baseUrl+'/api/sessions?limit=200')).json();
-    for(const run of runs) expect(listing.sessions.find((row:{id:string})=>row.id===run.appSessionId)).toMatchObject({parentAppSessionId:sessionId,agentWork:{runId:run.id,assignment:run.task}});
-    for(const run of runs) runner.release(WEB_CHAT_CONTEXT_PREFIX+run.appSessionId);
-    await Promise.all(runs.map(run=>executeProjectAgentCommand({action:'wait',id:run.id},context)));
+    const listing = await (await fetch(baseUrl + '/api/sessions?limit=200')).json();
+    for (const run of runs)
+      expect(
+        listing.sessions.find((row: { id: string }) => row.id === run.appSessionId)
+      ).toMatchObject({
+        parentAppSessionId: sessionId,
+        agentWork: { runId: run.id, assignment: run.task },
+      });
+    for (const run of runs) runner.release(WEB_CHAT_CONTEXT_PREFIX + run.appSessionId);
+    await Promise.all(
+      runs.map((run) => executeProjectAgentCommand({ action: 'wait', id: run.id }, context))
+    );
   });
 
-  it.each([false, true])('consults default using instance settings and workspace (self=%s)', async (self) => {
-    const post = async (path: string, body: unknown) => {
-      const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      expect(response.ok).toBe(true);
-      return response.json();
-    };
-    const { agent } = await post('/api/agents', { name: 'Questioner', backend: 'codex', model: 'caller-model' });
-    const { sessionId } = await post('/api/sessions', self ? {} : { agentId: agent.id });
-    const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
-    const oldResolve = resolver.resolve;
-    resolver.resolve = (channelId, requestDefault) => channelId
-      ? oldResolve(channelId, requestDefault)
-      : { backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' };
-    resolver.setChannelOverride(context.channelId, { backend: 'codex', model: 'caller-model' });
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'Find the existing avatar' }, context));
-    expect(run.selfDelegation).toBe(self);
-    if (self) {
-      await expect(executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'recurse' }, { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`, platform: 'web' })).rejects.toThrow('再委譲');
+  it.each([false, true])(
+    'consults default using instance settings and workspace (self=%s)',
+    async (self) => {
+      const post = async (path: string, body: unknown) => {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        expect(response.ok).toBe(true);
+        return response.json();
+      };
+      const { agent } = await post('/api/agents', {
+        name: 'Questioner',
+        backend: 'codex',
+        model: 'caller-model',
+      });
+      const { sessionId } = await post('/api/sessions', self ? {} : { agentId: agent.id });
+      const context = {
+        channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`,
+        platform: 'web' as const,
+      };
+      const oldResolve = resolver.resolve;
+      resolver.resolve = (channelId, requestDefault) =>
+        channelId
+          ? oldResolve(channelId, requestDefault)
+          : { backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' };
+      resolver.setChannelOverride(context.channelId, { backend: 'codex', model: 'caller-model' });
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: 'default', task: 'Find the existing avatar' },
+          context
+        )
+      );
+      expect(run.selfDelegation).toBe(self);
+      if (self) {
+        await expect(
+          executeProjectAgentCommand(
+            { action: 'run', agent: 'default', task: 'recurse' },
+            { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`, platform: 'web' }
+          )
+        ).rejects.toThrow('再委譲');
+      }
+      expect(run).toMatchObject({
+        agentId: 'xangi:default',
+        workspaceId: 'default',
+        backend: 'claude-code',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+      });
+      await vi.waitFor(() =>
+        expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+      );
+      expect(runner.options.find((o) => o?.appSessionId === run.appSessionId)).toMatchObject({
+        workdir: realpathSync(testDir),
+        defaultBackend: 'claude-code',
+        defaultModel: 'claude-sonnet-4-6',
+        defaultEffort: 'high',
+      });
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+      const answer = JSON.parse(
+        await executeProjectAgentCommand({ action: 'wait', id: run.id }, context)
+      );
+      expect(answer.status).toBe('succeeded');
+      expect(answer.result).toBeTruthy();
+      await vi.waitFor(() => expect(runner.callOrder).toContain(context.channelId));
     }
-    expect(run).toMatchObject({ agentId: 'xangi:default', workspaceId: 'default', backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' });
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
-    expect(runner.options.find((o) => o?.appSessionId === run.appSessionId)).toMatchObject({ workdir: realpathSync(testDir), defaultBackend: 'claude-code', defaultModel: 'claude-sonnet-4-6', defaultEffort: 'high' });
-    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
-    const answer = JSON.parse(await executeProjectAgentCommand({ action: 'wait', id: run.id }, context));
-    expect(answer.status).toBe('succeeded');
-    expect(answer.result).toBeTruthy();
-    await vi.waitFor(() => expect(runner.callOrder).toContain(context.channelId));
-  });
+  );
 
   it('resumes a Web parent once after its delegated child finishes', async () => {
     const post = async (path: string, body: unknown) => {
@@ -1075,22 +1479,43 @@ describe('web-chat HTTP API', () => {
     const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
     try {
       const { workspace } = await post('/api/workspaces', { name: 'Child', path: childPath });
-      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: parentAgent } = await post('/api/agents', {
+        name: 'Parent',
+        backend: 'codex',
+      });
       const { agent: childAgent } = await post('/api/agents', {
-        name: 'Child', backend: 'codex', workspaceId: workspace.id,
+        name: 'Child',
+        backend: 'codex',
+        workspaceId: workspace.id,
       });
       const { project } = await post('/api/projects', {
         name: 'Completion',
-        });
+      });
       const { sessionId } = await post('/api/sessions', { projectId: project.id });
-      const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
-      const run = JSON.parse(await executeProjectAgentCommand({
-        action: 'run', agent: childAgent.id, task: 'Implement one module',
-      }, context));
-      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      const context = {
+        channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`,
+        platform: 'web' as const,
+      };
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          {
+            action: 'run',
+            agent: childAgent.id,
+            task: 'Implement one module',
+          },
+          context
+        )
+      );
+      await vi.waitFor(() =>
+        expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+      );
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
-      await vi.waitFor(() => expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`));
-      const resumed = runner.callOrder.filter((key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
+      await vi.waitFor(() =>
+        expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)
+      );
+      const resumed = runner.callOrder.filter(
+        (key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`
+      );
       expect(resumed).toHaveLength(1);
       expect(runner.prompts.at(-1)).toContain(run.id);
       expect(runner.prompts.at(-1)).toContain('succeeded');
@@ -1105,26 +1530,60 @@ describe('web-chat HTTP API', () => {
   });
 
   it('renames default without changing channel identity or allowing deletion', async () => {
-    const request = async (path: string, body: unknown, method = 'PUT') => fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const request = async (path: string, body: unknown, method = 'PUT') =>
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const endpoint = '/api/agents/xangi%3Adefault';
     const before = await (await fetch(`${baseUrl}/api/agents`)).json();
-    expect(before.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({ workspaceId: 'default', workChannel: null });
-    expect((await request(endpoint + '/channel', { action: 'set', platform: 'discord', channelId: 'default-work' })).status).toBe(200);
+    expect(before.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({
+      workspaceId: 'default',
+      workChannel: null,
+    });
+    expect(
+      (
+        await request(endpoint + '/channel', {
+          action: 'set',
+          platform: 'discord',
+          channelId: 'default-work',
+        })
+      ).status
+    ).toBe(200);
     const after = await (await fetch(`${baseUrl}/api/agents`)).json();
-    expect(after.agents.find((a: { id: string }) => a.id === 'xangi:default').workChannel).toEqual({ platform: 'discord', channelId: 'default-work' });
+    expect(after.agents.find((a: { id: string }) => a.id === 'xangi:default').workChannel).toEqual({
+      platform: 'discord',
+      channelId: 'default-work',
+    });
     expect((await request(endpoint, { name: 'borot' }, 'PATCH')).status).toBe(200);
     const renamed = await (await fetch(`${baseUrl}/api/agents`)).json();
-    expect(renamed.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({ name: 'borot', workChannel: { platform: 'discord', channelId: 'default-work' } });
+    expect(renamed.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({
+      name: 'borot',
+      workChannel: { platform: 'discord', channelId: 'default-work' },
+    });
     expect((await request(endpoint, { backend: 'codex' }, 'PATCH')).status).toBe(400);
     expect((await request(endpoint, { workspaceId: 'missing' }, 'PATCH')).status).toBe(400);
     expect((await request(endpoint, {}, 'DELETE')).status).toBe(400);
-    const create = vi.fn(async (channelId: string) => ({ platform: 'discord' as const, channelId, threadId: 'default-thread', url: 'https://discord.com/channels/g/default-thread' }));
+    const create = vi.fn(async (channelId: string) => ({
+      platform: 'discord' as const,
+      channelId,
+      threadId: 'default-thread',
+      url: 'https://discord.com/channels/g/default-thread',
+    }));
     registerWorkTransport('discord', { create, send: async () => {}, progress: async () => {} });
     const context = { channelId: 'questioner', platform: 'discord' as const };
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'answer a question' }, context));
+    const run = JSON.parse(
+      await executeProjectAgentCommand(
+        { action: 'run', agent: 'default', task: 'answer a question' },
+        context
+      )
+    );
     expect(create.mock.calls[0][0]).toBe('default-work');
     expect(run.workThread).toMatchObject({ channelId: 'default-work', threadId: 'default-thread' });
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     await executeProjectAgentCommand({ action: 'wait', id: run.id }, context);
     expect((await request(endpoint + '/channel', { action: 'reset' })).status).toBe(200);
@@ -1134,17 +1593,27 @@ describe('web-chat HTTP API', () => {
     const directory = mkdtempSync(join(tmpdir(), 'default-agent-workspace-'));
     try {
       const post = async (path: string, body: unknown, method = 'POST') => {
-        const response = await fetch(`${baseUrl}${path}`, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        const response = await fetch(`${baseUrl}${path}`, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         expect(response.ok).toBe(true);
         return response.json();
       };
       const { sessionId: before } = await post('/api/sessions', {});
       const { workspace } = await post('/api/workspaces', { name: 'Writing', path: directory });
-      await post('/api/agents/xangi%3Adefault', { name: 'borot', workspaceId: workspace.id }, 'PATCH');
+      await post(
+        '/api/agents/xangi%3Adefault',
+        { name: 'borot', workspaceId: workspace.id },
+        'PATCH'
+      );
       const { sessionId: after } = await post('/api/sessions', {});
       expect(getSessionEntry(after)?.workspacePath).toBe(realpathSync(directory));
       expect(getSessionEntry(before)?.workspacePath).toBe(realpathSync(testDir));
-      const response = await fetch(`${baseUrl}/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+      const response = await fetch(`${baseUrl}/api/workspaces/${workspace.id}`, {
+        method: 'DELETE',
+      });
       expect(response.status).toBe(409);
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -1152,50 +1621,114 @@ describe('web-chat HTTP API', () => {
   });
 
   it('lists and edits an Agent work channel, preserving the binding on a duplicate attempt', async () => {
-    const request = async (path: string, body?: unknown, method = 'POST') => fetch(`${baseUrl}${path}`, {method, headers: {'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
-    const {agent} = await (await request('/api/agents', {name:'channel editor'})).json();
+    const request = async (path: string, body?: unknown, method = 'POST') =>
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const { agent } = await (await request('/api/agents', { name: 'channel editor' })).json();
     const endpoint = `/api/agents/${agent.id}/channel`;
-    const foreign = await fetch(`${baseUrl}${endpoint}`, {method:'PUT', headers:{'Content-Type':'application/json', Origin:'https://foreign.test'},body:JSON.stringify({action:'reset'})});
+    const foreign = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://foreign.test' },
+      body: JSON.stringify({ action: 'reset' }),
+    });
     expect(foreign.status).toBe(403);
-    expect((await request(endpoint, {action:'set',platform:'discord',channelId:'first'}, 'PUT')).status).toBe(200);
+    expect(
+      (await request(endpoint, { action: 'set', platform: 'discord', channelId: 'first' }, 'PUT'))
+        .status
+    ).toBe(200);
     const agents = (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
-    expect(agents.find((a:any) => a.id === agent.id).workChannel).toEqual({platform:'discord',channelId:'first'});
-    const conflict = await request(endpoint, {action:'set',platform:'slack',channelId:'second'}, 'PUT');
+    expect(agents.find((a: any) => a.id === agent.id).workChannel).toEqual({
+      platform: 'discord',
+      channelId: 'first',
+    });
+    const conflict = await request(
+      endpoint,
+      { action: 'set', platform: 'slack', channelId: 'second' },
+      'PUT'
+    );
     expect(conflict.ok).toBe(false);
     expect((await conflict.json()).error).toContain('<#first>');
-    expect((await (await request(endpoint, {action:'reset'}, 'PUT')).json()).workChannel).toBeNull();
-    expect((await request(endpoint, {action:'set',platform:'slack',channelId:'second'}, 'PUT')).status).toBe(200);
+    expect(
+      (await (await request(endpoint, { action: 'reset' }, 'PUT')).json()).workChannel
+    ).toBeNull();
+    expect(
+      (await request(endpoint, { action: 'set', platform: 'slack', channelId: 'second' }, 'PUT'))
+        .status
+    ).toBe(200);
     const final = (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
-    expect(final.find((a:any) => a.id === agent.id).workChannel).toEqual({platform:'slack',channelId:'second'});
-    await request(endpoint, {action:'reset'}, 'PUT');
+    expect(final.find((a: any) => a.id === agent.id).workChannel).toEqual({
+      platform: 'slack',
+      channelId: 'second',
+    });
+    await request(endpoint, { action: 'reset' }, 'PUT');
   });
 
   it('runs a configured Team leader, dispatches only members, and integrates before notifying the parent', async () => {
     const deliveries: string[] = [];
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: async ({ text }) => { deliveries.push(text); return ['answer']; } };
+    discordRemoteInputRef.current = {
+      continueSession: vi.fn(),
+      deliverResult: async ({ text }) => {
+        deliveries.push(text);
+        return ['answer'];
+      },
+    };
     const provider = runner.runStream.bind(runner);
     vi.spyOn(runner, 'runStream').mockImplementation((prompt, callbacks, options) => {
       const snapshot = getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
-      return snapshot ? runTeamTurn(runner, snapshot, prompt, callbacks, options!) : provider(prompt, callbacks, options);
+      return snapshot
+        ? runTeamTurn(runner, snapshot, prompt, callbacks, options!)
+        : provider(prompt, callbacks, options);
     });
-    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const { agent: leader } = await (await post('/api/agents', {name:'Coordinator', prompt:'Coordinate carefully'})).json();
-    const { agent: worker } = await (await post('/api/agents', {name:'Worker'})).json();
-    const { agent: reviewer } = await (await post('/api/agents', {name:'Reviewer'})).json();
-    const { team } = await (await post('/api/teams', {name:'Led team', leaderAgentId:leader.id, members:[{agentId:worker.id},{agentId:reviewer.id}], prompt:'Check evidence'})).json();
+    const post = async (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent: leader } = await (
+      await post('/api/agents', { name: 'Coordinator', prompt: 'Coordinate carefully' })
+    ).json();
+    const { agent: worker } = await (await post('/api/agents', { name: 'Worker' })).json();
+    const { agent: reviewer } = await (await post('/api/agents', { name: 'Reviewer' })).json();
+    const { team } = await (
+      await post('/api/teams', {
+        name: 'Led team',
+        leaderAgentId: leader.id,
+        members: [{ agentId: worker.id }, { agentId: reviewer.id }],
+        prompt: 'Check evidence',
+      })
+    ).json();
     createSession('configured-parent', { platform: 'discord' });
-    const context = { channelId:'configured-parent', platform:'discord' as const };
-    const run = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Complete the project'},context));
+    const context = { channelId: 'configured-parent', platform: 'discord' as const };
+    const run = JSON.parse(
+      await executeTeamCommand(
+        { action: 'run', team: team.id, task: 'Complete the project' },
+        context
+      )
+    );
     const leaderKey = `web-chat:${run.appSessionId}`;
     await vi.waitFor(() => expect(runner.pending.has(leaderKey)).toBe(true));
     expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.id).toBe(leader.id);
     expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team).toBeUndefined();
     expect(runner.prompts.at(-1)).toContain('Coordinate carefully');
     expect(runner.prompts.at(-1)).toContain('Check evidence');
-    const nested = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Do work','assignments-json':JSON.stringify([{agentId:worker.id,task:'Make result'}])}, {channelId:leaderKey,platform:'web'}));
+    const nested = JSON.parse(
+      await executeTeamCommand(
+        {
+          action: 'run',
+          team: team.id,
+          task: 'Do work',
+          'assignments-json': JSON.stringify([{ agentId: worker.id, task: 'Make result' }]),
+        },
+        { channelId: leaderKey, platform: 'web' }
+      )
+    );
     await vi.waitFor(() => expect(runner.pending.size).toBe(2));
     runner.release(leaderKey); // premature answer must not complete the Team
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(deliveries).toHaveLength(0);
     const workerKey = [...runner.pending.keys()][0];
     runner.nextResult = 'verified work result';
@@ -1203,388 +1736,677 @@ describe('web-chat HTTP API', () => {
     await vi.waitFor(() => expect(runner.pending.has(leaderKey)).toBe(true));
     expect(runner.prompts.at(-1)).toContain('verified work result');
     expect(deliveries).toHaveLength(0);
-    const status = JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    const status = JSON.parse(await executeTeamCommand({ action: 'status', id: run.id }, context));
     expect(status.members).toHaveLength(1);
     expect(status.members[0].agentId).toBe(worker.id);
-    expect(JSON.parse(await executeTeamCommand({action:'status',id:nested.id},{channelId:leaderKey})).status).toBe('succeeded');
-    const reviewRun = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Review completed work','assignments-json':JSON.stringify([{agentId:reviewer.id,task:'Review result'}])}, {channelId:leaderKey,platform:'web'}));
+    expect(
+      JSON.parse(
+        await executeTeamCommand({ action: 'status', id: nested.id }, { channelId: leaderKey })
+      ).status
+    ).toBe('succeeded');
+    const reviewRun = JSON.parse(
+      await executeTeamCommand(
+        {
+          action: 'run',
+          team: team.id,
+          task: 'Review completed work',
+          'assignments-json': JSON.stringify([{ agentId: reviewer.id, task: 'Review result' }]),
+        },
+        { channelId: leaderKey, platform: 'web' }
+      )
+    );
     await vi.waitFor(() => expect(runner.pending.size).toBe(2));
-    const reviewKey = [...runner.pending.keys()].find(key => key !== leaderKey)!;
+    const reviewKey = [...runner.pending.keys()].find((key) => key !== leaderKey)!;
     runner.nextResult = 'review passed';
     runner.release(reviewKey);
-    await vi.waitFor(async () => expect(JSON.parse(await executeTeamCommand({action:'status',id:reviewRun.id},{channelId:leaderKey})).status).toBe('succeeded'));
-    const afterReview = JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
-    expect(afterReview.members.map((member: {agentId: string}) => member.agentId).sort()).toEqual([worker.id,reviewer.id].sort());
+    await vi.waitFor(async () =>
+      expect(
+        JSON.parse(
+          await executeTeamCommand({ action: 'status', id: reviewRun.id }, { channelId: leaderKey })
+        ).status
+      ).toBe('succeeded')
+    );
+    const afterReview = JSON.parse(
+      await executeTeamCommand({ action: 'status', id: run.id }, context)
+    );
+    expect(afterReview.members.map((member: { agentId: string }) => member.agentId).sort()).toEqual(
+      [worker.id, reviewer.id].sort()
+    );
     expect(deliveries).toHaveLength(0);
     runner.nextResult = 'Integrated answer';
     runner.release(leaderKey);
     await vi.waitFor(() => expect(runner.pending.has(context.channelId)).toBe(true));
     runner.release(context.channelId);
     await vi.waitFor(() => expect(deliveries).toHaveLength(1));
-    expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).result).toBe('Integrated answer');
+    expect(
+      JSON.parse(await executeTeamCommand({ action: 'status', id: run.id }, context)).result
+    ).toBe('Integrated answer');
   });
 
   it('dispatches a complete caller-led batch through the API concurrently and notifies the original leader once', async () => {
     const deliveries: string[] = [];
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: async ({ text }) => { deliveries.push(text); return ['answer']; } };
+    discordRemoteInputRef.current = {
+      continueSession: vi.fn(),
+      deliverResult: async ({ text }) => {
+        deliveries.push(text);
+        return ['answer'];
+      },
+    };
     const provider = runner.runStream.bind(runner);
-    vi.spyOn(runner,'runStream').mockImplementation((prompt,callbacks,options)=>{
-      const snapshot=getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
-      return snapshot ? runTeamTurn(runner,snapshot,prompt,callbacks,options!) : provider(prompt,callbacks,options);
+    vi.spyOn(runner, 'runStream').mockImplementation((prompt, callbacks, options) => {
+      const snapshot = getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
+      return snapshot
+        ? runTeamTurn(runner, snapshot, prompt, callbacks, options!)
+        : provider(prompt, callbacks, options);
     });
-    const post=async(path:string,body:unknown)=>fetch(`${baseUrl}${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const members=[];
-    for (const name of ['持ち帰り','定食','周辺']) {
-      const {agent}=await (await post('/api/agents',{name})).json();
-      members.push({agentId:agent.id,role:name});
+    const post = async (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const members = [];
+    for (const name of ['持ち帰り', '定食', '周辺']) {
+      const { agent } = await (await post('/api/agents', { name })).json();
+      members.push({ agentId: agent.id, role: name });
     }
     registerWorkTransport('discord', {
-      create: async (channelId) => ({platform:'discord',channelId,threadId:'member-work',url:'https://discord.com/channels/g/member-work'}),
-      send: async()=>{}, progress:async()=>{},
+      create: async (channelId) => ({
+        platform: 'discord',
+        channelId,
+        threadId: 'member-work',
+        url: 'https://discord.com/channels/g/member-work',
+      }),
+      send: async () => {},
+      progress: async () => {},
     });
-    expect((await post('/api/runtime-settings',{name:'agent',platform:'discord',channelId:'member-channel',action:'set',value:members[0].agentId})).status).toBe(200);
-    const {team}=await (await post('/api/teams',{name:'caller-test',members})).json();
+    expect(
+      (
+        await post('/api/runtime-settings', {
+          name: 'agent',
+          platform: 'discord',
+          channelId: 'member-channel',
+          action: 'set',
+          value: members[0].agentId,
+        })
+      ).status
+    ).toBe(200);
+    const { team } = await (await post('/api/teams', { name: 'caller-test', members })).json();
     expect(team.leadership).toBe('caller');
-    const assignments=members.map(m=>({agentId:m.agentId,task:`${m.role}を調査`}));
+    const assignments = members.map((m) => ({ agentId: m.agentId, task: `${m.role}を調査` }));
     createSession('caller-parent', { platform: 'discord' });
-    const context={channelId:'caller-parent',platform:'discord' as const};
-    await expect(executeTeamCommand({action:'run',team:team.id,task:'共和周辺'},context)).rejects.toThrow('assignments-json');
+    const context = { channelId: 'caller-parent', platform: 'discord' as const };
+    await expect(
+      executeTeamCommand({ action: 'run', team: team.id, task: '共和周辺' }, context)
+    ).rejects.toThrow('assignments-json');
     expect(runner.pending.size).toBe(0);
-    const run=JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'共和周辺','assignments-json':JSON.stringify(assignments)},context));
-    await vi.waitFor(()=>expect(runner.pending.size).toBe(3));
-    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(assignments.map(a => ({...a,memberId:a.agentId})));
-    expect(runner.prompts.slice(-3).every(p=>p.includes('共和周辺'))).toBe(true);
+    const run = JSON.parse(
+      await executeTeamCommand(
+        {
+          action: 'run',
+          team: team.id,
+          task: '共和周辺',
+          'assignments-json': JSON.stringify(assignments),
+        },
+        context
+      )
+    );
+    await vi.waitFor(() => expect(runner.pending.size).toBe(3));
+    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team?.assignments).toEqual(
+      assignments.map((a) => ({ ...a, memberId: a.agentId }))
+    );
+    expect(runner.prompts.slice(-3).every((p) => p.includes('共和周辺'))).toBe(true);
     for (const prompt of runner.prompts.slice(-3)) {
       expect(prompt).not.toContain('You are the leader');
-      expect(prompt).not.toContain('use team run to dispatch independent tasks to all members together');
+      expect(prompt).not.toContain(
+        'use team run to dispatch independent tasks to all members together'
+      );
       expect(prompt).not.toContain('Members: [{');
       expect(prompt).toContain('You are an assigned team member.');
-      expect(assignments.filter(a => prompt.includes(a.task))).toHaveLength(1);
+      expect(assignments.filter((a) => prompt.includes(a.task))).toHaveLength(1);
     }
-    const progress=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    const progress = JSON.parse(
+      await executeTeamCommand({ action: 'status', id: run.id }, context)
+    );
     expect(progress.members).toHaveLength(3);
-    expect(progress.members.every((m:any)=>m.phase==='work')).toBe(true);
+    expect(progress.members.every((m: any) => m.phase === 'work')).toBe(true);
     expect(deliveries).toHaveLength(0);
-    runner.nextResult='調査結果';
+    runner.nextResult = '調査結果';
     for (const id of [...runner.pending.keys()]) runner.release(id);
-    await vi.waitFor(()=>expect(runner.pending.has(context.channelId)).toBe(true));
+    await vi.waitFor(() => expect(runner.pending.has(context.channelId)).toBe(true));
     expect(runner.prompts.at(-1)).toContain(run.id);
     runner.release(context.channelId);
-    await vi.waitFor(()=>expect(deliveries).toHaveLength(1));
-    expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).status).toBe('succeeded');
-    const finished=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
-    const member=finished.members.find((m:any)=>m.agentId===members[0].agentId);
-    submitAgentWork('discord','member-work','followup-message','詳細を追加して');
-    await vi.waitFor(()=>expect(runner.pending.size).toBe(1));
-    const [continued]=runner.pending.keys();
+    await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+    expect(
+      JSON.parse(await executeTeamCommand({ action: 'status', id: run.id }, context)).status
+    ).toBe('succeeded');
+    const finished = JSON.parse(
+      await executeTeamCommand({ action: 'status', id: run.id }, context)
+    );
+    const member = finished.members.find((m: any) => m.agentId === members[0].agentId);
+    submitAgentWork('discord', 'member-work', 'followup-message', '詳細を追加して');
+    await vi.waitFor(() => expect(runner.pending.size).toBe(1));
+    const [continued] = runner.pending.keys();
     expect(continued).not.toBe(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     expect(runner.prompts.at(-1)).toContain('詳細を追加して');
     runner.release(continued);
-    await vi.waitFor(()=>expect(runner.pending.has(context.channelId)).toBe(true));
+    await vi.waitFor(() => expect(runner.pending.has(context.channelId)).toBe(true));
     expect(runner.prompts.at(-1)).toContain(member.id);
     runner.release(context.channelId);
-    await vi.waitFor(()=>expect(deliveries).toHaveLength(2));
+    await vi.waitFor(() => expect(deliveries).toHaveLength(2));
     expect(runner.pending.size).toBe(0);
-
   });
 
-  it.each(['discord', 'slack', 'web', 'line', 'telegram'] as const)('resumes the original %s parent through shared conversation execution', async (platform) => {
-    webConfig.sessionTitle.mode = 'ai';
-    const titleRun = vi.spyOn(runner, 'run');
-    const contextKey = platform === 'web' ? undefined : `completion-${platform}`;
-    const parentId = contextKey ? createSession(contextKey, { platform }) : createWebSession();
-    const parent = getSessionEntry(parentId)!;
-    setProviderSessionId(parentId, 'original-provider');
-    const deliverResult = vi.fn().mockResolvedValue(['parent-answer']);
-    const scheduled = vi.fn().mockResolvedValue('wrong session');
-    scheduler.registerAgentRunner(platform, scheduled);
-    const bridge = { continueSession: vi.fn(), deliverResult };
-    if (platform === 'discord') discordRemoteInputRef.current = bridge;
-    if (platform === 'slack') slackRemoteInputRef.current = bridge;
-    if (platform === 'line' || platform === 'telegram') completionBridgeRefs[platform]!.current = {
-      isBusy: () => false, enqueue: async (_key, execute) => execute(), deliverResult,
-    };
-    const response = await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Completion child' }),
-    });
-    const { agent } = await response.json();
-    const run = JSON.parse(await executeProjectAgentCommand({
-      action: 'run', agent: agent.id, task: 'Review one module',
-    }, { channelId: parent.contextKey, platform }));
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    setProviderSessionId(parentId, 'latest-provider');
-    runner.release(childKey);
-    await vi.waitFor(() => expect(runner.pending.has(parent.contextKey)).toBe(true));
-    expect(run.parentAppSessionId).toBe(parentId);
-    expect(runner.options.at(-1)).toMatchObject({
-      channelId: parent.contextKey, appSessionId: parentId, sessionId: 'latest-provider',
-      workdir: parent.workspacePath || testDir,
-    });
-    expect(runner.prompts.at(-1)).toContain(run.id);
-    expect(runner.prompts.at(-1)).not.toContain('[発言者: Web]');
-    expect(scheduled).not.toHaveBeenCalled();
-    expect(deliverResult).not.toHaveBeenCalled();
-    const concurrent = await fetch(`${baseUrl}/api/sessions/${parentId}/turns`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId: 'concurrent-user-input', message: 'Continue' }),
-    });
-    expect(concurrent.status).toBe(platform === 'line' || platform === 'telegram' ? 404 : 409);
-    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-    expect((await read()).parentNotifiedAt).toBeUndefined();
-    runner.release(parent.contextKey);
-    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
-    if (platform !== 'web') {
-      expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: parentId }));
-      expect(deliverResult.mock.calls[0][0]).not.toHaveProperty('webInput');
-    } else expect(deliverResult).not.toHaveBeenCalled();
-    expect(runner.callOrder.filter((key) => key === parent.contextKey)).toHaveLength(1);
-    expect(titleRun).not.toHaveBeenCalled();
-  });
+  it.each(['discord', 'slack', 'web', 'line', 'telegram'] as const)(
+    'resumes the original %s parent through shared conversation execution',
+    async (platform) => {
+      webConfig.sessionTitle.mode = 'ai';
+      const titleRun = vi.spyOn(runner, 'run');
+      const contextKey = platform === 'web' ? undefined : `completion-${platform}`;
+      const parentId = contextKey ? createSession(contextKey, { platform }) : createWebSession();
+      const parent = getSessionEntry(parentId)!;
+      setProviderSessionId(parentId, 'original-provider');
+      const deliverResult = vi.fn().mockResolvedValue(['parent-answer']);
+      const scheduled = vi.fn().mockResolvedValue('wrong session');
+      scheduler.registerAgentRunner(platform, scheduled);
+      const bridge = { continueSession: vi.fn(), deliverResult };
+      if (platform === 'discord') discordRemoteInputRef.current = bridge;
+      if (platform === 'slack') slackRemoteInputRef.current = bridge;
+      if (platform === 'line' || platform === 'telegram')
+        completionBridgeRefs[platform]!.current = {
+          isBusy: () => false,
+          enqueue: async (_key, execute) => execute(),
+          deliverResult,
+        };
+      const response = await fetch(`${baseUrl}/api/agents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Completion child' }),
+      });
+      const { agent } = await response.json();
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          {
+            action: 'run',
+            agent: agent.id,
+            task: 'Review one module',
+          },
+          { channelId: parent.contextKey, platform }
+        )
+      );
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      setProviderSessionId(parentId, 'latest-provider');
+      runner.release(childKey);
+      await vi.waitFor(() => expect(runner.pending.has(parent.contextKey)).toBe(true));
+      expect(run.parentAppSessionId).toBe(parentId);
+      expect(runner.options.at(-1)).toMatchObject({
+        channelId: parent.contextKey,
+        appSessionId: parentId,
+        sessionId: 'latest-provider',
+        workdir: parent.workspacePath || testDir,
+      });
+      expect(runner.prompts.at(-1)).toContain(run.id);
+      expect(runner.prompts.at(-1)).not.toContain('[発言者: Web]');
+      expect(scheduled).not.toHaveBeenCalled();
+      expect(deliverResult).not.toHaveBeenCalled();
+      const concurrent = await fetch(`${baseUrl}/api/sessions/${parentId}/turns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: 'concurrent-user-input', message: 'Continue' }),
+      });
+      expect(concurrent.status).toBe(platform === 'line' || platform === 'telegram' ? 404 : 409);
+      const read = async () =>
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      expect((await read()).parentNotifiedAt).toBeUndefined();
+      runner.release(parent.contextKey);
+      await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+      if (platform !== 'web') {
+        expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ appSessionId: parentId })
+        );
+        expect(deliverResult.mock.calls[0][0]).not.toHaveProperty('webInput');
+      } else expect(deliverResult).not.toHaveBeenCalled();
+      expect(runner.callOrder.filter((key) => key === parent.contextKey)).toHaveLength(1);
+      expect(titleRun).not.toHaveBeenCalled();
+    }
+  );
 
-  it.each(['line', 'telegram'] as const)('waits for an offline %s adapter before executing the parent', async (platform) => {
-    const key = `offline-${platform}`;
-    const parentId = createSession(key, { platform });
-    setProviderSessionId(parentId, 'original-provider');
-    const wrongRunner = vi.fn();
-    scheduler.registerAgentRunner(platform, wrongRunner);
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' }, { channelId: key, platform }));
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    runner.release(childKey);
-    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-    await vi.waitFor(async () => expect((await read()).parentDeliveryError).toContain('接続'));
-    expect(runner.pending.has(key)).toBe(false);
-    expect(wrongRunner).not.toHaveBeenCalled();
-    const deliverResult = vi.fn().mockResolvedValue(['answer']);
-    const enqueue = vi.fn(async (_key, execute) => execute());
-    completionBridgeRefs[platform]!.current = { isBusy: () => false, enqueue, deliverResult };
-    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true), { timeout: 3500 });
-    runner.release(key);
-    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
-    expect(runner.callOrder.filter(value => value === key)).toHaveLength(1);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: parentId }));
-  });
+  it.each(['line', 'telegram'] as const)(
+    'waits for an offline %s adapter before executing the parent',
+    async (platform) => {
+      const key = `offline-${platform}`;
+      const parentId = createSession(key, { platform });
+      setProviderSessionId(parentId, 'original-provider');
+      const wrongRunner = vi.fn();
+      scheduler.registerAgentRunner(platform, wrongRunner);
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: key, platform }
+        )
+      );
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      runner.release(childKey);
+      const read = async () =>
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      await vi.waitFor(async () => expect((await read()).parentDeliveryError).toContain('接続'));
+      expect(runner.pending.has(key)).toBe(false);
+      expect(wrongRunner).not.toHaveBeenCalled();
+      const deliverResult = vi.fn().mockResolvedValue(['answer']);
+      const enqueue = vi.fn(async (_key, execute) => execute());
+      completionBridgeRefs[platform]!.current = { isBusy: () => false, enqueue, deliverResult };
+      await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true), { timeout: 3500 });
+      runner.release(key);
+      await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+      expect(runner.callOrder.filter((value) => value === key)).toHaveLength(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ appSessionId: parentId })
+      );
+    }
+  );
 
-  it.each(['discord', 'slack', 'line', 'telegram'].flatMap(platform => ['agent', 'team'].flatMap(kind => [true, false].map(hasInteractive => ({ platform: platform as 'discord' | 'slack' | 'line' | 'telegram', kind, hasInteractive })))))('returns scheduled $platform $kind results without changing the interactive session (existing=$hasInteractive)', async ({ platform, kind, hasInteractive }) => {
-    const key = platform === 'discord' ? 'scheduled-channel' : platform === 'slack' ? 'C_SCHEDULE:123.456' : platform === 'line' ? `line:U${'a'.repeat(32)}` : 'telegram:chat:-100123:topic:7';
-    const interactive = hasInteractive ? createSession(key, { platform }) : undefined;
-    if (interactive) setProviderSessionId(interactive, 'interactive-provider');
-    const interactiveBefore = interactive ? structuredClone(getSessionEntry(interactive)) : undefined;
-    webConfig.agent = { backend: 'codex', config: { workdir: testDir, skipPermissions: false } } as Config['agent'];
-    const thinking = { id: 'thinking', edit: vi.fn(async () => {}), delete: vi.fn(async () => {}) };
-    if (platform === 'discord') registerDiscordSchedulerBridge({
-      scheduler, agentRunner: runner, config: webConfig,
-      client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any,
-    });
-    else if (platform === 'slack') registerSlackSchedulerBridge({
-      scheduler, agentRunner: runner, config: webConfig,
-      client: { chat: { postMessage: async () => ({ ts: 'thinking' }), update: async () => ({ ok: true }) } } as any,
-    });
-    else if (platform === 'line') registerLineSchedulerBridge({scheduler, agentRunner: runner,
-      queue: new LineChatQueue(), client: {pushMessage: vi.fn().mockResolvedValue({})} as any,
-      allowedUsers: ['*'], allowAll: true});
-    else { webConfig.telegram = {} as Config['telegram']; registerTelegramSchedulerBridge({scheduler, agentRunner: runner, config: webConfig,
-      bot: {api: {sendMessage: vi.fn().mockResolvedValue({chat:{id:-100123},message_id:1}), editMessageText: vi.fn().mockResolvedValue({})}} as any}); }
-    const deliver = vi.fn().mockResolvedValue(['scheduled-answer']);
-    const bridge = { continueSession: vi.fn(), deliverResult: deliver };
-    if (platform === 'discord') discordRemoteInputRef.current = bridge;
-    else if (platform === 'slack') slackRemoteInputRef.current = bridge;
-    else completionBridgeRefs[platform]!.current = {isBusy: () => false, enqueue: async (_key, execute) => execute(), deliverResult: deliver};
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    let team: { id: string } | undefined;
-    if (kind === 'team') ({ team } = await (await fetch(`${baseUrl}/api/teams`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Scheduled team', members: [{ agentId: agent.id }] }),
-    })).json());
-    const scheduled = scheduler.getAgentRunner(platform)!('Do scheduled work', key);
-    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
-    const scheduledId = runner.options.at(-1)!.appSessionId!;
-    expect(scheduledId).not.toBe(interactive);
-    const run = JSON.parse(kind === 'team'
-      ? await executeTeamCommand({ action: 'run', team: team!.id, task: 'Work',
-          'assignments-json': JSON.stringify([{ agentId: agent.id, task: 'Work' }]) }, { channelId: key, platform })
-      : await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' }, { channelId: key, platform }));
-    expect(run.parentAppSessionId).toBe(scheduledId);
-    runner.release(key);
-    await scheduled;
-    expect(getSessionLifecycle(scheduledId)).toBe('closed');
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    runner.release(childKey);
-    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
-    expect(runner.options.at(-1)).toMatchObject({
-      appSessionId: scheduledId, channelId: key, sessionId: `provider-${key}`,
-      runnerKey: `scheduled-parent:${scheduledId}`,
-    });
-    expect(getActiveSessionId(key)).toBe(interactive);
-    runner.release(key);
-    await vi.waitFor(async () => {
-      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-      expect(detail.parentNotifiedAt).toBeTruthy();
-    });
-    expect(deliver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: scheduledId }));
-    if (interactive) expect(getSessionEntry(interactive)).toEqual(interactiveBefore);
-    expect(getSessionLifecycle(scheduledId)).toBe('closed');
-  });
+  it.each(
+    ['discord', 'slack', 'line', 'telegram'].flatMap((platform) =>
+      ['agent', 'team'].flatMap((kind) =>
+        [true, false].map((hasInteractive) => ({
+          platform: platform as 'discord' | 'slack' | 'line' | 'telegram',
+          kind,
+          hasInteractive,
+        }))
+      )
+    )
+  )(
+    'returns scheduled $platform $kind results without changing the interactive session (existing=$hasInteractive)',
+    async ({ platform, kind, hasInteractive }) => {
+      const key =
+        platform === 'discord'
+          ? 'scheduled-channel'
+          : platform === 'slack'
+            ? 'C_SCHEDULE:123.456'
+            : platform === 'line'
+              ? `line:U${'a'.repeat(32)}`
+              : 'telegram:chat:-100123:topic:7';
+      const interactive = hasInteractive ? createSession(key, { platform }) : undefined;
+      if (interactive) setProviderSessionId(interactive, 'interactive-provider');
+      const interactiveBefore = interactive
+        ? structuredClone(getSessionEntry(interactive))
+        : undefined;
+      webConfig.agent = {
+        backend: 'codex',
+        config: { workdir: testDir, skipPermissions: false },
+      } as Config['agent'];
+      const thinking = {
+        id: 'thinking',
+        edit: vi.fn(async () => {}),
+        delete: vi.fn(async () => {}),
+      };
+      if (platform === 'discord')
+        registerDiscordSchedulerBridge({
+          scheduler,
+          agentRunner: runner,
+          config: webConfig,
+          client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any,
+        });
+      else if (platform === 'slack')
+        registerSlackSchedulerBridge({
+          scheduler,
+          agentRunner: runner,
+          config: webConfig,
+          client: {
+            chat: {
+              postMessage: async () => ({ ts: 'thinking' }),
+              update: async () => ({ ok: true }),
+            },
+          } as any,
+        });
+      else if (platform === 'line')
+        registerLineSchedulerBridge({
+          scheduler,
+          agentRunner: runner,
+          queue: new LineChatQueue(),
+          client: { pushMessage: vi.fn().mockResolvedValue({}) } as any,
+          allowedUsers: ['*'],
+          allowAll: true,
+        });
+      else {
+        webConfig.telegram = {} as Config['telegram'];
+        registerTelegramSchedulerBridge({
+          scheduler,
+          agentRunner: runner,
+          config: webConfig,
+          bot: {
+            api: {
+              sendMessage: vi.fn().mockResolvedValue({ chat: { id: -100123 }, message_id: 1 }),
+              editMessageText: vi.fn().mockResolvedValue({}),
+            },
+          } as any,
+        });
+      }
+      const deliver = vi.fn().mockResolvedValue(['scheduled-answer']);
+      const bridge = { continueSession: vi.fn(), deliverResult: deliver };
+      if (platform === 'discord') discordRemoteInputRef.current = bridge;
+      else if (platform === 'slack') slackRemoteInputRef.current = bridge;
+      else
+        completionBridgeRefs[platform]!.current = {
+          isBusy: () => false,
+          enqueue: async (_key, execute) => execute(),
+          deliverResult: deliver,
+        };
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      let team: { id: string } | undefined;
+      if (kind === 'team')
+        ({ team } = await (
+          await fetch(`${baseUrl}/api/teams`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Scheduled team', members: [{ agentId: agent.id }] }),
+          })
+        ).json());
+      const scheduled = scheduler.getAgentRunner(platform)!('Do scheduled work', key);
+      await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+      const scheduledId = runner.options.at(-1)!.appSessionId!;
+      expect(scheduledId).not.toBe(interactive);
+      const run = JSON.parse(
+        kind === 'team'
+          ? await executeTeamCommand(
+              {
+                action: 'run',
+                team: team!.id,
+                task: 'Work',
+                'assignments-json': JSON.stringify([{ agentId: agent.id, task: 'Work' }]),
+              },
+              { channelId: key, platform }
+            )
+          : await executeProjectAgentCommand(
+              { action: 'run', agent: agent.id, task: 'Work' },
+              { channelId: key, platform }
+            )
+      );
+      expect(run.parentAppSessionId).toBe(scheduledId);
+      runner.release(key);
+      await scheduled;
+      expect(getSessionLifecycle(scheduledId)).toBe('closed');
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      runner.release(childKey);
+      await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+      expect(runner.options.at(-1)).toMatchObject({
+        appSessionId: scheduledId,
+        channelId: key,
+        sessionId: `provider-${key}`,
+        runnerKey: `scheduled-parent:${scheduledId}`,
+      });
+      expect(getActiveSessionId(key)).toBe(interactive);
+      runner.release(key);
+      await vi.waitFor(async () => {
+        const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+        expect(detail.parentNotifiedAt).toBeTruthy();
+      });
+      expect(deliver).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ appSessionId: scheduledId })
+      );
+      if (interactive) expect(getSessionEntry(interactive)).toEqual(interactiveBefore);
+      expect(getSessionLifecycle(scheduledId)).toBe('closed');
+    }
+  );
 
   it('returns a scheduled Web child to its new parent session without changing an existing Web conversation', async () => {
     const existing = createWebSession();
     const snapshot = structuredClone(getSessionEntry(existing));
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
+    const { agent } = await (
+      await fetch(`${baseUrl}/api/agents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child' }),
+      })
+    ).json();
     const original = runner.run.bind(runner);
     let run: { id: string; appSessionId: string; parentAppSessionId: string };
     let scheduledId: string;
     let key: string;
     vi.spyOn(runner, 'run').mockImplementationOnce(async (prompt, options) => {
-      scheduledId = options!.appSessionId!; key = options!.channelId!;
-      run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-        { channelId: key, platform: 'web' }));
+      scheduledId = options!.appSessionId!;
+      key = options!.channelId!;
+      run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: key, platform: 'web' }
+        )
+      );
       return original(prompt, options);
     });
     await scheduler.getAgentRunner('web')!('Scheduled work', WEB_SCHEDULE_NEW_SESSION_ID);
-    expect(getSessionEntry(scheduledId!)).toMatchObject({executionOrigin: 'automation'});
-    expect(getSessionEntry(run!.appSessionId)).toMatchObject({executionOrigin: 'automation', parentAppSessionId: scheduledId!});
+    expect(getSessionEntry(scheduledId!)).toMatchObject({ executionOrigin: 'automation' });
+    expect(getSessionEntry(run!.appSessionId)).toMatchObject({
+      executionOrigin: 'automation',
+      parentAppSessionId: scheduledId!,
+    });
     expect(run!.parentAppSessionId).toBe(scheduledId!);
     expect(scheduledId!).not.toBe(existing);
     const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run!.appSessionId}`;
     await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
     runner.release(childKey);
     await vi.waitFor(() => expect(runner.pending.has(key!)).toBe(true));
-    expect(runner.options.at(-1)).toMatchObject({ appSessionId: scheduledId!, channelId: key!, sessionId: `provider-${key!}` });
+    expect(runner.options.at(-1)).toMatchObject({
+      appSessionId: scheduledId!,
+      channelId: key!,
+      sessionId: `provider-${key!}`,
+    });
     runner.release(key!);
     await vi.waitFor(async () => {
-      expect((await (await fetch(`${baseUrl}/api/agent-runs/${run!.id}`)).json()).run.parentNotifiedAt).toBeTruthy();
+      expect(
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run!.id}`)).json()).run.parentNotifiedAt
+      ).toBeTruthy();
     });
     expect(getSessionEntry(existing)).toEqual(snapshot);
   });
 
-  it.each(['explicit-close', 'archived', 'missing-provider'] as const)('does not resume a scheduled parent after %s', async (condition) => {
-    const key = 'scheduled-stop';
-    const interactive = createSession(key, { platform: 'discord' });
-    const snapshot = structuredClone(getSessionEntry(interactive));
-    webConfig.agent = { backend: 'codex', config: { workdir: testDir } } as Config['agent'];
-    const thinking = { id: 'thinking', edit: async () => {}, delete: async () => {} };
-    registerDiscordSchedulerBridge({ scheduler, config: webConfig, agentRunner: runner,
-      client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any });
-    const deliver = vi.fn().mockResolvedValue(['answer']);
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const scheduled = scheduler.getAgentRunner('discord')!('Scheduled work', key);
-    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
-    const scheduledId = runner.options.at(-1)!.appSessionId!;
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-      { channelId: key, platform: 'discord' }));
-    runner.release(key); await scheduled;
-    if (condition === 'explicit-close') closeSession(scheduledId, 'monitor');
-    if (condition === 'archived') archiveSession(scheduledId);
-    if (condition === 'missing-provider') setProviderSessionId(scheduledId, '');
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    runner.release(childKey);
-    await vi.waitFor(async () => {
-      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-      expect(detail.parentDeliveryError).toContain('no longer active');
-      expect(detail.parentNotifiedAt).toBeUndefined();
-    });
-    expect(runner.callOrder.filter(k => k === key)).toHaveLength(1);
-    expect(deliver).not.toHaveBeenCalled();
-    expect(getSessionEntry(interactive)).toEqual(snapshot);
-  });
-
-  it.each(['discord', 'slack', 'web', 'line', 'telegram'].flatMap(platform => ['switched', 'closed', 'deleted', 'missing'].map(condition => ({ platform: platform as 'discord' | 'slack' | 'web' | 'line' | 'telegram', condition }))))('does not resume a $condition $platform parent or fall back to a schedule', async ({ platform, condition }) => {
-    const parentId = createSession('completion-stale', { platform });
-    if (condition === 'missing') removeSession(parentId);
-    const scheduled = vi.fn();
-    scheduler.registerAgentRunner(platform, scheduled);
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-      { channelId: 'completion-stale', platform }));
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    if (condition === 'switched') createSession('completion-stale', { platform });
-    if (condition === 'closed') closeSession(parentId, 'user');
-    if (condition === 'deleted') removeSession(parentId);
-    runner.release(childKey);
-    await vi.waitFor(async () => {
-      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-      expect(detail.parentDeliveryError).toContain(condition === 'missing' ? 'identity is missing' : 'no longer active');
-      expect(detail.parentNotifiedAt).toBeUndefined();
-    });
-    expect(scheduled).not.toHaveBeenCalled();
-    expect(runner.callOrder).not.toContain('completion-stale');
-  });
-
-  it.each(['offline', 'unknown', 'execution-failed'] as const)('does not repeat parent execution after %s', async (failure) => {
-    const parentId = createSession('completion-retry', { platform: 'discord' });
-    const deliver = vi.fn().mockResolvedValue(['answer']);
-    if (failure === 'offline') deliver.mockRejectedValueOnce(new DeliveryUnavailable('offline'));
-    if (failure === 'unknown') deliver.mockRejectedValue(new Error('connection lost after sending'));
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
-    const fallback = vi.fn().mockResolvedValue(undefined);
-    scheduler.registerSender('discord', fallback);
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-      { channelId: 'completion-retry', platform: 'discord' }));
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    runner.release(childKey);
-    await vi.waitFor(() => expect(runner.pending.has('completion-retry')).toBe(true));
-    if (failure === 'execution-failed') runner.nextFailed = true;
-    runner.release('completion-retry');
-    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-    await vi.waitFor(async () => expect((await read()).parentDeliveryRequestId).toBeTruthy());
-    const receiptId = (await read()).parentDeliveryRequestId;
-    if (failure === 'offline') {
-      await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy(), { timeout: 3500 });
-      expect(deliver).toHaveBeenCalledTimes(2);
-      expect(fallback).not.toHaveBeenCalled();
-    } else {
-      await vi.waitFor(async () => expect((await read()).parentDeliveryAttempts).toBeGreaterThanOrEqual(2), { timeout: 3500 });
-      expect((await read()).parentNotifiedAt).toBeUndefined();
-      expect(deliver).toHaveBeenCalledTimes(failure === 'unknown' ? 1 : 0);
+  it.each(['explicit-close', 'archived', 'missing-provider'] as const)(
+    'does not resume a scheduled parent after %s',
+    async (condition) => {
+      const key = 'scheduled-stop';
+      const interactive = createSession(key, { platform: 'discord' });
+      const snapshot = structuredClone(getSessionEntry(interactive));
+      webConfig.agent = { backend: 'codex', config: { workdir: testDir } } as Config['agent'];
+      const thinking = { id: 'thinking', edit: async () => {}, delete: async () => {} };
+      registerDiscordSchedulerBridge({
+        scheduler,
+        config: webConfig,
+        agentRunner: runner,
+        client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any,
+      });
+      const deliver = vi.fn().mockResolvedValue(['answer']);
+      discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      const scheduled = scheduler.getAgentRunner('discord')!('Scheduled work', key);
+      await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+      const scheduledId = runner.options.at(-1)!.appSessionId!;
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: key, platform: 'discord' }
+        )
+      );
+      runner.release(key);
+      await scheduled;
+      if (condition === 'explicit-close') closeSession(scheduledId, 'monitor');
+      if (condition === 'archived') archiveSession(scheduledId);
+      if (condition === 'missing-provider') setProviderSessionId(scheduledId, '');
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      runner.release(childKey);
+      await vi.waitFor(async () => {
+        const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+        expect(detail.parentDeliveryError).toContain('no longer active');
+        expect(detail.parentNotifiedAt).toBeUndefined();
+      });
+      expect(runner.callOrder.filter((k) => k === key)).toHaveLength(1);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(getSessionEntry(interactive)).toEqual(snapshot);
     }
-    expect((await read()).parentDeliveryRequestId).toBe(receiptId);
-    const receipt = (await (await fetch(`${baseUrl}/api/sessions/${parentId}/turn-requests/${receiptId}`)).json()).turn;
-    expect(receipt.source).toBe('agent-completion');
-    expect(receipt.state).toBe(failure === 'execution-failed' ? 'failed' : 'completed');
-    expect(runner.callOrder.filter((key) => key === 'completion-retry')).toHaveLength(1);
-  });
+  );
+
+  it.each(
+    ['discord', 'slack', 'web', 'line', 'telegram'].flatMap((platform) =>
+      ['switched', 'closed', 'deleted', 'missing'].map((condition) => ({
+        platform: platform as 'discord' | 'slack' | 'web' | 'line' | 'telegram',
+        condition,
+      }))
+    )
+  )(
+    'does not resume a $condition $platform parent or fall back to a schedule',
+    async ({ platform, condition }) => {
+      const parentId = createSession('completion-stale', { platform });
+      if (condition === 'missing') removeSession(parentId);
+      const scheduled = vi.fn();
+      scheduler.registerAgentRunner(platform, scheduled);
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: 'completion-stale', platform }
+        )
+      );
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      if (condition === 'switched') createSession('completion-stale', { platform });
+      if (condition === 'closed') closeSession(parentId, 'user');
+      if (condition === 'deleted') removeSession(parentId);
+      runner.release(childKey);
+      await vi.waitFor(async () => {
+        const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+        expect(detail.parentDeliveryError).toContain(
+          condition === 'missing' ? 'identity is missing' : 'no longer active'
+        );
+        expect(detail.parentNotifiedAt).toBeUndefined();
+      });
+      expect(scheduled).not.toHaveBeenCalled();
+      expect(runner.callOrder).not.toContain('completion-stale');
+    }
+  );
+
+  it.each(['offline', 'unknown', 'execution-failed'] as const)(
+    'does not repeat parent execution after %s',
+    async (failure) => {
+      const parentId = createSession('completion-retry', { platform: 'discord' });
+      const deliver = vi.fn().mockResolvedValue(['answer']);
+      if (failure === 'offline') deliver.mockRejectedValueOnce(new DeliveryUnavailable('offline'));
+      if (failure === 'unknown')
+        deliver.mockRejectedValue(new Error('connection lost after sending'));
+      discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
+      const fallback = vi.fn().mockResolvedValue(undefined);
+      scheduler.registerSender('discord', fallback);
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: 'completion-retry', platform: 'discord' }
+        )
+      );
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      runner.release(childKey);
+      await vi.waitFor(() => expect(runner.pending.has('completion-retry')).toBe(true));
+      if (failure === 'execution-failed') runner.nextFailed = true;
+      runner.release('completion-retry');
+      const read = async () =>
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      await vi.waitFor(async () => expect((await read()).parentDeliveryRequestId).toBeTruthy());
+      const receiptId = (await read()).parentDeliveryRequestId;
+      if (failure === 'offline') {
+        await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy(), {
+          timeout: 3500,
+        });
+        expect(deliver).toHaveBeenCalledTimes(2);
+        expect(fallback).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(
+          async () => expect((await read()).parentDeliveryAttempts).toBeGreaterThanOrEqual(2),
+          { timeout: 3500 }
+        );
+        expect((await read()).parentNotifiedAt).toBeUndefined();
+        expect(deliver).toHaveBeenCalledTimes(failure === 'unknown' ? 1 : 0);
+      }
+      expect((await read()).parentDeliveryRequestId).toBe(receiptId);
+      const receipt = (
+        await (await fetch(`${baseUrl}/api/sessions/${parentId}/turn-requests/${receiptId}`)).json()
+      ).turn;
+      expect(receipt.source).toBe('agent-completion');
+      expect(receipt.state).toBe(failure === 'execution-failed' ? 'failed' : 'completed');
+      expect(runner.callOrder.filter((key) => key === 'completion-retry')).toHaveLength(1);
+    }
+  );
 
   it('スレッドで受けた子の完了は親チャンネルのモデルで会話を引き継ぐ', async () => {
     const oldResolve = resolver.resolve;
     resolver.resolve = (channelId, requestDefault) =>
-      oldResolve(channelId, requestDefault ?? { backend: 'claude-code', model: 'claude-sonnet-4-6' });
+      oldResolve(
+        channelId,
+        requestDefault ?? { backend: 'claude-code', model: 'claude-sonnet-4-6' }
+      );
     resolver.setChannelOverride('C1', { backend: 'claude-code', model: 'claude-opus-5-5' });
     const parentId = createSession('T1', { platform: 'discord' });
     setProviderSessionId(parentId, 'P1', 'claude-code', 'claude-opus-5-5');
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: vi.fn().mockResolvedValue(['answer']) };
+    discordRemoteInputRef.current = {
+      continueSession: vi.fn(),
+      deliverResult: vi.fn().mockResolvedValue(['answer']),
+    };
     await ensureSessionWithWorkspace({
-      registry: await WorkspaceRegistry.open({ dataDir: process.env.DATA_DIR!, defaultWorkspacePath: testDir }),
+      registry: await WorkspaceRegistry.open({
+        dataDir: process.env.DATA_DIR!,
+        defaultWorkspacePath: testDir,
+      }),
       platform: 'discord',
       contextKey: 'T1',
       bindingKey: 'C1',
     });
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-      { channelId: 'T1', platform: 'discord' }));
+    const { agent } = await (
+      await fetch(`${baseUrl}/api/agents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child' }),
+      })
+    ).json();
+    const run = JSON.parse(
+      await executeProjectAgentCommand(
+        { action: 'run', agent: agent.id, task: 'Work' },
+        { channelId: 'T1', platform: 'discord' }
+      )
+    );
     const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
     await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
     runner.release(childKey);
@@ -1595,139 +2417,209 @@ describe('web-chat HTTP API', () => {
     expect(completion.sessionId).toBe('P1');
     runner.release('T1');
     await vi.waitFor(async () => {
-      expect((await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run.parentNotifiedAt).toBeTruthy();
+      expect(
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run.parentNotifiedAt
+      ).toBeTruthy();
     });
   });
 
   it('keeps new child results separate from a saved completion awaiting delivery', async () => {
     createSession('completion-batches', { platform: 'discord' });
-    const deliver = vi.fn().mockRejectedValueOnce(new DeliveryUnavailable('offline')).mockResolvedValue(['answer']);
+    const deliver = vi
+      .fn()
+      .mockRejectedValueOnce(new DeliveryUnavailable('offline'))
+      .mockResolvedValue(['answer']);
     discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
     const runs = [];
     for (const name of ['First', 'Second']) {
-      const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
-      })).json();
-      runs.push(JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: name },
-        { channelId: 'completion-batches', platform: 'discord' })));
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        })
+      ).json();
+      runs.push(
+        JSON.parse(
+          await executeProjectAgentCommand(
+            { action: 'run', agent: agent.id, task: name },
+            { channelId: 'completion-batches', platform: 'discord' }
+          )
+        )
+      );
     }
     const keys = runs.map((run) => `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     await vi.waitFor(() => expect(keys.every((key) => runner.pending.has(key))).toBe(true));
     runner.release(keys[0]);
     await vi.waitFor(() => expect(runner.pending.has('completion-batches')).toBe(true));
     runner.release('completion-batches');
-    const read = async (id: string) => (await (await fetch(`${baseUrl}/api/agent-runs/${id}`)).json()).run;
+    const read = async (id: string) =>
+      (await (await fetch(`${baseUrl}/api/agent-runs/${id}`)).json()).run;
     await vi.waitFor(async () => expect((await read(runs[0].id)).parentDeliveryError).toBeTruthy());
     runner.release(keys[1]);
     await vi.waitFor(() => expect(runner.pending.has('completion-batches')).toBe(true));
     expect(runner.prompts.at(-1)).toContain(runs[1].id);
     expect(runner.prompts.at(-1)).not.toContain(runs[0].id);
     runner.release('completion-batches');
-    await vi.waitFor(async () => {
-      expect((await read(runs[0].id)).parentNotifiedAt).toBeTruthy();
-      expect((await read(runs[1].id)).parentNotifiedAt).toBeTruthy();
-    }, { timeout: 3500 });
-    expect((await read(runs[0].id)).parentDeliveryRequestId).not.toBe((await read(runs[1].id)).parentDeliveryRequestId);
+    await vi.waitFor(
+      async () => {
+        expect((await read(runs[0].id)).parentNotifiedAt).toBeTruthy();
+        expect((await read(runs[1].id)).parentNotifiedAt).toBeTruthy();
+      },
+      { timeout: 3500 }
+    );
+    expect((await read(runs[0].id)).parentDeliveryRequestId).not.toBe(
+      (await read(runs[1].id)).parentDeliveryRequestId
+    );
     expect(runner.callOrder.filter((key) => key === 'completion-batches')).toHaveLength(2);
     expect(deliver).toHaveBeenCalledTimes(3);
   });
 
-  it.each(['completed', 'interrupted'] as const)('recovers a %s completion receipt after restart without repeating the parent', async (state) => {
-    const parentId = createWebSession();
-    const parentKey = getSessionEntry(parentId)!.contextKey;
-    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
-    })).json();
-    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
-      { channelId: parentKey, platform: 'web' }));
-    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
-    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
-    runner.release(childKey);
-    await vi.waitFor(() => expect(runner.pending.has(parentKey)).toBe(true));
-    runner.release(parentKey);
-    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
-    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
-    const requestId = (await read()).parentDeliveryRequestId;
-    webServer.closeAllConnections();
-    await new Promise<void>((resolve) => webServer.close(() => resolve()));
-    const path = join(process.env.DATA_DIR!, 'agent-runs.json');
-    const saved = JSON.parse(readFileSync(path, 'utf8'));
-    const persisted = saved.runs.find((r: { id: string }) => r.id === run.id);
-    delete persisted.parentNotifiedAt;
-    delete persisted.parentDeliveryAttemptAt;
-    writeFileSync(path, JSON.stringify(saved));
-    if (state === 'interrupted') {
-      const filename = createHash('sha256').update(JSON.stringify([parentId, requestId])).digest('hex') + '.json';
-      const receiptPath = join(process.env.DATA_DIR!, 'conversation-turns', filename);
-      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-      receipt.state = 'running';
-      receipt.delivery = 'none';
-      delete receipt.result;
-      writeFileSync(receiptPath, JSON.stringify(receipt));
-    }
-    const port = await freePort();
-    webServer = startWebChat({ agentRunner: runner, port, resolver, scheduler });
-    baseUrl = `http://127.0.0.1:${port}`;
-    await new Promise<void>((resolve) => webServer.listening ? resolve() : webServer.once('listening', resolve));
-    await vi.waitFor(async () => {
-      const detail = await read();
-      if (state === 'completed') expect(detail.parentNotifiedAt).toBeTruthy();
-      else {
-        expect(detail.parentDeliveryError).toContain('interrupted');
-        expect(detail.parentNotifiedAt).toBeUndefined();
+  it.each(['completed', 'interrupted'] as const)(
+    'recovers a %s completion receipt after restart without repeating the parent',
+    async (state) => {
+      const parentId = createWebSession();
+      const parentKey = getSessionEntry(parentId)!.contextKey;
+      const { agent } = await (
+        await fetch(`${baseUrl}/api/agents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Child' }),
+        })
+      ).json();
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          { action: 'run', agent: agent.id, task: 'Work' },
+          { channelId: parentKey, platform: 'web' }
+        )
+      );
+      const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+      await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+      runner.release(childKey);
+      await vi.waitFor(() => expect(runner.pending.has(parentKey)).toBe(true));
+      runner.release(parentKey);
+      const read = async () =>
+        (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+      const requestId = (await read()).parentDeliveryRequestId;
+      webServer.closeAllConnections();
+      await new Promise<void>((resolve) => webServer.close(() => resolve()));
+      const path = join(process.env.DATA_DIR!, 'agent-runs.json');
+      const saved = JSON.parse(readFileSync(path, 'utf8'));
+      const persisted = saved.runs.find((r: { id: string }) => r.id === run.id);
+      delete persisted.parentNotifiedAt;
+      delete persisted.parentDeliveryAttemptAt;
+      writeFileSync(path, JSON.stringify(saved));
+      if (state === 'interrupted') {
+        const filename =
+          createHash('sha256')
+            .update(JSON.stringify([parentId, requestId]))
+            .digest('hex') + '.json';
+        const receiptPath = join(process.env.DATA_DIR!, 'conversation-turns', filename);
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        receipt.state = 'running';
+        receipt.delivery = 'none';
+        delete receipt.result;
+        writeFileSync(receiptPath, JSON.stringify(receipt));
       }
-    }, { timeout: 2500 });
-    expect(runner.callOrder.filter((key) => key === parentKey)).toHaveLength(1);
-    expect((await read()).parentDeliveryRequestId).toBe(requestId);
-  });
+      const port = await freePort();
+      webServer = startWebChat({ agentRunner: runner, port, resolver, scheduler });
+      baseUrl = `http://127.0.0.1:${port}`;
+      await new Promise<void>((resolve) =>
+        webServer.listening ? resolve() : webServer.once('listening', resolve)
+      );
+      await vi.waitFor(
+        async () => {
+          const detail = await read();
+          if (state === 'completed') expect(detail.parentNotifiedAt).toBeTruthy();
+          else {
+            expect(detail.parentDeliveryError).toContain('interrupted');
+            expect(detail.parentNotifiedAt).toBeUndefined();
+          }
+        },
+        { timeout: 2500 }
+      );
+      expect(runner.callOrder.filter((key) => key === parentKey)).toHaveLength(1);
+      expect((await read()).parentDeliveryRequestId).toBe(requestId);
+    }
+  );
 
   it('reports completed children without waiting for other running children', async () => {
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`${baseUrl}${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       expect(response.ok).toBe(true);
       return response.json();
     };
-    const childPaths = [mkdtempSync(join(tmpdir(), 'web-chat-child-')),
-      mkdtempSync(join(tmpdir(), 'web-chat-child-'))];
+    const childPaths = [
+      mkdtempSync(join(tmpdir(), 'web-chat-child-')),
+      mkdtempSync(join(tmpdir(), 'web-chat-child-')),
+    ];
     try {
-      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: parentAgent } = await post('/api/agents', {
+        name: 'Parent',
+        backend: 'codex',
+      });
       const children = [];
       for (const [index, path] of childPaths.entries()) {
         const { workspace } = await post('/api/workspaces', { name: `Child ${index}`, path });
         const { agent } = await post('/api/agents', {
-          name: `Child ${index}`, backend: 'codex', workspaceId: workspace.id,
+          name: `Child ${index}`,
+          backend: 'codex',
+          workspaceId: workspace.id,
         });
         children.push(agent);
       }
       const { project } = await post('/api/projects', {
         name: 'Parallel',
-        });
+      });
       const { sessionId } = await post('/api/sessions', { projectId: project.id });
-      const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+      const context = {
+        channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`,
+        platform: 'web' as const,
+      };
       const runs = [];
       for (const child of children) {
-        runs.push(JSON.parse(await executeProjectAgentCommand({
-          action: 'run', agent: child.id, task: 'Work independently',
-        }, context)));
+        runs.push(
+          JSON.parse(
+            await executeProjectAgentCommand(
+              {
+                action: 'run',
+                agent: child.id,
+                task: 'Work independently',
+              },
+              context
+            )
+          )
+        );
       }
       for (const run of runs) {
-        await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+        await vi.waitFor(() =>
+          expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+        );
       }
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${runs[0].appSessionId}`);
       await vi.waitFor(async () => {
         const detail = await (await fetch(`${baseUrl}/api/agent-runs/${runs[0].id}`)).json();
         expect(detail.run.status).toBe('succeeded');
       });
-      await vi.waitFor(() => expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`));
+      await vi.waitFor(() =>
+        expect(runner.callOrder).toContain(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)
+      );
       expect(runner.prompts.at(-1)).toContain(runs[0].id);
       expect(runner.prompts.at(-1)).not.toContain(runs[1].id);
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${runs[1].appSessionId}`);
-      await vi.waitFor(() => expect(runner.callOrder.filter(
-        (key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)).toHaveLength(2), { timeout: 2500 });
+      await vi.waitFor(
+        () =>
+          expect(
+            runner.callOrder.filter((key) => key === `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`)
+          ).toHaveLength(2),
+        { timeout: 2500 }
+      );
       expect(runner.prompts.at(-1)).toContain(runs[1].id);
     } finally {
       for (const path of childPaths) rmSync(path, { recursive: true, force: true });
@@ -1735,27 +2627,45 @@ describe('web-chat HTTP API', () => {
   });
 
   it('waits for a busy parent before delivering child completion', async () => {
-    const post = async (path: string, body: unknown) => (await fetch(`${baseUrl}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })).json();
+    const post = async (path: string, body: unknown) =>
+      (
+        await fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).json();
     const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
     try {
       const { workspace } = await post('/api/workspaces', { name: 'Child', path: childPath });
-      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
+      const { agent: parentAgent } = await post('/api/agents', {
+        name: 'Parent',
+        backend: 'codex',
+      });
       const { agent: childAgent } = await post('/api/agents', {
-        name: 'Child', backend: 'codex', workspaceId: workspace.id,
+        name: 'Child',
+        backend: 'codex',
+        workspaceId: workspace.id,
       });
       const { project } = await post('/api/projects', {
         name: 'Busy parent',
-        });
+      });
       const { sessionId } = await post('/api/sessions', { projectId: project.id });
       const parentKey = `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`;
-      const run = JSON.parse(await executeProjectAgentCommand({
-        action: 'run', agent: childAgent.id, task: 'Work independently',
-      }, { channelId: parentKey, platform: 'web' }));
+      const run = JSON.parse(
+        await executeProjectAgentCommand(
+          {
+            action: 'run',
+            agent: childAgent.id,
+            task: 'Work independently',
+          },
+          { channelId: parentKey, platform: 'web' }
+        )
+      );
       runner.activeContexts.add(parentKey);
-      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+      await vi.waitFor(() =>
+        expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+      );
       runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
       await vi.waitFor(async () => {
         const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
@@ -1769,42 +2679,67 @@ describe('web-chat HTTP API', () => {
     }
   });
 
-  it.each(['legacy', 'selected', 'archived'])('removes a closed %s agent without deleting its project or history', async (kind) => {
-    const request = (path: string, body: unknown = {}, method = 'POST') =>
-      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const { agent } = await (await request('/api/agents', { name: 'Retired' })).json();
-    const { project } = await (await request('/api/projects', {
-      name: 'History',
-    })).json();
-    const sessionId = createWebSession({ projectId: project.id, ...(kind === 'legacy' ? {} : { selectedAgentId: agent.id }) });
-    logPrompt(testDir, sessionId, 'Keep this conversation');
-    closeSession(sessionId);
-    if (kind === 'archived') archiveSession(sessionId);
-    const before = readSessionMessages(testDir, sessionId);
-    expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(200);
-    expect(getSessionEntry(sessionId)?.projectId).toBe(project.id);
-    expect(getSessionEntry(sessionId)?.selectedAgentId).toBeUndefined();
-    expect(readSessionMessages(testDir, sessionId)).toEqual(before);
-    const { sessionId: resumed } = await (await request(`/api/sessions/${sessionId}/resume`)).json();
-    expect(getSessionEntry(resumed)?.projectId).toBe(project.id);
-    expect(getSessionEntry(resumed)?.selectedAgentId).toBeUndefined();
-    expect((await fetch(`${baseUrl}/api/sessions/${resumed}`)).status).toBe(200);
-  });
+  it.each(['legacy', 'selected', 'archived'])(
+    'removes a closed %s agent without deleting its project or history',
+    async (kind) => {
+      const request = (path: string, body: unknown = {}, method = 'POST') =>
+        fetch(`${baseUrl}${path}`, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const { agent } = await (await request('/api/agents', { name: 'Retired' })).json();
+      const { project } = await (
+        await request('/api/projects', {
+          name: 'History',
+        })
+      ).json();
+      const sessionId = createWebSession({
+        projectId: project.id,
+        ...(kind === 'legacy' ? {} : { selectedAgentId: agent.id }),
+      });
+      logPrompt(testDir, sessionId, 'Keep this conversation');
+      closeSession(sessionId);
+      if (kind === 'archived') archiveSession(sessionId);
+      const before = readSessionMessages(testDir, sessionId);
+      expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(200);
+      expect(getSessionEntry(sessionId)?.projectId).toBe(project.id);
+      expect(getSessionEntry(sessionId)?.selectedAgentId).toBeUndefined();
+      expect(readSessionMessages(testDir, sessionId)).toEqual(before);
+      const { sessionId: resumed } = await (
+        await request(`/api/sessions/${sessionId}/resume`)
+      ).json();
+      expect(getSessionEntry(resumed)?.projectId).toBe(project.id);
+      expect(getSessionEntry(resumed)?.selectedAgentId).toBeUndefined();
+      expect((await fetch(`${baseUrl}/api/sessions/${resumed}`)).status).toBe(200);
+    }
+  );
 
   it('filters Agent conversations before pagination', async () => {
-    const send = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const {agent} = await (await send('/api/agents',{name:'Filter agent'})).json();
-    const {sessionId} = await (await send('/api/sessions',{agentId:agent.id})).json();
-    await send('/api/sessions',{});
-    const response = await (await fetch(`${baseUrl}/api/sessions?agentId=${agent.id}&limit=1`)).json();
-    expect(response.sessions.map((s: {id:string})=>s.id)).toEqual([sessionId]);
+    const send = (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent } = await (await send('/api/agents', { name: 'Filter agent' })).json();
+    const { sessionId } = await (await send('/api/sessions', { agentId: agent.id })).json();
+    await send('/api/sessions', {});
+    const response = await (
+      await fetch(`${baseUrl}/api/sessions?agentId=${agent.id}&limit=1`)
+    ).json();
+    expect(response.sessions.map((s: { id: string }) => s.id)).toEqual([sessionId]);
     expect(response.sessions[0].selectedAgentId).toBe(agent.id);
     expect(response.meta.hasMore).toBe(false);
   });
 
   it('allows deleting a closed standalone agent but protects open conversations', async () => {
     const request = (path: string, body: unknown = {}, method = 'POST') =>
-      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const { agent } = await (await request('/api/agents', { name: 'Standalone retired' })).json();
     const sessionId = createWebSession({ selectedAgentId: agent.id });
     expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(409);
@@ -1816,16 +2751,24 @@ describe('web-chat HTTP API', () => {
 
   it('protects a running agent even if its conversation has been marked closed', async () => {
     const request = (path: string, body: unknown = {}, method = 'POST') =>
-      fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const { agent } = await (await request('/api/agents', { name: 'Running' })).json();
-    const { project } = await (await request('/api/projects', { name: 'Running project', })).json();
-    const { sessionId } = await (await request('/api/sessions', { projectId: project.id, agentId: agent.id })).json();
+    const { project } = await (await request('/api/projects', { name: 'Running project' })).json();
+    const { sessionId } = await (
+      await request('/api/sessions', { projectId: project.id, agentId: agent.id })
+    ).json();
     const send = request('/api/chat', { appSessionId: sessionId, message: 'Wait' });
     const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`;
     try {
       await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
       closeSession(sessionId);
-      expect((await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH')).status).toBe(200);
+      expect(
+        (await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH')).status
+      ).toBe(200);
       expect((await request(`/api/agents/${agent.id}`, {}, 'DELETE')).status).toBe(409);
       expect(getSessionEntry(sessionId)?.selectedAgentId).toBe(agent.id);
     } finally {
@@ -1847,13 +2790,14 @@ describe('web-chat HTTP API', () => {
     const { project } = await (
       await request('/api/projects', {
         name: 'Pinned',
-          })
+      })
     ).json();
-    const { sessionId } = await (await request('/api/sessions', { projectId: project.id, agentId: agent.id })).json();
+    const { sessionId } = await (
+      await request('/api/sessions', { projectId: project.id, agentId: agent.id })
+    ).json();
     expect(getSessionEntry(sessionId)?.selectedAgentId).toBe(agent.id);
     expect(
-      (await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH'))
-        .status
+      (await request(`/api/projects/${project.id}`, { prompt: 'Updated' }, 'PATCH')).status
     ).toBe(200);
     const { sessionId: standalone } = await (
       await request('/api/sessions', { agentId: agent.id, workspaceId: 'default' })
@@ -1875,7 +2819,9 @@ describe('web-chat HTTP API', () => {
       projectId: project.id,
       selectedAgentId: agent.id,
     });
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     expect(
       (
@@ -1940,15 +2886,18 @@ describe('web-chat HTTP API', () => {
     });
     expect(existsSync(join(testDir, '.xangi', 'agent-runs.json'))).toBe(true);
     const listed = await (await fetch(`${baseUrl}/api/sessions?limit=200`)).json();
-    expect(listed.sessions.find((s: { id: string }) => s.id === created.run.appSessionId)).toMatchObject({ agentRunStatus: 'succeeded', lifecycle: 'open' });
+    expect(
+      listed.sessions.find((s: { id: string }) => s.id === created.run.appSessionId)
+    ).toMatchObject({ agentRunStatus: 'succeeded', lifecycle: 'open' });
     const closed = await fetch(`${baseUrl}/api/sessions/${created.run.appSessionId}/close`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
     });
     expect(closed.status).toBe(200);
     expect(await closed.json()).toMatchObject({ ok: true, lifecycle: 'closed' });
     const preserved = await (await fetch(`${baseUrl}/api/agent-runs/${created.run.id}`)).json();
     expect(preserved.run.result).toBe('ok');
-
   });
 
   it('records a backend error result as a failed Agent Run', async () => {
@@ -1960,7 +2909,9 @@ describe('web-chat HTTP API', () => {
     const { run } = await response.json();
     runner.nextResult = 'LLMからの応答がタイムアウトしました';
     runner.nextFailed = true;
-    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    await vi.waitFor(() =>
+      expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true)
+    );
     runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     await vi.waitFor(async () => {
       const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
@@ -2387,7 +3338,7 @@ describe('web-chat HTTP API', () => {
         name: 'Talk',
         goal: 'Teach',
         prompt: 'Shared material',
-        })
+      })
     ).json();
     const { sessionId } = await (
       await post('/api/sessions', { projectId: project.id, agentId: agent.id })
@@ -2474,7 +3425,13 @@ describe('web-chat HTTP API', () => {
     const { project } = (await projectResponse.json()) as { project: { id: string } };
     expect(projectResponse.status).toBe(201);
 
-    const created = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({agentId: agent.id}) })).json()) as {
+    const created = (await (
+      await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: agent.id }),
+      })
+    ).json()) as {
       sessionId: string;
     };
     setProviderSessionId(created.sessionId, 'provider-old', 'claude-code');
@@ -2567,49 +3524,67 @@ describe('web-chat HTTP API', () => {
   it('shows logs by default in the workspace API and allows direct links and edits', async () => {
     mkdirSync(join(testDir, 'logs'));
     writeFileSync(join(testDir, 'logs', 'session.jsonl'), '{}\n');
-    const root = await (await fetch(`${baseUrl}/api/workspace/entries?path=`)).json() as { entries: Array<{ name: string }> };
+    const root = (await (await fetch(`${baseUrl}/api/workspace/entries?path=`)).json()) as {
+      entries: Array<{ name: string }>;
+    };
     expect(root.entries.some((entry) => entry.name === 'logs')).toBe(true);
     const directory = await fetch(`${baseUrl}/api/workspace/entries?path=logs`);
     expect(directory.status).toBe(200);
     const response = await fetch(`${baseUrl}/api/workspace/file?path=logs%2Fsession.jsonl`);
     expect(response.status).toBe(200);
-    const opened = await response.json() as { version: string };
+    const opened = (await response.json()) as { version: string };
     const saved = await fetch(`${baseUrl}/api/workspace/file`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: 'logs/session.jsonl', content: '{"saved":true}\n', version: opened.version }),
+      body: JSON.stringify({
+        path: 'logs/session.jsonl',
+        content: '{"saved":true}\n',
+        version: opened.version,
+      }),
     });
     expect(saved.status).toBe(200);
     expect(readFileSync(join(testDir, 'logs', 'session.jsonl'), 'utf8')).toBe('{"saved":true}\n');
   });
 
   it('passes configured exclusions to the workspace API while allowing direct access', async () => {
-    await new Promise<void>(resolve => webServer.close(() => resolve()));
+    await new Promise<void>((resolve) => webServer.close(() => resolve()));
     const port = await freePort();
     webServer = startWebChat({
       agentRunner: runner,
       port,
       config: { web: { workspaceBrowserExclude: ['logs'] } } as Config,
     });
-    await new Promise<void>(resolve => webServer.listening ? resolve() : webServer.once('listening', resolve));
+    await new Promise<void>((resolve) =>
+      webServer.listening ? resolve() : webServer.once('listening', resolve)
+    );
     const url = `http://127.0.0.1:${port}`;
     mkdirSync(join(testDir, 'logs'));
     writeFileSync(join(testDir, 'logs', 'session.jsonl'), '{}\n');
     const listing = await fetch(`${url}/api/workspace/entries`);
     expect(listing.status).toBe(200);
-    const root = await listing.json() as { entries: Array<{ name: string }>; excludedDirectoryCount: number };
-    expect(root.entries.some(entry => entry.name === 'logs')).toBe(false);
+    const root = (await listing.json()) as {
+      entries: Array<{ name: string }>;
+      excludedDirectoryCount: number;
+    };
+    expect(root.entries.some((entry) => entry.name === 'logs')).toBe(false);
     expect(root.excludedDirectoryCount).toBe(1);
     const direct = await fetch(`${url}/api/workspace/entries?path=logs`);
     expect(direct.status).toBe(200);
-    expect((await direct.json()).entries).toEqual([expect.objectContaining({ name: 'session.jsonl' })]);
+    expect((await direct.json()).entries).toEqual([
+      expect.objectContaining({ name: 'session.jsonl' }),
+    ]);
     const response = await fetch(`${url}/api/workspace/file?path=logs%2Fsession.jsonl`);
     expect(response.status).toBe(200);
-    const opened = await response.json() as { content: string; version: string };
+    const opened = (await response.json()) as { content: string; version: string };
     expect(opened.content).toBe('{}\n');
     const saved = await fetch(`${url}/api/workspace/file`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: 'logs/session.jsonl', content: '{"saved":true}\n', version: opened.version }),
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: 'logs/session.jsonl',
+        content: '{"saved":true}\n',
+        version: opened.version,
+      }),
     });
     expect(saved.status).toBe(200);
     expect(readFileSync(join(testDir, 'logs', 'session.jsonl'), 'utf8')).toBe('{"saved":true}\n');
@@ -2638,12 +3613,14 @@ describe('web-chat HTTP API', () => {
     expect(entries.entries.map((entry) => entry.name)).toContain('only-here.md');
 
     const agentResponse = await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Workspace owner', workspaceId: registered.workspace.id }),
     });
     const { agent } = await agentResponse.json();
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Alternate Project' }),
     });
     const project = (await projectResponse.json()) as { project: { id: string } };
@@ -2707,11 +3684,34 @@ describe('web-chat HTTP API', () => {
     const directory = join(testDir, 'dialogue-workspace');
     mkdirSync(directory);
     const context = { channelId: 'settings-dialogue' };
-    const { workspace } = JSON.parse(await executeWorkspaceCommand({ action: 'create', name: '資料制作', path: directory }, context));
-    const { agent } = JSON.parse(await executeProjectAgentCommand({ action: 'create', name: '執筆担当', 'workspace-id': workspace.id, prompt: '出典を示す' }, context));
-    const { team } = JSON.parse(await executeTeamCommand({ action: 'create', name: '資料チーム', 'members-json': JSON.stringify([{agentId: agent.id, role: '執筆'}]) }, context));
-    expect((await (await fetch(`${baseUrl}/api/workspaces`)).json()).workspaces).toContainEqual(workspace);
-    expect((await (await fetch(`${baseUrl}/api/agents`)).json()).agents).toEqual(expect.arrayContaining([expect.objectContaining(agent)]));
+    const { workspace } = JSON.parse(
+      await executeWorkspaceCommand(
+        { action: 'create', name: '資料制作', path: directory },
+        context
+      )
+    );
+    const { agent } = JSON.parse(
+      await executeProjectAgentCommand(
+        { action: 'create', name: '執筆担当', 'workspace-id': workspace.id, prompt: '出典を示す' },
+        context
+      )
+    );
+    const { team } = JSON.parse(
+      await executeTeamCommand(
+        {
+          action: 'create',
+          name: '資料チーム',
+          'members-json': JSON.stringify([{ agentId: agent.id, role: '執筆' }]),
+        },
+        context
+      )
+    );
+    expect((await (await fetch(`${baseUrl}/api/workspaces`)).json()).workspaces).toContainEqual(
+      workspace
+    );
+    expect((await (await fetch(`${baseUrl}/api/agents`)).json()).agents).toEqual(
+      expect.arrayContaining([expect.objectContaining(agent)])
+    );
     expect((await (await fetch(`${baseUrl}/api/teams`)).json()).teams).toContainEqual(team);
     expect((await (await fetch(`${baseUrl}/api/agent-runs`)).json()).runs).toHaveLength(0);
   });
@@ -2724,14 +3724,18 @@ describe('web-chat HTTP API', () => {
     writeFileSync(join(oldPath, 'old.md'), 'old');
     writeFileSync(join(newPath, 'new.md'), 'new');
     const context = { channelId: 'path-change' };
-    const { workspace } = JSON.parse(await executeWorkspaceCommand(
-      { action: 'create', name: 'moving', path: oldPath }, context
-    ));
-    const list = async () => (await (await fetch(
-      `${baseUrl}/api/workspace/entries?workspaceId=${workspace.id}`
-    )).json()).entries.map((entry: { name: string }) => entry.name);
+    const { workspace } = JSON.parse(
+      await executeWorkspaceCommand({ action: 'create', name: 'moving', path: oldPath }, context)
+    );
+    const list = async () =>
+      (
+        await (await fetch(`${baseUrl}/api/workspace/entries?workspaceId=${workspace.id}`)).json()
+      ).entries.map((entry: { name: string }) => entry.name);
     expect(await list()).toContain('old.md');
-    await executeWorkspaceCommand({ action: 'set-path', workspace: workspace.id, path: newPath }, context);
+    await executeWorkspaceCommand(
+      { action: 'set-path', workspace: workspace.id, path: newPath },
+      context
+    );
     expect(await list()).toContain('new.md');
     expect(await list()).not.toContain('old.md');
     expect(existsSync(join(oldPath, 'old.md'))).toBe(true);
@@ -2741,13 +3745,17 @@ describe('web-chat HTTP API', () => {
     const directory = join(testDir, 'rename-workspace');
     mkdirSync(directory);
     const created = await fetch(`${baseUrl}/api/workspaces`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Before', path: directory }),
     });
     const { workspace } = await created.json();
-    const patch = (id: string, body: object) => fetch(`${baseUrl}/api/workspaces/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+    const patch = (id: string, body: object) =>
+      fetch(`${baseUrl}/api/workspaces/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     expect((await patch(workspace.id, { name: 'After' })).status).toBe(200);
     const listed = await (await fetch(`${baseUrl}/api/workspaces`)).json();
     expect(listed.workspaces).toContainEqual({ ...workspace, name: 'After' });
@@ -2816,12 +3824,14 @@ describe('web-chat HTTP API', () => {
     });
     const registered = (await registeredResponse.json()) as { workspace: { id: string } };
     const agentResponse = await fetch(`${baseUrl}/api/agents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Workspace owner', workspaceId: registered.workspace.id }),
     });
     const { agent } = await agentResponse.json();
     const projectResponse = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Session Project' }),
     });
     const project = (await projectResponse.json()) as { project: { id: string } };
@@ -3137,9 +4147,13 @@ process.stdin.on('end', () => server.close());
       displayMessage: string;
     };
     expect(uninstall.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
-    expect(uninstall.prompt).toContain('Do not change the workspace, stop the extension, or unlink it before the user chooses');
+    expect(uninstall.prompt).toContain(
+      'Do not change the workspace, stop the extension, or unlink it before the user chooses'
+    );
     expect(uninstall.prompt).toContain('hooks, skills, extension-specific AGENTS.md rules');
-    expect(uninstall.prompt).toContain(`${instanceCliCommand} tool extension_uninstall --id demo-extension`);
+    expect(uninstall.prompt).toContain(
+      `${instanceCliCommand} tool extension_uninstall --id demo-extension`
+    );
     expect(uninstall.displayMessage).toBe('Demo Extension の削除準備を開始します。');
     expect(getSessionEntry(uninstall.sessionId)).toMatchObject({
       platform: 'web',
@@ -3157,31 +4171,85 @@ process.stdin.on('end', () => server.close());
   it('validates extension favorites and blocks cross-origin mutations', async () => {
     const url = `${baseUrl}/api/extension-favorites`;
     expect(await (await fetch(url)).json()).toEqual({ favorites: [] });
-    const mutate = (body: unknown, origin = baseUrl) => fetch(url, {
-      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    expect((await mutate({ id: 'unknown', action: 'add' }, 'https://attacker.example')).status).toBe(403);
+    const mutate = (body: unknown, origin = baseUrl) =>
+      fetch(url, {
+        method: 'POST',
+        headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await mutate({ id: 'unknown', action: 'add' }, 'https://attacker.example')).status
+    ).toBe(403);
     expect((await mutate({ id: 'unknown', action: 'add' })).status).toBe(400);
     expect((await mutate({ id: '../invalid', action: 'remove' })).status).toBe(400);
-    writeFileSync(join(process.env.DATA_DIR!, 'extension-favorites.json'), JSON.stringify(['removed', 'other']));
-    expect(await (await fetch(url)).json()).toEqual({ favorites: [
-      { id: 'removed', displayName: 'removed', defaultDisplayName: 'removed', showInSidebar: true, available: false },
-      { id: 'other', displayName: 'other', defaultDisplayName: 'other', showInSidebar: true, available: false },
-    ] });
-    expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' }, 'https://attacker.example')).status).toBe(403);
-    expect((await mutate({ id: 'other', action: 'rename', displayName: 'x'.repeat(81) })).status).toBe(400);
-    expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' })).status).toBe(200);
-    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: false }, 'https://attacker.example')).status).toBe(403);
-    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: 'false' })).status).toBe(400);
-    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: false })).status).toBe(200);
-    expect((await (await fetch(url)).json()).favorites[1]).toMatchObject({ id: 'other', displayName: '新しい名前', showInSidebar: false });
-    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: true })).status).toBe(200);
+    writeFileSync(
+      join(process.env.DATA_DIR!, 'extension-favorites.json'),
+      JSON.stringify(['removed', 'other'])
+    );
+    expect(await (await fetch(url)).json()).toEqual({
+      favorites: [
+        {
+          id: 'removed',
+          displayName: 'removed',
+          defaultDisplayName: 'removed',
+          showInSidebar: true,
+          available: false,
+        },
+        {
+          id: 'other',
+          displayName: 'other',
+          defaultDisplayName: 'other',
+          showInSidebar: true,
+          available: false,
+        },
+      ],
+    });
+    expect(
+      (
+        await mutate(
+          { id: 'other', action: 'rename', displayName: '新しい名前' },
+          'https://attacker.example'
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (await mutate({ id: 'other', action: 'rename', displayName: 'x'.repeat(81) })).status
+    ).toBe(400);
+    expect(
+      (await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' })).status
+    ).toBe(200);
+    expect(
+      (
+        await mutate(
+          { id: 'other', action: 'set-sidebar', showInSidebar: false },
+          'https://attacker.example'
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: 'false' })).status
+    ).toBe(400);
+    expect(
+      (await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: false })).status
+    ).toBe(200);
+    expect((await (await fetch(url)).json()).favorites[1]).toMatchObject({
+      id: 'other',
+      displayName: '新しい名前',
+      showInSidebar: false,
+    });
+    expect((await mutate({ id: 'other', action: 'set-sidebar', showInSidebar: true })).status).toBe(
+      200
+    );
 
     expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('新しい名前');
     expect((await mutate({ id: 'other', action: 'rename', displayName: '' })).status).toBe(200);
     expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('other');
-    expect(await (await mutate({ id: 'other', action: 'up' })).json()).toEqual({ ids: ['other', 'removed'] });
-    expect(await (await mutate({ id: 'removed', action: 'remove' })).json()).toEqual({ ids: ['other'] });
+    expect(await (await mutate({ id: 'other', action: 'up' })).json()).toEqual({
+      ids: ['other', 'removed'],
+    });
+    expect(await (await mutate({ id: 'removed', action: 'remove' })).json()).toEqual({
+      ids: ['other'],
+    });
   });
 
   it('proxies a declared extension UI and its same-origin service requests', async () => {
@@ -3254,14 +4322,23 @@ process.stdin.on('end', () => process.exit(0));
       expect(installed.status).toBe(200);
 
       const favorite = await fetch(`${baseUrl}/api/extension-favorites`, {
-        method: 'POST', headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { Origin: baseUrl, 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: 'ui-extension', action: 'add' }),
       });
       expect(favorite.status).toBe(200);
       const healthBeforeFavorites = healthRequests;
-      expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({ favorites: [
-        { id: 'ui-extension', displayName: 'UI Extension', defaultDisplayName: 'UI Extension', showInSidebar: true, available: true },
-      ] });
+      expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({
+        favorites: [
+          {
+            id: 'ui-extension',
+            displayName: 'UI Extension',
+            defaultDisplayName: 'UI Extension',
+            showInSidebar: true,
+            available: true,
+          },
+        ],
+      });
       expect(healthRequests).toBe(healthBeforeFavorites);
       const shell = await fetch(`${baseUrl}/extensions/ui-extension`);
       expect(shell.status).toBe(200);
@@ -3340,24 +4417,47 @@ process.stdin.on('end', () => process.exit(0));
   });
 
   it('uses a Project default Agent only for new ordinary Web conversations', async () => {
-    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const { agent } = await (await post('/api/agents', { name: 'Project writer', prompt: 'Write' })).json();
-    const { project } = await (await post('/api/projects', { name: 'Writing', defaultAgentId: agent.id })).json();
+    const post = (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const { agent } = await (
+      await post('/api/agents', { name: 'Project writer', prompt: 'Write' })
+    ).json();
+    const { project } = await (
+      await post('/api/projects', { name: 'Writing', defaultAgentId: agent.id })
+    ).json();
     const ordinary = await (await post('/api/sessions', { projectId: project.id })).json();
     expect(getSessionEntry(ordinary.sessionId)?.selectedAgentId).toBe(agent.id);
-    const secret = await (await post('/api/sessions', { projectId: project.id, secret: true })).json();
+    const secret = await (
+      await post('/api/sessions', { projectId: project.id, secret: true })
+    ).json();
     expect(getSessionEntry(secret.sessionId)?.selectedAgentId).toBeUndefined();
   });
 
   it('creates linked conversations through the bridge, keeps secret sessions local and continues Slack', async () => {
-    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const post = (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     const remoteId = createSession('C123:1.2', { platform: 'slack' });
     const create = vi.fn().mockResolvedValue({ sessionId: remoteId });
     const continuation = vi.fn().mockResolvedValue({ response: null });
     slackRemoteInputRef.current = { createSession: create, continueSession: continuation };
-    const { project } = await (await post('/api/projects', { name: 'Linked', channel: { platform: 'slack', channelId: 'C123' } })).json();
+    const { project } = await (
+      await post('/api/projects', {
+        name: 'Linked',
+        channel: { platform: 'slack', channelId: 'C123' },
+      })
+    ).json();
     expect((await post('/api/sessions', { projectId: project.id })).status).toBe(400);
-    expect((await post('/api/sessions', { projectId: project.id, message: '  ' })).status).toBe(400);
+    expect((await post('/api/sessions', { projectId: project.id, message: '  ' })).status).toBe(
+      400
+    );
     expect(create).not.toHaveBeenCalled();
     const linkedId = createSession('C123:linked', { platform: 'slack', projectId: project.id });
     const detail = await (await fetch(`${baseUrl}/api/sessions/${linkedId}`)).json();
@@ -3366,30 +4466,58 @@ process.stdin.on('end', () => process.exit(0));
     expect(result.status).toBe(200);
     expect((await result.json()).sessionId).toBe(remoteId);
     expect(create).toHaveBeenCalledExactlyOnceWith('C123', 'Start');
-    const secret = await (await post('/api/sessions', { projectId: project.id, secret: true })).json();
+    const secret = await (
+      await post('/api/sessions', { projectId: project.id, secret: true })
+    ).json();
     expect(getSessionEntry(secret.sessionId)?.platform).toBe('web');
     expect(create).toHaveBeenCalledTimes(1);
-    expect((await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'Continue' })).status).toBe(200);
-    expect(continuation).toHaveBeenCalledExactlyOnceWith({ appSessionId: remoteId, message: 'Continue' });
-    expect((await post(`/api/sessions/${remoteId}/discord-continue`, { message: 'wrong platform' })).status).toBe(404);
+    expect(
+      (await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'Continue' })).status
+    ).toBe(200);
+    expect(continuation).toHaveBeenCalledExactlyOnceWith({
+      appSessionId: remoteId,
+      message: 'Continue',
+    });
+    expect(
+      (await post(`/api/sessions/${remoteId}/discord-continue`, { message: 'wrong platform' }))
+        .status
+    ).toBe(404);
     slackRemoteInputRef.current = undefined;
-    expect((await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'offline' })).status).toBe(503);
-    expect((await post('/api/sessions', { projectId: project.id, message: 'Start' })).status).toBe(503);
+    expect(
+      (await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'offline' })).status
+    ).toBe(503);
+    expect((await post('/api/sessions', { projectId: project.id, message: 'Start' })).status).toBe(
+      503
+    );
   });
 
-  it.each(['discord', 'slack'] as const)('titles new %s Project conversations from the first message', async (platform) => {
-    const channelId = platform === 'discord' ? 'discord-channel-id' : 'C123';
-    const ref = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
-    const create = vi.fn().mockResolvedValue({ sessionId: 'new-conversation' });
-    ref.current = { createSession: create, continueSession: vi.fn() };
-    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const { project } = await (await post('/api/projects', { name: 'task', channel: { platform, channelId } })).json();
-    for (const [message, title] of [[' タスクのテスト\n詳細 ', 'タスクのテスト 詳細'], ['別の相談', '別の相談'], ['😀'.repeat(40), '😀'.repeat(25)]]) {
-      expect((await post('/api/sessions', { projectId: project.id, message })).status).toBe(200);
-      expect(create).toHaveBeenLastCalledWith(channelId, title);
+  it.each(['discord', 'slack'] as const)(
+    'titles new %s Project conversations from the first message',
+    async (platform) => {
+      const channelId = platform === 'discord' ? 'discord-channel-id' : 'C123';
+      const ref = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
+      const create = vi.fn().mockResolvedValue({ sessionId: 'new-conversation' });
+      ref.current = { createSession: create, continueSession: vi.fn() };
+      const post = (path: string, body: unknown) =>
+        fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const { project } = await (
+        await post('/api/projects', { name: 'task', channel: { platform, channelId } })
+      ).json();
+      for (const [message, title] of [
+        [' タスクのテスト\n詳細 ', 'タスクのテスト 詳細'],
+        ['別の相談', '別の相談'],
+        ['😀'.repeat(40), '😀'.repeat(25)],
+      ]) {
+        expect((await post('/api/sessions', { projectId: project.id, message })).status).toBe(200);
+        expect(create).toHaveBeenLastCalledWith(channelId, title);
+      }
+      ref.current = undefined;
     }
-    ref.current = undefined;
-  });
+  );
 
   it('legacy Web first turn requests an AI title in AI mode', async () => {
     webConfig.sessionTitle.mode = 'ai';
@@ -3398,116 +4526,166 @@ process.stdin.on('end', () => process.exit(0));
     runner.nextResult = 'AIが生成した画像確認タイトル';
     const titleRun = vi.spyOn(runner, 'run');
     const pendingResponse = fetch(`${baseUrl}/api/chat`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ appSessionId: id, message: 'テストです。どうかな？画像見えてる？' }),
     });
     await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
     runner.release(context);
     await (await pendingResponse).text();
-    await vi.waitFor(() => expect(titleRun).toHaveBeenCalledWith(
-      expect.any(String), expect.objectContaining({ internalTask: true })
-    ));
-    expect(getSessionEntry(id)?.title).toBe('AIが生成した画像確認タイトル');
-  });
-
-  it.each(['web', 'discord', 'slack'] as const)('shared %s first turn requests an AI title in AI mode', async (platform) => {
-    webConfig.sessionTitle.mode = 'ai';
-    const id = platform === 'web' ? createWebSession() : createSession(`title-${platform}`, { platform });
-    const context = getSessionEntry(id)!.contextKey;
-    if (platform === 'discord') {
-      discordRemoteInputRef.current = {
-        continueSession: vi.fn(),
-        prepareSessionTitle: vi.fn().mockResolvedValue({
-          onTitle: async (title: string) => { updateSessionTitle(id, title); },
-        }),
-      };
-    }
-    runner.nextResult = 'AIが生成した画像確認タイトル';
-    const titleRun = vi.spyOn(runner, 'run');
-    const response = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId: 'title-investigation', message: 'テストです。どうかな？画像見えてる？', attachments: [] }),
-    });
-    expect(response.status).toBe(202);
-    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
-    runner.release(context);
-    await vi.waitFor(async () => {
-      const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-investigation`)).json();
-      expect(receipt.turn.state).toBe('completed');
-    });
-    expect(titleRun, `stored title=${getSessionEntry(id)?.title}`).toHaveBeenCalledWith(
-      expect.any(String), expect.objectContaining({ internalTask: true })
+    await vi.waitFor(() =>
+      expect(titleRun).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ internalTask: true })
+      )
     );
     expect(getSessionEntry(id)?.title).toBe('AIが生成した画像確認タイトル');
   });
 
-  it.each(['manual', 'new', 'failure', 'prefix', 'attachment'] as const)('shared AI title preserves response delivery and title policy (%s)', async (scenario) => {
-    webConfig.sessionTitle.mode = scenario === 'prefix' ? 'prefix' : 'ai';
-    const id = createWebSession();
-    const context = getSessionEntry(id)!.contextKey;
-    let resolveTitle!: (result: RunResult) => void;
-    let rejectTitle!: (error: Error) => void;
-    const titleRun = vi.spyOn(runner, 'run').mockImplementation(() => new Promise((resolve, reject) => {
-      resolveTitle = resolve; rejectTitle = reject;
-    }));
-    const message = scenario === 'attachment' ? '' : '最初の質問';
-    const attachments: string[] = [];
-    if (scenario === 'attachment') {
-      const form = new FormData();
-      form.append('file', new Blob(['image']), 'cat.png');
-      const uploaded = await (await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })).json();
-      attachments.push(uploaded.files[0].path);
-    }
-    const post = (requestId: string) => fetch(`${baseUrl}/api/sessions/${id}/turns`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId, message, attachments }),
-    });
-    expect((await post('title-policy-first')).status).toBe(202);
-    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
-    runner.callbacks.get(context)?.onBackendReady?.();
-    runner.emitText(context, '回答中');
-    expect(titleRun).toHaveBeenCalledTimes(scenario === 'prefix' ? 0 : 1);
-    runner.release(context);
-    await vi.waitFor(async () => {
-      const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-first`)).json();
-      expect(receipt.turn.state).toBe('completed');
-    });
-    if (scenario === 'prefix') {
-      expect(getSessionEntry(id)?.title).toBe(message);
-      return;
-    }
-    if (scenario === 'manual') updateSessionTitle(id, '手動タイトル');
-    if (scenario === 'new') createSession(context, { platform: 'web' });
-    if (scenario === 'failure') rejectTitle(new Error('title backend unavailable'));
-    else resolveTitle({ result: 'AIタイトル', sessionId: 'title-provider' });
-    await vi.waitFor(() => expect(runner.destroyed.has(`session-title:${id}`)).toBe(true));
-    // Flush the asynchronous onTitle callback as well as runner cleanup.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(getSessionEntry(id)?.title).toBe(scenario === 'manual' ? '手動タイトル' : scenario === 'attachment' ? 'AIタイトル' : message);
-    if (scenario === 'attachment') {
-      expect((await post('title-policy-next')).status).toBe(202);
+  it.each(['web', 'discord', 'slack'] as const)(
+    'shared %s first turn requests an AI title in AI mode',
+    async (platform) => {
+      webConfig.sessionTitle.mode = 'ai';
+      const id =
+        platform === 'web' ? createWebSession() : createSession(`title-${platform}`, { platform });
+      const context = getSessionEntry(id)!.contextKey;
+      if (platform === 'discord') {
+        discordRemoteInputRef.current = {
+          continueSession: vi.fn(),
+          prepareSessionTitle: vi.fn().mockResolvedValue({
+            onTitle: async (title: string) => {
+              updateSessionTitle(id, title);
+            },
+          }),
+        };
+      }
+      runner.nextResult = 'AIが生成した画像確認タイトル';
+      const titleRun = vi.spyOn(runner, 'run');
+      const response = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'title-investigation',
+          message: 'テストです。どうかな？画像見えてる？',
+          attachments: [],
+        }),
+      });
+      expect(response.status).toBe(202);
       await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
       runner.release(context);
       await vi.waitFor(async () => {
-        const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-next`)).json();
+        const receipt = await (
+          await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-investigation`)
+        ).json();
         expect(receipt.turn.state).toBe('completed');
       });
-      expect(titleRun).toHaveBeenCalledTimes(1);
+      expect(titleRun, `stored title=${getSessionEntry(id)?.title}`).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ internalTask: true })
+      );
+      expect(getSessionEntry(id)?.title).toBe('AIが生成した画像確認タイトル');
     }
-  });
+  );
+
+  it.each(['manual', 'new', 'failure', 'prefix', 'attachment'] as const)(
+    'shared AI title preserves response delivery and title policy (%s)',
+    async (scenario) => {
+      webConfig.sessionTitle.mode = scenario === 'prefix' ? 'prefix' : 'ai';
+      const id = createWebSession();
+      const context = getSessionEntry(id)!.contextKey;
+      let resolveTitle!: (result: RunResult) => void;
+      let rejectTitle!: (error: Error) => void;
+      const titleRun = vi.spyOn(runner, 'run').mockImplementation(
+        () =>
+          new Promise((resolve, reject) => {
+            resolveTitle = resolve;
+            rejectTitle = reject;
+          })
+      );
+      const message = scenario === 'attachment' ? '' : '最初の質問';
+      const attachments: string[] = [];
+      if (scenario === 'attachment') {
+        const form = new FormData();
+        form.append('file', new Blob(['image']), 'cat.png');
+        const uploaded = await (
+          await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })
+        ).json();
+        attachments.push(uploaded.files[0].path);
+      }
+      const post = (requestId: string) =>
+        fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId, message, attachments }),
+        });
+      expect((await post('title-policy-first')).status).toBe(202);
+      await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+      runner.callbacks.get(context)?.onBackendReady?.();
+      runner.emitText(context, '回答中');
+      expect(titleRun).toHaveBeenCalledTimes(scenario === 'prefix' ? 0 : 1);
+      runner.release(context);
+      await vi.waitFor(async () => {
+        const receipt = await (
+          await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-first`)
+        ).json();
+        expect(receipt.turn.state).toBe('completed');
+      });
+      if (scenario === 'prefix') {
+        expect(getSessionEntry(id)?.title).toBe(message);
+        return;
+      }
+      if (scenario === 'manual') updateSessionTitle(id, '手動タイトル');
+      if (scenario === 'new') createSession(context, { platform: 'web' });
+      if (scenario === 'failure') rejectTitle(new Error('title backend unavailable'));
+      else resolveTitle({ result: 'AIタイトル', sessionId: 'title-provider' });
+      await vi.waitFor(() => expect(runner.destroyed.has(`session-title:${id}`)).toBe(true));
+      // Flush the asynchronous onTitle callback as well as runner cleanup.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(getSessionEntry(id)?.title).toBe(
+        scenario === 'manual' ? '手動タイトル' : scenario === 'attachment' ? 'AIタイトル' : message
+      );
+      if (scenario === 'attachment') {
+        expect((await post('title-policy-next')).status).toBe(202);
+        await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+        runner.release(context);
+        await vi.waitFor(async () => {
+          const receipt = await (
+            await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-next`)
+          ).json();
+          expect(receipt.turn.state).toBe('completed');
+        });
+        expect(titleRun).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
 
   it('does not recover or rewrite UI receipts when starting a headless companion server', async () => {
     const id = createWebSession();
     const requestId = 'headless-request';
     const directory = join(process.env.DATA_DIR!, 'conversation-turns');
     mkdirSync(directory, { recursive: true });
-    const filename = createHash('sha256').update(JSON.stringify([id, requestId])).digest('hex') + '.json';
+    const filename =
+      createHash('sha256')
+        .update(JSON.stringify([id, requestId]))
+        .digest('hex') + '.json';
     const path = join(directory, filename);
-    const original = JSON.stringify({ appSessionId: id, requestId, id: 'running-turn', state: 'running', delivery: 'none' });
+    const original = JSON.stringify({
+      appSessionId: id,
+      requestId,
+      id: 'running-turn',
+      state: 'running',
+      delivery: 'none',
+    });
     writeFileSync(path, original);
-    const headless = startWebChat({ agentRunner: runner, port: await freePort(), uiEnabled: false });
+    const headless = startWebChat({
+      agentRunner: runner,
+      port: await freePort(),
+      uiEnabled: false,
+    });
     try {
-      await new Promise<void>((resolve) => headless.listening ? resolve() : headless.once('listening', resolve));
+      await new Promise<void>((resolve) =>
+        headless.listening ? resolve() : headless.once('listening', resolve)
+      );
       expect(readFileSync(path, 'utf8')).toBe(original);
       expect(runner.callOrder).toHaveLength(0);
     } finally {
@@ -3516,100 +4694,148 @@ process.stdin.on('end', () => process.exit(0));
     }
   });
 
-  it.each(['discord', 'slack', 'web'] as const)('accepts a %s turn before completion and resumes the same provider context', async (platform) => {
-    const key = platform === 'web' ? undefined : `shared-${platform}`;
-    const id = key ? createSession(key, { platform }) : createWebSession();
-    const context = getSessionEntry(id)!.contextKey;
-    setProviderSessionId(id, 'existing-provider');
-    const deliver = vi.fn().mockResolvedValue(['posted-result']);
-    const legacy = vi.fn();
-    if (platform === 'discord') discordRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
-    if (platform === 'slack') slackRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
-    const post = (body: unknown) => fetch(`${baseUrl}/api/sessions/${id}/turns`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const body = { requestId: 'request-shared-1234', message: '続けて', attachments: [] };
-    const response = await post(body);
-    expect(response.status).toBe(202);
-    const receipt = (await response.json()).turn;
-    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
-    expect(runner.options.at(-1)).toMatchObject({ appSessionId: id, channelId: context, sessionId: 'existing-provider' });
-    expect(deliver).not.toHaveBeenCalled(); expect(legacy).not.toHaveBeenCalled();
-    expect((await (await post(body)).json()).turn.id).toBe(receipt.id);
-    expect((await post({ ...body, requestId: 'request-concurrent' })).status).toBe(409);
-    expect((await post({ ...body, message: '違う入力' })).status).toBe(409);
-    const read = () => fetch(`${baseUrl}/api/sessions/${id}/turn-requests/${body.requestId}`).then((r) => r.json());
-    expect((await read()).turn.state).toBe('running');
-    runner.release(context);
-    await vi.waitFor(async () => expect((await read()).turn.state).toBe('completed'));
-    if (platform !== 'web') await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
-    else expect(deliver).not.toHaveBeenCalled();
-    expect(runner.callOrder.filter((k) => k === context)).toHaveLength(1);
-    expect(getSessionEntry(id)?.agent?.providerSessionId).toBe(`provider-${context}`);
-    expect((await post(body)).status).toBe(202);
-  });
+  it.each(['discord', 'slack', 'web'] as const)(
+    'accepts a %s turn before completion and resumes the same provider context',
+    async (platform) => {
+      const key = platform === 'web' ? undefined : `shared-${platform}`;
+      const id = key ? createSession(key, { platform }) : createWebSession();
+      const context = getSessionEntry(id)!.contextKey;
+      setProviderSessionId(id, 'existing-provider');
+      const deliver = vi.fn().mockResolvedValue(['posted-result']);
+      const legacy = vi.fn();
+      if (platform === 'discord')
+        discordRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
+      if (platform === 'slack')
+        slackRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
+      const post = (body: unknown) =>
+        fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const body = { requestId: 'request-shared-1234', message: '続けて', attachments: [] };
+      const response = await post(body);
+      expect(response.status).toBe(202);
+      const receipt = (await response.json()).turn;
+      await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+      expect(runner.options.at(-1)).toMatchObject({
+        appSessionId: id,
+        channelId: context,
+        sessionId: 'existing-provider',
+      });
+      expect(deliver).not.toHaveBeenCalled();
+      expect(legacy).not.toHaveBeenCalled();
+      expect((await (await post(body)).json()).turn.id).toBe(receipt.id);
+      expect((await post({ ...body, requestId: 'request-concurrent' })).status).toBe(409);
+      expect((await post({ ...body, message: '違う入力' })).status).toBe(409);
+      const read = () =>
+        fetch(`${baseUrl}/api/sessions/${id}/turn-requests/${body.requestId}`).then((r) =>
+          r.json()
+        );
+      expect((await read()).turn.state).toBe('running');
+      runner.release(context);
+      await vi.waitFor(async () => expect((await read()).turn.state).toBe('completed'));
+      if (platform !== 'web') await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+      else expect(deliver).not.toHaveBeenCalled();
+      expect(runner.callOrder.filter((k) => k === context)).toHaveLength(1);
+      expect(getSessionEntry(id)?.agent?.providerSessionId).toBe(`provider-${context}`);
+      expect((await post(body)).status).toBe(202);
+    }
+  );
 
-  it.each([true, false])('delivers Web input attachments with the answering agent identity (selected=%s)', async (selected) => {
-    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const { agent } = await (await post('/api/agents', { name: 'ボルト' })).json();
-    const { project } = await (await post('/api/projects', { name: 'ソフト開発' })).json();
-    const context = 'input-and-result';
-    const id = createSession(context, { platform: 'discord', projectId: project.id, ...(selected ? { selectedAgentId: agent.id } : {}) });
-    const deliverResult = vi.fn().mockResolvedValue(['answer', 'input']);
-    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult };
-    const form = new FormData();
-    form.append('file', new Blob(['image']), 'user.png');
-    const { files } = await (await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })).json();
-    const body = { requestId: 'request-input-label', message: '画像を確認して', attachments: [files[0].path] };
-    expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
-    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
-    runner.release(context);
-    await vi.waitFor(() => expect(deliverResult).toHaveBeenCalledTimes(1));
-    expect(deliverResult).toHaveBeenCalledWith(expect.objectContaining({
-      appSessionId: id,
-      text: 'ok',
-      attachments: [],
-      webInput: { message: body.message, attachments: body.attachments },
-      assistantName: selected ? 'ボルト' : basename(testDir),
-    }));
-    expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
-    expect(deliverResult).toHaveBeenCalledTimes(1);
-  });
+  it.each([true, false])(
+    'delivers Web input attachments with the answering agent identity (selected=%s)',
+    async (selected) => {
+      const post = (path: string, body: unknown) =>
+        fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const { agent } = await (await post('/api/agents', { name: 'ボルト' })).json();
+      const { project } = await (await post('/api/projects', { name: 'ソフト開発' })).json();
+      const context = 'input-and-result';
+      const id = createSession(context, {
+        platform: 'discord',
+        projectId: project.id,
+        ...(selected ? { selectedAgentId: agent.id } : {}),
+      });
+      const deliverResult = vi.fn().mockResolvedValue(['answer', 'input']);
+      discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult };
+      const form = new FormData();
+      form.append('file', new Blob(['image']), 'user.png');
+      const { files } = await (
+        await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })
+      ).json();
+      const body = {
+        requestId: 'request-input-label',
+        message: '画像を確認して',
+        attachments: [files[0].path],
+      };
+      expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
+      await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+      runner.release(context);
+      await vi.waitFor(() => expect(deliverResult).toHaveBeenCalledTimes(1));
+      expect(deliverResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appSessionId: id,
+          text: 'ok',
+          attachments: [],
+          webInput: { message: body.message, attachments: body.attachments },
+          assistantName: selected ? 'ボルト' : basename(testDir),
+        })
+      );
+      expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
+      expect(deliverResult).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('keeps a completed result when chat delivery is unavailable and retries only that delivery', async () => {
     const context = 'offline-delivery';
     const id = createSession(context, { platform: 'discord' });
     const path = `/api/sessions/${id}/turn-requests/request-offline`;
     const response = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId: 'request-offline', message: '結果だけ投稿', attachments: [] }),
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'request-offline',
+        message: '結果だけ投稿',
+        attachments: [],
+      }),
     });
     expect(response.status).toBe(202);
     await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
     runner.release(context);
-    await vi.waitFor(async () => expect((await (await fetch(`${baseUrl}${path}`)).json()).turn.delivery).toBe('failed'));
+    await vi.waitFor(async () =>
+      expect((await (await fetch(`${baseUrl}${path}`)).json()).turn.delivery).toBe('failed')
+    );
     const deliverResult = vi.fn().mockResolvedValue(['posted']);
     discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult };
     const retried = await fetch(`${baseUrl}${path}/retry-delivery`, { method: 'POST' });
     expect(retried.status).toBe(200);
     expect((await retried.json()).turn.delivery).toBe('delivered');
     expect(runner.callOrder.filter((k) => k === context)).toHaveLength(1);
-    expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      webInput: { message: '結果だけ投稿', attachments: [] },
-    }));
+    expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        webInput: { message: '結果だけ投稿', attachments: [] },
+      })
+    );
   });
 
   it('rejects untrusted attachments, cross-origin admission, and durable secret turns', async () => {
     const id = createWebSession();
     const secret = createWebSession({ secret: true });
-    const post = (sessionId: string, body: unknown, origin?: string) => fetch(`${baseUrl}/api/sessions/${sessionId}/turns`, {
-      method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify(body),
-    });
+    const post = (sessionId: string, body: unknown, origin?: string) =>
+      fetch(`${baseUrl}/api/sessions/${sessionId}/turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+        body: JSON.stringify(body),
+      });
     const body = { requestId: 'request-validate', message: 'test', attachments: ['/etc/passwd'] };
     expect((await post(id, body)).status).toBe(400);
-    expect((await post(id, { ...body, attachments: [] }, 'https://invalid.example')).status).toBe(403);
+    expect((await post(id, { ...body, attachments: [] }, 'https://invalid.example')).status).toBe(
+      403
+    );
     expect((await post(secret, { ...body, attachments: [] })).status).toBe(404);
     expect(runner.callOrder).toHaveLength(0);
   });
@@ -3855,11 +5081,11 @@ process.stdin.on('end', () => process.exit(0));
     expect(res.status).toBe(200);
     expect(data.commands.find((command) => command.name === 'help')?.usage).toBe('/help');
     expect(data.commands.find((command) => command.name === 'backend')?.usage).toContain('models');
-    expect(data.commands.some(command => command.name === 'models')).toBe(false);
+    expect(data.commands.some((command) => command.name === 'models')).toBe(false);
     expect(data.commands.find((command) => command.name === 'skill')?.description).toContain(
       'スキル'
     );
-    expect(data.commands.some(command => command.name === 'llmmode')).toBe(false);
+    expect(data.commands.some((command) => command.name === 'llmmode')).toBe(false);
 
     const dynamicRes = await fetch(`${baseUrl}/api/web-commands?backend=codex&model=gpt-test`);
     const dynamicData = (await dynamicRes.json()) as typeof data;
@@ -3968,12 +5194,23 @@ process.stdin.on('end', () => process.exit(0));
   });
 
   it('switches Web workspace and Agent into new conversations and loads skills from the saved workspace', async () => {
-    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const command = (appSessionId: string, input: string) => post('/api/web-commands', { appSessionId, input });
+    const post = async (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const command = (appSessionId: string, input: string) =>
+      post('/api/web-commands', { appSessionId, input });
     const other = join(testDir, 'command-workspace');
     mkdirSync(join(other, 'skills', 'only-here'), { recursive: true });
-    writeFileSync(join(other, 'skills', 'only-here', 'SKILL.md'), '---\nname: only-here\ndescription: Workspace skill\n---\n');
-    const workspace = await (await post('/api/workspaces', { name: '別の作業場所', path: other })).json();
+    writeFileSync(
+      join(other, 'skills', 'only-here', 'SKILL.md'),
+      '---\nname: only-here\ndescription: Workspace skill\n---\n'
+    );
+    const workspace = await (
+      await post('/api/workspaces', { name: '別の作業場所', path: other })
+    ).json();
     const original = await (await post('/api/sessions', {})).json();
     const switchedResponse = await command(original.sessionId, '/workspace use "別の作業場所"');
     expect(switchedResponse.status).toBe(200);
@@ -3982,18 +5219,32 @@ process.stdin.on('end', () => process.exit(0));
     expect(switched.sessionId).not.toBe(original.sessionId);
     expect(getSessionEntry(original.sessionId)?.workspacePath).toBe(testDir);
     expect(getSessionEntry(switched.sessionId)?.workspacePath).toBe(other);
-    const metadata = await (await fetch(`${baseUrl}/api/web-commands?appSessionId=${switched.sessionId}`)).json();
+    const metadata = await (
+      await fetch(`${baseUrl}/api/web-commands?appSessionId=${switched.sessionId}`)
+    ).json();
     expect(metadata.commands.some((c: { name: string }) => c.name === 'only-here')).toBe(true);
     const wrongWorkspace = await command(original.sessionId, '/only-here');
     expect(wrongWorkspace.status).toBe(400);
     const direct = await (await command(switched.sessionId, '/only-here "two words"')).json();
-    expect(direct).toEqual({ kind: 'chat', displayMessage: '/only-here "two words"', message: 'Run the skill "only-here". Arguments: two words' });
-    const explicit = await (await command(switched.sessionId, '/skill only-here "two words"')).json();
+    expect(direct).toEqual({
+      kind: 'chat',
+      displayMessage: '/only-here "two words"',
+      message: 'Run the skill "only-here". Arguments: two words',
+    });
+    const explicit = await (
+      await command(switched.sessionId, '/skill only-here "two words"')
+    ).json();
     expect(explicit.message).toBe(direct.message);
     const fresh = await (await command(switched.sessionId, '/new')).json();
     expect(fresh.kind).toBe('session');
     expect(getSessionEntry(fresh.sessionId)?.workspacePath).toBe(other);
-    const agent = await (await post('/api/agents', { name: '試験担当', prompt: '', workspaceId: workspace.workspace.id })).json();
+    const agent = await (
+      await post('/api/agents', {
+        name: '試験担当',
+        prompt: '',
+        workspaceId: workspace.workspace.id,
+      })
+    ).json();
     const assigned = await (await command(fresh.sessionId, `/agent set ${agent.agent.id}`)).json();
     expect(assigned.kind).toBe('session');
     expect(getSessionEntry(assigned.sessionId)?.selectedAgentId).toBe(agent.agent.id);
@@ -4044,7 +5295,11 @@ process.stdin.on('end', () => process.exit(0));
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(runner.pending.size).toBe(1);
-    const switching = await fetch(`${baseUrl}/api/web-commands`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appSessionId: id, input: '/workspace reset' }) });
+    const switching = await fetch(`${baseUrl}/api/web-commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, input: '/workspace reset' }),
+    });
     expect(switching.status).toBe(400);
     expect((await switching.json()).error).toContain('実行中');
 
@@ -4063,19 +5318,24 @@ process.stdin.on('end', () => process.exit(0));
   });
 
   it('streams retry state separately from assistant text and clears it on recovery', async () => {
-    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
     const key = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
     const send = fetch(`${baseUrl}/api/chat`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({appSessionId:id,message:'hello'}),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'hello' }),
     });
     await vi.waitFor(() => expect(runner.callbacks.has(key)).toBe(true));
-    runner.callbacks.get(key)?.onStatus?.({reason:'rate_limit',retryAt:12345});
+    runner.callbacks.get(key)?.onStatus?.({ reason: 'rate_limit', retryAt: 12345 });
     runner.callbacks.get(key)?.onStatus?.(null);
     runner.release(key);
     const events = (await readSSEUntilDone((await send).body)).events;
-    expect(events.filter(e => e.event === 'backend_status').map(e => e.data)).toEqual([{status:{reason:'rate_limit',retryAt:12345}},{status:null}]);
-    expect(events.find(e => e.event === 'done')?.data.response).toBe('ok');
+    expect(events.filter((e) => e.event === 'backend_status').map((e) => e.data)).toEqual([
+      { status: { reason: 'rate_limit', retryAt: 12345 } },
+      { status: null },
+    ]);
+    expect(events.find((e) => e.event === 'done')?.data.response).toBe('ok');
   });
 
   it('hides reply suggestion markup from Web SSE and returns structured suggestions', async () => {
@@ -4353,19 +5613,25 @@ process.stdin.on('end', () => process.exit(0));
   });
 
   it('keeps the partial Web response in the transcript when stopped', async () => {
-    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+      .sessionId as string;
     const ctx = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
     const send = fetch(`${baseUrl}/api/chat`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ appSessionId: id, message: 'hello' }),
     });
-    for (let i = 0; i < 50 && !runner.pending.has(ctx); i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 50 && !runner.pending.has(ctx); i++)
+      await new Promise((r) => setTimeout(r, 20));
     expect(runner.emitText(ctx, '途中の回答')).toBe(true);
     logPrompt(testDir, id, 'hello');
-    const stopped = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    const stopped = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/stop`, {
+      method: 'POST',
+    });
     expect(stopped.ok).toBe(true);
     expect(readSessionMessages(testDir, id).at(-1)).toMatchObject({
-      role: 'assistant', content: { result: expect.stringContaining('途中の回答') },
+      role: 'assistant',
+      content: { result: expect.stringContaining('途中の回答') },
     });
     runner.nextError = new Error('Request cancelled by user');
     runner.release(ctx);
@@ -4611,7 +5877,9 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toMatch(/content=\{promptDisplay\.content\}\s+markdown\s*\/>/);
     expect(chatSource).toContain('<MessageContent content={remoteEcho.text} markdown />');
     expect(chatSource).toContain('copyText(promptDisplay.content)');
-    expect(sourceStylesheet).toMatch(/\.message\.user \.markdown-message\s*\{[^}]*margin-left:\s*auto/s);
+    expect(sourceStylesheet).toMatch(
+      /\.message\.user \.markdown-message\s*\{[^}]*margin-left:\s*auto/s
+    );
     expect(chatSource).toMatch(
       /if \(activeRef\.current\) \{\s*requestAnimationFrame\(\(\) => draftRef\.current\?\.focus\(\)\);\s*\}/
     );
@@ -4621,7 +5889,9 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
-    expect(chatSource).toContain("jsonInit('POST', { projectId, agentId: selectedAgentId, secret })");
+    expect(chatSource).toContain(
+      "jsonInit('POST', { projectId, agentId: selectedAgentId, secret })"
+    );
     expect(chatSource).toContain('session-project-tag');
     expect(chatSource).toContain('<SidebarProjects');
     expect(chatSource).toContain('className="project-view"');
@@ -4646,10 +5916,10 @@ process.stdin.on('end', () => process.exit(0));
       'mutationObserver?.observe(viewport, { childList: true, subtree: true })'
     );
     expect(sourceStylesheet).toMatch(
-      /@media \(max-width: 768px\)[\s\S]*\.workspace-markdown-preview\s*\{[^}]*font-size:\s*15px/s
+      /@media \(max-width: 768px\)[\s\S]*\.workspace-markdown-preview\s*\{[^}]*font-size:\s*var\(--xangi-font-reading\)/s
     );
     expect(sourceStylesheet).toMatch(
-      /@media \(max-width: 768px\)[\s\S]*\.workspace-editor-tabs button\s*\{[^}]*min-height:\s*32px[^}]*font-size:\s*13px/s
+      /@media \(max-width: 768px\)[\s\S]*\.workspace-editor-tabs button\s*\{[^}]*min-height:\s*32px[^}]*font-size:\s*var\(--xangi-font-ui\)/s
     );
     expect(sourceStylesheet).toMatch(
       /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
@@ -4696,8 +5966,11 @@ process.stdin.on('end', () => process.exit(0));
         platform: 'discord',
         title: `origin page ${i}`,
       });
-      logPrompt(testDir, id,
-        `[チャンネル: #channel-${i} (ID: ${i}) / thread: topic-${i} (ID: thread-${i})]\nhello`);
+      logPrompt(
+        testDir,
+        id,
+        `[チャンネル: #channel-${i} (ID: ${i}) / thread: topic-${i} (ID: thread-${i})]\nhello`
+      );
     }
     const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
     try {
@@ -4711,8 +5984,10 @@ process.stdin.on('end', () => process.exit(0));
         for (const session of data.sessions) {
           const index = session.title.split(' ').at(-1);
           expect(session.origin).toEqual({
-            channelName: `channel-${index}`, channelId: index,
-            threadName: `topic-${index}`, threadId: `thread-${index}`,
+            channelName: `channel-${index}`,
+            channelId: index,
+            threadName: `topic-${index}`,
+            threadId: `thread-${index}`,
           });
           expect(originSpy).toHaveBeenCalledWith(testDir, session.id);
         }
@@ -4967,7 +6242,9 @@ process.stdin.on('end', () => process.exit(0));
   });
 
   it('streams complete monitor membership then changed rows and removals', async () => {
-    const ids = Array.from({ length: 105 }, (_, i) => createSession('web-chat:delta-' + i, { platform: 'web', title: 'row-' + i }));
+    const ids = Array.from({ length: 105 }, (_, i) =>
+      createSession('web-chat:delta-' + i, { platform: 'web', title: 'row-' + i })
+    );
     const response = await fetch(`${baseUrl}/api/sessions/stream?mode=changes`);
     const reader = response.body!.getReader();
     const decode = async () => new TextDecoder().decode((await reader.read()).value);
@@ -4985,7 +6262,9 @@ process.stdin.on('end', () => process.exit(0));
       removeSession(ids[0]);
       const removed = await decode();
       expect(JSON.parse(removed.split('data: ')[1].split('\n')[0]).removed).toContain(ids[0]);
-    } finally { await reader.cancel(); }
+    } finally {
+      await reader.cancel();
+    }
   });
 
   it('GET /api/sessions/stream sends an initial snapshot without polling', async () => {
@@ -5041,10 +6320,12 @@ process.stdin.on('end', () => process.exit(0));
     const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
     try {
       for (let i = 0; i < 10; i++) updateSessionTitle(id, `burst-${i}`);
-      const frames = await Promise.all(readers.map(async (reader) => {
-        const chunk = await reader.read();
-        return new TextDecoder().decode(chunk.value);
-      }));
+      const frames = await Promise.all(
+        readers.map(async (reader) => {
+          const chunk = await reader.read();
+          return new TextDecoder().decode(chunk.value);
+        })
+      );
       expect(frames[0]).toContain('burst-9');
       expect(frames[0].match(/event: sessions/g)).toHaveLength(1);
       expect(frames[1]).toBe(frames[0]);
@@ -5072,10 +6353,12 @@ process.stdin.on('end', () => process.exit(0));
     const reader = stream.body!.getReader();
     await reader.read();
     const write = response.write.bind(response);
-    const writeSpy = vi.spyOn(response, 'write').mockImplementation((...args: Parameters<typeof response.write>) => {
-      write(...args);
-      return false;
-    });
+    const writeSpy = vi
+      .spyOn(response, 'write')
+      .mockImplementation((...args: Parameters<typeof response.write>) => {
+        write(...args);
+        return false;
+      });
     const originSpy = vi.spyOn(sessionTitle, 'deriveSessionOrigin');
     const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
     try {
@@ -5130,63 +6413,72 @@ process.stdin.on('end', () => process.exit(0));
     await reader.cancel();
   });
 
-  it.each(['reject', 'resolve'])('persists and streams an interrupted assistant response during shutdown before runner %s', async (outcome) => {
-    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
-      .sessionId as string;
-    const responsePromise = fetch(`${baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ appSessionId: id, message: 'restart now' }),
-    });
+  it.each(['reject', 'resolve'])(
+    'persists and streams an interrupted assistant response during shutdown before runner %s',
+    async (outcome) => {
+      const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+        .sessionId as string;
+      const responsePromise = fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appSessionId: id, message: 'restart now' }),
+      });
 
-    for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      for (let i = 0; i < 50 && runner.pending.size === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(runner.emitText(`${WEB_CHAT_CONTEXT_PREFIX}${id}`, '途中までの回答')).toBe(true);
+      logPrompt(testDir, id, 'restart now');
+
+      await finalizeActiveStreams();
+
+      const response = await responsePromise;
+      const messages = readSessionMessages(testDir, id);
+      expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+      expect(messages[1]?.content).toEqual({
+        result: '途中までの回答\n\n⏸ プロセス再起動により中断されました',
+      });
+      expect(messages[1]?.platformMessageId).toBeUndefined();
+
+      const reader = response.body!.getReader();
+      const streamed = await readStreamUntil(
+        reader,
+        (text) =>
+          text.includes('event: done') && text.includes('プロセス再起動により中断されました')
+      );
+      expect(streamed).toContain('"replySuggestions":[]');
+      if (outcome === 'reject') runner.nextError = new Error('Runner is shutting down');
+      expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
+      let trailing = '';
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        trailing += new TextDecoder().decode(chunk.value);
+      }
+      expect(trailing).toBe('');
+      expect(readSessionMessages(testDir, id)).toEqual(messages);
     }
-    expect(runner.emitText(`${WEB_CHAT_CONTEXT_PREFIX}${id}`, '途中までの回答')).toBe(true);
-    logPrompt(testDir, id, 'restart now');
+  );
 
-    await finalizeActiveStreams();
-
-    const response = await responsePromise;
-    const messages = readSessionMessages(testDir, id);
-    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant']);
-    expect(messages[1]?.content).toEqual({
-      result: '途中までの回答\n\n⏸ プロセス再起動により中断されました',
-    });
-    expect(messages[1]?.platformMessageId).toBeUndefined();
-
-    const reader = response.body!.getReader();
-    const streamed = await readStreamUntil(
-      reader,
-      (text) => text.includes('event: done') && text.includes('プロセス再起動により中断されました')
-    );
-    expect(streamed).toContain('"replySuggestions":[]');
-    if (outcome === 'reject') runner.nextError = new Error('Runner is shutting down');
-    expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
-    let trailing = '';
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      trailing += new TextDecoder().decode(chunk.value);
+  it.each(['Runner is shutting down', 'Request cancelled by user'])(
+    'still streams ordinary runner errors without a shutdown finalizer: %s',
+    async (message) => {
+      const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+        .sessionId as string;
+      const responsePromise = fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appSessionId: id, message: 'fail now' }),
+      });
+      await vi.waitFor(() => expect(runner.pending.size).toBe(1));
+      runner.nextError = new Error(message);
+      expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
+      const streamed = await (await responsePromise).text();
+      expect(streamed).toContain('event: error');
+      expect(streamed).toContain(message);
+      expect(streamed).not.toContain('プロセス再起動により中断されました');
     }
-    expect(trailing).toBe('');
-    expect(readSessionMessages(testDir, id)).toEqual(messages);
-  });
-
-  it.each(['Runner is shutting down', 'Request cancelled by user'])('still streams ordinary runner errors without a shutdown finalizer: %s', async (message) => {
-    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
-    const responsePromise = fetch(`${baseUrl}/api/chat`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ appSessionId: id, message: 'fail now' }),
-    });
-    await vi.waitFor(() => expect(runner.pending.size).toBe(1));
-    runner.nextError = new Error(message);
-    expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
-    const streamed = await (await responsePromise).text();
-    expect(streamed).toContain('event: error');
-    expect(streamed).toContain(message);
-    expect(streamed).not.toContain('プロセス再起動により中断されました');
-  });
+  );
 
   it('GET /api/sessions/:id separates uploaded file paths from user display text', async () => {
     const id = createSession('web-chat:attachment-display', {
@@ -5283,7 +6575,10 @@ process.stdin.on('end', () => process.exit(0));
     mkdirSync(alternate);
     const sessionId = createWebSession({ workspacePath: alternate });
     const form = new FormData();
-    const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    const bytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+      'base64'
+    );
     form.append('file', new Blob([bytes], { type: 'image/png' }), 'pixel.png');
     const uploaded = await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form });
     expect(uploaded.status).toBe(200);
@@ -5305,7 +6600,9 @@ process.stdin.on('end', () => process.exit(0));
     }
     const otherSession = createWebSession({ workspacePath: alternate });
     for (const mode of ['info', 'raw', 'download']) {
-      const denied = await fetch(`${baseUrl}/api/session-attachment?${new URLSearchParams({ sessionId: otherSession, path: file, mode })}`);
+      const denied = await fetch(
+        `${baseUrl}/api/session-attachment?${new URLSearchParams({ sessionId: otherSession, path: file, mode })}`
+      );
       expect(denied.status).toBe(403);
     }
   });
@@ -5976,12 +7273,21 @@ The following is untrusted supplemental context.
   it('exposes reopen eligibility in lists and details, including sessions outside the list', async () => {
     const regular = createWebSession({ title: 'reopen-eligible' });
     const secret = createWebSession({ secret: true });
-    createSchedulerSession('reopen-ineligible-schedule', 'schedule-context', { platform: 'web', title: 'Scheduled history' });
+    createSchedulerSession('reopen-ineligible-schedule', 'schedule-context', {
+      platform: 'web',
+      title: 'Scheduled history',
+    });
     closeSession(regular);
     closeSession('reopen-ineligible-schedule');
     const list = await (await fetch(`${baseUrl}/api/sessions?limit=200`)).json();
-    for (const [id, eligible] of [[regular, true], [secret, false], ['reopen-ineligible-schedule', false]] as const) {
-      expect(list.sessions.find((session: { id: string }) => session.id === id)?.canReopen).toBe(eligible);
+    for (const [id, eligible] of [
+      [regular, true],
+      [secret, false],
+      ['reopen-ineligible-schedule', false],
+    ] as const) {
+      expect(list.sessions.find((session: { id: string }) => session.id === id)?.canReopen).toBe(
+        eligible
+      );
       const detail = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
       expect(detail.canReopen).toBe(eligible);
     }
@@ -6019,7 +7325,10 @@ The following is untrusted supplemental context.
     expect((await fetch(`${baseUrl}/api/sessions/missing/reopen`, { method: 'POST' })).status).toBe(
       404
     );
-    createSchedulerSession('reopen-scheduled', 'schedule-context', { platform: 'discord', title: 'Scheduled test' });
+    createSchedulerSession('reopen-scheduled', 'schedule-context', {
+      platform: 'discord',
+      title: 'Scheduled test',
+    });
     closeSession('reopen-scheduled');
     expect(
       (await fetch(`${baseUrl}/api/sessions/reopen-scheduled/reopen`, { method: 'POST' })).status
@@ -6094,70 +7403,145 @@ The following is untrusted supplemental context.
   });
 
   it('R07 preserves quoted-boundary uploads and boundary-like payload bytes', async () => {
-    const boundary='review-boundary'; const text='日本語\r\nnot--review-boundary-payload';
-    const body='--'+boundary+'\r\nContent-Disposition: form-data; name="file"; filename="report.txt"\r\nContent-Type: text/plain\r\n\r\n'+text+'\r\n--'+boundary+'--\r\n';
-    const response=await fetch(baseUrl+'/api/upload',{method:'POST',headers:{'content-type':'multipart/form-data; boundary="'+boundary+'"; charset=utf-8'},body});
+    const boundary = 'review-boundary';
+    const text = '日本語\r\nnot--review-boundary-payload';
+    const body =
+      '--' +
+      boundary +
+      '\r\nContent-Disposition: form-data; name="file"; filename="report.txt"\r\nContent-Type: text/plain\r\n\r\n' +
+      text +
+      '\r\n--' +
+      boundary +
+      '--\r\n';
+    const response = await fetch(baseUrl + '/api/upload', {
+      method: 'POST',
+      headers: {
+        'content-type': 'multipart/form-data; boundary="' + boundary + '"; charset=utf-8',
+      },
+      body,
+    });
     expect(response.status).toBe(200);
-    const result=await response.json();expect(result.files).toHaveLength(1);
-    expect(readFileSync(result.files[0].path,'utf8')).toBe(text);
-    const invalid=await fetch(baseUrl+'/api/upload',{method:'POST',headers:{'content-type':'multipart/form-data; boundary="'+boundary+'"'},body:body.replace('--'+boundary+'--','missing-end')});
+    const result = await response.json();
+    expect(result.files).toHaveLength(1);
+    expect(readFileSync(result.files[0].path, 'utf8')).toBe(text);
+    const invalid = await fetch(baseUrl + '/api/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary="' + boundary + '"' },
+      body: body.replace('--' + boundary + '--', 'missing-end'),
+    });
     expect(invalid.status).toBe(400);
   });
   it('R10 returns 400 for invalid path encoding and remains available', async () => {
-    for(const path of ['/api/sessions/%ZZ/history','/api/files/%E0%A4%A']) {
-      const response=await fetch(baseUrl+path);expect(response.status).toBe(400);
-      expect((await fetch(baseUrl+'/health')).status).toBe(200);
+    for (const path of ['/api/sessions/%ZZ/history', '/api/files/%E0%A4%A']) {
+      const response = await fetch(baseUrl + path);
+      expect(response.status).toBe(400);
+      expect((await fetch(baseUrl + '/health')).status).toBe(200);
     }
   });
   it('R11 ignores permission overrides in Web chat requests', async () => {
-    const id=createWebSession();const run=vi.spyOn(runner,'runStream');
-    const pending=fetch(baseUrl+'/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,message:'hello',skipPermissions:true})});
-    await vi.waitFor(()=>expect(run).toHaveBeenCalled());runner.release('web-chat:'+id);
-    const response=await pending;expect(response.status).toBe(200);await response.text();
-    expect(run).toHaveBeenCalled();expect(run.mock.calls[0][2]?.skipPermissions).not.toBe(true);
+    const id = createWebSession();
+    const run = vi.spyOn(runner, 'runStream');
+    const pending = fetch(baseUrl + '/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'hello', skipPermissions: true }),
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    runner.release('web-chat:' + id);
+    const response = await pending;
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(run).toHaveBeenCalled();
+    expect(run.mock.calls[0][2]?.skipPermissions).not.toBe(true);
   });
   it('R14 shares admission between Web chat and all inbox aliases', async () => {
-    const id=createWebSession();const {webSessionTurns}=await import('../src/web-session-turns.js');
+    const id = createWebSession();
+    const { webSessionTurns } = await import('../src/web-session-turns.js');
     webSessionTurns.add(id);
     try {
-      for(const path of ['/api/chat','/api/pet/inbox','/api/device/inbox','/api/terminal/inbox']) {
-        const response=await fetch(baseUrl+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,message:'hello',text:'hello'})});
+      for (const path of [
+        '/api/chat',
+        '/api/pet/inbox',
+        '/api/device/inbox',
+        '/api/terminal/inbox',
+      ]) {
+        const response = await fetch(baseUrl + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ appSessionId: id, message: 'hello', text: 'hello' }),
+        });
         expect(response.status).toBe(409);
       }
-    } finally {webSessionTurns.delete(id);}
+    } finally {
+      webSessionTurns.delete(id);
+    }
   });
   it('R40 rejects closed conversations from Inbox and selects an open session instead', async () => {
-    const id=createWebSession();closeSession(id);
-    const response=await fetch(baseUrl+'/api/pet/inbox',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,text:'hello'})});
+    const id = createWebSession();
+    closeSession(id);
+    const response = await fetch(baseUrl + '/api/pet/inbox', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, text: 'hello' }),
+    });
     expect(response.status).toBe(409);
-    const next=await fetch(baseUrl+'/api/pet/inbox',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:'hello'})});
+    const next = await fetch(baseUrl + '/api/pet/inbox', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
     expect(next.status).toBe(202);
-    const result=await next.json();expect(listAllSessions()).toHaveLength(2);
-    await vi.waitFor(()=>expect(runner.options.length).toBeGreaterThan(0));
+    const result = await next.json();
+    expect(listAllSessions()).toHaveLength(2);
+    await vi.waitFor(() => expect(runner.options.length).toBeGreaterThan(0));
     expect(runner.options[0].appSessionId).not.toBe(id);
     runner.release(runner.options[0].channelId!);
   });
   it('R44 denies foreign origins across read, write and upload paths without wildcard CORS', async () => {
-    for(const [path,method] of [['/api/sessions','GET'],['/api/workspace/file?path=README.md','GET'],['/api/chat','POST'],['/api/upload','POST'],['/api/workspace/file','PUT']]) {
-      const response=await fetch(baseUrl+path,{method,headers:{origin:'https://untrusted.example'}});
-      expect(response.status).toBe(403);expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    for (const [path, method] of [
+      ['/api/sessions', 'GET'],
+      ['/api/workspace/file?path=README.md', 'GET'],
+      ['/api/chat', 'POST'],
+      ['/api/upload', 'POST'],
+      ['/api/workspace/file', 'PUT'],
+    ]) {
+      const response = await fetch(baseUrl + path, {
+        method,
+        headers: { origin: 'https://untrusted.example' },
+      });
+      expect(response.status).toBe(403);
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
     }
-    expect((await fetch(baseUrl+'/health')).headers.get('access-control-allow-origin')).toBeNull();
+    expect(
+      (await fetch(baseUrl + '/health')).headers.get('access-control-allow-origin')
+    ).toBeNull();
   });
-
 
   it('R11 ignores permission overrides in Agent Run requests as well', async () => {
-    const agentResponse=await fetch(baseUrl+'/api/agents',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'Permission regression',backend:'codex',model:'test'})});
-    const {agent}=await agentResponse.json();
-    const response=await fetch(baseUrl+'/api/agent-runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agent.id,task:'permission test',skipPermissions:true})});
-    expect(response.status).toBe(202);const {run}=await response.json();
-    const context='web-chat:'+run.appSessionId;
-    await vi.waitFor(()=>expect(runner.pending.has(context)).toBe(true));
-    expect(runner.options.at(-1)?.skipPermissions).not.toBe(true);runner.release(context);
+    const agentResponse = await fetch(baseUrl + '/api/agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Permission regression', backend: 'codex', model: 'test' }),
+    });
+    const { agent } = await agentResponse.json();
+    const response = await fetch(baseUrl + '/api/agent-runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: agent.id, task: 'permission test', skipPermissions: true }),
+    });
+    expect(response.status).toBe(202);
+    const { run } = await response.json();
+    const context = 'web-chat:' + run.appSessionId;
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    expect(runner.options.at(-1)?.skipPermissions).not.toBe(true);
+    runner.release(context);
   });
   it('R44 preserves the separately authenticated device ingress preflight', async () => {
-    const response=await fetch(baseUrl+'/api/devices/sample/device-status',{method:'OPTIONS',headers:{origin:'https://device.example','access-control-request-method':'POST'}});
-    expect(response.status).toBe(200);expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    const response = await fetch(baseUrl + '/api/devices/sample/device-status', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://device.example', 'access-control-request-method': 'POST' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
   });
-
 });

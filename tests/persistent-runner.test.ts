@@ -264,7 +264,7 @@ describe('PersistentRunner', () => {
             {
               type: 'tool_use',
               name: 'Bash',
-              input: { command: 'cat /home/karaage/borot/AGENTS.md' },
+              input: { command: 'cat /home/example/borot/AGENTS.md' },
             },
           ],
         },
@@ -283,7 +283,7 @@ describe('PersistentRunner', () => {
 
     await expect(promise).resolves.toMatchObject({ result: 'ok' });
     expect(onToolUse).toHaveBeenCalledWith('Bash', {
-      command: 'cat /home/karaage/borot/AGENTS.md',
+      command: 'cat /home/example/borot/AGENTS.md',
     });
   });
 

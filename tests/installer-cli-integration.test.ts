@@ -106,6 +106,17 @@ function fakeUpdateScheduler(installed = false): UpdateSchedulerAdapter & {
 }
 
 describe('managed installer CLI integration', () => {
+  it.each(['wait', 'restart'])(
+    'rejects the removed --%s update option before touching managed state',
+    async (option) => {
+      const fetchManifest = vi.fn();
+      await expect(updateCmd({ [option]: true }, { fetchManifest })).rejects.toThrow(
+        'Unknown update option'
+      );
+      expect(fetchManifest).not.toHaveBeenCalled();
+    }
+  );
+
   it.each(['persisted', 'inherited', 'service startup'])(
     'uses the %s port for the default install health check',
     async (source) => {
@@ -305,10 +316,13 @@ describe('managed installer CLI integration', () => {
     expect(onProgress).toHaveBeenLastCalledWith('Downloading xangi 1.0.0...');
   });
 
-  it('updates without restarting the service and preserves personal data', async () => {
+  it('updates synchronously without restarting or checking health and preserves personal data', async () => {
     const progress = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const first = await fixture();
     const service = fakeService(true);
+    const healthCheck = vi.fn(async () => {
+      throw new Error('running app must not be probed');
+    });
     await mkdir(join(first.layout.versionsDir, '0.9.0'), { recursive: true });
     await mkdir(first.layout.workspaceDir, { recursive: true });
     await mkdir(first.layout.stateDir, { recursive: true });
@@ -336,12 +350,12 @@ describe('managed installer CLI integration', () => {
             await writeFile(join(destination, 'version.txt'), '1.0.0');
           },
           service,
-          healthCheck: async () => false,
+          healthCheck,
           healthTimeoutMs: 25,
           healthRetryIntervalMs: 5,
         }
       )
-    ).resolves.toBe('Updated xangi to 1.0.0 (previous 0.9.0)');
+    ).resolves.toMatch(/To apply the update[\s\S]*再起動して/);
 
     expect(progress.mock.calls.map(([message]) => message)).toEqual([
       'Checking for xangi updates...',
@@ -353,6 +367,7 @@ describe('managed installer CLI integration', () => {
     ]);
     expect(service.installs).toBe(0);
     expect(service.restarts).toBe(0);
+    expect(healthCheck).not.toHaveBeenCalled();
     expect(await readlink(first.layout.currentLink)).toBe(join(first.layout.versionsDir, '1.0.0'));
     expect(await readFile(join(first.layout.workspaceDir, 'USER.md'), 'utf8')).toBe(
       'private preference'

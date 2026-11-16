@@ -11,6 +11,24 @@ See the [extension development guide](extension-development.md) for extension re
 
 See the [extension UI guide](extension-ui.md) for same-origin iframe appearance hints, theme propagation, and domain-specific presentation.
 
+## Recommended UI typography and density
+
+Choose sizes by the element’s role and its hierarchy relative to nearby text; do not bulk-convert by selector names. Preserve the monitor’s established 9–14px compact hierarchy, 20px screen title and 24px metrics. Favorite labels use 12px. Feed list titles use 16px with 14px summaries; Tasks editing text uses 14px on desktop and 16px on mobile. Do not apply the general 16px long-form size to every preview or editing pane.
+
+Use the host file browser as the default density reference, so lists and controls stay consistent across screens. Follow the host extension guide for names and icons without renaming existing IDs. These are recommended defaults for new and maintained UI; user preferences and task-specific presentation take priority. No exception approval or mandatory SDK is required.
+
+- List text, buttons, navigation and ordinary labels: 13px (`--xangi-font-ui`).
+- Supporting descriptions and dates: 12px (`--xangi-font-caption`); short counts and badges: 11px (`--xangi-font-micro`). Keep primary information readable.
+- Screen title: 18px (`--xangi-font-heading`); section heading: 16px (`--xangi-font-section`). Keep large promotional headings out of work areas.
+- Reading content, including articles, mail, Markdown and conversations: 16px with 1.6–1.75 line height (`--xangi-font-reading`). Content headings can use 24/18/16px.
+- Code and file editors: 13px monospace (`--xangi-font-code`); prominent chart values: 24px (`--xangi-font-metric`).
+
+Use the same Inter, system sans-serif and Japanese Noto Sans JP fallback order. Preserve browser text enlargement. Each extension owns the same named CSS variables and works standalone; the parent iframe must not force fonts onto every descendant. Preserve imported report HTML and external preview typography.
+
+Keep existing layout, functions and reading order. Use 4px spacing increments, quiet neutral surfaces, blue actions, thin borders and 6–8px radii where appropriate. Mobile inputs stay at 16px and touch targets around 44px independently of text size. Screen titles normally stay 18px on desktop and mobile; do not shrink long-form text solely for narrow screens.
+
+Check computed styles, long labels, scrolling, focus, input and back navigation at desktop/mobile widths in light/dark themes, both embedded and standalone. Report device conditions that remain unverified.
+
 ## Overview
 
 xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI) and local LLMs (Ollama, etc.) accessible from chat platforms."
@@ -1409,6 +1427,10 @@ Status and doctor also recheck the reserved owner: a terminal startup state or p
 `installer/managed-env.ts` creates persistent `config/runtime.env` exclusively with mode 0600, leaving existing files unchanged. Legacy settings are not imported. `runtime-config.ts` loads the file, pins internal setup/state paths and applies typed JSON before importing the application. The application reapplies that JSON after dotenv loading to keep setup authoritative. `env-file.ts` shares path resolution between startup and settings writes. Health checks and the CLI default URL use the persisted port.
 
 Checkout and Docker runtimes honor setup/state values from their own env file; an empty pair disables shared setup. Only managed runtime and CLI entrypoints pin the selected setup/state, env file, and installation kind. PM2 startup prioritizes the target checkout’s explicit setup pair and rejects partial pairs. It does not inherit caller setup when shared setup is missing or belongs to a different explicit workspace.
+
+### Shared local app and worker restart
+
+`cli/lifecycle-cmd.ts` hands explicit `restart` to independent launchd/systemd user jobs. Linux checkouts with only a running PM2 app explicitly select a temporary helper managed by the existing PM2 daemon; restart with no running targets skips without a job. There is no implicit fallback. PM2 helpers disable automatic retries and remove only their own unique name after persisting result/log and releasing the lock. Mode-0600 requests carry host environment and target selection rather than the caller’s bot runtime settings. A lease lock serializes jobs for the same installation, and mode-0600 JSON results are written atomically. `cli/restart-cmd.ts` snapshots running components and restarts the worker before the app. Managed workers regenerate settings with current Node/CLI paths; the app uses the current CLI for state validation and restart. Managed `update` runs synchronously, verifies the signature/hash, switches current, and returns manual restart guidance without a job, restart plan, or health probe. Install-only `forceActivate` retains service activation, health checks, and rollback on failure. OS running state, app health, and Gateway connectivity are separate checks. `restart status <job-id>` exits 0 for completed, 1 for failed, and 2 for pending. Explicit `--wait` for external terminals waits up to five minutes without cancelling the helper on timeout.
 
 ### Shared HTTP ingress for device extensions
 
