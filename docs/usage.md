@@ -1740,13 +1740,12 @@ Workspace API:
 - `GET /api/workspace/file?path=<relative-file>` — `{path, content, version, size, mtimeMs}`
 - `PUT /api/workspace/file` — `{path, content, version}`。競合時は409
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` はセッションの監視・状態切替ページ。Sessionを「作業中」「完了」の2列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は作業中カードの状態ラベルと色付きドットで区別する。Sessionに進捗カードがあれば、一覧カードへ現在工程と完了工程数、詳細へ未着手・現在・完了の全工程と補足を文字ラベル付きで表示する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Antigravity、Claude Codeで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗カード・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDK、Antigravityは公式statusline JSONを使用する。Claude CodeのcontextはCLIのresult event、アカウント枠はCLI標準のstream-json制御要求（`get_usage`）を使用する。TUI解析・statusline設定は不要で、モデル呼び出し（枠の消費）も発生しない。この応答形式はCLI側でExperimental扱いのため、形式変更時はClaude Code枠が表示されなくなることがある。APIキー・Bedrock・Vertex経由ではアカウント枠が存在しないため表示されない。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` はセッションの監視・状態切替ページ。Sessionを「作業中」「完了」の2列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は作業中カードの状態ラベルと色付きドットで区別する。Sessionに進捗カードがあれば、一覧カードへ現在工程と完了工程数、詳細へ未着手・現在・完了の全工程と補足を文字ラベル付きで表示する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Claude Codeで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗カード・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDKを使用する。Claude CodeのcontextはCLIのresult event、アカウント枠はCLI標準のstream-json制御要求（`get_usage`）を使用する。TUI解析・statusline設定は不要で、モデル呼び出し（枠の消費）も発生しない。この応答形式はCLI側でExperimental扱いのため、形式変更時はClaude Code枠が表示されなくなることがある。APIキー・Bedrock・Vertex経由ではアカウント枠が存在しないため表示されない。
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
 
-補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。AntigravityはGeminiモデルとサードパーティモデルごとに5時間枠・週次枠をまとめて表示する。公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安は推定表示しない。Agyがセッションの推定`cost`を返す場合だけSession詳細に推定利用料を表示し、xangi側では金額や通貨を推定しない。
+補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。
 
-AntigravityをMonitorへ接続するには、Antigravity TUIで `/statusline "/path/to/xangi/bin/xangi-antigravity-statusline" --data-dir "/absolute/path/to/state"` を一度実行する。このhelperは公式statusline JSONを`DATA_DIR/antigravity-status.json`へ原子的に保存し、quotaを含まない更新では最後に取得できた公式quotaを保持する。非公開APIや画面解析は行わない。
 
 ### スケジューラ
 
@@ -1884,13 +1883,12 @@ Agy 1.1.28はprint timeout時に途中回答を返し、終了コード0・`SUCC
 
 Agy 1.1.27以降のJSON / stream-json最終結果に`denied_actions`がある場合、回答本文に権限不足で未実行となった操作の通知を追加します。`SUCCESS`でも本文が空なら、この通知を回答として返します。通知のためにタスクを再実行したり、権限を自動変更したりはしません。旧版でこのフィールドがない場合は従来どおりです。
 
-statuslineの`conversation_title`は、`conversation_id`が一致する最新のAntigravityセッションへ補助情報として保存し、Monitor詳細の「AI側の会話名」に表示します。xangiのタイトルは上書きしません。反映は利用量取得時に行い、既存のstatusline設定をそのまま使用できます。
 
-Monitorの利用量は `agy --print /usage --output-format json` から取得し、失敗時はstatuslineの保存値へフォールバックします。どちらも表示名ではなく枠IDで「Gemini共通枠」「Gemini 4 Argon」「Claude・GPT共通枠」を識別します。Agy 1.4.0の実出力で確認したArgonの `gemini-argon-wtu-weekly` は「専用枠」として週次使用率とリセット日時を表示し、5時間枠は補いません。公式説明ではProのArgonは別枠、Ultraでは大きなGemini枠に含まれます。プラン名から枠を推定せず、公式データに返った枠だけを表示します。未知の枠も消さずに残します。
+Monitorのアカウント利用量にはAntigravityの個人契約枠を表示しません。xangiから `agy /usage` を呼び出したり、過去のstatuslineの枠を読み込んだりしません。Gemini APIプロジェクトの利用量はAI Studioで確認してください。
 
 1.1.27で追加された一時的なモデル相談`/model <name> <prompt>`は、対話CLI向けです。1.1.27の実機では`agy -p '/model <name> <prompt>' --output-format json`が`/model takes no arguments`（終了コード2）となるため、xangiのヘッドレス経路では未対応です。`--disable-slash-commands`の既定動作は維持します。
 
-Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
+Antigravity CLI backend は、[Google AI Studio](https://aistudio.google.com/apikey)で発行した `GEMINI_API_KEY` をxangiの `.env` に設定して使います。公式 `agy` CLI 1.5.9 以降をインストールしてください。xangiはAPIキーをAgyの実行とモデル一覧取得にだけ明示的に渡し、`--settings` で `modelProvider: "gemini"` を指定します。キーがない場合は起動せず、個人ログインへは切り替えません。利用枠・課金はGemini APIプロジェクトに紐づき、Google AI Pro／Ultraの枠は使いません。 [Agy公式認証ガイド](https://antigravity.google/docs/cli/install/)
 
 非対話実行は `agy --print-timeout <timeout> --output-format json -p ...` です。構造化出力はAgy CLI 1.1.8で正式化され、xangiは1.1.12の実出力でも検証しています。最終JSONの `status`、`response`、`conversation_id` を利用し、`conversation_id` を provider session として返します。`ANTIGRAVITY_PRINT_TIMEOUT` で Agy 自身の print mode タイムアウトを設定できます。未指定時は xangi の実行タイムアウトから最大30秒（全体の10%を上限）を差し引いた値（通常 `1770s`）を使用します。`AGENT_MODEL` が設定されていれば `--model`、provider session があれば `--conversation` を渡します。作業ディレクトリが設定されている場合は、子プロセスの cwd と同じ場所を `--add-dir .` で明示します。
 
@@ -1908,7 +1906,7 @@ headless実行はMCP初期化完了後に`init`イベントを返します。`St
 
 Agy 1.4.3では、空のartifact情報によって通常ファイルの書き込み・編集が拒否される問題と、空ファイル作成の失敗が修正されています。旧版との互換性と他のartifact-pathエラーへの備えとして、xangiのworkspace書き込みガイダンスと一度だけのリカバリは維持します。
 
-インストール・認証済みのAgyでworkspace書き込みを実機検証する場合は、リポジトリ直下で次を実行します。通常のテストでは実行されません。テスト開始前にランナーと同じ実行ファイルの`--version`を確認し、1.4.3未満・確認失敗・未確認のバージョン表記では、AIを呼び出さず理由を表示して失敗します。この検証はAI利用枠を消費し、Agy側に会話が保存される場合があります。既存のAgy認証・プラグイン・MCP設定を利用するため、信頼できるテスト環境で実行してください。`accept-edits`とツール承認の省略を使い、一時ディレクトリ内で新規作成・編集・空ファイル作成をJSON／stream-jsonの2回で確認し、xangiの書き込みリカバリが発動していないことも確認します。削除するのはテスト用一時ディレクトリだけで、Agy側の会話履歴・ログなどは削除しません。`DATA_DIR`は継承値を使うstatusline helperの保存先を一時領域に向けますが、保存先が明示指定されたhelperやimport済みのxangiモジュールを隔離するものではありません。プラグインやMCPを無効化するサンドボックスでもありません。
+インストール・認証済みのAgyでworkspace書き込みを実機検証する場合は、リポジトリ直下で次を実行します。通常のテストでは実行されません。テスト開始前にランナーと同じ実行ファイルの`--version`を確認し、1.4.3未満・確認失敗・未確認のバージョン表記では、AIを呼び出さず理由を表示して失敗します。この検証はAI利用枠を消費し、Agy側に会話が保存される場合があります。Google AI Studioの有効な `GEMINI_API_KEY` と Agy 1.5.9 以降が必要で、既存のプラグイン・MCP設定を利用するため、信頼できるテスト環境で実行してください。`accept-edits`とツール承認の省略を使い、一時ディレクトリ内で新規作成・編集・空ファイル作成をJSON／stream-jsonの2回で確認し、xangiの書き込みリカバリが発動していないことも確認します。削除するのはテスト用一時ディレクトリだけで、Agy側の会話履歴・ログなどは削除しません。`DATA_DIR`は継承値を使うstatusline helperの保存先を一時領域に向けますが、保存先が明示指定されたhelperやimport済みのxangiモジュールを隔離するものではありません。プラグインやMCPを無効化するサンドボックスでもありません。
 
 ```bash
 agy --version
@@ -2046,7 +2044,6 @@ Error: Another xangi process is using the same dataDir: /path/to/.xangi. Stop th
 | スケジュール・通知 | `DATA_DIR/schedules.json`、`DATA_DIR/trigger-receipts.json` | 予約定義とtriggerの配信記録 |
 | Web・チャットの実行時設定 | `DATA_DIR/settings.json` | 返信候補やチャンネルごとの設定など |
 | 拡張機能 | `DATA_DIR/extensions.json`、`DATA_DIR/extension-sources.json`、`DATA_DIR/extension-favorites.json` | 登録・取得元・左メニューのお気に入り |
-| Antigravityの利用量 | `DATA_DIR/antigravity-status.json` | statusline連携を設定した場合の利用量スナップショット |
 | 受信した添付ファイル | `DATA_DIR/media/attachments/` | 保存対象の添付ファイル。プラットフォームや保持期間の設定によって内容は異なる |
 
 子への依頼を調べるときは、`agent-runs.json` の実行IDから `appSessionId` を確認し、同じIDの `logs/sessions/<appSessionId>.jsonl` を開きます。親と子の会話は別ファイルです。`agent-runs.json` の `trajectoryPath` は、詳細ログのファイルが実際に存在する場合だけ付きます。親の会話全体は子へ自動共有されません。
@@ -2107,9 +2104,6 @@ Codexの過去モデルに限り、元のrolloutが残っていれば `npx tsx s
 
 Grokは実行したセッション・作業ディレクトリ・時間範囲に一致するネイティブのprimary turn記録からモデルを取得します。GitHub Copilotは応答メッセージのモデル情報も取得します。CursorのAuto実行で内部モデルが公開されない場合は、`Auto（自動選択・内部モデル不明）`と表示・保存します。過去の設定やキャッシュされたモデル候補を実モデルとして補完しません。
 
-### 任意設定: インストール版のAntigravity利用量連携
-
-同梱の `current/bin/xangi-antigravity-statusline` を使い、`--data-dir` には稼働中のxangiの実際の `DATA_DIR` を絶対pathで指定する。空白を含むpathは引用符で囲む。`current` 経由なら更新後も同じpathを使える。helperは同梱Nodeを優先する。既存のAntigravity statusline設定は確認してから変更する。設定後はAntigravityで利用枠データを受信するまでセッションを動かし、Monitorへの表示を確認する。この連携はxangiのMonitorにも利用量を表示したい人だけが行う任意設定。Antigravity自体の利用には不要で、未設定ならMonitorのカードは表示しない。Antigravity自身のstatuslineをONにするだけでは、この保存処理は実行されない。同梱helperは必要な人が個別にダウンロードせず設定できるように用意している。
 
 ## プロジェクトとエージェントの共用
 

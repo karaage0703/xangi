@@ -1,4 +1,10 @@
 import { assertWorkspaceOutsideManagedDirectories } from '../installer/workspace-protection.js';
+import {
+  ANTIGRAVITY_API_ARGS,
+  requireAntigravityApiKey,
+  withoutAntigravityApiKey,
+} from '../antigravity-auth.js';
+import { getSafeEnv } from '../safe-env.js';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -82,7 +88,7 @@ export const GUIDED_BACKENDS: readonly GuidedBackend[] = [
     id: 'antigravity',
     label: 'Antigravity',
     command: 'agy',
-    authGuide: 'agyを初回起動して認証',
+    authGuide: 'Google AI Studioで発行したGEMINI_API_KEYを設定',
   },
   {
     id: 'github-copilot',
@@ -140,6 +146,7 @@ export async function detectGuidedBackends(
         const result = await promisify(execFile)(command, ['--version'], {
           encoding: 'utf8',
           timeout: 5_000,
+          env: withoutAntigravityApiKey(),
           maxBuffer: 256 * 1024,
         });
         return (result.stdout || result.stderr || '').trim().split('\n')[0] || undefined;
@@ -150,7 +157,11 @@ export async function detectGuidedBackends(
   const authStatus =
     options.authStatus ??
     ((command: string, args: readonly string[]) => {
-      const result = spawnSync(command, args, { encoding: 'utf8', timeout: 5_000 });
+      const result = spawnSync(command, args, {
+        encoding: 'utf8',
+        timeout: 5_000,
+        env: withoutAntigravityApiKey(),
+      });
       return result.status === 0;
     });
   const detected: DetectedBackend[] = [];
@@ -404,15 +415,19 @@ async function defaultLaunchGuidedBackend(
   initialPrompt: string,
   cwd: string
 ): Promise<number> {
+  const agyKey = selected.id === 'antigravity' ? requireAntigravityApiKey() : undefined;
   const prepared = await prepareOnboardingLaunch(initialPrompt);
   try {
     return await new Promise<number>((resolve, reject) => {
       const child = spawn(
         selected.executable,
-        buildGuidedLaunchArgs(selected, prepared.visiblePrompt),
+        [
+          ...(agyKey ? ANTIGRAVITY_API_ARGS : []),
+          ...buildGuidedLaunchArgs(selected, prepared.visiblePrompt),
+        ],
         {
           cwd,
-          env: process.env,
+          env: agyKey ? { ...getSafeEnv(), GEMINI_API_KEY: agyKey } : withoutAntigravityApiKey(),
           stdio: 'inherit',
         }
       );

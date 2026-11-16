@@ -60,6 +60,8 @@ macOS、Linux、WSL2で共通です。
 
    `codex`の代わりに`claude-code`、`cursor`、`grok`、`antigravity`、`github-copilot`、`opencode`も選べます。
 
+   `antigravity` は [Google AI Studio](https://aistudio.google.com/apikey) の `GEMINI_API_KEY` が必須です。個人ログインや Google AI Pro／Ultra の利用枠は使用しません。課金・利用枠は Gemini API プロジェクトに紐づきます。
+
 2. xangiをインストールします。
 
    ```bash

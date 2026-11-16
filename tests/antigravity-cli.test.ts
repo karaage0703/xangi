@@ -30,16 +30,26 @@ vi.mock('child_process', () => {
   }
 
   const mockProcesses: MockProcess[] = [];
+  let omitSettingsInHelp = false;
 
   return {
-    spawn: vi.fn(() => {
+    spawn: vi.fn((_command: string, args: string[]) => {
       const process = new MockProcess();
       mockProcesses.push(process);
+      if (args[0] === '--help' && !omitSettingsInHelp) {
+        queueMicrotask(() => process.stdout.emit('data', Buffer.from('  --settings JSON\n')));
+      }
       return process;
     }),
     getMockProcess: () => mockProcesses.at(-1),
     getMockProcesses: () => mockProcesses,
-    resetMockProcesses: () => mockProcesses.splice(0),
+    resetMockProcesses: () => {
+      omitSettingsInHelp = false;
+      mockProcesses.splice(0);
+    },
+    omitSettingsFlag: () => {
+      omitSettingsInHelp = true;
+    },
   };
 });
 
@@ -66,6 +76,7 @@ describe('AntigravityRunner', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
     delete process.env.ANTIGRAVITY_PRINT_TIMEOUT;
     delete process.env.ANTIGRAVITY_MODE;
     process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS = 'false';
@@ -153,7 +164,20 @@ describe('AntigravityRunner', () => {
   const agyErrorLine = (overrides: Record<string, unknown> = {}) =>
     `AGY_ERROR: ${JSON.stringify({ ...agyError, ...overrides })}\n`;
 
-  it('probes Agy 1.1.9 once and disables slash expansion for run and stream', async () => {
+  it('blocks execution when Agy help confirms that --settings is unavailable', async () => {
+    const { omitSettingsFlag } = await import('child_process');
+    (omitSettingsFlag as () => void)();
+    delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
+    const pending = new AntigravityRunner({}).run('task');
+    const rejected = expect(pending).rejects.toThrow('Agy 1.5.9');
+    const proc = await waitForProcess();
+    proc.stdout.emit('data', Buffer.from('  --disable-slash-commands\n'));
+    proc.emit('close', 0);
+    await rejected;
+    expect(await getProcesses()).toHaveLength(1);
+  });
+
+  it('probes Agy once and disables slash expansion for run and stream', async () => {
     const { spawn } = await import('child_process');
     delete process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS;
     const runner = new AntigravityRunner({});
@@ -684,6 +708,21 @@ describe('AntigravityRunner', () => {
     const { env } = await getSpawnArgs(runner, 'run');
 
     expect(env.AGY_CLI_HIDE_ACCOUNT_INFO).toBe('true');
+  });
+
+  it.each(['run', 'stream'] as const)('requires API authentication in %s mode', async (mode) => {
+    const { args, env } = await getSpawnArgs(new AntigravityRunner({}), mode);
+    expect(args.slice(0, 2)).toEqual(['--settings', '{"modelProvider":"gemini"}']);
+    expect(env.GEMINI_API_KEY).toBe('test-gemini-key');
+    expect(args).not.toContain('test-gemini-key');
+  });
+
+  it('does not spawn Agy without an API key', async () => {
+    delete process.env.GEMINI_API_KEY;
+    const runner = new AntigravityRunner({});
+    await expect(runner.run('task')).rejects.toThrow('GEMINI_API_KEY');
+    await expect(runner.runStream('task', {})).rejects.toThrow('GEMINI_API_KEY');
+    expect(await getProcesses()).toHaveLength(0);
   });
 
   it('uses the Agy 1.1.2 SUCCESS response and conversation id', async () => {

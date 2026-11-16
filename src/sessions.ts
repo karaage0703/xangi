@@ -48,6 +48,7 @@ export interface SessionContextUsage {
   usedTokens: number;
   contextWindow: number;
   updatedAt: string;
+  // Legacy statusline values remain readable in saved sessions.
   source: 'codex-app-server' | 'claude-result' | 'antigravity-statusline' | 'copilot-sdk';
 }
 
@@ -68,7 +69,7 @@ export interface SessionProcessingTime {
 export interface SessionEstimatedCost {
   value: number;
   updatedAt: string;
-  source: 'antigravity-statusline';
+  source: 'antigravity-statusline'; // Legacy persisted values only.
 }
 
 export type SessionProgressStatus = 'pending' | 'in_progress' | 'completed';

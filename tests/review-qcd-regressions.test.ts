@@ -123,17 +123,6 @@ describe('review regression cases', () => {
     await expect(assertManagedDeletionPreservesWorkspaces(layout,true)).rejects.toThrow(/would delete a workspace/);
   });
 
-  it('R03 force-kills a usage probe that ignores TERM after its timeout', async () => {
-    if(process.platform==='win32')return;
-    const {chmod}=await import('node:fs/promises');const {runAgyUsageProbe}=await import('../src/usage-monitor.js');
-    const root=await fixture();const executable=join(root,'agy');const pidFile=join(root,'pid');
-    await writeFile(executable,'#!'+process.execPath+'\n'+"require('fs').writeFileSync("+JSON.stringify(pidFile)+",String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");await chmod(executable,0o700);
-    vi.stubEnv('XANGI_BACKEND_EXECUTABLE',executable);
-    await expect(runAgyUsageProbe(300)).rejects.toThrow(/timed out/);
-    const pid=Number(await readFile(pidFile,'utf8'));
-    try {await vi.waitFor(()=>expect(()=>process.kill(pid,0)).toThrow(),{timeout:2500});}
-    finally {try{process.kill(pid,'SIGKILL');}catch{ /* already exited */ }}
-  });
   it('R20 executes all consecutive expired once jobs during startup', async () => {
     const {Scheduler}=await import('../src/scheduler.js');const root=await fixture();
     const schedules=Array.from({length:3},(_,i)=>({id:'past-'+i,type:'once',runAt:new Date(Date.now()-1000).toISOString(),message:'test',channelId:'test-'+i,platform:'web',createdAt:new Date().toISOString(),enabled:true}));

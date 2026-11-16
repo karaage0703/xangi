@@ -32,6 +32,30 @@ describe('config', () => {
     expect(() => loadConfig()).not.toThrow();
   });
 
+  it.each([false, true])(
+    'checks the Agy API key at startup (channel override: %s)',
+    async (override) => {
+      process.env.WEB_CHAT_ENABLED = 'true';
+      process.env.AGENT_BACKEND = override ? 'codex' : 'antigravity';
+      if (override) process.env.CHANNEL_OVERRIDES = '{"123":{"backend":"antigravity"}}';
+      else delete process.env.CHANNEL_OVERRIDES;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.XANGI_CONFIG_STRICT;
+      const { loadConfig } = await import('../src/config.js');
+      const warnings = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(() => loadConfig()).not.toThrow();
+        expect(warnings.mock.calls.flat().join(' ')).toContain('GEMINI_API_KEY');
+        process.env.XANGI_CONFIG_STRICT = 'true';
+        expect(() => loadConfig()).toThrow('GEMINI_API_KEY');
+        process.env.GEMINI_API_KEY = 'test-key';
+        expect(() => loadConfig()).not.toThrow();
+      } finally {
+        warnings.mockRestore();
+      }
+    }
+  );
+
   it.each([
     [undefined, undefined],
     ['  ', undefined],

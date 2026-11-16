@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { ChatPlatform } from './prompts/index.js';
-import { EnvValidator } from './config-validate.js';
+import { EnvValidator, validateChannelOverrides } from './config-validate.js';
 import { listExtensionAgentBackends } from './extensions.js';
 import { featureControlsFromEnv, type FeatureControls } from './feature-controls.js';
 import { hasUsableModelForEffort, supportsEffort } from './backend-effort.js';
@@ -301,6 +301,17 @@ export function loadConfig(): Config {
     throw new Error(
       `Invalid AGENT_BACKEND: ${backend}. Must be one of: ${availableBackends.join(', ')}`
     );
+  }
+
+  if (!process.env.GEMINI_API_KEY?.trim()) {
+    const rawOverrides = process.env.CHANNEL_OVERRIDES;
+    const overrides = rawOverrides ? validateChannelOverrides(rawOverrides).overrides : undefined;
+    if (
+      backend === 'antigravity' ||
+      Object.values(overrides ?? {}).some((override) => override.backend === 'antigravity')
+    ) {
+      v.issue('GEMINI_API_KEY', '', 'Antigravityの実行にはGoogle AI StudioのAPIキーが必要です');
+    }
   }
 
   // プラットフォーム自動検出

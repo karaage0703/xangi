@@ -30,7 +30,7 @@ describe('backend authentication status', () => {
 
   it('distinguishes configured API keys from login and unknown failures', async () => {
     const statuses = await backendAuthenticationSnapshot(
-      new Set(['ANTHROPIC_API_KEY', 'CURSOR_API_KEY']),
+      new Set(['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'GEMINI_API_KEY']),
       {
         detectedBackends: [detected('claude-code'), detected('cursor'), detected('antigravity')],
         runCommand: vi.fn(async (command) => ({
@@ -46,7 +46,11 @@ describe('backend authentication status', () => {
       apiKeyConfigured: true,
     });
     expect(statuses.find((item) => item.id === 'cursor')?.state).toBe('api-key');
-    expect(statuses.find((item) => item.id === 'antigravity')?.state).toBe('unknown');
+    expect(statuses.find((item) => item.id === 'antigravity')).toMatchObject({
+      loginSupported: false,
+      state: 'api-key',
+      apiKeyConfigured: true,
+    });
   });
 
   it('treats an empty OpenCode credential list as unauthenticated', async () => {

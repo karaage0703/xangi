@@ -16,6 +16,12 @@ import { inferEffortFromModelName } from './backend-effort.js';
 import type { AgentBackend } from './config.js';
 import { resolveExtensionAgentBackend } from './extensions.js';
 import { getSafeEnv } from './safe-env.js';
+import {
+  ANTIGRAVITY_API_ARGS,
+  ANTIGRAVITY_UPGRADE_MESSAGE,
+  reportsUnsupportedAntigravitySettings,
+  requireAntigravityApiKey,
+} from './antigravity-auth.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
@@ -76,6 +82,7 @@ function hasAuthenticationError(result: CommandResult): boolean {
 function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const env = getSafeEnv();
+    if (command === 'agy') env.GEMINI_API_KEY = requireAntigravityApiKey();
     const child = spawn(configuredBackendCommand(command, env), args, {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       env,
@@ -435,7 +442,7 @@ export async function discoverBackendModels(
   } = {}
 ): Promise<BackendModelDiscovery> {
   const runner = options.runner ?? runCommand;
-  let antigravitySource = 'agy --output-format json models';
+  const antigravitySource = 'agy --output-format json models';
   try {
     if (backend === 'claude-code') {
       return {
@@ -582,12 +589,17 @@ export async function discoverBackendModels(
       return { backend, source: 'opencode models --verbose', status: 'available', models };
     }
     let result: CommandResult;
+    requireAntigravityApiKey();
     try {
-      result = await runner('agy', ['--output-format', 'json', 'models']);
+      result = await runner('agy', [...ANTIGRAVITY_API_ARGS, '--output-format', 'json', 'models']);
     } catch (error) {
-      if (!isUnsupportedAntigravityOutputFormat(error)) throw error;
-      antigravitySource = 'agy models (legacy fallback)';
-      result = await runner('agy', ['models']);
+      if (
+        isUnsupportedAntigravityOutputFormat(error) ||
+        reportsUnsupportedAntigravitySettings(error)
+      ) {
+        throw new Error(ANTIGRAVITY_UPGRADE_MESSAGE);
+      }
+      throw error;
     }
     if (hasAuthenticationError(result)) throw new Error('Antigravity CLI is not authenticated');
     const { stdout } = result;

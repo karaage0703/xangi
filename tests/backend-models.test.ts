@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyGrokModelMetadata,
   discoverBackendModels,
@@ -214,6 +214,18 @@ describe('backend model parsers', () => {
 });
 
 describe('discoverBackendModels', () => {
+  beforeEach(() => vi.stubEnv('GEMINI_API_KEY', 'test-gemini-key'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('does not launch Agy model discovery without an API key', async () => {
+    vi.stubEnv('GEMINI_API_KEY', '');
+    const runner = vi.fn<ModelDiscoveryCommandRunner>();
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('GEMINI_API_KEY'),
+    });
+    expect(runner).not.toHaveBeenCalled();
+  });
   it('does not hard-code Claude Code models when listing is unsupported', async () => {
     const runner = vi.fn<ModelDiscoveryCommandRunner>();
     const result = await discoverBackendModels('claude-code', { runner });
@@ -337,34 +349,19 @@ describe('discoverBackendModels', () => {
       ['cursor-agent', ['models']],
       ['grok', ['models']],
       ['opencode', ['models', '--verbose']],
-      ['agy', ['--output-format', 'json', 'models']],
+      ['agy', ['--settings', '{"modelProvider":"gemini"}', '--output-format', 'json', 'models']],
     ]);
   });
 
-  it('falls back to legacy agy models only when output-format is unsupported', async () => {
+  it.each(['settings', 'output-format'])('does not fall back when Agy lacks --%s', async (flag) => {
     const runner = vi
       .fn<ModelDiscoveryCommandRunner>()
-      .mockRejectedValueOnce(new Error('flags provided but not defined: -output-format'))
-      .mockResolvedValueOnce({
-        stdout: 'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n',
-        stderr: '',
-      });
-
+      .mockRejectedValue(new Error('flags provided but not defined: -' + flag));
     await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
-      status: 'available',
-      source: 'agy models (legacy fallback)',
-      models: [
-        {
-          id: 'gemini-3.6-flash-high',
-          displayName: 'Gemini 3.6 Flash (High)',
-          supportedEfforts: ['high'],
-        },
-      ],
+      status: 'unavailable',
+      message: expect.stringContaining('Agy 1.5.9'),
     });
-    expect(runner.mock.calls.map(([command, args]) => [command, args])).toEqual([
-      ['agy', ['--output-format', 'json', 'models']],
-      ['agy', ['models']],
-    ]);
+    expect(runner).toHaveBeenCalledTimes(1);
   });
 
   it('preserves an Antigravity JSON error message', async () => {

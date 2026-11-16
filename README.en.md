@@ -60,6 +60,8 @@ The same flow works on macOS, Linux, and WSL2.
 
    Replace `codex` with `claude-code`, `cursor`, `grok`, `antigravity`, `github-copilot`, or `opencode` if needed.
 
+   `antigravity` requires a `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/apikey). It does not use personal Antigravity sign-in or Google AI Pro/Ultra quotas. Usage and billing belong to the Gemini API project.
+
 2. Install xangi.
 
    ```bash

@@ -1,4 +1,10 @@
 import { privacyConsole as console } from './privacy-console.js';
+import {
+  ANTIGRAVITY_API_ARGS,
+  ANTIGRAVITY_UPGRADE_MESSAGE,
+  reportsUnsupportedAntigravitySettings,
+  requireAntigravityApiKey,
+} from './antigravity-auth.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
@@ -160,6 +166,7 @@ export class AntigravityRunner extends CliRunnerBase {
   private readonly disableSlashCommands: boolean;
   private readonly executionMode?: BaseRunnerOptions['antigravityMode'];
   private modeCapability?: boolean;
+  private settingsCapability?: boolean;
   private readonly reportedDiagnostics = new WeakSet<AntigravityStderrError>();
   private slashCommandCapability?: boolean;
   private readonly slashCommandCapabilityProbes = new Map<
@@ -188,13 +195,15 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     outputFormat?: 'json' | 'stream-json'
   ): Promise<string[]> {
-    const args: string[] = [];
+    requireAntigravityApiKey();
+    const args: string[] = [...ANTIGRAVITY_API_ARGS];
     if (options?.secret)
       args.push('--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
 
     if (await this.supportsDisableSlashCommands(options?.channelId)) {
       args.push('--disable-slash-commands');
     }
+    if (this.settingsCapability === false) throw new Error(ANTIGRAVITY_UPGRADE_MESSAGE);
 
     if (this.executionMode) {
       if (this.modeCapability === undefined) {
@@ -391,6 +400,7 @@ export class AntigravityRunner extends CliRunnerBase {
             return;
           }
           if (code === 0) {
+            this.settingsCapability = /^[ \t]*--settings(?:[ \t=]|$)/m.test(output);
             this.modeCapability = /^[ \t]*(?:-\w,[ \t]*)?--mode(?:[ \t=]|$)/m.test(output);
             finish(
               output.includes('--disable-slash-commands') ? 'supported' : 'unsupported',
@@ -437,6 +447,9 @@ export class AntigravityRunner extends CliRunnerBase {
       return { stdout, stderr };
     } catch (error) {
       stderrDiagnostic ??= parseAntigravityStderrError(stderr);
+      if (reportsUnsupportedAntigravitySettings(error)) {
+        throw new Error(ANTIGRAVITY_UPGRADE_MESSAGE);
+      }
       const response = this.parseResponse(stdoutOnError);
       const terminated = this.finishedReasonError(response ?? {}, stderrDiagnostic, error);
       const outputError = (terminated ?? error) as AntigravityOutputError;
@@ -455,6 +468,7 @@ export class AntigravityRunner extends CliRunnerBase {
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
     return {
       ...super.buildEnv(channelId),
+      GEMINI_API_KEY: requireAntigravityApiKey(),
       // Discord/Web などへのログ流出を避ける。ユーザーが明示設定していればそれを尊重する。
       AGY_CLI_HIDE_ACCOUNT_INFO: process.env.AGY_CLI_HIDE_ACCOUNT_INFO ?? 'true',
     };
@@ -638,6 +652,9 @@ export class AntigravityRunner extends CliRunnerBase {
       );
     } catch (error) {
       if (isNonRetryableError(error)) throw error;
+      if (reportsUnsupportedAntigravitySettings(error)) {
+        throw new Error(ANTIGRAVITY_UPGRADE_MESSAGE);
+      }
       if (this.isUnsupportedOutputFormat(error)) {
         // This failure happens during flag parsing, before agy executes the prompt.
         this.streamOutputCapability = 'legacy';
