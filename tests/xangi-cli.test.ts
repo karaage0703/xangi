@@ -380,7 +380,9 @@ exit 0
       const stdout = await runCliInProcess(['update', ...updateArgs]);
       expect(stdout).toContain('Usage:');
       expect(stdout).toContain('xangi update --managed');
-      expect(stdout).toContain('service is not restarted automatically');
+      expect(stdout).toContain('Runs synchronously without an OS job');
+      expect(stdout).toContain('run xangi restart separately');
+      expect(stdout).not.toContain('--wait');
     }
   );
 

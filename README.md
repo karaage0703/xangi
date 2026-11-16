@@ -52,6 +52,8 @@ xangiはチャット接続、会話の継続、自動起動を担当します。
 
 macOS、Linux、WSL2で共通です。
 
+AIサービスの利用条件は、提供会社・サービス・契約プラン・認証方式（サブスクリプションのログインやAPIキーなど）によって異なります。利用するAIサービスの最新の規約・公式案内を確認してください。確認先の例は[AIサービスの利用規約](docs/usage.md#aiサービスの利用規約)にまとめています。
+
 1. 利用するAIツールを1つ準備します。例はCodexです。
 
    ```bash
@@ -77,6 +79,8 @@ macOS、Linux、WSL2で共通です。
 ```bash
 xangi doctor
 ```
+
+`xangi update`は本体・workerを自動再起動せず、更新の反映には`xangi restart`が必要と案内します。今すぐ再起動する場合は、xangiとの会話で「再起動して」と依頼する方法も案内します。managed版は同期実行し、変更なしの場合は更新済みと表示します。明示的な`xangi restart`は独立helperへ引き継ぎ、表示された`xangi restart status <job-id>`で完了・失敗を確認します。外部ターミナルでは`xangi restart --wait`で完了と終了コードを待てます。LinuxのPM2本体だけが稼働するcheckoutはPM2 helperを使い、systemdを追加必須にしません。
 
 詳しいインストール、更新、削除、設定保存先は[使い方ガイド](docs/usage.md#gitを使わない初回インストール)を参照してください。
 

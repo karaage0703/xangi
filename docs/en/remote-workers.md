@@ -23,7 +23,7 @@ On macOS, `worker install` stores the credential and configuration with mode 060
 
 Connection transitions and retry times are logged as JSON to macOS `worker.log` or the Linux/WSL2 journal. Tokens, URLs, raw errors, and arbitrary peer close reasons are withheld; known error categories, HTTP status codes, known close reasons, and close codes are retained. Status storage failures are logged without stopping the worker.
 
-Updating the app does not refresh an existing worker launch configuration. Check the running CLI path and run `worker restart` from the updated CLI; restarting from an old CLI can register the old version again. Pairing credentials are preserved. Existing workers need a restart with the new code before these diagnostics become available.
+`xangi update` never automatically restarts the local worker or app; it tells you to run `xangi restart` to apply an update. Explicit `xangi restart` restarts the worker before the app. Managed workers use Node and CLI paths under `app/current`; missing or stopped workers are skipped. Inspect the printed restart result/log for acceptance, completion, or failure, and check Gateway reconnection separately. To restart only the worker, run `worker restart` from the updated CLI; using an old CLI for this individual restart can register the old version again. Pairing credentials are preserved. Existing workers need a restart with the new code before these diagnostics become available.
 
 Manual configuration remains available. Configure the Gateway with a registration file and a dedicated listener. Token files must use mode 0600 on Unix systems. The remote-worker listener is separate from xangi's internal tool server.
 

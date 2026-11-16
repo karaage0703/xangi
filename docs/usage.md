@@ -6,6 +6,7 @@ xangiの詳細な使い方ガイドです。
 
 ## 目次
 
+- [AIサービスの利用規約](#aiサービスの利用規約)
 - [基本操作](#基本操作)
 - [プラットフォーム別のメッセージ処理](#プラットフォーム別のメッセージ処理)
 - [チャンネルトピック注入](#チャンネルトピック注入)
@@ -29,6 +30,17 @@ xangiの詳細な使い方ガイドです。
 - [セッションの保持期間](#セッションの保持期間)
 - [オプション](#オプション)
 - [トラブルシューティング](#トラブルシューティング)
+
+## AIサービスの利用規約
+
+AIサービスの利用条件は、提供会社・サービス・契約プラン・認証方式（サブスクリプションのログインやAPIキーなど）によって異なります。xangiから利用する前に、外部ツールとの連携や自動実行を含め、ご自身の使い方が最新の利用規約・公式案内に沿っていることを確認してください。規約や案内は変更されるため、導入後も必要に応じて確認してください。
+
+参考となる公式ページの例です。利用するサービスに適用される規約・ポリシーを確認してください。
+
+- [Anthropic: Legal center](https://www.anthropic.com/legal)
+- [OpenAI: Terms & policies](https://openai.com/policies/)
+- Google Antigravity: [利用規約](https://antigravity.google/terms) / [FAQ](https://antigravity.google/docs/faq)
+- [Google: Gemini API追加利用規約](https://ai.google.dev/gemini-api/terms)
 
 ## 基本操作
 
@@ -451,8 +463,8 @@ xangi --version
 # 署名済みreleaseへ安全に更新（installerが保存した公開鍵とmanifest URLを使用）
 xangi update
 
-# 更新後、反映したいタイミングでserviceを明示的に再起動
-xangi service restart
+# 更新せずに稼働中の本体・workerをまとめて再起動
+xangi restart
 
 # managed版を削除（workspace・設定・token・履歴は保持）
 xangi uninstall
@@ -484,9 +496,19 @@ AIオンボーディングを置き換えるsetup用browser UIはありません
 
 checkout版の`./bin/xangi update`は、未commit変更、detached HEAD、upstreamなしを先に拒否し、`git pull --ff-only`、`npm ci`、`npm run build`を順に実行します。署名済みmanaged appのupdaterをcheckoutから明示的に呼ぶ場合は`./bin/xangi update --managed`を使います。
 
-managed版の`xangi update`は、更新確認・ダウンロード・検証・展開・切り替えの進捗を標準エラー出力へ表示し、完了結果を標準出力へ表示します。
+managed版の`xangi update`は、署名・hash検証後にcurrentを切り替えて同期的に完了します。本体・workerを自動再起動せず、「反映には`xangi restart`が必要」と案内します。今すぐ再起動する場合はxangiに「再起動して」と依頼する案内も表示します。会話の案内は許可ではなく、その後の明示依頼を受けて対象を再起動します。既に同じ版なら変更なしと表示し、新たな更新があったとは案内しません。checkoutからのmanaged更新でも対象を間違えないよう、反映用のmanaged launcherの絶対pathも表示します。OS job・service/workerの状態確認・稼働中の本体health確認は要求しません。更新で旧processが参照する可能性のある過去版を自動削除しません。service起動・health確認と失敗時のrollbackは`xangi install`の専用activation経路に残します。
 
-`xangi update --help`（短縮形は`-h`）は、checkout版とmanaged版それぞれの更新内容・利用可能なoption・serviceを自動再起動しないことを表示します。更新内容を反映するタイミングで`xangi service restart`を明示的に実行してください。
+`xangi restart`はmanaged版の本体、または呼び出したcheckout自身のPM2 appと、ローカルに導入したworkerを対象にします。未導入・停止中のコンポーネントはskipして停止状態を保ち、他checkoutのapp、他マシン、外部サービスには触れません。managed workerのNode/CLIは`app/current`を使って起動設定を再生成するため、更新前の`versions/<version>`へ固定しません。再ペアリングは不要です。
+
+`restart`は独立helperへ引き継ぎます。Macはlaunchd、Linux/WSL2のmanaged restart・稼働中systemd workerは`systemd-run --user`を使います。Linux checkoutで稼働対象がPM2本体だけの場合は、既存のPM2 daemonへ一意名の一時helperを登録します。systemd user managerは追加必須にしません。全対象が停止中・未導入のrestartはjobを作らずskip完了します。選択したsupervisorと理由を受付に表示し、受付失敗時に別経路へ暗黙fallbackしません。workerの状態を確認できない場合も拒否します。
+
+PM2 helperは本体の子をdetachする方式ではなく、daemonが本体とは別appとして管理します。自動再実行を無効にし、本体の置換は対象名だけに限定します。helperは結果・ログとlock解放を確定してから自分の一意名だけを削除します。cleanupに失敗すると停止済みhelperが一覧に残るため、ログを確認してその名前だけ`pm2 delete`してください。helper実行中の`pm2 save`は避けてください。PM2 daemon全体の停止やOS再起動をまたぐjobの復旧は扱いません。
+
+restart既定の`accepted (not completed)`と終了コード0は受付だけです。表示された`xangi restart status <job-id>`（managed操作は`--managed`付き）を同じ導入先・checkoutのlauncherで実行し、状態と失敗理由を確認します。statusの終了コードは完了0、失敗1、受付中・実行中2です。外部ターミナルからは`xangi restart --wait`または`xangi restart status <job-id> --wait`で最大5分待ち、最終終了コードを受け取れます。待機timeoutは2を返し、helperを取り消しません。自己終了対象の本体・worker配下からは`--wait`を使わず受付を受け取ってください。TTYでは親の所属を確定できないため、自動待機はしません。updateに`--wait`はありません。
+
+restartの`result.json`の`state`（`accepted` / `running` / `completed` / `failed`）・`exitCode`と`output.log`にも最終状態を保存します。supervisor受付失敗は呼出しCLIも非0、受付後の失敗はhelperの結果を失敗にします。再起動後のOS runningとアプリhealth、Gateway再接続は別の判定です。`xangi worker status`とGateway側の`remote_worker --action list`で確認してください。heartbeatがない場合の接続状態はunknownです。
+
+checkout版updateはbuild成功後に反映用の`xangi restart`を案内し、更新されたlauncherを含め再起動処理は呼びません。HEAD未変更でも依存導入・buildを再試行し、「HEAD変更なし・依存とbuildを再生成済み」と表示して、反映が必要な場合だけ手動restartするよう案内します。pull・依存導入・buildの失敗時は成功案内を出しません。checkoutのHEADは自動rollbackせず、その状態から再試行できます。`xangi update --help`（短縮形`-h`）はこれらの動作とoptionを表示します。既存の本体だけの`service restart`、workerだけの`worker restart`も利用できます。
 
 `xangi --version`（`xangi -V`、`xangi version`も可）は、managed版では現在有効な署名済みrelease番号を、checkout版ではGitのtagまたはcommitを表示します。
 
@@ -921,7 +943,7 @@ AIの応答テキストに `\n===\n`（前後に改行を含む `===`）が含�
 
 `/restart` や `xangi tool system_restart` は、起動中の xangi 自身に graceful shutdown を要求する低レベル操作です。実際に再起動して復帰させるのは、xangiの外側にある Docker / pm2 / systemd などの supervisor です。
 
-現在の会話を処理しているxangi自身を再起動するときは、子プロセスやスケジューラへ遅延委譲せず、`xangi tool system_restart`を直接使います。このコマンドの成功は再起動リクエストの受付を表し、再起動完了は新しいプロセスのstatus・起動時刻・起動ログで確認します。別cloneのサービス操作には、対象cloneの`./bin/xangi service restart`を直接実行して完了を待ちます。
+現在の会話を処理している本体だけを再起動するときは、`xangi tool system_restart`を直接使います。本体とローカルworkerをまとめて再起動するときは`xangi restart`を使います。このコマンドの成功は再起動リクエストの受付を表し、再起動完了は新しいプロセスのstatus・起動時刻・起動ログで確認します。別cloneのサービス操作には、対象cloneの`./bin/xangi service restart`を直接実行して完了を待ちます。
 
 自己再起動の許可は管理者が `.env` の `XANGI_SELF_LIFECYCLE` で設定します。AI が runtime setting で変更するものではありません。停止は xangi 内部からは保証できないため、Docker / pm2 / systemd など外側のライフサイクル管理で行います。
 
@@ -2508,7 +2530,7 @@ Mac配布版の追加設定は `~/Library/Application Support/xangi/config/runti
 
 `runtime.env` に `WEB_CHAT_PORT` がない場合、install/updateまたはサービス起動時に渡された有効な環境変数 `WEB_CHAT_PORT` を同ファイルへ保存します。保存済みの値は上書きせず、以後のサービス再起動も同じポートを使います。配布ディレクトリの `.env` やLaunchAgentファイル自体からの自動移行は行いません。追加設定は `runtime.env` に記入してください。
 
-`doctor` は確認先URLと設定ファイルを表示します。checkoutでは`service start/restart`と同じ対象checkoutの`.env`をdotenv形式で読み、保存値、18888の順でポートを決定します。呼び出し元の`XANGI_ENV_PATH`や`WEB_CHAT_PORT`は診断先へ継承しません。配布版のinstall/updateはサービス起動後に設定を再読込して確認するため、起動時に保存したポートも使用します。
+`doctor` は確認先URLと設定ファイルを表示します。checkoutでは`service start/restart`と同じ対象checkoutの`.env`をdotenv形式で読み、保存値、18888の順でポートを決定します。呼び出し元の`XANGI_ENV_PATH`や`WEB_CHAT_PORT`は診断先へ継承しません。配布版のinstallはサービス起動後に設定を再読込してhealthを確認するため、起動時に保存したポートも使用します。updateはservice起動・health確認を行いません。
 
 初期設定の `xangi.json` が管理するbackend、model（設定済みの場合）、workspace、Web Chat有効化と公開範囲、および配布版のstate保存先は、`runtime.env` より優先します。それ以外の追加設定は `runtime.env` を使います。接続情報は引き続き `config/secrets.json`、会話別設定は `state/settings.json` に保存します。`secrets.json` は既存環境変数に値がない項目を補います。
 

@@ -4,6 +4,8 @@
 
 This guide helps people and AI develop xangi extensions. Choose designs, implementation languages, and templates to suit the task and user preferences. Follow the implemented contracts for manifests, readiness, and authentication.
 
+For consistent UI density, use the [recommended typography roles](extension-ui.md#recommended-ui-typography-and-density) and the bundled template CSS variables.
+
 ## What is an extension?
 
 An extension adds specialized UI, data operations, or device connections to xangi. In the managed HTTP model, a manifest declares its entry point, and the host starts a separate process and proxies its UI and APIs.
@@ -24,11 +26,13 @@ The user describes the desired capability, and the conversational AI reads `exte
 
 Start a new extension from the requested template or the latest published template. AI reads its README and setup instructions, then handles acquisition, configuration, and verification. When GitHub repository creation is part of the request, use the CLI below and adjust the owner, name, and visibility accordingly.
 
+For new extensions, use the `xangi-xxx` form for the repository name, extension ID, and display name (for example, `xangi-counter`). Keep the display name consistent instead of shortening it to `Counter`, so the extension remains recognizable. This is a recommendation; user preferences and existing product names take precedence. Do not rename existing IDs solely to follow it, because IDs affect storage, settings, and capabilities. Prefer `xs-xxx` for skill names (for example, `xs-counter` for the `xangi-counter` extension). Skill names are separate from extension IDs. User preferences and existing skill names take precedence; installed skills are not automatically renamed, moved, or deleted.
+
 ```sh
-gh repo create OWNER/my-extension --template karaage0703/xangi-extension-template --private --clone
-cd my-extension
+gh repo create OWNER/xangi-example --template karaage0703/xangi-extension-template --private --clone
+cd xangi-example
 npm ci
-npm run configure -- --id my-extension --name "My extension" --features ui
+npm run configure -- --id xangi-example --name xangi-example --features ui
 npm test
 npm run build
 ```
@@ -91,14 +95,14 @@ Declare a relative entrypoint, runtime, and HTTP capability in `xangi-extension.
 ```json
 {
   "schemaVersion": 2,
-  "id": "example-extension",
-  "displayName": "Example extension",
+  "id": "xangi-example",
+  "displayName": "xangi-example",
   "version": "0.1.0",
   "entrypoint": "scripts/xangi-extension",
   "runtime": { "kind": "managed-http" },
   "setup": { "instructions": "XANGI_SETUP.md" },
-  "capabilities": [{ "id": "example.manage", "protocol": "http", "healthPath": "/health" }],
-  "ui": { "capability": "example.manage", "path": "/ui" }
+  "capabilities": [{ "id": "xangi-example.manage", "protocol": "http", "healthPath": "/health" }],
+  "ui": { "capability": "xangi-example.manage", "path": "/ui" }
 }
 ```
 
@@ -115,7 +119,7 @@ Declare a relative entrypoint, runtime, and HTTP capability in `xangi-extension.
 {
   "schemaVersion": 2,
   "event": "ready",
-  "id": "example-extension",
+  "id": "xangi-example",
   "workspace": "/absolute/path/to/workspace",
   "baseUrl": "http://127.0.0.1:12345"
 }

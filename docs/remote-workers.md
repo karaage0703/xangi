@@ -96,7 +96,7 @@ xangi worker run --config /absolute/path/to/worker.json
 
 接続・切断・再試行はMacの`worker.log`、Linux/WSL2のjournalにJSONで記録します。token、接続先URL、生のエラー文・任意の切断理由は記録せず、既知のエラー分類・HTTP status・既知の切断理由と切断コードを残します。状態ファイルの保存に失敗してもworkerの接続処理は継続し、保存失敗をログへ記録します。
 
-アプリ更新だけでは既存workerの起動設定は更新されません。実行中CLIのpathを確認し、更新後のCLIから`worker restart`を実行してください。古いCLIからのrestartは古い版を再登録し得ます。再ペアリングは不要です。今回の診断表示は既存workerにも自動適用されず、新コードでのworker再起動が必要です。
+`xangi update`はローカルworkerと本体を自動再起動せず、反映には`xangi restart`が必要と案内します。明示的な`xangi restart`はworker、本体の順に再起動し、managed版は`app/current`のNode/CLIでworker起動設定を再生成します。停止中・未導入workerはskipします。restartの受付・完了・失敗の確認は表示されたresult/logで行い、Gateway再接続は別途確認してください。worker単独の再起動は引き続き更新後のCLIから`worker restart`で行えます。古いCLIからの単独restartは古い版を再登録し得ます。再ペアリングは不要です。今回の診断表示は既存workerにも自動適用されず、新コードでのworker再起動が必要です。
 
 nodeは切断後に自動再接続します。`worker install`を使ったMacではlaunchdもprocess終了後に再起動します。
 

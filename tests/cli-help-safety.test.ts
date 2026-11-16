@@ -41,6 +41,7 @@ describe('CLI help safety', () => {
     ['worker', 'run'],
     ['worker', 'restart'],
     ['service', 'restart'],
+    ['restart'],
     ['service', 'autostart', 'enable'],
     ['extension', 'restart', '--all'],
   ];

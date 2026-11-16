@@ -60,8 +60,7 @@ export function renderWorkerUnit(command: string, args: string[], configPath: st
   ].join('\n');
 }
 
-function currentUnit(): string {
-  const invocation = cliInvocation();
+function currentUnit(invocation = cliInvocation()): string {
   return renderWorkerUnit(invocation.command, invocation.args, workerInstallLayout().configPath);
 }
 
@@ -86,7 +85,8 @@ export async function installLinuxWorker(pairUri: string, workspaceRoot: string)
 }
 
 export function manageLinuxWorker(
-  action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall'
+  action: 'start' | 'stop' | 'restart' | 'status' | 'uninstall',
+  invocation?: ReturnType<typeof cliInvocation>
 ): string {
   systemctl(['show-environment']);
   const layout = workerInstallLayout();
@@ -118,7 +118,7 @@ export function manageLinuxWorker(
     return 'Remote worker uninstalled';
   }
   if (!existsSync(layout.configPath)) throw new Error('worker is not installed');
-  if (action === 'restart' || action === 'start') writeUnit(currentUnit());
+  if (action === 'restart' || action === 'start') writeUnit(currentUnit(invocation));
   systemctl([action, service]);
   return `Remote worker ${action === 'stop' ? 'stopped' : action === 'restart' ? 'restarted' : 'started'}`;
 }

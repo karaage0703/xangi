@@ -53,7 +53,7 @@ if { [ -d "$ROOT_DIR/.git" ] || [ -f "$ROOT_DIR/.git" ]; } && [ -f "$source_cli"
     exit 1
   fi
   # Service routing belongs to this launcher, not to a parent instance's mode.
-  if [ "${1:-}" = "service" ]; then
+  if [ "${1:-}" = "service" ] || [ "${1:-}" = "restart" ]; then
     export XANGI_INSTALLATION_KIND=checkout
   fi
   exec "$local_tsx" "$source_cli" "$@"

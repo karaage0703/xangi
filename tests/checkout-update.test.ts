@@ -19,19 +19,23 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 }
 
 describe('checkout updater', () => {
-  it.each(['--help', '-h'])('prints update help without inspecting checkout state for %s', async (flag) => {
-    const root = await mkdtemp(join(tmpdir(), 'xangi-update-help-'));
-    roots.push(root);
-    await git(root, 'init');
-    await writeFile(join(root, 'package.json'), '{"dirty":true}\n');
+  it.each(['--help', '-h'])(
+    'prints update help without inspecting checkout state for %s',
+    async (flag) => {
+      const root = await mkdtemp(join(tmpdir(), 'xangi-update-help-'));
+      roots.push(root);
+      await git(root, 'init');
+      await writeFile(join(root, 'package.json'), '{"dirty":true}\n');
 
-    const { stdout, stderr } = await exec(updaterSource, [root, flag]);
+      const { stdout, stderr } = await exec(updaterSource, [root, flag]);
 
-    expect(stderr).toBe('');
-    expect(stdout).toContain('Usage:');
-    expect(stdout).toContain('xangi update --managed');
-    expect(stdout).toContain('service is not restarted automatically');
-  });
+      expect(stderr).toBe('');
+      expect(stdout).toContain('Usage:');
+      expect(stdout).toContain('xangi update --managed');
+      expect(stdout).toContain('does not restart');
+      expect(stdout).not.toContain('--wait');
+    }
+  );
 
   it('refuses a checkout with uncommitted changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-update-dirty-'));
@@ -71,7 +75,7 @@ describe('checkout updater', () => {
     await writeFile(join(seed, 'package.json'), '{}\n');
     await writeFile(
       join(seed, 'bin', 'xangi'),
-      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SERVICE_LOG"\n'
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SERVICE_LOG"\nexit "${SERVICE_EXIT:-0}"\n'
     );
     await chmod(join(seed, 'bin', 'xangi'), 0o755);
     await git(seed, 'add', 'package.json', 'packaging/update-checkout.sh', 'bin/xangi');
@@ -99,8 +103,28 @@ describe('checkout updater', () => {
     expect(await readFile(join(checkout, 'updated.txt'), 'utf8')).toBe('new version\n');
     expect(await readFile(npmLog, 'utf8')).toBe('ci\nrun build\n');
     await expect(readFile(serviceLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(stdout).toContain('To apply the update, run `xangi restart`.');
+    expect(stdout).toContain('再起動して');
     expect(stdout).toContain('Updated xangi checkout: main');
     expect(stdout).toContain('Build: complete');
+
+    const unchanged = await exec(join(checkout, 'packaging', 'update-checkout.sh'), [checkout], {
+      env: {
+        ...process.env,
+        NPM_LOG: npmLog,
+        SERVICE_LOG: serviceLog,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      },
+    });
+    expect(unchanged.stdout).toContain('HEAD unchanged; dependencies and build refreshed.');
+    expect(unchanged.stdout).not.toContain('To apply the update');
+    expect(unchanged.stdout).toContain('If these changes need to be applied');
+    await expect(readFile(serviceLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      exec(join(checkout, 'packaging', 'update-checkout.sh'), [checkout, '--wait'])
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('unknown checkout update option: --wait'),
+    });
 
     await expect(
       exec(join(checkout, 'packaging', 'update-checkout.sh'), [checkout, '--restart'])

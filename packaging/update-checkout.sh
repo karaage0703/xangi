@@ -15,7 +15,8 @@ Checkout update:
   Fast-forwards the current branch, installs locked dependencies, and builds xangi.
   The checkout must be clean, attached to a branch, and configured with an upstream.
 
-The service is not restarted automatically. Run `xangi service restart` when ready.
+Update does not restart the app or worker. To apply an update, run xangi restart separately.
+At unchanged HEAD, dependency installation and build are retried for recovery.
 EOF
 }
 
@@ -62,5 +63,14 @@ fi
 npm ci
 npm run build
 
-echo "Updated xangi checkout: $branch ${before:0:7} -> ${after:0:7}"
 echo "Build: complete"
+if [ "$before" != "$after" ]; then
+  echo "Updated xangi checkout: $branch ${before:0:7} -> ${after:0:7}"
+  echo 'To apply the update, run `xangi restart`.'
+else
+  echo 'HEAD unchanged; dependencies and build refreshed.'
+  echo 'If these changes need to be applied to running components, run `xangi restart`.'
+fi
+echo 'No components were restarted.'
+
+echo 'To restart now, tell xangi "restart now" (「再起動して」).'

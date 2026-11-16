@@ -4,6 +4,8 @@
 
 このガイドは、AIと協働してxangiの拡張機能を作るためのものです。設計・実装言語・テンプレートは用途に合わせて選び、利用者の希望を優先します。manifest・readiness・認証などの接続仕様は、実装に合わせます。
 
+UIの密度をそろえるときは、[推奨の文字サイズ基準](extension-ui.md#uiの文字と密度の基準推奨)と同梱テンプレートのCSS変数を参照してください。
+
 ## 拡張機能とは
 
 拡張機能は、専用の画面・データ操作・機器接続などをxangiへ追加するソフトウェアです。managed HTTP方式では、manifestで入口を宣言し、本体が別プロセスを起動して画面やAPIへ中継します。
@@ -24,11 +26,13 @@
 
 新規拡張は、指定されたテンプレートか公開テンプレートの最新版を使います。AIがREADMEとsetup手順を読み、取得・設定・検証を行います。GitHub上のrepo作成が依頼に含まれる場合は次のCLIを使い、OWNER・名前・公開範囲を依頼に合わせます。
 
+新規拡張のリポジトリ名・拡張ID・表示名は、`xangi-xxx`形式（例: `xangi-counter`）を推奨します。表示名も`Counter`だけに省略せず、同じ名前にそろえると識別しやすくなります。これは推奨であり、利用者の指定や既存製品の名前を優先します。既存のIDは保存先・設定・capability等に関係するため、この推奨だけを理由に変更しません。 スキル名は`xs-xxx`形式（例: 拡張`xangi-counter`の操作スキルは`xs-counter`）を推奨します。拡張IDとは別の名前です。利用者指定や既存スキル名を優先し、導入済みスキルを自動で改名・移動・削除しません。
+
 ```sh
-gh repo create OWNER/my-extension --template karaage0703/xangi-extension-template --private --clone
-cd my-extension
+gh repo create OWNER/xangi-example --template karaage0703/xangi-extension-template --private --clone
+cd xangi-example
 npm ci
-npm run configure -- --id my-extension --name "My extension" --features ui
+npm run configure -- --id xangi-example --name xangi-example --features ui
 npm test
 npm run build
 ```
@@ -91,14 +95,14 @@ repo rootの`xangi-extension.json`に相対entrypoint、runtime、HTTP capabilit
 ```json
 {
   "schemaVersion": 2,
-  "id": "example-extension",
-  "displayName": "Example extension",
+  "id": "xangi-example",
+  "displayName": "xangi-example",
   "version": "0.1.0",
   "entrypoint": "scripts/xangi-extension",
   "runtime": { "kind": "managed-http" },
   "setup": { "instructions": "XANGI_SETUP.md" },
-  "capabilities": [{ "id": "example.manage", "protocol": "http", "healthPath": "/health" }],
-  "ui": { "capability": "example.manage", "path": "/ui" }
+  "capabilities": [{ "id": "xangi-example.manage", "protocol": "http", "healthPath": "/health" }],
+  "ui": { "capability": "xangi-example.manage", "path": "/ui" }
 }
 ```
 
@@ -115,7 +119,7 @@ repo rootの`xangi-extension.json`に相対entrypoint、runtime、HTTP capabilit
 {
   "schemaVersion": 2,
   "event": "ready",
-  "id": "example-extension",
+  "id": "xangi-example",
   "workspace": "/absolute/path/to/workspace",
   "baseUrl": "http://127.0.0.1:12345"
 }

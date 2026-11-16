@@ -28,8 +28,10 @@ import {
   writeOnboardingState,
 } from '../setup/guided-onboarding.js';
 import { installCmd } from './install-cmd.js';
-import { uninstallCmd } from './uninstall-cmd.js';
 import { updateCmd } from './update-cmd.js';
+import { uninstallCmd } from './uninstall-cmd.js';
+import { lifecycleStatus, queueLifecycle, runLifecycle } from './lifecycle-cmd.js';
+import { RESTART_HELP } from './restart-cmd.js';
 import { settingsCmd } from './settings-cmd.js';
 import { resolveAppLayout } from '../installer/layout.js';
 import { installConfiguredWorkspaceTemplate } from '../installer/workspace-template.js';
@@ -142,6 +144,7 @@ Usage:
   xangi install [--manifest URL] [--public-key PATH]
   xangi uninstall [--purge --yes]
   xangi update [--managed] [--manifest URL] [--public-key PATH] [--allow-downgrade]
+  xangi restart
   xangi settings
   xangi extension create              Load the AI development guide and template
   xangi extension <link|unlink|list|start|stop|restart|status|doctor|update> [ID|MANIFEST]
@@ -196,7 +199,7 @@ function printUpdateHelp(): void {
   xangi update --managed [--manifest URL] [--public-key PATH] [--allow-downgrade]
 
 Managed update:
-  Downloads and verifies the signed release, then activates it for the next service start.
+  Downloads and verifies the signed release, then switches current without restarting components.
 
 Options:
   --managed          From a source checkout, update the signed managed installation instead
@@ -204,7 +207,8 @@ Options:
   --public-key PATH  Ed25519 release public key path
   --allow-downgrade  Explicitly permit installing an older release
 
-The service is not restarted automatically. Run \`xangi service restart\` when ready.`);
+Runs synchronously without an OS job, service restart, or app health check.
+To apply an update, run xangi restart separately. Unchanged releases report no update.`);
 }
 
 function printVersion(): void {
@@ -550,6 +554,9 @@ export async function run(argv = process.argv): Promise<void> {
       case 'worker':
         console.log(await workerCmd('help', {}));
         break;
+      case 'restart':
+        console.log(RESTART_HELP);
+        break;
       case 'update':
         printUpdateHelp();
         break;
@@ -578,6 +585,27 @@ export async function run(argv = process.argv): Promise<void> {
     console.log(
       await serviceCmd(parsed.positionals[0] || 'help', parsed.flags, {}, parsed.positionals[1])
     );
+    return;
+  }
+  if (argv[2] === 'restart' || argv[2] === 'lifecycle-run' || argv[2] === 'update') {
+    const parsed = parseArgs(argv);
+    if (parsed.command === 'update') {
+      if (parsed.positionals.length) throw new Error('Usage: xangi update [options]');
+      console.log(await updateCmd(parsed.flags));
+      return;
+    }
+    if (parsed.command === 'restart' && parsed.positionals[0] === 'status') {
+      if (parsed.positionals.length !== 2) throw new Error(RESTART_HELP);
+      console.log(await lifecycleStatus(parsed.positionals[1], parsed.flags));
+      return;
+    }
+    if (parsed.command === 'restart' && parsed.positionals.length) throw new Error(RESTART_HELP);
+    if (parsed.command === 'lifecycle-run') {
+      if (typeof parsed.flags.request !== 'string') throw new Error('Missing lifecycle request');
+      console.log(await runLifecycle(parsed.flags.request));
+    } else {
+      console.log(await queueLifecycle('restart', parsed.flags));
+    }
     return;
   }
   loadEnvFiles();
@@ -788,11 +816,6 @@ export async function run(argv = process.argv): Promise<void> {
 
   if (parsed.command === 'uninstall') {
     console.log(await uninstallCmd(parsed.flags));
-    return;
-  }
-
-  if (parsed.command === 'update') {
-    console.log(await updateCmd(parsed.flags));
     return;
   }
 

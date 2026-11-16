@@ -74,7 +74,7 @@ const HOST_ENV_KEYS = [
   'NODE_EXTRA_CA_CERTS',
 ];
 
-function checkoutHostEnv(): NodeJS.ProcessEnv {
+export function checkoutHostEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(
     HOST_ENV_KEYS.filter((key) => process.env[key] !== undefined).map((key) => [
       key,

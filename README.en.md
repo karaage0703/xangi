@@ -52,6 +52,8 @@ xangi handles chat connectivity, conversation continuity, and automated turns. T
 
 The same flow works on macOS, Linux, and WSL2.
 
+AI service terms vary by provider, service, subscription plan, and authentication method (such as a subscription login or an API key). Check the latest terms and official guidance for the AI service you plan to use. See [AI Service Terms](docs/en/usage.md#ai-service-terms) for example reference pages.
+
 1. Prepare one supported AI tool. This example uses Codex.
 
    ```bash
@@ -77,6 +79,8 @@ The guided setup currently communicates in Japanese. It lets you choose the work
 ```bash
 xangi doctor
 ```
+
+`xangi update` never automatically restarts the app or worker; it tells you to run `xangi restart` to apply an update. You can also tell xangi “restart now” in the conversation. Managed updates run synchronously and report when the release is already current. Explicit `xangi restart` hands off to an independent helper; use the printed `xangi restart status <job-id>` command for completion or failure. External terminals can use `xangi restart --wait` for the final exit code. Linux checkouts running only a PM2 app use a separate PM2 helper without requiring systemd.
 
 See the [usage guide](docs/en/usage.md#first-install-without-git) for installation, updates, removal, and configuration paths.
 

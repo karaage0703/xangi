@@ -43,6 +43,8 @@ export async function extensionDevelopmentPrompt(): Promise<string> {
           'The template is distributed separately and is not included in this xangi release.',
           'Check that the publication target is available before fetching it into a separate development directory. If it is not yet published, report that fact and use an authorized source checkout; do not invent a successful download.',
         ]),
+    'For new extensions, recommend the xangi-xxx form for the repository name, extension ID, and display name (for example, xangi-counter). Keep the display name consistent instead of shortening it to Counter. This is not a validation requirement: user preferences and existing product names take precedence. Do not rename existing IDs solely for this recommendation, because IDs affect storage, settings, and capabilities.',
+    'Recommend xs-xxx for skill names, such as xs-counter for extension xangi-counter. Skill names are distinct from extension IDs. Honor user choices and existing names; do not automatically rename, move, or delete installed skills.',
     'For a new template-based extension, run npm ci, npm run configure -- --id NEW_ID --name DISPLAY_NAME --features ui, npm test, and npm run build. Reuse the template configuration, startup/authentication, update preparation, and documentation when adding domain features. For an existing extension, work in the requested project.',
     'Read the template README and setup instructions before adapting it. Compare required host features, tested host versions, and unverified behavior against this installed host; the repositories do not have to share version numbers.',
     'Select UI, device ingress, and AI independently. All can be combined or omitted. Reuse only what the task needs.',
