@@ -55,7 +55,9 @@ export async function fetchDiscordLinkContent(client: Client, text: string): Pro
             : '';
 
         const quotedContent = `\n---\n📎 引用メッセージ (${author}):\n${content}${attachmentInfo}\n---\n`;
-        result = result.replace(fullUrl, quotedContent);
+        // 関数置換を使う: 引用本文に $& や $' が含まれていても
+        // String.replace の置換パターンとして解釈させない。
+        result = result.replace(fullUrl, () => quotedContent);
         console.log(`[xangi] Fetched linked message from channel ${channelId}`);
       }
     } catch (err) {
@@ -151,7 +153,9 @@ export async function fetchChannelMessages(client: Client, text: string): Promis
           .join('\n');
 
         const expandedContent = `\n---\n📺 #${channelName} の最新メッセージ:\n${messageList}\n---\n`;
-        result = result.replace(fullMention, expandedContent);
+        // 関数置換を使う: 引用した発言に $& や $' が含まれていても
+        // String.replace の置換パターンとして解釈させない。
+        result = result.replace(fullMention, () => expandedContent);
         console.log(`[xangi] Fetched messages from channel #${channelName}`);
       }
     } catch (err) {
