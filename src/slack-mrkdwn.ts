@@ -27,10 +27,20 @@ class CodeVault {
   }
 
   restore(text: string): string {
-    return text.replace(
-      new RegExp(`${PLACEHOLDER_OPEN}(\\d+)${PLACEHOLDER_CLOSE}`, 'g'),
-      (_, i: string) => this.tokens[Number(i)] ?? ''
-    );
+    const pattern = new RegExp(`${PLACEHOLDER_OPEN}(\\d+)${PLACEHOLDER_CLOSE}`, 'g');
+    let restored = text;
+    // 退避した断片が別の断片を含むことがある（表のセル内のインラインコード等）。
+    // 1 回の置換では内側のプレースホルダが残るため、置換が無くなるまで繰り返す。
+    // 断片は必ず自分より前の断片しか参照しないので、tokens.length 回で収束する。
+    for (let pass = 0; pass <= this.tokens.length; pass++) {
+      let replaced = false;
+      restored = restored.replace(pattern, (_, i: string) => {
+        replaced = true;
+        return this.tokens[Number(i)] ?? '';
+      });
+      if (!replaced) break;
+    }
+    return restored;
   }
 }
 

@@ -84,6 +84,13 @@ describe('markdownToSlackMrkdwn', () => {
     expect(out).toContain('─');
   });
 
+  it('表のセル内インラインコードを復元し、退避用プレースホルダを残さない', () => {
+    const src = '| 名前 | 値 |\n|---|---|\n| `x=1` | y |';
+    const out = markdownToSlackMrkdwn(src);
+    expect(out).toContain('`x=1`');
+    expect(out).not.toMatch(/[\uE000\uE001]/);
+  });
+
   it('箇条書きの * を斜体と誤変換しない', () => {
     expect(markdownToSlackMrkdwn('* 項目')).toBe('• 項目');
   });
