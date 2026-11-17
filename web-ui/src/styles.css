@@ -7451,6 +7451,24 @@ video.media-preview {
   padding: 6px 8px;
   text-align: left;
 }
+.sidebar-lifecycle-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  color: var(--ink-secondary);
+  font-size: var(--sidebar-caption);
+}
+.sidebar-lifecycle-filter select {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--sidebar-control);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+}
 .sidebar-section-heading {
   display: flex;
   align-items: center;

@@ -50,7 +50,13 @@ with sync_playwright() as pw:
                     query = parse_qs(u.query); pid = query.get('projectId', [''])[0]
                     q = query.get('q', [''])[0]
                     lifecycle = query.get('lifecycle', [''])[0]; session_queries.append(query)
-                    data = {'sessions': [s for s in sessions if (not pid or s['projectId'] == pid) and (not q or q in s['title']) and (not lifecycle or s['lifecycle'] == lifecycle)]}
+                    matching = [s for s in sessions if (not pid or s['projectId'] == pid) and (not q or q in s['title']) and (not lifecycle or s['lifecycle'] == lifecycle)]
+                    offset = int(query.get('offset', ['0'])[0]); limit = int(query.get('limit', ['100'])[0])
+                    data = {'sessions': matching[offset:offset+limit], 'meta': {'hasMore': offset+limit < len(matching), 'nextOffset': offset+limit}}
+                elif method == 'POST' and (path.endswith('/close') or path.endswith('/reopen')):
+                    session = next(s for s in sessions if s['id'] == path.split('/')[3])
+                    session['lifecycle'] = 'closed' if path.endswith('/close') else 'open'
+                    data = {'ok': True}
                 elif path.endswith('/turn-history'): data = {'history': []}
                 elif path.startswith('/api/sessions/'):
                     data = {**next((s for s in sessions if s['id'] == path.split('/')[3]), {}), 'messages': [], 'total': 0, 'hasMore': False}
@@ -70,8 +76,31 @@ with sync_playwright() as pw:
             open_sidebar()
             expect(page.locator('.session-row')).to_have_count(6)
             expect(page.locator('.session-list')).to_contain_text('会話5')
-            expect(page.get_by_role('group', name='セッションの状態で絞り込む')).to_have_count(0)
+            expect(page.get_by_role('combobox', name='会話の状態')).to_have_value('all')
             assert session_queries and all('lifecycle' not in query for query in session_queries)
+            state_filter = page.get_by_role('combobox', name='会話の状態')
+            state_filter.select_option('open')
+            expect(page.locator('.session-row')).to_have_count(5)
+            state_filter.select_option('closed')
+            expect(page.locator('.session-row')).to_have_count(1)
+            expect(page.locator('.session-list')).to_contain_text('会話5')
+            page.get_by_placeholder('会話を検索').fill('該当なし')
+            expect(page.locator('.session-row')).to_have_count(0)
+            page.get_by_placeholder('会話を検索').fill('')
+            expect(page.locator('.session-row')).to_have_count(1)
+            page.locator('.sidebar-project-select').first.click()
+            expect(page.locator('.session-row')).to_have_count(0)
+            page.get_by_role('button', name='すべての会話', exact=True).click()
+            expect(state_filter).to_have_value('closed')
+            expect(page.locator('.session-row')).to_have_count(1)
+            state_filter.focus()
+            page.keyboard.press('ArrowUp')
+            page.keyboard.press('Enter')
+            expect(state_filter).to_have_value('open')
+            expect(page.locator('.session-row')).to_have_count(5)
+            page.screenshot(path=str(out/f'lifecycle-{width}.png'), full_page=True, animations='disabled')
+            state_filter.select_option('all')
+            expect(page.locator('.session-row')).to_have_count(6)
             search = page.get_by_placeholder('会話を検索')
             search.fill('会話5')
             expect(page.locator('.session-row')).to_have_count(1)
@@ -188,5 +217,68 @@ with sync_playwright() as pw:
             page.get_by_role('button', name='新規プロジェクト', exact=True).click()
             expect(page.locator('.project-form')).to_be_visible()
             context.close(); print(f'PASS catalog count={count}', flush=True)
+        # An unfiltered SSE snapshot must refresh the filtered API, rather than
+        # reintroducing completed rows or hiding older matching conversations.
+        context = browser.new_context(viewport={'width': 1280, 'height': 900})
+        context.route('**/*', route)
+        context.add_init_script("""
+          window.testStreams = [];
+          window.EventSource = class extends EventTarget {
+            constructor() { super(); window.testStreams.push(this); }
+            close() { window.testStreams = window.testStreams.filter(s => s !== this); }
+          };
+        """)
+        sessions[:] = [dict(id=f'page{i}', title=f'検証{i}', projectId='', platform='web',
+                           updatedAt='2026-11-17T00:00:00Z', isActive=False,
+                           lifecycle='open' if i < 105 else 'closed') for i in range(110)]
+        page = context.new_page(); page.set_default_timeout(8000)
+        page.goto('http://sidebar.test/')
+        state_filter = page.get_by_role('combobox', name='会話の状態')
+        expect(state_filter).to_have_value('all')
+        state_filter.select_option('open')
+        expect(page.locator('.session-row')).to_have_count(100)
+        page.get_by_role('button', name='さらに読み込む').click()
+        expect(page.locator('.session-row')).to_have_count(105)
+        expect(page.get_by_role('button', name='さらに読み込む')).to_have_count(0)
+        sessions[0]['lifecycle'] = 'closed'
+        def snapshot():
+            page.evaluate("""() => window.testStreams.forEach(s => s.dispatchEvent(
+              new MessageEvent('sessions', {data: JSON.stringify({sessions: []})})))""")
+        snapshot()
+        expect(page.locator('.session-row')).to_have_count(100)
+        expect(page.locator('.session-main').filter(has_text='検証0')).to_have_count(0)
+        state_filter.select_option('closed')
+        expect(page.locator('.session-row')).to_have_count(6)
+        sessions[0]['lifecycle'] = 'open'
+        snapshot()
+        expect(page.locator('.session-row')).to_have_count(5)
+        page.get_by_placeholder('会話を検索').fill('検証0')
+        expect(page.locator('.session-row')).to_have_count(0)
+        sessions[0]['lifecycle'] = 'closed'
+        snapshot()
+        expect(page.locator('.session-row')).to_have_count(1)
+        # Existing source visibility remains independent from lifecycle.
+        page.get_by_label('会話の表示設定').click()
+        page.get_by_label('Web', exact=True).uncheck()
+        expect(page.locator('.session-row')).to_have_count(0)
+        page.get_by_label('Web', exact=True).check()
+        expect(page.locator('.session-row')).to_have_count(1)
+        page.get_by_label('会話の表示設定').click()
+        page.get_by_placeholder('会話を検索').fill('')
+        state_filter.select_option('open')
+        expect(page.locator('.session-row')).to_have_count(100)
+        target_row = page.locator('.session-row').filter(has=page.get_by_text('検証1', exact=True))
+        target_row.hover()
+        target_row.get_by_role('button', name='完了にする', exact=True).click()
+        expect(target_row).to_have_count(0)
+        expect(page.get_by_role('button', name='元に戻す', exact=True)).to_be_visible()
+        assert sessions[1]['lifecycle'] == 'closed'
+        page.get_by_role('button', name='元に戻す', exact=True).click()
+        expect(target_row).to_be_visible()
+        assert sessions[1]['lifecycle'] == 'open'
+        page.reload()
+        expect(page.get_by_role('combobox', name='会話の状態')).to_have_value('all')
+        context.close()
+        print('PASS lifecycle: pagination/SSE close/reopen/search/source/reset', flush=True)
     finally:
         browser.close()

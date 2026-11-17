@@ -2458,6 +2458,7 @@ export function Chat() {
   const [activeKey, setActiveKey] = useState(restored.activeKey);
   const initialHistory = useRef(true);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'open' | 'closed'>('all');
   const [visibleSources, setVisibleSources] = useState<SessionSource[]>(() => {
     try {
       return restoreSessionSources(localStorage);
@@ -2578,6 +2579,7 @@ export function Chat() {
       const requestId = ++loadRequestRef.current;
       const params = new URLSearchParams({ limit: '100', offset: String(offset) });
       if (q.trim()) params.set('q', q.trim());
+      if (lifecycleFilter !== 'all') params.set('lifecycle', lifecycleFilter);
       if (activeProjectId) params.set('projectId', activeProjectId);
       if (activeAgentId) params.set('agentId', activeAgentId);
       setSearching(true);
@@ -2603,7 +2605,7 @@ export function Chat() {
         if (requestId === loadRequestRef.current) setSearching(false);
       }
     },
-    [activeProjectId, activeAgentId, query]
+    [activeProjectId, activeAgentId, lifecycleFilter, query]
   );
 
   useEffect(() => {
@@ -2666,6 +2668,12 @@ export function Chat() {
     const source = new EventSource(`/api/sessions/stream?${streamParams}`);
     source.addEventListener('sessions', (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as SessionsResponse;
+      // The stream is unfiltered by lifecycle. Refresh through the filtered API so
+      // transitions, counts and pagination stay consistent, including during search.
+      if (lifecycleFilter !== 'all') {
+        void loadSessions(0, queryRef.current, false);
+        return;
+      }
       if (queryRef.current.trim()) return;
       const hadAdditionalPages = sessionsRef.current.length > data.sessions.length;
       setSessions((current) => {
@@ -2718,7 +2726,7 @@ export function Chat() {
     };
     source.onerror = () => setNotice('更新ストリームを再接続しています');
     return () => source.close();
-  }, [activeProjectId, activeAgentId]);
+  }, [activeProjectId, activeAgentId, lifecycleFilter]);
 
   useEffect(() => {
     if (skipInitialSearchRef.current) {
@@ -2728,7 +2736,7 @@ export function Chat() {
     window.clearTimeout(searchTimerRef.current);
     searchTimerRef.current = window.setTimeout(() => void loadSessions(0, query, false), 180);
     return () => window.clearTimeout(searchTimerRef.current);
-  }, [activeProjectId, activeAgentId, query]);
+  }, [activeProjectId, activeAgentId, lifecycleFilter, query]);
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
@@ -3090,13 +3098,14 @@ export function Chat() {
     const result: Array<{ label: string; sessions: Session[] }> = [];
     for (const session of sessions) {
       if (!visibleSources.includes(sessionSource(session))) continue;
+      if (lifecycleFilter !== 'all' && session.lifecycle !== lifecycleFilter) continue;
       const label = dateGroup(session.updatedAt);
       const group = result[result.length - 1];
       if (group?.label === label) group.sessions.push(session);
       else result.push({ label, sessions: [session] });
     }
     return result;
-  }, [sessions, visibleSources]);
+  }, [sessions, visibleSources, lifecycleFilter]);
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
@@ -3220,6 +3229,8 @@ export function Chat() {
           <SidebarProjects
             projects={projects}
             activeId={activeProjectId}
+            lifecycleFilter={lifecycleFilter}
+            onLifecycleFilterChange={setLifecycleFilter}
             onSelect={(id) => {
               setActiveAgentId('');
               setActiveProjectId(id);
