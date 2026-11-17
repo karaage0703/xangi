@@ -10,12 +10,16 @@ interface SidebarProject {
 export function SidebarProjects({
   projects,
   activeId,
+  lifecycleFilter,
+  onLifecycleFilterChange,
   onSelect,
   onCreate,
   onEdit,
 }: {
   projects: SidebarProject[];
   activeId: string;
+  lifecycleFilter: 'all' | 'open' | 'closed';
+  onLifecycleFilterChange: (value: 'all' | 'open' | 'closed') => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onEdit: (id: string) => void;
@@ -43,6 +47,19 @@ export function SidebarProjects({
       >
         すべての会話
       </button>
+      <label className="sidebar-lifecycle-filter">
+        <span>会話の状態</span>
+        <select
+          value={lifecycleFilter}
+          onChange={(event) =>
+            onLifecycleFilterChange(event.target.value as 'all' | 'open' | 'closed')
+          }
+        >
+          <option value="all">すべて</option>
+          <option value="open">未完了</option>
+          <option value="closed">完了</option>
+        </select>
+      </label>
       <div className="sidebar-section-heading">
         <h2>
           <button
