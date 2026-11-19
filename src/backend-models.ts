@@ -16,6 +16,13 @@ import { inferEffortFromModelName } from './backend-effort.js';
 import type { AgentBackend } from './config.js';
 import { resolveExtensionAgentBackend } from './extensions.js';
 import { getSafeEnv } from './safe-env.js';
+import {
+  antigravityApiKey,
+  ANTIGRAVITY_API_KEY_ARGS,
+  ANTIGRAVITY_API_KEY_UPGRADE,
+  redactGeminiApiKey,
+  reportsUnsupportedAntigravitySettings,
+} from './antigravity-auth.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
@@ -76,6 +83,8 @@ function hasAuthenticationError(result: CommandResult): boolean {
 function runCommand(command: string, args: string[], input?: string): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const env = getSafeEnv();
+    const key = command === 'agy' ? antigravityApiKey() : undefined;
+    if (key) env.GEMINI_API_KEY = key;
     const child = spawn(configuredBackendCommand(command, env), args, {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       env,
@@ -120,10 +129,12 @@ function runCommand(command: string, args: string[], input?: string): Promise<Co
       if (settled) return;
       settled = true;
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+        reject(
+          new Error(redactGeminiApiKey(stderr.trim(), key) || `${command} exited with code ${code}`)
+        );
         return;
       }
-      resolve({ stdout, stderr });
+      resolve({ stdout: redactGeminiApiKey(stdout, key), stderr: redactGeminiApiKey(stderr, key) });
     });
 
     if (input !== undefined) {
@@ -582,9 +593,22 @@ export async function discoverBackendModels(
       return { backend, source: 'opencode models --verbose', status: 'available', models };
     }
     let result: CommandResult;
+    const apiKey = antigravityApiKey();
     try {
-      result = await runner('agy', ['--output-format', 'json', 'models']);
+      result = await runner('agy', [
+        ...(apiKey ? ANTIGRAVITY_API_KEY_ARGS : []),
+        '--output-format',
+        'json',
+        'models',
+      ]);
     } catch (error) {
+      if (
+        apiKey &&
+        (reportsUnsupportedAntigravitySettings(error) ||
+          isUnsupportedAntigravityOutputFormat(error))
+      ) {
+        throw new Error(ANTIGRAVITY_API_KEY_UPGRADE);
+      }
       if (!isUnsupportedAntigravityOutputFormat(error)) throw error;
       antigravitySource = 'agy models (legacy fallback)';
       result = await runner('agy', ['models']);

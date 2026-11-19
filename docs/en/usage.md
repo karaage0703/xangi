@@ -1860,6 +1860,12 @@ When `SKIP_PERMISSIONS=true` (the default), xangi passes `--always-approve` to a
 
 ### Antigravity CLI (`AGENT_BACKEND=antigravity`)
 
+To use a Google AI Studio key, set `GEMINI_API_KEY` in xangi's `.env`, Connections and API Keys, or `xangi settings`, then restart xangi. Without an effective key, Agy keeps its existing authentication behavior. To override a key saved in the settings UI, explicitly set `GEMINI_API_KEY=` in the environment or `.env` and restart xangi. With a key, xangi passes it as an environment variable and selects the Gemini provider for regular replies, streaming, and model discovery using the session-only `--settings '{"modelProvider":"gemini"}'`. This requires an Agy version that supports both that option and Gemini API key authentication. xangi does not modify persistent Agy settings or fall back to account sign-in after an authentication failure. [Official Agy authentication guide](https://antigravity.google/docs/install#using-a-gemini-api-key)
+
+An inherited shell `GEMINI_API_KEY` also opts in. xangi reports the Agy authentication mode at startup when a key takes effect or Antigravity is the default backend. Connections and API Keys shows when an explicitly empty environment value overrides a saved key.
+
+Usage and billing belong to the Gemini API project. With a key configured, Monitor does not fetch Agy account quotas or display old statusline quota snapshots. Removing the key restores the previous behavior. Start a new conversation if a session cannot be resumed after switching authentication. Check the [official FAQ](https://antigravity.google/docs/faq) and applicable terms before using any authentication method.
+
 Starting with Agy 1.5.7, headless runs without a saved agent mode start in Auto where available. To retain Default, leave `ANTIGRAVITY_MODE` unset and select Default under Agent Mode in Agy's `/config` as the same OS user that runs xangi. This saves `agentMode: ""`. After upgrading, check permissions with a representative unattended task. `SKIP_PERMISSIONS=true` does not bypass protected commands or administrator approval policies.
 
 When `/models antigravity` lists Gemini 4 Hydrogen (XHigh), select its model ID (`gemini-4-hydrogen-xhigh`) and leave effort unset. XHigh is selected by the model ID, not by a separate Antigravity effort setting.

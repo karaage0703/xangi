@@ -7,6 +7,7 @@ import type { AppLayout } from '../installer/types.js';
 import {
   authenticationGuide,
   buildGuidedLaunchArgs,
+  guidedLaunchEnv,
   detectGuidedBackends,
   type DetectedBackend,
   type DetectBackendsOptions,
@@ -125,7 +126,7 @@ async function launchRescueBackend(
         buildGuidedLaunchArgs(backend, prepared.visiblePrompt),
         {
           cwd,
-          env: process.env,
+          env: guidedLaunchEnv(backend),
           stdio: 'inherit',
         }
       );

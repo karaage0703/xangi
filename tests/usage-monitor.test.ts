@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   parseCodexContextUsage,
   parseCodexRateLimits,
@@ -969,6 +969,18 @@ describe('usage monitor parsers', () => {
     const res4 = await readAntigravityUsage(mockRunner, 70_000);
     expect(runnerCallCount).toBe(2);
     expect(res4.sourceType).toBe('live');
+  });
+
+  it('does not read personal account usage in Agy API key mode', async () => {
+    resetAntigravityUsageState();
+    const runner = vi.fn(async () => '');
+    vi.stubEnv('GEMINI_API_KEY', 'agy-test-secret');
+    try {
+      await expect(readAntigravityUsage(runner)).rejects.toThrow('API');
+      expect(runner).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('falls back to snapshot when agy live runner fails', async () => {

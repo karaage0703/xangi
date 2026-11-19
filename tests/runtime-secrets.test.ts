@@ -21,12 +21,14 @@ describe('loadStoredSecrets', () => {
       DISCORD_ALLOWED_USER: '123456789012345678',
       SLACK_APP_TOKEN: 'stored-slack-app',
       SLACK_USER_TOKEN: 'xoxp-stored-user',
+      GEMINI_API_KEY: 'agy-stored-key',
     });
     const env: NodeJS.ProcessEnv = {
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: join(root, 'data'),
       XDG_STATE_HOME: join(root, 'state'),
       DISCORD_TOKEN: 'explicit-discord',
+      GEMINI_API_KEY: '',
     };
 
     expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
@@ -36,5 +38,12 @@ describe('loadStoredSecrets', () => {
     expect(env.DISCORD_ALLOWED_USER).toBe('123456789012345678');
     expect(env.SLACK_APP_TOKEN).toBe('stored-slack-app');
     expect(env.SLACK_USER_TOKEN).toBe('xoxp-stored-user');
+    expect(env.GEMINI_API_KEY).toBe('');
+
+    delete env.GEMINI_API_KEY;
+    expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
+      ['GEMINI_API_KEY']
+    );
+    expect(env.GEMINI_API_KEY).toBe('agy-stored-key');
   });
 });

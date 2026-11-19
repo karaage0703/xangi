@@ -731,16 +731,21 @@ export async function webConnectionSettingsSnapshot(
         key: string;
         label: string;
         configured: boolean;
+        overriddenByEmptyEnv?: boolean;
         type: 'password' | 'text';
       }>;
     }
   >();
+  const geminiKeyOverridden = process.env.GEMINI_API_KEY?.trim() === '';
   for (const field of SECRET_FIELDS) {
     const group = groups.get(field.group) ?? { label: field.group, fields: [] };
     group.fields.push({
       key: field.name,
       label: field.label,
       configured: Boolean(process.env[field.name] || stored[field.name]),
+      ...(field.name === 'GEMINI_API_KEY' && geminiKeyOverridden && stored[field.name]
+        ? { overriddenByEmptyEnv: true }
+        : {}),
       type: field.type ?? 'password',
     });
     groups.set(field.group, group);
@@ -749,6 +754,9 @@ export async function webConnectionSettingsSnapshot(
     ...Object.keys(stored),
     ...Object.keys(process.env).filter((key) => Boolean(process.env[key])),
   ]);
+  if (geminiKeyOverridden) {
+    configuredSecrets.delete('GEMINI_API_KEY');
+  }
   return {
     groups: [...groups.values()],
     backends: await authenticationSnapshot(configuredSecrets),

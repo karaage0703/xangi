@@ -42,6 +42,7 @@ import { runShutdownCleanup, XANGI_SHUTDOWN_TIMEOUT_MS } from './shutdown.js';
 import { processManager } from './process-manager.js';
 import { getSelfLifecyclePermission } from './self-lifecycle.js';
 import { loadStoredSecrets } from './setup/runtime-secrets.js';
+import { antigravityAuthStartupMessage } from './antigravity-auth.js';
 import { applySetupRuntimeEnvFromProcess } from './installer/runtime-config.js';
 import { acquireDataDirLock } from './data-dir-lock.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
@@ -119,6 +120,8 @@ async function main() {
   console.log(
     `[xangi] Using ${backendName} as agent backend (platform: ${config.agent.platform ?? 'all'})`
   );
+  const antigravityAuthMessage = antigravityAuthStartupMessage(config.agent.backend);
+  if (antigravityAuthMessage) console.log(antigravityAuthMessage);
 
   // スキルを読み込み（`/skill` 再読込と共有する可変参照）
   const skillsRef: SkillsRef = { current: loadSkills(workdir) };

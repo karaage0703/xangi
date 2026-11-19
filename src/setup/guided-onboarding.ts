@@ -1,4 +1,9 @@
 import { assertWorkspaceOutsideManagedDirectories } from '../installer/workspace-protection.js';
+import {
+  antigravityApiKey,
+  ANTIGRAVITY_API_KEY_ARGS,
+  withoutGeminiApiKey,
+} from '../antigravity-auth.js';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -140,6 +145,7 @@ export async function detectGuidedBackends(
         const result = await promisify(execFile)(command, ['--version'], {
           encoding: 'utf8',
           timeout: 5_000,
+          env: withoutGeminiApiKey(),
           maxBuffer: 256 * 1024,
         });
         return (result.stdout || result.stderr || '').trim().split('\n')[0] || undefined;
@@ -150,7 +156,11 @@ export async function detectGuidedBackends(
   const authStatus =
     options.authStatus ??
     ((command: string, args: readonly string[]) => {
-      const result = spawnSync(command, args, { encoding: 'utf8', timeout: 5_000 });
+      const result = spawnSync(command, args, {
+        encoding: 'utf8',
+        timeout: 5_000,
+        env: withoutGeminiApiKey(),
+      });
       return result.status === 0;
     });
   const detected: DetectedBackend[] = [];
@@ -393,10 +403,19 @@ export function buildGuidedLaunchArgs(
       ...(env.AGENT_MODEL ? ['--model', env.AGENT_MODEL] : []),
       prompt,
     ];
-  } else if (selected.id === 'antigravity' || selected.id === 'github-copilot') {
+  } else if (selected.id === 'antigravity') {
+    return [...(antigravityApiKey(env) ? ANTIGRAVITY_API_KEY_ARGS : []), '-i', prompt];
+  } else if (selected.id === 'github-copilot') {
     return ['-i', prompt];
   }
   return [prompt];
+}
+
+export function guidedLaunchEnv(backend: DetectedBackend): NodeJS.ProcessEnv {
+  const env = withoutGeminiApiKey();
+  const key = backend.id === 'antigravity' ? antigravityApiKey() : undefined;
+  if (key) env.GEMINI_API_KEY = key;
+  return env;
 }
 
 async function defaultLaunchGuidedBackend(
@@ -412,7 +431,7 @@ async function defaultLaunchGuidedBackend(
         buildGuidedLaunchArgs(selected, prepared.visiblePrompt),
         {
           cwd,
-          env: process.env,
+          env: guidedLaunchEnv(selected),
           stdio: 'inherit',
         }
       );

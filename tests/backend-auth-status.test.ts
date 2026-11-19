@@ -8,6 +8,20 @@ function detected(id: DetectedBackend['id']): DetectedBackend {
 }
 
 describe('backend authentication status', () => {
+  it('reports an Agy API key without probing the personal login', async () => {
+    const runCommand = vi.fn();
+    const statuses = await backendAuthenticationSnapshot(new Set(['GEMINI_API_KEY']), {
+      detectedBackends: [detected('antigravity')],
+      runCommand,
+    });
+    expect(statuses.find((item) => item.id === 'antigravity')).toMatchObject({
+      state: 'api-key',
+      apiKeyConfigured: true,
+      loginSupported: false,
+    });
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it('reports every supported login-capable backend without exposing command output', async () => {
     const statuses = await backendAuthenticationSnapshot(new Set(), {
       detectedBackends: [detected('codex'), detected('opencode'), detected('grok')],

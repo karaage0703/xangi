@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyGrokModelMetadata,
   discoverBackendModels,
@@ -214,6 +214,44 @@ describe('backend model parsers', () => {
 });
 
 describe('discoverBackendModels', () => {
+  beforeEach(() => vi.stubEnv('GEMINI_API_KEY', undefined));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('selects API key mode for Agy model discovery', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'agy-test-secret');
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockResolvedValue({
+      stdout: JSON.stringify({
+        command: { name: 'models', data: { models: [{ id: 'gemini-test' }] } },
+      }),
+      stderr: '',
+    });
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'available',
+      models: [{ id: 'gemini-test' }],
+    });
+    expect(runner).toHaveBeenCalledExactlyOnceWith('agy', [
+      '--settings',
+      '{"modelProvider":"gemini"}',
+      '--output-format',
+      'json',
+      'models',
+    ]);
+  });
+
+  it.each(['settings', 'output-format'])(
+    'does not retry model discovery in API key mode after an unsupported --%s',
+    async (flag) => {
+      vi.stubEnv('GEMINI_API_KEY', 'agy-test-secret');
+      const runner = vi
+        .fn<ModelDiscoveryCommandRunner>()
+        .mockRejectedValue(new Error('flag provided but not defined: -' + flag));
+      await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+        status: 'unavailable',
+        message: expect.stringContaining('agyを更新'),
+      });
+      expect(runner).toHaveBeenCalledTimes(1);
+    }
+  );
   it('does not hard-code Claude Code models when listing is unsupported', async () => {
     const runner = vi.fn<ModelDiscoveryCommandRunner>();
     const result = await discoverBackendModels('claude-code', { runner });

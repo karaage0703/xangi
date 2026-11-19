@@ -1894,6 +1894,12 @@ Grok CLI backend は xAI の `grok` コマンドを使用します。非対話�
 
 ### Antigravity CLI（`AGENT_BACKEND=antigravity` 時）
 
+Google AI StudioのAPIキーで利用するには、xangiの `.env` または「接続とAPIキー」／ `xangi settings` に `GEMINI_API_KEY` を設定し、xangiを再起動してください。有効な設定値がなければ、従来どおりAgyの認証設定を使います。画面から保存したキーを一時的に使わない場合は、実行環境または `.env` に `GEMINI_API_KEY=` を明示して再起動してください。キーを指定した場合は、通常応答・ストリーミング・モデル一覧取得で、Agyにセッション限定の `--settings '{"modelProvider":"gemini"}'` と環境変数を渡します。Agyの保存済み設定は変更せず、認証失敗時にアカウントログインへ切り替えません。この設定には `--settings` とAPIキー認証に対応したAgyが必要です。 [Agy公式認証ガイド](https://antigravity.google/docs/install#using-a-gemini-api-key)
+
+シェルから継承した `GEMINI_API_KEY` も対象です。キーが有効なとき、または既定バックエンドがAntigravityのときは、起動ログにAgyの認証方式を表示します。保存済みのキーを空欄の環境設定で無効にしている場合は、「接続とAPIキー」にその状態を表示します。
+
+APIキーの利用枠・課金はGemini APIプロジェクトに紐づきます。キー設定時はMonitorでAgyの個人契約枠を取得せず、statuslineの個人契約枠も表示しません。キーを外せば従来の表示方法に戻ります。認証方式の切り替え後に以前の会話を再開できない場合は、新規会話を開始してください。xangiで技術的に選べる認証方式がすべての契約で利用できるわけではありません。[公式FAQ](https://antigravity.google/docs/faq)と利用規約を確認してください。
+
 Agy 1.5.7以降は、実行モードが未保存の場合、対応アカウントではヘッドレス実行もAutoで始まります。従来のDefaultを維持するには、`ANTIGRAVITY_MODE`を未指定にし、xangiと同じOSユーザーでAgyの `/config` → Agent Mode → Default を選びます（`agentMode: ""` が保存されます）。更新後は無人実行の代表タスクで権限の挙動を確認してください。`SKIP_PERMISSIONS=true`でも、保護対象コマンドや管理者ポリシーによる承認要件がなくなるわけではありません。
 
 Gemini 4 Hydrogen (XHigh) が `/models antigravity` に出る環境では、そのモデルID（`gemini-4-hydrogen-xhigh`）を選ぶことでXHighを利用できます。Antigravityの独立したeffort設定には `xhigh` を指定せず、effortは未指定にしてください。
