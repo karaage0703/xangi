@@ -42,15 +42,9 @@ describe('guided setup backend preflight', () => {
       version: '1.18.21',
       authGuide: 'opencode auth login',
     };
-    expect(buildGuidedLaunchArgs(backend, 'setup prompt', { AGENT_MODEL: 'xangi-local/qwen' })).toEqual([
-      'run',
-      '--auto',
-      '--agent',
-      'build',
-      '--model',
-      'xangi-local/qwen',
-      'setup prompt',
-    ]);
+    expect(
+      buildGuidedLaunchArgs(backend, 'setup prompt', { AGENT_MODEL: 'xangi-local/qwen' })
+    ).toEqual(['run', '--auto', '--agent', 'build', '--model', 'xangi-local/qwen', 'setup prompt']);
   });
 
   it('launches Antigravity with an interactive initial prompt', () => {
@@ -62,7 +56,10 @@ describe('guided setup backend preflight', () => {
       version: '1.1.22',
       authGuide: 'agyを初回起動して認証',
     };
-    expect(buildGuidedLaunchArgs(backend, 'setup prompt')).toEqual(['-i', 'setup prompt']);
+    expect(buildGuidedLaunchArgs(backend, 'setup prompt', {})).toEqual(['-i', 'setup prompt']);
+    expect(
+      buildGuidedLaunchArgs(backend, 'setup prompt', { GEMINI_API_KEY: 'agy-test-secret' })
+    ).toEqual(['--settings', '{"modelProvider":"gemini"}', '-i', 'setup prompt']);
   });
 
   it('launches GitHub Copilot with an interactive initial prompt for setup and rescue', () => {
@@ -306,7 +303,9 @@ describe('guided setup backend preflight', () => {
     expect(prompt).toContain('tailscale serve --bg --tcp=18888');
     expect(prompt).toContain('setup --access tailscale');
     expect(prompt).toContain('setup --access lan');
-    expect(prompt).toContain('Do not use Funnel or change other forwarding destinations or Serve/Funnel settings');
+    expect(prompt).toContain(
+      'Do not use Funnel or change other forwarding destinations or Serve/Funnel settings'
+    );
     expect(prompt).toContain('Web Chat itself has no authentication');
     expect(prompt).toContain('Discord');
     expect(prompt).not.toContain('Notion sync');

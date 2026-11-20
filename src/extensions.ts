@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { withoutGeminiApiKey } from './antigravity-auth.js';
 import { randomBytes } from 'node:crypto';
 import {
   access,
@@ -682,7 +683,10 @@ export async function runExtensionAction(
   const args: string[] = [action];
   if (options.workspace) args.push('--workspace', options.workspace);
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    const child = spawn(executable, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: withoutGeminiApiKey(),
+    });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 15_000);
@@ -825,7 +829,7 @@ async function startManagedExtension(
   const workspace = resolve(options.workspace ?? process.env.WORKSPACE_PATH ?? process.cwd());
   const executable = resolve(dirname(linked.manifestPath), manifest.entrypoint);
   const token = randomBytes(32).toString('base64url');
-  const childEnv = { ...process.env };
+  const childEnv = withoutGeminiApiKey();
   delete childEnv.XANGI_EXTENSION_HOST_URL;
   delete childEnv.XANGI_EXTENSION_EVENTS_URL;
   delete childEnv.XANGI_EXTENSION_INSTANCE_ID;

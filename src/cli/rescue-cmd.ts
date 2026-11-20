@@ -7,6 +7,7 @@ import type { AppLayout } from '../installer/types.js';
 import {
   authenticationGuide,
   buildGuidedLaunchArgs,
+  guidedLaunchEnv,
   detectGuidedBackends,
   type DetectedBackend,
   type DetectBackendsOptions,
@@ -119,13 +120,14 @@ async function launchRescueBackend(
 ): Promise<number> {
   const prepared = await prepareRescueLaunch(initialPrompt);
   try {
+    const env = await guidedLaunchEnv(backend);
     return await new Promise<number>((resolve, reject) => {
       const child = spawn(
         backend.executable,
-        buildGuidedLaunchArgs(backend, prepared.visiblePrompt),
+        buildGuidedLaunchArgs(backend, prepared.visiblePrompt, env),
         {
           cwd,
-          env: process.env,
+          env,
           stdio: 'inherit',
         }
       );

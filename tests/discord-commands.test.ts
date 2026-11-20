@@ -1088,6 +1088,35 @@ describe('Discord Commands', () => {
       ).resolves.toEqual([{ name: 'gemma-4-26b-a4b', value: 'gemma-4-26b-a4b' }]);
     });
 
+    it('keeps a configured default visible when more than 25 models are returned', async () => {
+      const resolver = { isBackendSelectable: () => true } as BackendResolver;
+      const models = [
+        ...Array.from({ length: 25 }, (_, index) => ({ id: `model-${index}` })),
+        { id: 'gemini-test-free', isDefault: true },
+      ];
+      const discover = vi
+        .fn()
+        .mockResolvedValue({ backend: 'antigravity', source: 'test', status: 'available', models });
+      const input = {
+        commandName: 'backend',
+        focusedName: 'model',
+        focusedValue: '',
+        backend: 'antigravity' as const,
+      };
+      const choices = await getDiscordAutocompleteChoices(input, [], resolver, discover);
+      expect(choices).toHaveLength(25);
+      expect(choices[0].value).toBe('gemini-test-free');
+      expect(models[25].id).toBe('gemini-test-free');
+      await expect(
+        getDiscordAutocompleteChoices(
+          { ...input, focusedValue: 'test-free' },
+          [],
+          resolver,
+          discover
+        )
+      ).resolves.toEqual([{ name: 'gemini-test-free', value: 'gemini-test-free' }]);
+    });
+
     it('returns only effort candidates supported by both xangi and the selected model', async () => {
       const resolver = {
         isBackendSelectable: (backend: string) => backend === 'codex',

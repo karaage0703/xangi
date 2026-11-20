@@ -8,6 +8,7 @@ export interface RuntimeSecretOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   homeDir?: string;
+  names?: readonly string[];
 }
 
 export async function loadStoredSecrets(options: RuntimeSecretOptions = {}): Promise<string[]> {
@@ -23,6 +24,9 @@ export async function loadStoredSecrets(options: RuntimeSecretOptions = {}): Pro
   const secrets = await new SecretStore(join(layout.configDir, 'secrets.json')).all();
   const loaded: string[] = [];
   for (const [name, value] of Object.entries(secrets)) {
+    if (options.names && !options.names.includes(name)) continue;
+    // An explicit empty value opts out of the optional Agy API key mode.
+    if (name === 'GEMINI_API_KEY' && env[name] !== undefined) continue;
     if (env[name]) continue;
     env[name] = value;
     loaded.push(name);

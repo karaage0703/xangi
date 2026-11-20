@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { withoutGeminiApiKey } from './antigravity-auth.js';
 import { promisify } from 'node:util';
 import { CopilotClient } from '@github/copilot-sdk';
 import {
@@ -74,6 +75,7 @@ const UPDATE_COMMANDS: Record<string, readonly string[]> = {
 };
 
 const API_KEY_ENV: Record<string, readonly string[]> = {
+  antigravity: ['GEMINI_API_KEY'],
   'claude-code': ['ANTHROPIC_API_KEY'],
   cursor: ['CURSOR_API_KEY'],
   grok: ['XAI_API_KEY'],
@@ -89,6 +91,7 @@ async function runCommand(command: string, args: readonly string[]): Promise<Com
     const result = await execFileAsync(command, [...args], {
       encoding: 'utf8',
       timeout: PROBE_TIMEOUT_MS,
+      env: withoutGeminiApiKey(),
       maxBuffer: 256 * 1024,
     });
     return { exitCode: 0, output: `${result.stdout}\n${result.stderr}`.trim(), timedOut: false };
@@ -112,6 +115,7 @@ async function runUpdate(command: string, args: readonly string[]): Promise<Comm
     const result = await execFileAsync(command, [...args], {
       encoding: 'utf8',
       timeout: UPDATE_TIMEOUT_MS,
+      env: withoutGeminiApiKey(),
       maxBuffer: 1024 * 1024,
     });
     return { exitCode: 0, output: `${result.stdout}\n${result.stderr}`.trim(), timedOut: false };
@@ -186,7 +190,9 @@ export async function backendAuthenticationSnapshot(
       let state: BackendAuthenticationState = 'not-installed';
 
       if (detectedBackend) {
-        if (backend.id === 'github-copilot') {
+        if (backend.id === 'antigravity' && apiKeyConfigured) {
+          state = 'api-key';
+        } else if (backend.id === 'github-copilot') {
           state = await copilotProbe();
         } else {
           const args = AUTH_PROBES[backend.id];
@@ -204,7 +210,7 @@ export async function backendAuthenticationSnapshot(
         version: detectedBackend?.version,
         state,
         apiKeyConfigured,
-        loginSupported: true,
+        loginSupported: backend.id !== 'antigravity' || !apiKeyConfigured,
         updateSupported: Boolean(UPDATE_COMMANDS[backend.id]),
       };
     })

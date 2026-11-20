@@ -66,6 +66,8 @@ describe('AntigravityRunner', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.ANTIGRAVITY_API_MODEL;
     delete process.env.ANTIGRAVITY_PRINT_TIMEOUT;
     delete process.env.ANTIGRAVITY_MODE;
     process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS = 'false';
@@ -93,6 +95,123 @@ describe('AntigravityRunner', () => {
       expect.arrayContaining(['--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null'])
     );
   });
+
+  it.each(['run', 'stream'] as const)('opts in to API key authentication in %s', async (mode) => {
+    process.env.GEMINI_API_KEY = '  agy-test-secret  ';
+    const { args, env } = await getSpawnArgs(new AntigravityRunner({}), mode);
+    expect(args.slice(0, 2)).toEqual(['--settings', '{"modelProvider":"gemini"}']);
+    expect(args.join(' ')).not.toContain('agy-test-secret');
+    expect(env.GEMINI_API_KEY).toBe('agy-test-secret');
+  });
+
+  it('keeps existing authentication when the key is blank', async () => {
+    process.env.GEMINI_API_KEY = '  ';
+    const { args, env } = await getSpawnArgs(new AntigravityRunner({}), 'run');
+    expect(args).not.toContain('--settings');
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+  });
+
+  it.each(['run', 'stream'] as const)(
+    'selects the configured API model explicitly in %s',
+    async (mode) => {
+      process.env.GEMINI_API_KEY = 'agy-test-secret';
+      process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+      const { args } = await getSpawnArgs(new AntigravityRunner({}), mode);
+      expect(args[args.indexOf('--model') + 1]).toBe('gemini-test-free');
+      expect(
+        JSON.parse(args[args.indexOf('--settings') + 1]).customModelsConfig.customModels[
+          'gemini-test-free'
+        ].modelName
+      ).toBe('gemini-api://gemini-test-free');
+      expect(args.join(' ')).not.toContain('agy-test-secret');
+    }
+  );
+
+  it('preserves an explicitly selected model over the API model default', async () => {
+    process.env.GEMINI_API_KEY = 'agy-test-secret';
+    process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+    const { args } = await getSpawnArgs(new AntigravityRunner({ model: 'gemini-explicit' }), 'run');
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-explicit');
+  });
+
+  it('ignores the API model when API key mode is disabled', async () => {
+    process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+    const { args } = await getSpawnArgs(new AntigravityRunner({}), 'run');
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--settings');
+  });
+
+  it.each(['run', 'stream'] as const)(
+    'does not retry an API key run after unsupported --settings (%s)',
+    async (mode) => {
+      process.env.GEMINI_API_KEY = 'agy-test-secret';
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+      const rejected = expect(promise).rejects.toThrow('agyを更新');
+      const proc = await waitForProcess();
+      proc.stderr.emit('data', Buffer.from('flag provided but not defined: -settings'));
+      proc.emit('close', 2);
+      await rejected;
+      expect(await getProcesses()).toHaveLength(1);
+    }
+  );
+
+  it('does not log or expose the key in Agy authentication diagnostics', async () => {
+    process.env.GEMINI_API_KEY = 'agy-test-secret';
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const pending = new AntigravityRunner({}).runStream('task', {});
+      const rejected = expect(pending).rejects.toThrow('invalid API key [REDACTED]');
+      const proc = await waitForProcess();
+      proc.stderr.emit('data', Buffer.from('invalid API key agy-test-'));
+      proc.stderr.emit('data', Buffer.from('secret'));
+      proc.emit('close', 1);
+      await rejected;
+      expect(log).not.toHaveBeenCalled();
+      expect(await getProcesses()).toHaveLength(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(['run', 'stream'] as const)(
+    'logs bounded, redacted stderr only after success (%s)',
+    async (mode) => {
+      process.env.GEMINI_API_KEY = 'agy-test-secret';
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const runner = new AntigravityRunner({});
+        const pending = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const proc = await waitForProcess();
+        proc.stderr.emit('data', Buffer.from('warning for agy-test-'));
+        proc.stderr.emit('data', Buffer.from('secret\n' + 'x'.repeat(2000)));
+        expect(warn).not.toHaveBeenCalled();
+        if (mode === 'stream') {
+          proc.stdout.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                event: 'result',
+                result: { status: 'SUCCESS', response: 'answer', conversation_id: 'conv' },
+              }) + '\n'
+            )
+          );
+        } else {
+          proc.stdout.emit('data', Buffer.from(success('answer')));
+        }
+        proc.emit('close', 0);
+        await pending;
+        expect(warn).toHaveBeenCalledOnce();
+        const logged = warn.mock.calls.flat().join(' ');
+        expect(logged).toContain('warning for [REDACTED]');
+        expect(logged).not.toContain('agy-test-secret');
+        expect(logged).not.toContain('\n');
+        expect(logged.length).toBeLessThan(1100);
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
 
   async function waitForProcess(count = 1): Promise<any> {
     for (let i = 0; i < 25; i += 1) {

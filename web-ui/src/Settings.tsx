@@ -42,6 +42,7 @@ interface ConnectionGroup {
     key: string;
     label: string;
     configured: boolean;
+    overriddenByEmptyEnv?: boolean;
     type: 'password' | 'text';
   }>;
 }
@@ -946,8 +947,16 @@ export function Settings() {
                       <div className="settings-secret-row" key={field.key}>
                         <div className="settings-secret-label">
                           <span>{field.label}</span>
-                          <strong className={field.configured ? 'configured' : ''}>
-                            {field.configured ? '設定済み' : '未設定'}
+                          <strong
+                            className={
+                              field.configured && !field.overriddenByEmptyEnv ? 'configured' : ''
+                            }
+                          >
+                            {field.overriddenByEmptyEnv
+                              ? '保存済み・空欄の環境設定で無効'
+                              : field.configured
+                                ? '設定済み'
+                                : '未設定'}
                           </strong>
                         </div>
                         <div className="settings-secret-control">

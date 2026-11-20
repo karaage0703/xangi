@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'dotenv';
 import { SecretStore } from '../src/setup/secret-store.js';
+import { resolveAppLayout } from '../src/installer/layout.js';
 import {
   updateWebConnectionSetting,
   updateWebStartupSetting,
@@ -14,9 +15,23 @@ import {
 describe('Web startup settings', () => {
   let root: string;
   const authenticationSnapshot = async () => [];
+  const secretStore = () =>
+    new SecretStore(
+      join(
+        resolveAppLayout({
+          platform: process.platform,
+          arch: process.arch,
+          homeDir: root,
+          xdgConfigHome: process.env.XDG_CONFIG_HOME,
+        }).configDir,
+        'secrets.json'
+      )
+    );
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'web-startup-settings-'));
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('USERPROFILE', root);
     process.env.XANGI_ENV_PATH = join(root, '.env');
     process.env.XDG_CONFIG_HOME = join(root, 'config');
     writeFileSync(
@@ -29,6 +44,7 @@ describe('Web startup settings', () => {
     delete process.env.XANGI_ENV_PATH;
     delete process.env.XDG_CONFIG_HOME;
     delete process.env.DISCORD_STREAMING;
+    vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -125,7 +141,7 @@ describe('Web startup settings', () => {
   });
 
   it('reports secret presence without returning values', async () => {
-    const store = new SecretStore(join(process.env.XDG_CONFIG_HOME!, 'xangi', 'secrets.json'));
+    const store = secretStore();
     await store.set('SLACK_BOT_TOKEN', 'stored-secret');
     const serialized = JSON.stringify(
       (await webConnectionSettingsSnapshot(authenticationSnapshot)).groups
@@ -140,7 +156,7 @@ describe('Web startup settings', () => {
       key: 'ANTHROPIC_API_KEY',
       value: 'new-secret-value',
     });
-    const store = new SecretStore(join(process.env.XDG_CONFIG_HOME!, 'xangi', 'secrets.json'));
+    const store = secretStore();
 
     expect(message).toContain('再起動後');
     expect(message).not.toContain('new-secret-value');
@@ -176,5 +192,38 @@ describe('Web startup settings', () => {
     expect(readFileSync(process.env.XANGI_ENV_PATH!, 'utf8')).not.toContain(
       'openrouter-test-secret'
     );
+  });
+
+  it('accepts and stores the optional AI Studio key without returning it', async () => {
+    const key = 'GEMINI_API_KEY';
+    const value = 'agy-test-secret';
+    const auth = vi.fn(async (configured: ReadonlySet<string>) => {
+      expect(configured.has(key)).toBe(true);
+      return [];
+    });
+    await expect(updateWebConnectionSetting({ key, value })).resolves.not.toContain(value);
+    expect(await secretStore().get(key)).toBe(value);
+    const snapshot = await webConnectionSettingsSnapshot(auth);
+    expect(auth).toHaveBeenCalledOnce();
+    expect(
+      snapshot.groups.flatMap((group) => group.fields).find((field) => field.key === key)
+    ).toMatchObject({ configured: true, type: 'password' });
+    expect(JSON.stringify(snapshot)).not.toContain(value);
+  });
+
+  it('reports a saved AI Studio key disabled by an explicit empty value', async () => {
+    const key = 'GEMINI_API_KEY';
+    vi.stubEnv(key, '');
+    await secretStore().set(key, 'agy-test-secret');
+    const auth = vi.fn(async (configured: ReadonlySet<string>) => {
+      expect(configured.has(key)).toBe(false);
+      return [];
+    });
+    const snapshot = await webConnectionSettingsSnapshot(auth);
+    expect(auth).toHaveBeenCalledOnce();
+    expect(
+      snapshot.groups.flatMap((group) => group.fields).find((field) => field.key === key)
+    ).toMatchObject({ configured: true, overriddenByEmptyEnv: true });
+    expect(JSON.stringify(snapshot)).not.toContain('agy-test-secret');
   });
 });

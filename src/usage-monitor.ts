@@ -4,6 +4,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import { CopilotClient } from '@github/copilot-sdk';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { getSafeEnv } from './safe-env.js';
+import { antigravityApiKey } from './antigravity-auth.js';
 import {
   updateSessionContextUsageByProviderSession,
   updateSessionEstimatedCostByProviderSession,
@@ -286,7 +287,7 @@ function parseCodexResume(output: string): { codexHome: string; path: string } |
     : undefined;
 }
 
-let cached: AccountUsageResponse | undefined;
+const usageCache = new Map<boolean, AccountUsageResponse>();
 
 export function parseCopilotQuota(result: unknown, now = Date.now()): AccountUsageGroup[] {
   const snapshots = (result as { quotaSnapshots?: Record<string, Record<string, unknown>> })
@@ -659,6 +660,7 @@ async function readCopilotUsage(): Promise<AccountUsageProvider> {
 export type AgyUsageRunner = () => Promise<string>;
 
 export async function runAgyUsageProbe(timeoutMs = AGY_USAGE_TIMEOUT_MS): Promise<string> {
+  if (antigravityApiKey()) throw new Error('Antigravity account usage is disabled in API key mode');
   const env = getSafeEnv();
   const configuredCommand = configuredBackendCommand('agy', env);
   return new Promise((resolve, reject) => {
@@ -749,6 +751,7 @@ export async function readAntigravityUsage(
   runner: AgyUsageRunner = runAgyUsageProbe,
   now = Date.now()
 ): Promise<AccountUsageProvider> {
+  if (antigravityApiKey()) throw new Error('Antigravity account usage is disabled in API key mode');
   if (antigravityState.cached && now - antigravityState.fetchedAt < ANTIGRAVITY_CACHE_MS) {
     return antigravityState.cached;
   }
@@ -809,24 +812,29 @@ export async function readClaudeUsage(
   };
 }
 
-let usageInFlight: Promise<AccountUsageResponse> | undefined;
+const usageInFlight = new Map<boolean, Promise<AccountUsageResponse>>();
 export function readAccountUsage(
   ...args: Parameters<typeof fetchAccountUsage>
 ): Promise<AccountUsageResponse> {
-  usageInFlight ??= fetchAccountUsage(...args).finally(() => {
-    usageInFlight = undefined;
-  });
-  return usageInFlight;
+  const apiKeyMode = Boolean(antigravityApiKey());
+  let pending = usageInFlight.get(apiKeyMode);
+  if (!pending) {
+    pending = fetchAccountUsage(...args).finally(() => usageInFlight.delete(apiKeyMode));
+    usageInFlight.set(apiKeyMode, pending);
+  }
+  return pending;
 }
 
 async function fetchAccountUsage(
   runner: CommandRunner = runCodexAppServer,
   readers: Array<() => Promise<AccountUsageProvider>> = [
     readCopilotUsage,
-    readAntigravityUsage,
+    ...(antigravityApiKey() ? [] : [readAntigravityUsage]),
     readClaudeUsage,
   ]
 ): Promise<AccountUsageResponse> {
+  const apiKeyMode = Boolean(antigravityApiKey());
+  const cached = usageCache.get(apiKeyMode);
   if (cached && Date.now() - Date.parse(cached.updatedAt) < CACHE_MS) return cached;
   const input = codexAppServerInput({ method: 'account/rateLimits/read', id: 3 });
   const codexReader = async (): Promise<AccountUsageProvider> => {
@@ -852,11 +860,12 @@ async function fetchAccountUsage(
     if (cached) return { ...cached, stale: true };
     throw new Error('No supported provider returned account usage');
   }
-  cached = {
+  const response = {
     providers,
     updatedAt: new Date().toISOString(),
   };
-  return cached;
+  usageCache.set(apiKeyMode, response);
+  return response;
 }
 
 export async function readCodexContextUsage(

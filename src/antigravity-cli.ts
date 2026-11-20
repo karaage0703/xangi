@@ -1,4 +1,12 @@
 import { privacyConsole as console } from './privacy-console.js';
+import {
+  antigravityApiKey,
+  antigravityApiKeyArgs,
+  antigravityApiModel,
+  ANTIGRAVITY_API_KEY_UPGRADE,
+  redactGeminiApiKey,
+  reportsUnsupportedAntigravitySettings,
+} from './antigravity-auth.js';
 import { ProviderModels } from './provider-model.js';
 import type { RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import {
@@ -18,6 +26,7 @@ import {
   AntigravityTurnError,
   formatErrorDiagnostic,
   isNonRetryableError,
+  NonRetryableError,
 } from './errors.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
@@ -159,6 +168,8 @@ export class AntigravityRunner extends CliRunnerBase {
   private readonly printTimeout: string;
   private readonly disableSlashCommands: boolean;
   private readonly executionMode?: BaseRunnerOptions['antigravityMode'];
+  private readonly apiKey = antigravityApiKey();
+  private readonly apiModel = this.apiKey ? antigravityApiModel() : undefined;
   private modeCapability?: boolean;
   private readonly reportedDiagnostics = new WeakSet<AntigravityStderrError>();
   private slashCommandCapability?: boolean;
@@ -188,7 +199,7 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     outputFormat?: 'json' | 'stream-json'
   ): Promise<string[]> {
-    const args: string[] = [];
+    const args: string[] = this.apiKey ? antigravityApiKeyArgs() : [];
     if (options?.secret)
       args.push('--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
 
@@ -215,11 +226,12 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--dangerously-skip-permissions');
     }
 
-    if (this.model) {
-      args.push('--model', this.model);
+    const model = this.model || this.apiModel;
+    if (model) {
+      args.push('--model', model);
     }
 
-    if (options?.effort && inferEffortFromModelName(this.model ?? '') !== options.effort) {
+    if (options?.effort && inferEffortFromModelName(model ?? '') !== options.effort) {
       args.push('--effort', options.effort);
     }
 
@@ -286,6 +298,7 @@ export class AntigravityRunner extends CliRunnerBase {
   private probeCliOptionsOnce(channelId?: string): Promise<SlashCommandCapabilityProbeResult> {
     return new Promise((resolve, reject) => {
       const env = this.buildEnv(channelId);
+      delete env.GEMINI_API_KEY;
       let settled = false;
       let output = '';
       let proc: ReturnType<typeof spawn> | undefined;
@@ -426,14 +439,15 @@ export class AntigravityRunner extends CliRunnerBase {
       const stdout = await this.collectOutput(args, channelId, {
         encoding: 'utf8',
         exitErrorDetail: (output) => {
-          stdoutOnError = output;
+          stdoutOnError = redactGeminiApiKey(output, this.apiKey);
           stderrDiagnostic = parseAntigravityStderrError(stderr);
-          return this.extractExitErrorDetail(output, stderrDiagnostic);
+          return this.extractExitErrorDetail(stdoutOnError, stderrDiagnostic);
         },
         onStderr: (output) => {
-          stderr = output;
+          stderr = redactGeminiApiKey(output, this.apiKey);
         },
       });
+      this.logCompletedApiKeyStderr(stderr);
       return { stdout, stderr };
     } catch (error) {
       stderrDiagnostic ??= parseAntigravityStderrError(stderr);
@@ -452,12 +466,39 @@ export class AntigravityRunner extends CliRunnerBase {
     }
   }
 
+  private logCompletedApiKeyStderr(stderr: string): void {
+    if (!this.apiKey || !stderr) return;
+    const diagnostic = redactGeminiApiKey(stderr, this.apiKey)
+      .replace(/[\p{Cc}\s]+/gu, ' ')
+      .trim();
+    if (!diagnostic) return;
+    const limit = 1000;
+    const preview = diagnostic.length > limit ? diagnostic.slice(0, limit) + '...' : diagnostic;
+    console.warn('[antigravity] stderr:', preview);
+  }
+
   protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
     return {
       ...super.buildEnv(channelId),
+      ...(this.apiKey ? { GEMINI_API_KEY: this.apiKey } : {}),
       // Discord/Web などへのログ流出を避ける。ユーザーが明示設定していればそれを尊重する。
       AGY_CLI_HIDE_ACCOUNT_INFO: process.env.AGY_CLI_HIDE_ACCOUNT_INFO ?? 'true',
     };
+  }
+
+  protected override buildExitError(code: number | null, detail?: string, stderr?: string): Error {
+    const error = super.buildExitError(
+      code,
+      detail === undefined ? undefined : redactGeminiApiKey(detail, this.apiKey),
+      stderr === undefined ? undefined : redactGeminiApiKey(stderr, this.apiKey)
+    );
+    if (
+      this.apiKey &&
+      (reportsUnsupportedAntigravitySettings(error) || this.isUnsupportedOutputFormat(error))
+    ) {
+      return new NonRetryableError(ANTIGRAVITY_API_KEY_UPGRADE);
+    }
+    return error;
   }
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
@@ -679,12 +720,14 @@ export class AntigravityRunner extends CliRunnerBase {
     const getStderrError = (stderr: string): AntigravityStderrError | undefined => {
       if (stderr !== cachedStderr) {
         cachedStderr = stderr;
-        cachedStderrError = parseAntigravityStderrError(stderr);
+        cachedStderrError = parseAntigravityStderrError(redactGeminiApiKey(stderr, this.apiKey));
       }
       return cachedStderrError;
     };
 
     return {
+      // In API key mode, process diagnostics only after the complete stderr has been collected.
+      ...(this.apiKey ? { handleStderr: () => {} } : {}),
       handleRawLine: (line, phase) => {
         rawOutput += phase === 'stream' ? `${line}\n` : line;
       },
@@ -798,6 +841,7 @@ export class AntigravityRunner extends CliRunnerBase {
         return undefined;
       },
       finalize: (stderr = '') => {
+        this.logCompletedApiKeyStderr(stderr);
         const stderrError = getStderrError(stderr);
         if (!sawNativeEvent) {
           const result = rawOutput.trim();
@@ -1267,6 +1311,7 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   private extractErrorMessage(event: AntigravityJsonResponse): string | undefined {
-    return extractAntigravityErrorMessage(event);
+    const message = extractAntigravityErrorMessage(event);
+    return message === undefined ? undefined : redactGeminiApiKey(message, this.apiKey);
   }
 }

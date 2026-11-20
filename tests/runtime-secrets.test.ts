@@ -12,6 +12,20 @@ afterEach(async () => {
 });
 
 describe('loadStoredSecrets', () => {
+  it('loads only requested names into an isolated environment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-filtered-secrets-'));
+    roots.push(root);
+    const env: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: join(root, 'config') };
+    await new SecretStore(join(env.XDG_CONFIG_HOME!, 'xangi', 'secrets.json')).setMany({
+      GEMINI_API_KEY: 'stored-test-key',
+      DISCORD_TOKEN: 'unrelated-test-token',
+    });
+    expect(
+      await loadStoredSecrets({ env, platform: 'linux', homeDir: root, names: ['GEMINI_API_KEY'] })
+    ).toEqual(['GEMINI_API_KEY']);
+    expect(env.GEMINI_API_KEY).toBe('stored-test-key');
+    expect(env.DISCORD_TOKEN).toBeUndefined();
+  });
   it('fills missing environment values without overriding explicit configuration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-runtime-secrets-'));
     roots.push(root);
@@ -21,12 +35,14 @@ describe('loadStoredSecrets', () => {
       DISCORD_ALLOWED_USER: '123456789012345678',
       SLACK_APP_TOKEN: 'stored-slack-app',
       SLACK_USER_TOKEN: 'xoxp-stored-user',
+      GEMINI_API_KEY: 'agy-stored-key',
     });
     const env: NodeJS.ProcessEnv = {
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: join(root, 'data'),
       XDG_STATE_HOME: join(root, 'state'),
       DISCORD_TOKEN: 'explicit-discord',
+      GEMINI_API_KEY: '',
     };
 
     expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
@@ -36,5 +52,12 @@ describe('loadStoredSecrets', () => {
     expect(env.DISCORD_ALLOWED_USER).toBe('123456789012345678');
     expect(env.SLACK_APP_TOKEN).toBe('stored-slack-app');
     expect(env.SLACK_USER_TOKEN).toBe('xoxp-stored-user');
+    expect(env.GEMINI_API_KEY).toBe('');
+
+    delete env.GEMINI_API_KEY;
+    expect(await loadStoredSecrets({ env, platform: 'linux', arch: 'x64', homeDir: root })).toEqual(
+      ['GEMINI_API_KEY']
+    );
+    expect(env.GEMINI_API_KEY).toBe('agy-stored-key');
   });
 });
