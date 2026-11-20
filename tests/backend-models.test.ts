@@ -214,8 +214,32 @@ describe('backend model parsers', () => {
 });
 
 describe('discoverBackendModels', () => {
-  beforeEach(() => vi.stubEnv('GEMINI_API_KEY', undefined));
+  beforeEach(() => {
+    vi.stubEnv('GEMINI_API_KEY', undefined);
+    vi.stubEnv('ANTIGRAVITY_API_MODEL', undefined);
+  });
   afterEach(() => vi.unstubAllEnvs());
+
+  it('registers the configured API model and marks the returned entry as default', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'agy-test-secret');
+    vi.stubEnv('ANTIGRAVITY_API_MODEL', 'gemini-test-free');
+    const runner = vi.fn<ModelDiscoveryCommandRunner>().mockResolvedValue({
+      stdout: JSON.stringify({
+        command: { name: 'models', data: { models: [{ id: 'gemini-test-free' }] } },
+      }),
+      stderr: '',
+    });
+    await expect(discoverBackendModels('antigravity', { runner })).resolves.toMatchObject({
+      status: 'available',
+      models: [{ id: 'gemini-test-free', isDefault: true }],
+    });
+    const args = runner.mock.calls[0][1];
+    const settings = JSON.parse(args[args.indexOf('--settings') + 1]);
+    expect(settings.customModelsConfig.customModels['gemini-test-free'].modelName).toBe(
+      'gemini-api://gemini-test-free'
+    );
+    expect(args.join(' ')).not.toContain('agy-test-secret');
+  });
 
   it('selects API key mode for Agy model discovery', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'agy-test-secret');

@@ -67,6 +67,7 @@ describe('AntigravityRunner', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     delete process.env.GEMINI_API_KEY;
+    delete process.env.ANTIGRAVITY_API_MODEL;
     delete process.env.ANTIGRAVITY_PRINT_TIMEOUT;
     delete process.env.ANTIGRAVITY_MODE;
     process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS = 'false';
@@ -108,6 +109,36 @@ describe('AntigravityRunner', () => {
     const { args, env } = await getSpawnArgs(new AntigravityRunner({}), 'run');
     expect(args).not.toContain('--settings');
     expect(env.GEMINI_API_KEY).toBeUndefined();
+  });
+
+  it.each(['run', 'stream'] as const)(
+    'selects the configured API model explicitly in %s',
+    async (mode) => {
+      process.env.GEMINI_API_KEY = 'agy-test-secret';
+      process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+      const { args } = await getSpawnArgs(new AntigravityRunner({}), mode);
+      expect(args[args.indexOf('--model') + 1]).toBe('gemini-test-free');
+      expect(
+        JSON.parse(args[args.indexOf('--settings') + 1]).customModelsConfig.customModels[
+          'gemini-test-free'
+        ].modelName
+      ).toBe('gemini-api://gemini-test-free');
+      expect(args.join(' ')).not.toContain('agy-test-secret');
+    }
+  );
+
+  it('preserves an explicitly selected model over the API model default', async () => {
+    process.env.GEMINI_API_KEY = 'agy-test-secret';
+    process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+    const { args } = await getSpawnArgs(new AntigravityRunner({ model: 'gemini-explicit' }), 'run');
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-explicit');
+  });
+
+  it('ignores the API model when API key mode is disabled', async () => {
+    process.env.ANTIGRAVITY_API_MODEL = 'gemini-test-free';
+    const { args } = await getSpawnArgs(new AntigravityRunner({}), 'run');
+    expect(args).not.toContain('--model');
+    expect(args).not.toContain('--settings');
   });
 
   it.each(['run', 'stream'] as const)(

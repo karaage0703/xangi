@@ -6,6 +6,37 @@ export function antigravityApiKey(env: NodeJS.ProcessEnv = process.env): string 
   return env.GEMINI_API_KEY?.trim() || undefined;
 }
 
+export function antigravityApiModel(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const model = env.ANTIGRAVITY_API_MODEL?.trim();
+  if (!model) return undefined;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)) {
+    throw new Error('ANTIGRAVITY_API_MODELにはGemini APIのモデルIDを指定してください');
+  }
+  return model;
+}
+
+export function antigravityApiKeyArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const model = antigravityApiModel(env);
+  if (!model) return [...ANTIGRAVITY_API_KEY_ARGS];
+  return [
+    '--settings',
+    JSON.stringify({
+      modelProvider: 'gemini',
+      model,
+      customModelsConfig: {
+        customModels: {
+          [model]: {
+            modelId: model,
+            modelName: `gemini-api://${model}`,
+            label: model,
+            apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+          },
+        },
+      },
+    }),
+  ];
+}
+
 export function antigravityAuthStartupMessage(
   defaultBackend: string,
   env: NodeJS.ProcessEnv = process.env

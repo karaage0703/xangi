@@ -12,6 +12,20 @@ afterEach(async () => {
 });
 
 describe('loadStoredSecrets', () => {
+  it('loads only requested names into an isolated environment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xangi-filtered-secrets-'));
+    roots.push(root);
+    const env: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: join(root, 'config') };
+    await new SecretStore(join(env.XDG_CONFIG_HOME!, 'xangi', 'secrets.json')).setMany({
+      GEMINI_API_KEY: 'stored-test-key',
+      DISCORD_TOKEN: 'unrelated-test-token',
+    });
+    expect(
+      await loadStoredSecrets({ env, platform: 'linux', homeDir: root, names: ['GEMINI_API_KEY'] })
+    ).toEqual(['GEMINI_API_KEY']);
+    expect(env.GEMINI_API_KEY).toBe('stored-test-key');
+    expect(env.DISCORD_TOKEN).toBeUndefined();
+  });
   it('fills missing environment values without overriding explicit configuration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-runtime-secrets-'));
     roots.push(root);

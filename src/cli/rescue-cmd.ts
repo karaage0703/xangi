@@ -120,13 +120,14 @@ async function launchRescueBackend(
 ): Promise<number> {
   const prepared = await prepareRescueLaunch(initialPrompt);
   try {
+    const env = await guidedLaunchEnv(backend);
     return await new Promise<number>((resolve, reject) => {
       const child = spawn(
         backend.executable,
-        buildGuidedLaunchArgs(backend, prepared.visiblePrompt),
+        buildGuidedLaunchArgs(backend, prepared.visiblePrompt, env),
         {
           cwd,
-          env: guidedLaunchEnv(backend),
+          env,
           stdio: 'inherit',
         }
       );

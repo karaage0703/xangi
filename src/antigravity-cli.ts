@@ -1,7 +1,8 @@
 import { privacyConsole as console } from './privacy-console.js';
 import {
   antigravityApiKey,
-  ANTIGRAVITY_API_KEY_ARGS,
+  antigravityApiKeyArgs,
+  antigravityApiModel,
   ANTIGRAVITY_API_KEY_UPGRADE,
   redactGeminiApiKey,
   reportsUnsupportedAntigravitySettings,
@@ -168,6 +169,7 @@ export class AntigravityRunner extends CliRunnerBase {
   private readonly disableSlashCommands: boolean;
   private readonly executionMode?: BaseRunnerOptions['antigravityMode'];
   private readonly apiKey = antigravityApiKey();
+  private readonly apiModel = this.apiKey ? antigravityApiModel() : undefined;
   private modeCapability?: boolean;
   private readonly reportedDiagnostics = new WeakSet<AntigravityStderrError>();
   private slashCommandCapability?: boolean;
@@ -197,7 +199,7 @@ export class AntigravityRunner extends CliRunnerBase {
     options?: RunOptions,
     outputFormat?: 'json' | 'stream-json'
   ): Promise<string[]> {
-    const args: string[] = this.apiKey ? [...ANTIGRAVITY_API_KEY_ARGS] : [];
+    const args: string[] = this.apiKey ? antigravityApiKeyArgs() : [];
     if (options?.secret)
       args.push('--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
 
@@ -224,11 +226,12 @@ export class AntigravityRunner extends CliRunnerBase {
       args.push('--dangerously-skip-permissions');
     }
 
-    if (this.model) {
-      args.push('--model', this.model);
+    const model = this.model || this.apiModel;
+    if (model) {
+      args.push('--model', model);
     }
 
-    if (options?.effort && inferEffortFromModelName(this.model ?? '') !== options.effort) {
+    if (options?.effort && inferEffortFromModelName(model ?? '') !== options.effort) {
       args.push('--effort', options.effort);
     }
 

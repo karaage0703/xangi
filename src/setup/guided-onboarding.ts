@@ -1,7 +1,8 @@
 import { assertWorkspaceOutsideManagedDirectories } from '../installer/workspace-protection.js';
 import {
   antigravityApiKey,
-  ANTIGRAVITY_API_KEY_ARGS,
+  antigravityApiKeyArgs,
+  antigravityApiModel,
   withoutGeminiApiKey,
 } from '../antigravity-auth.js';
 import { execFile, spawn, spawnSync } from 'node:child_process';
@@ -26,6 +27,7 @@ import type { SetupBackend, SetupWebChatAccess } from './schema.js';
 import { parseSetupConfig, SETUP_WEB_CHAT_ACCESS } from './schema.js';
 import { verifyBackendExecutable } from './backend-executable.js';
 import { SetupStore } from './store.js';
+import { loadStoredSecrets } from './runtime-secrets.js';
 import { writePrivateJsonFile } from './private-json-file.js';
 import type { AppLayout } from '../installer/types.js';
 
@@ -404,16 +406,27 @@ export function buildGuidedLaunchArgs(
       prompt,
     ];
   } else if (selected.id === 'antigravity') {
-    return [...(antigravityApiKey(env) ? ANTIGRAVITY_API_KEY_ARGS : []), '-i', prompt];
+    const key = antigravityApiKey(env);
+    const model = key ? antigravityApiModel(env) : undefined;
+    return [
+      ...(key ? antigravityApiKeyArgs(env) : []),
+      ...(model ? ['--model', model] : []),
+      '-i',
+      prompt,
+    ];
   } else if (selected.id === 'github-copilot') {
     return ['-i', prompt];
   }
   return [prompt];
 }
 
-export function guidedLaunchEnv(backend: DetectedBackend): NodeJS.ProcessEnv {
-  const env = withoutGeminiApiKey();
-  const key = backend.id === 'antigravity' ? antigravityApiKey() : undefined;
+export async function guidedLaunchEnv(backend: DetectedBackend): Promise<NodeJS.ProcessEnv> {
+  const env = { ...process.env };
+  if (backend.id === 'antigravity') {
+    await loadStoredSecrets({ env, names: ['GEMINI_API_KEY'] });
+  }
+  const key = backend.id === 'antigravity' ? antigravityApiKey(env) : undefined;
+  delete env.GEMINI_API_KEY;
   if (key) env.GEMINI_API_KEY = key;
   return env;
 }
@@ -425,13 +438,14 @@ async function defaultLaunchGuidedBackend(
 ): Promise<number> {
   const prepared = await prepareOnboardingLaunch(initialPrompt);
   try {
+    const env = await guidedLaunchEnv(selected);
     return await new Promise<number>((resolve, reject) => {
       const child = spawn(
         selected.executable,
-        buildGuidedLaunchArgs(selected, prepared.visiblePrompt),
+        buildGuidedLaunchArgs(selected, prepared.visiblePrompt, env),
         {
           cwd,
-          env: guidedLaunchEnv(selected),
+          env,
           stdio: 'inherit',
         }
       );

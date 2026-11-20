@@ -18,7 +18,8 @@ import { resolveExtensionAgentBackend } from './extensions.js';
 import { getSafeEnv } from './safe-env.js';
 import {
   antigravityApiKey,
-  ANTIGRAVITY_API_KEY_ARGS,
+  antigravityApiKeyArgs,
+  antigravityApiModel,
   ANTIGRAVITY_API_KEY_UPGRADE,
   redactGeminiApiKey,
   reportsUnsupportedAntigravitySettings,
@@ -596,7 +597,7 @@ export async function discoverBackendModels(
     const apiKey = antigravityApiKey();
     try {
       result = await runner('agy', [
-        ...(apiKey ? ANTIGRAVITY_API_KEY_ARGS : []),
+        ...(apiKey ? antigravityApiKeyArgs() : []),
         '--output-format',
         'json',
         'models',
@@ -617,7 +618,10 @@ export async function discoverBackendModels(
     const { stdout } = result;
     const outputError = extractAntigravityOutputError(stdout);
     if (outputError) throw new Error(outputError);
-    const models = parseAntigravityModels(stdout);
+    const apiModel = apiKey ? antigravityApiModel() : undefined;
+    const models = parseAntigravityModels(stdout).map((model) =>
+      apiModel && model.id === apiModel ? { ...model, isDefault: true } : model
+    );
     if (models.length === 0) throw new Error('agy models returned no models');
     return { backend, source: antigravitySource, status: 'available', models };
   } catch (error) {

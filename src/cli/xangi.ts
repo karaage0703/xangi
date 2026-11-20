@@ -119,7 +119,8 @@ function loadEnvFiles(): void {
       ) {
         value = value.slice(1, -1);
       }
-      if (!process.env[key]) process.env[key] = value;
+      // Match runtime precedence for the optional Agy key, including explicit blanks.
+      if (key === 'GEMINI_API_KEY' || !process.env[key]) process.env[key] = value;
     }
     return;
   }

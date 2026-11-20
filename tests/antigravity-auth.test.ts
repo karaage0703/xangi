@@ -1,5 +1,12 @@
 import { expect, it } from 'vitest';
-import { antigravityAuthStartupMessage } from '../src/antigravity-auth.js';
+import { antigravityAuthStartupMessage, antigravityApiModel } from '../src/antigravity-auth.js';
+
+it.each(['https://example.com/models/test', 'invalid model', '../test'])(
+  'rejects an invalid API model ID: %s',
+  (model) => {
+    expect(() => antigravityApiModel({ ANTIGRAVITY_API_MODEL: model })).toThrow('モデルID');
+  }
+);
 
 it('reports API project billing when an Agy key is set without revealing it', () => {
   const message = antigravityAuthStartupMessage('codex', { GEMINI_API_KEY: 'agy-test-secret' });

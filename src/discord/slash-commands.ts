@@ -311,13 +311,15 @@ export async function getDiscordAutocompleteChoices(
     const discovery = await discoverModels(input.backend);
     if (discovery.status !== 'available') return [];
     return filterAutocompleteChoices(
-      discovery.models.map((model) => ({
-        name:
-          model.displayName && model.displayName !== model.id
-            ? `${model.displayName} (${model.id})`.slice(0, 100)
-            : model.id.slice(0, 100),
-        value: model.id,
-      })),
+      [...discovery.models]
+        .sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)))
+        .map((model) => ({
+          name:
+            model.displayName && model.displayName !== model.id
+              ? `${model.displayName} (${model.id})`.slice(0, 100)
+              : model.id.slice(0, 100),
+          value: model.id,
+        })),
       input.focusedValue
     );
   }
