@@ -1,7 +1,6 @@
 import {
   channelAgent,
-  channelProject,
-  projectChannelAgent,
+  projectSessionAgent,
   defaultAgentWorkspaceId,
   agentWorkspaceRegistry,
   beginAgentChannelTurn,
@@ -15,6 +14,7 @@ import {
   updateSessionAgentBindingKey,
   type SessionScope,
 } from './sessions.js';
+import type { SharedProject } from './project-catalog.js';
 import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
 
 export interface ResolvedSessionWorkspace {
@@ -36,6 +36,8 @@ type WorkspaceOptions = {
   scope?: SessionScope;
   /** Privacy for a newly created session; existing sessions retain their mode. */
   secret?: boolean;
+  project?: SharedProject;
+  webLinked?: boolean;
 };
 export async function ensureSessionWithWorkspace(
   options: WorkspaceOptions
@@ -54,16 +56,20 @@ async function resolveSessionWithWorkspace(
   const registry = options.registry ?? agentWorkspaceRegistry();
   if (!registry) {
     return {
-      appSessionId: ensureSession(contextKey, { platform, scope, secret: options.secret }),
+      appSessionId: ensureSession(contextKey, {
+        platform,
+        scope,
+        secret: options.secret,
+        webLinked: options.webLinked,
+      }),
     };
   }
 
   let activeId = getActiveSessionId(contextKey);
   let activeEntry = activeId ? getSessionEntry(activeId) : undefined;
   const secret = activeEntry?.secret ?? options.secret ?? false;
-  const project = secret ? undefined : channelProject(platform, bindingKey);
-  const agent =
-    (project && projectChannelAgent(platform, bindingKey)) || channelAgent(platform, bindingKey);
+  const project = secret ? undefined : options.project;
+  const agent = project ? projectSessionAgent(project) : channelAgent(platform, bindingKey);
   if (
     activeId &&
     !project &&
@@ -102,6 +108,7 @@ async function resolveSessionWithWorkspace(
     secret,
     scope,
     projectId: project?.id,
+    webLinked: options.webLinked,
     selectedAgentId: agent?.id,
     selectedAgentConfig: agent
       ? {

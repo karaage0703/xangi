@@ -30,7 +30,9 @@ with sync_playwright() as playwright:
                     else:
                         data = runtime
                 elif path == "/api/startup-settings":
-                    data = {"groups": [{"id": "test", "label": "起動設定テスト", "settings": []}]}
+                    groups = [{"id":"test", "label":"起動設定テスト", "settings":[{"key":"WEB_CHAT_PORT", "label":"テストポート", "description":"再起動が必要なテスト設定", "type":"integer", "value":"18888"}]}]
+                    data = {"groups":groups}
+                    if r.request.method == "POST": data["message"] = "起動設定を保存しました"
                 elif path == "/api/runtime-settings/channels":
                     data = {"status": "disabled", "channels": []}
                 elif path == "/api/models":
@@ -68,6 +70,11 @@ with sync_playwright() as playwright:
             pending.pop(0).fulfill(json=connections)
             expect(page.get_by_text("test-version", exact=True)).to_be_visible()
             expect(page.get_by_text("接続と認証状態を確認しています…", exact=True)).not_to_be_visible()
+            startup = page.locator('.settings-startup').filter(has_text='起動設定テストの起動設定')
+            startup.locator('summary').click()
+            startup.get_by_label('テストポート', exact=True).fill('18889')
+            startup.get_by_role('button', name='保存', exact=True).click()
+            expect(page.get_by_text('今すぐ反映する場合は、xangiに「再起動して」と依頼してください。再起動中は接続が一時的に切れます。', exact=True)).to_be_in_viewport()
             assert not errors, errors
             print(json.dumps({"width": width, "pending_save": True, "failure_isolated": True, "retry_success": True}))
             context.close()

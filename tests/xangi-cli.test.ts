@@ -186,6 +186,10 @@ fi
 if [ "$1" = "describe" ]; then
   exit "\${PM2_DESCRIBE_EXIT:-0}"
 fi
+if [ "$1" = "pid" ]; then
+  echo "\${PM2_PID:-0}"
+  exit 0
+fi
 if [ "$1" = "startup" ]; then
   if [ -n "$PM2_STARTUP_OUTPUT" ]; then
     echo "$PM2_STARTUP_OUTPUT"
@@ -572,6 +576,33 @@ exit 0
     expect(log).toContain('delete xangi-prod');
     expect(log).toContain('start ecosystem.config.cjs --only xangi-prod');
   });
+
+  it.each(['start', 'restart'])(
+    'refuses service %s of a real caller ancestor before PM2 deletion',
+    async (action) => {
+      const fakePm2 = createFakePm2({ PM2_PID: String(process.pid) });
+      const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-self-service-'));
+      try {
+        writeFileSync(
+          join(xangiDir, '.env'),
+          'XANGI_PROCESS_NAME=test\nXANGI_SETUP_CONFIG_PATH=\nXANGI_SETUP_STATE_DIR=\n'
+        );
+        writeFileSync(join(xangiDir, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
+        const result = await runCli(['service', action, '--dir', xangiDir], {
+          PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+        });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('ancestor');
+        const log = readFileSync(fakePm2.logFile, 'utf8');
+        expect(log).toContain('pid test');
+        expect(log).not.toContain('delete test');
+        expect(log).not.toContain('start ecosystem.config.cjs');
+      } finally {
+        rmSync(xangiDir, { recursive: true, force: true });
+        rmSync(fakePm2.dir, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('selects an explicit checkout before loading the caller env or managed configuration', async () => {
     const fakePm2 = createFakePm2();

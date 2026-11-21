@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { secretFilterFromEnv, SECRET_BLOCK_NOTICE } from './secret-filter.js';
 
 const DOWNLOAD_DIR = path.join(
   process.env.DATA_DIR ||
@@ -342,6 +343,8 @@ export function buildAttachmentResult(
   displayText: string;
   attachmentFailure?: 'missing' | 'outside_allowed' | 'mixed';
 } {
+  const filter = secretFilterFromEnv();
+  if (filter.contains(result)) return { filePaths: [], displayText: SECRET_BLOCK_NOTICE };
   const validatedStructuredAttachments = (structuredAttachments ?? [])
     .map((attachment) => resolveAttachmentPath(attachment, workspaceRootOverride))
     .filter((attachment): attachment is string => attachment !== null);
@@ -351,6 +354,12 @@ export function buildAttachmentResult(
       ...validatedStructuredAttachments,
     ]),
   ];
+  try {
+    for (const filePath of filePaths) filter.assertFileSafe(filePath);
+  } catch {
+    // A security rejection must not trigger the automatic attachment recovery/retry.
+    return { filePaths: [], displayText: SECRET_BLOCK_NOTICE };
+  }
   const unattachedMarkers = inspectUnattachedMediaMarkers(
     result,
     workspaceRootOverride,

@@ -1,3 +1,16 @@
+import { installAgentConnectionScheduleWorker } from './agent-connection-schedules.js';
+import {
+  acceptsWorkChannelMessage,
+  projectWorkAgentId,
+  readWorkChannelAgent,
+  workChannelConnection,
+  type ConnectionRoute,
+  type WorkChannel,
+} from './agent-work-channel-routing.js';
+import { ProjectCatalog } from './project-catalog.js';
+import { WebProjectError } from './web-projects.js';
+import { AgentConnectionStore } from './agent-connections.js';
+import { AgentConnectionRuntimes } from './agent-connection-runtime.js';
 import type { PlatformCompletionRefs } from './platform-completion.js';
 import { Client, GatewayIntentBits, Events, Partials, REST, Routes } from 'discord.js';
 import { loadConfig } from './config.js';
@@ -48,9 +61,15 @@ import { acquireDataDirLock } from './data-dir-lock.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
 import { discordChannelUrl, type ExternalChatUrlResolvers } from './external-chat-link.js';
 import { startAutostartExtensions, stopManagedExtensions } from './extensions.js';
-loadRuntimeEnvFile();
-await applySetupRuntimeEnvFromProcess();
-await loadStoredSecrets();
+const connectionWorker = Boolean(process.env.XANGI_AGENT_CONNECTION_ID);
+if (connectionWorker) {
+  // Never reload the parent env file/secrets and reconnect its shared Bots.
+  process.on('disconnect', () => process.kill(process.pid, 'SIGTERM'));
+} else {
+  loadRuntimeEnvFile();
+  await applySetupRuntimeEnvFromProcess();
+  await loadStoredSecrets();
+}
 
 async function main() {
   const config = loadConfig();
@@ -137,6 +156,22 @@ async function main() {
   // 新規 web セッションが古い in-memory state で上書き消去）。
   const releaseDataDirLock = await acquireDataDirLock(dataDir);
 
+  const connections = connectionWorker ? [] : await new AgentConnectionStore(dataDir).read();
+  const connectionRoutes: ConnectionRoute[] = connectionWorker
+    ? JSON.parse(process.env.XANGI_CONNECTION_WORK_CHANNEL_ROUTES || '[]')
+    : connections;
+  const routeDataDir = process.env.XANGI_CONNECTION_PARENT_DATA_DIR || dataDir;
+  const ownConnectionId = process.env.XANGI_AGENT_CONNECTION_ID;
+  const dedicatedAgentId = process.env.XANGI_CONNECTION_AGENT_ID;
+  const acceptsWorkMessage = (platform: WorkChannel['platform'], channelId: string) =>
+    acceptsWorkChannelMessage(routeDataDir, connectionRoutes, platform, channelId, ownConnectionId);
+  const isAssignedWorker = (platform: WorkChannel['platform'], channelId: string) =>
+    Boolean(
+      dedicatedAgentId &&
+      readWorkChannelAgent(routeDataDir, platform, channelId) === dedicatedAgentId &&
+      workChannelConnection(connectionRoutes, platform, dedicatedAgentId)?.id === ownConnectionId
+    );
+
   // 設定を初期化（dataDir 配下の settings.json を使用）
   initSettings(dataDir);
   loadSettings();
@@ -174,8 +209,29 @@ async function main() {
   const eventsServerEnabled = process.env.XANGI_EVENTS_SERVER_ENABLED === 'true';
   const interChatCfg = getInterChatConfig();
   const remotePlatformEnabled = process.env.XANGI_REMOTE_PLATFORM_ENABLED === 'true';
-  if (webChatEnabled || eventsServerEnabled || interChatCfg.enabled || remotePlatformEnabled) {
+  if (
+    connectionWorker ||
+    webChatEnabled ||
+    eventsServerEnabled ||
+    interChatCfg.enabled ||
+    remotePlatformEnabled
+  ) {
     startWebChat({
+      initializeOnly: connectionWorker,
+      connectionRoutes,
+      validateConnectionChat: connectionWorker
+        ? (platform, channelId, projectId) => {
+            if (!isAssignedWorker(platform, channelId))
+              throw new WebProjectError('作業チャンネルの割当が変更されました', 409);
+            if (!projectId) return undefined;
+            const project = ProjectCatalog.readProjects(routeDataDir).find(
+              (item) => item.id === projectId
+            );
+            if (!project || projectWorkAgentId(project) !== dedicatedAgentId)
+              throw new WebProjectError('Projectの担当または作業チャンネルが変更されました', 409);
+            return project;
+          }
+        : undefined,
       agentRunner,
       platformTurnBusy: (key) => discordTurnCoordinator.isBusy(key) || isSlackConversationBusy(key),
       historyPrefetch: config.historyPrefetch,
@@ -276,7 +332,7 @@ async function main() {
       platform === 'discord'
         ? resolveCachedDiscordDestinationLabel(client, destinationId)
         : undefined;
-    settingsChannelListers.discord = () => listDiscordSettingsChannels(client);
+    settingsChannelListers.discord = () => listDiscordSettingsChannels(client, connectionWorker);
     externalChatUrlResolvers.discord = async ({ contextKey }) => {
       const channel = await client.channels.fetch(contextKey).catch(() => null);
       if (!channel) return undefined;
@@ -358,6 +414,7 @@ async function main() {
       workdir,
       workspaceRegistry,
       turnCoordinator: discordTurnCoordinator,
+      acceptWorkChannelMessage: (channelId) => acceptsWorkMessage('discord', channelId),
     });
 
     // スケジューラに Discord 送信関数とエージェント実行関数を登録
@@ -384,6 +441,7 @@ async function main() {
     platformStartupTasks.push(
       startSlackBot({
         remoteInputRef: slackRemoteInputRef,
+        acceptWorkChannelMessage: (channelId) => acceptsWorkMessage('slack', channelId),
         workspaceRegistry,
         config,
         agentRunner,
@@ -415,16 +473,23 @@ async function main() {
     process.exit(1);
   }
 
+  const connectionRuntimes = new AgentConnectionRuntimes(dataDir, workdir, workspaceRegistry);
+  if (!connectionWorker) await connectionRuntimes.start(connections);
+
   // Discord/Slackは同時に接続する。一方が再試行中でも他方とWebは利用できる。
   // スケジューラのstartup taskは全ての有効platformのready後に開始する。
   await Promise.all(platformStartupTasks);
 
   // Extensions inherit the listening tool server URL and may immediately send triggers.
-  await startAutostartExtensions({ workspace: config.agent.config.workdir });
+  if (!connectionWorker) await startAutostartExtensions({ workspace: config.agent.config.workdir });
   agentRunner.initializeDefaultRunner();
 
   // スケジューラの全ジョブを開始
   scheduler.startAll(config.scheduler);
+  if (connectionWorker) {
+    installAgentConnectionScheduleWorker(scheduler, config.discord.enabled ? 'discord' : 'slack');
+    process.send?.({ type: 'agent-connection-ready' });
+  }
 
   // シャットダウン時にスケジューラを停止し、dataDir ロックを解放
   let shutdownPromise: Promise<void> | undefined;
@@ -433,6 +498,7 @@ async function main() {
       stopScheduler: () => scheduler.stopAll(),
       finalizeActiveStreams,
       stopAgentProcesses: async () => {
+        await connectionRuntimes.stop();
         agentRunner.shutdown();
         await processManager.stopAllAndWait();
       },

@@ -6,7 +6,12 @@ const PANE_STATE_KEY = 'xangi_pane_state_v1';
 export interface PaneDescriptor {
   key: string;
   sessionId: string | null;
-  draftProjectId?: string;
+  linkedDraft?: {
+    projectId?: string;
+    agentId: string;
+    name: string;
+    channel: { platform: 'discord' | 'slack'; channelId: string };
+  };
 }
 
 let paneSequence = 0;

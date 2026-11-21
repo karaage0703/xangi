@@ -120,6 +120,7 @@ export interface SessionEntry {
   workspacePath?: string;
   /** Web UI上の論理Project。workspaceやディレクトリとは独立している。 */
   projectId?: string;
+  webLinked?: boolean;
   selectedAgentId?: string;
   agentBindingKey?: string;
   selectedAgentConfig?: import('./web-projects.js').WebProject;
@@ -148,6 +149,7 @@ interface SessionSnapshotOptions {
   workspaceId?: string;
   workspacePath?: string;
   projectId?: string;
+  webLinked?: boolean;
   selectedAgentId?: string;
   agentBindingKey?: string;
   selectedAgentConfig?: import('./web-projects.js').WebProject;
@@ -539,6 +541,7 @@ export function createSession(
     workspaceId: opts.workspaceId,
     workspacePath: opts.workspacePath,
     projectId: opts.projectId,
+    webLinked: opts.webLinked,
     selectedAgentId: opts.selectedAgentId,
     agentBindingKey: opts.agentBindingKey,
     selectedAgentConfig: opts.selectedAgentConfig,

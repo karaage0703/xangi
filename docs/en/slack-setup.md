@@ -172,6 +172,25 @@ xangi settings
 
 Enter the Bot Token (xoxb-...), App Token (xapp-...), and allowed user IDs in the Slack fields on the local settings page, then save them. Separate multiple users with commas, or use `*` to allow everyone.
 
+### Dedicated Agent Slack Apps
+
+The connection name is an optional management label. Leave it blank to display the service name (Discord/Slack). It does not change the Bot's name. Saving displays restart guidance. To apply the change now, ask xangi to restart.
+
+In Web settings, edit a saved Agent and select **Discord・Slackの専用Bot → 接続を追加**, then choose Slack. Supply the dedicated App's Bot Token, App Token and allowed user IDs. Configure Socket Mode, events, permissions and Bot invitations using the steps above. Bot/App tokens cannot be reused across shared or dedicated connections.
+
+Additions, edits, disabling and deletion apply after restarting the main xangi process; deleted connections remain active until then. Each App is pinned to its Agent and copies its instructions, AI settings and workspace at startup. After changing Agent settings, restart and begin a new conversation. Existing conversation snapshots are retained.
+
+Connections use isolated child runtimes with separate conversations, schedules and tool credentials even for identical channel IDs. History is retained under `DATA_DIR/agent-connections/<connection-ID>/` and session activity is shared with the main Monitor and pets. Open history from the shared Web UI conversation list and send through the dedicated Bot that owns the conversation. Deletion does not erase history. Reload settings to refresh status. Tokens are stored in `DATA_DIR/agent-connections.json` with mode 600 and never returned by the API. Keep the data directory out of Git.
+
+[Native Slack slash-command names](https://docs.slack.dev/interactivity/implementing-slash-commands/#naming-your-slash-command) may conflict when multiple Apps are installed in one workspace; use ordinary Bot mentions in that case.
+
+
+### Scheduled delivery for assigned Agents
+
+When a channel's assigned Agent has one enabled dedicated Bot for that service, existing schedules owned by the main runtime execute and post through that dedicated Bot. Recreating or moving schedules is unnecessary; their timing and instructions remain unchanged. The Agent is resolved from channel settings on every run, so changing the assignment also changes the Agent for existing schedules on their next run. No Agent names or schedule IDs are special-cased.
+
+Delivery fails if the selected dedicated Bot is disconnected or disabled, or multiple dedicated Bots are enabled for the same Agent/service. The shared Bot does not take over. Keep one dedicated Bot enabled per Agent/service for scheduled delivery, and grant it access and posting permissions in the destination channel.
+
 In a source checkout, the same allowed user IDs and other advanced settings can be placed in `.env`:
 
 ```bash

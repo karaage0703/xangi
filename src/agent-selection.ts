@@ -3,7 +3,7 @@ import { DEFAULT_TEAM_AGENT_ID, teamCallerInstructions, upgradeLegacyTeam } from
 import { migrateTeamId } from './team-migration.js';
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ProjectCatalog } from './project-catalog.js';
+import type { ProjectCatalog, SharedProject } from './project-catalog.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
@@ -16,6 +16,7 @@ import {
   clearClosedSessionTeamSelections,
   getSessionLifecycle,
 } from './sessions.js';
+import { projectWorkAgentId, type WorkChannel } from './agent-work-channel-routing.js';
 import { WebProjectError } from './web-projects.js';
 
 interface Dependencies {
@@ -23,6 +24,7 @@ interface Dependencies {
   registry?: WorkspaceRegistry;
   runner: AgentRunner;
   busy?: (contextKey: string) => boolean;
+  hasConnections?: (agentId: string) => boolean;
 }
 const preparing = new Map<string, number>();
 export function beginAgentChannelTurn(platform: string, channel: string): () => void {
@@ -41,8 +43,7 @@ export async function channelAgentSnapshot(
 ) {
   const release = beginAgentChannelTurn(platform, channel);
   try {
-    const project = channelProject(platform, channel);
-    const agent = projectChannelAgent(platform, channel) || channelAgent(platform, channel);
+    const agent = channelAgent(platform, channel);
     if (agent && !registry) throw new Error('Workspace registry is unavailable');
     const workspace = registry
       ? agent
@@ -52,7 +53,6 @@ export async function channelAgentSnapshot(
           )
       : undefined;
     return {
-      projectId: project?.id,
       workspaceId: workspace?.id,
       workspacePath: workspace?.path,
       selectedAgentId: agent?.id,
@@ -146,18 +146,22 @@ export function defaultAgentWorkspaceId(): string {
 export function agentWorkspaceRegistry(): WorkspaceRegistry | undefined {
   return active?.registry;
 }
-export function channelProject(platform: string, channel: string) {
-  return active?.catalog.forChannel(platform, channel);
-}
-export function projectChannelAgent(platform: string, channel: string) {
-  const project = channelProject(platform, channel);
-  if (!project) return undefined;
-  const id = project.defaultAgentId || bindings[key(platform, channel)] || DEFAULT_TEAM_AGENT_ID;
+export function projectSessionAgent(project: SharedProject) {
+  const dedicatedAgentId = process.env.XANGI_CONNECTION_AGENT_ID;
+  if (dedicatedAgentId) {
+    const execution = active!.catalog.execution(undefined, dedicatedAgentId)!;
+    return {
+      ...execution,
+      id: dedicatedAgentId,
+      prompt: [project.prompt, execution.prompt].filter(Boolean).join('\n\n'),
+    };
+  }
+  const id = projectWorkAgentId(project);
   const execution = active!.catalog.execution(project.id, id)!;
   return { ...execution, id };
 }
 export function channelAgent(platform: string, channel: string) {
-  const id = bindings[key(platform, channel)];
+  const id = process.env.XANGI_CONNECTION_AGENT_ID || bindings[key(platform, channel)];
   const agent =
     id === DEFAULT_TEAM_AGENT_ID
       ? active?.catalog.defaultAgent()
@@ -169,13 +173,11 @@ export function channelAgent(platform: string, channel: string) {
   return agent;
 }
 export const channelIndividualAgent = channelAgent;
-export function agentWorkChannel(
-  agentId: string
-): { platform: string; channelId: string } | undefined {
+export function agentWorkChannel(agentId: string): WorkChannel | undefined {
   const binding = Object.entries(bindings).find(([, id]) => id === agentId);
   if (!binding) return undefined;
   const [platform, channelId] = JSON.parse(binding[0]) as [string, string];
-  return { platform, channelId };
+  if (platform === 'discord' || platform === 'slack') return { platform, channelId };
 }
 /** Kept only to explicitly reject obsolete API callers. */
 export async function changeChannelTeam(_platform: string, _channel: string, _id?: string) {
@@ -251,6 +253,8 @@ export async function changeChannelAgent(
   id?: string,
   teamOnly = false
 ) {
+  if (process.env.XANGI_CONNECTION_AGENT_ID)
+    throw new Error('専用Botの担当はメインのエージェント接続設定から変更してください');
   if (teamOnly || id?.startsWith('team:')) throw new Error('Teamのチャンネル設定は廃止しました');
   if (!active || !file) throw new Error('エージェント設定はWeb Chat有効時に利用できます');
   if (!['discord', 'slack'].includes(platform) || !channel.trim())
@@ -306,6 +310,8 @@ export function removeRegisteredAgent(
 ): void {
   if (id === DEFAULT_TEAM_AGENT_ID)
     throw new WebProjectError('既定のエージェントは削除できません', 400);
+  if (active?.hasConnections?.(id))
+    throw new WebProjectError('個別接続を削除してからエージェントを削除してください', 409);
   if (catalog.list().some((p) => p.defaultAgentId === id))
     throw new WebProjectError('Projectの担当に設定されています', 409);
   if (!catalog.agent(id)) throw new WebProjectError('エージェントが見つかりません', 404);

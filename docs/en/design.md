@@ -44,6 +44,7 @@ Use concise English by default for fixed instructions that xangi sends to AI age
 - Preserve the original language and content of user messages, scheduled tasks, quotations, and workspace instructions. Reply in the user's preferred language.
 - Keep exact Japanese input syntax and UI text when matching requires them. Emit `[Attachment]` for internal attachment labels; readers also accept legacy `[添付ファイル]` markers. Preserve filenames, paths, and user text. Do not invent unsupported English syntax for examples.
 - This is not a requirement to translate Japanese user-facing UI, documentation, or source comments. When adding or changing internal fixed text, review both shared prompts and tool descriptions.
+- This also covers fixed AI instructions appended to tool results or errors. For example, write the secret-detection instruction `SECRET_AI_WARNING` in English and ask the AI to warn the user in their preferred language. Keep this separate from notices shown directly to the user, such as `SECRET_BLOCK_NOTICE`.
 
 ## Architecture
 
@@ -745,7 +746,24 @@ Design points:
 
 Set `XANGI_TOOL_TRAJECTORY_LOG=false` to disable the logger entirely (no files created). The runner only emits observation events; downstream processing of the accumulated JSONL is left to separate tooling. See `docs/usage.md` "Tool Trajectory Logger" for full details.
 
+### Monitoring dedicated Bots
+
+`agent-connection-monitor.ts` sends child session metadata and activity to the parent over IPC for the session-list API and session update stream. Changes are coalesced over 150ms, retaining the latest state while IPC is busy. Connection, session and conversation identities are isolated so Bots sharing a channel cannot overwrite each other's activity. Child exit removes that connection's rows; restart restores them from a fresh snapshot.
+
+List notifications carry display metadata only, excluding secret sessions, conversation previews, credentials and Agent instructions. The shared conversation list and Monitor cover the same child sessions. History, sending, editing, stopping and completion requests go to the child that owns the conversation. History and credential storage remain isolated.
+
+Each child exposes a loopback API protected by a per-start key sent only over IPC. Requests with no valid key and APIs outside conversation operations are rejected. After checking the browser's same-host policy, the parent connects only to registered children. Keys are never returned to browsers; parent cookies and authorization headers are not forwarded to children. Session identities are mapped across JSON and SSE while text, message IDs, request IDs and provider IDs remain unchanged. Browser disconnects close the proxy. The child's existing conversation service handles deduplication and posting to Discord/Slack.
+
+A dedicated Bot's `system_restart` uses request-correlated IPC in `agent-connection-restart.ts` to ask its owning parent. The parent checks its own effective permission and persisted state, then uses the existing SIGTERM path. The child's own restart permission stays off; requests contain neither a parent URL nor an arbitrary command. Repeated request IDs are not executed again. Disconnects and response timeouts report an unknown outcome requiring a status check. The synchronous PM2 checkout delete/start path checks PID ancestry and refuses replacement of the caller or an ancestor before deleting anything.
+
 ### Scheduler (scheduler.ts)
+
+When a channel's assigned Agent has a dedicated Discord/Slack connection, the platform bridge delegates through `agent-connection-schedules.ts` before posting from the shared Bot. The parent retains schedules and the duplicate-run guard; `agent-connection-runtime.ts` selects one enabled child matching the Agent and service. The child's registered platform runner uses its own Bot credentials and Agent configuration. Schedules are neither copied nor moved.
+
+Parent-child IPC correlates start, delivery receipt and completion events by request ID. Child exit fails outstanding requests; the IPC layer neither resends requests nor falls back to the shared Bot. A starting child has up to 60 seconds to become ready. Agents without dedicated connections retain ordinary delivery; disabled, ambiguous or unavailable dedicated connections fail delivery. Children never relay again.
+
+Settings share `ApplyBadge` for apply timing and `RestartGuidance` after saving dedicated Bots, shared connections and startup settings. Guidance asks the user to explicitly request a restart; saving does not restart the process.
+
 
 `runWithBubbleEvents` registers the executing Session by channel and releases it on success, failure, or cancellation. `progress_card` prefers the unique executing Session and falls back to the interactive active Session only when no run is registered. Distinct simultaneous Sessions in the same channel cause rejection. This resolves the update target; it is not HTTP caller authentication.
 
@@ -798,6 +816,12 @@ Manages periodic execution and reminders:
 An HTTP API server that allows AI CLIs to safely invoke xangi features (Discord operations, scheduling, system control).
 
 Command execution and GitHub token issuance require a loopback socket peer and a valid Origin when present. External triggers retain their separate Bearer authentication boundary. Ordinary Web APIs validate same-host Origin for reads as well as mutations, independently of extension device ingress authentication and CORS.
+
+`secret-filter.ts` reduces leakage of known values. It selects resolved credentials from the environment by variable name and matches literal, JSON-escaped, and URL-encoded representations. Masking runs at the `DynamicRunnerManager` prompt/response boundary, Local LLM tools, and Tool Server results and supported logs. Discord tools inspect arguments and actual attachment bytes before API calls.
+
+`XANGI_SECRET_FILTER_ENABLED` defaults ON and is exposed through Web startup settings. OFF skips collecting known values and supplies an empty filter, disabling masking and blocking at these boundaries. Managed inputs, tool results, and rejection errors receive a fixed AI warning instruction when detection occurs. History/search preserve detection before truncation so the returned result still carries the instruction. No credential or original arguments are included in it. Final-response detection still becomes an application-generated blocked-send notice; it does not trigger extra inference or independent alert delivery. Compliance with the AI instruction is not guaranteed.
+
+Streaming holds suffixes matching secret prefixes and suppresses further text when a match crosses chunks. Shared attachment inspection rejections do not trigger automatic recovery. This filter covers managed paths; it does not isolate external CLI network access, internal tools, existing management APIs, or arbitrary code running as the same OS user. Files can still change after shared attachment inspection. See [Known secret filter](usage.md#known-secret-filter) for configuration and exclusions.
 
 ```
 AI CLI (Claude Code, etc.)
@@ -1304,7 +1328,7 @@ DATA_DIR/project-catalog.json stores projects and agents, managed separately thr
 
 See [Channel agents and precedence](usage.md#channel-agents-and-precedence).
 
-Project connection settings persist as `defaultAgentId` (Agent ID or `team:<ID>`) and `channel: { platform, channelId }` in `project-catalog.json`. Set them through `POST/PATCH /api/projects`, or clear with null. Continuation uses `POST /api/sessions/:id/discord-continue` and `POST /api/sessions/:id/slack-continue`.
+Project assignees persist as `defaultAgentId` in `project-catalog.json`. New linked chats use the Agent assignment in `channel-agents.json`. Continuation uses `POST /api/sessions/:id/discord-continue` and `POST /api/sessions/:id/slack-continue`.
 
 Discord/Slack support `/agent list`, `/agent status`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
 

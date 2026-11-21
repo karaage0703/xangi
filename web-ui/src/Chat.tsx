@@ -1,3 +1,4 @@
+import { isSecretConversationId } from '../../src/connection-session-id';
 import { useBufferedState } from './useBufferedState';
 import type { ComposerContributionsHandle } from './ComposerContributions';
 import {
@@ -121,6 +122,7 @@ interface Activity extends LiveActivity {
 }
 
 interface Session {
+  connectionId?: string;
   transcriptRevision?: string;
   nextBackend?: {
     backend: string;
@@ -159,9 +161,12 @@ interface Session {
   };
 }
 
+type WorkChannel = NonNullable<PaneDescriptor['linkedDraft']>['channel'];
+const defaultWorkAgentId = 'xangi:default';
+
 interface Project {
   defaultAgentId?: string;
-  channel?: { platform: 'discord' | 'slack'; channelId: string };
+  workChannel?: WorkChannel | null;
   role?: string;
   id: string;
   name: string;
@@ -551,6 +556,7 @@ function ChatPane({
   summary,
   onFocus,
   onClose,
+  onCreateConversation,
   onSessionChange,
   onBusyChange,
   onSessionsInvalidated,
@@ -559,11 +565,9 @@ function ChatPane({
   lifecyclePending,
   refreshVersion,
   onAbortReady,
-  linkedProject,
   composerExtensions = [],
 }: {
   composerExtensions?: ComposerExtension[];
-  linkedProject?: Project;
   pane: PaneDescriptor;
   active: boolean;
   config: Config;
@@ -572,6 +576,7 @@ function ChatPane({
   summary?: Session;
   onFocus: () => void;
   onClose: () => void;
+  onCreateConversation: () => void;
   onSessionChange: (sessionId: string | null) => void;
   onBusyChange: (busy: boolean) => void;
   onSessionsInvalidated: () => Promise<void>;
@@ -651,7 +656,35 @@ function ChatPane({
     if (draft) textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
   }, [draft, sessionId, active]);
 
-  const linkedDraft = !sessionId && linkedProject?.channel ? linkedProject : undefined;
+  const linkedDraft = sessionId ? undefined : pane.linkedDraft;
+  const [destinationName, setDestinationName] = useState<{
+    draft: NonNullable<typeof linkedDraft>;
+    name: string;
+  }>();
+  useEffect(() => {
+    if (!linkedDraft) return;
+    setDraft('');
+    setError('');
+    setRemoteEcho(null);
+    setPendingFiles((files) => {
+      for (const file of files) if (file.localUrl) URL.revokeObjectURL(file.localUrl);
+      return [];
+    });
+    let cancelled = false;
+    const { agentId, channel } = linkedDraft;
+    const query = new URLSearchParams({ platform: channel.platform, agentId });
+    void requestJson<{ channels: { id: string; name: string }[] }>(
+      `/api/runtime-settings/channels?${query}`
+    )
+      .then(({ channels }) => {
+        const name = channels.find((item) => item.id === channel.channelId)?.name;
+        if (!cancelled && name) setDestinationName({ draft: linkedDraft, name });
+      })
+      .catch(() => {}); // The channel ID remains visible if its name is unavailable.
+    return () => {
+      cancelled = true;
+    };
+  }, [linkedDraft]);
   const linkedConversation = Boolean(detail?.linkedChannel);
   const remotePlatform = detail?.platform === 'discord' || detail?.platform === 'slack';
   const editable =
@@ -849,7 +882,11 @@ function ChatPane({
     if ((busy && !sharedSending) || (!summary?.activity?.active && !sharedSending)) return;
     const threadId = liveThreadId(summary);
     if (!threadId) return;
-    const source = new EventSource(`/api/events/stream?thread_id=${encodeURIComponent(threadId)}`);
+    const source = new EventSource(
+      summary?.connectionId && sessionId
+        ? `/api/sessions/${encodeURIComponent(sessionId)}/events`
+        : `/api/events/stream?thread_id=${encodeURIComponent(threadId)}`
+    );
     source.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as PublishedLiveEvent;
@@ -974,7 +1011,7 @@ function ChatPane({
   }
 
   useEffect(() => {
-    if (!sessionId || sessionId.startsWith('secret_')) return;
+    if (!sessionId || isSecretConversationId(sessionId)) return;
     const stored = window.sessionStorage.getItem(submissionKey(sessionId));
     if (stored) {
       try {
@@ -1184,7 +1221,11 @@ function ChatPane({
   async function createSession(secret = false) {
     const result = await requestJson<{ sessionId: string }>(
       '/api/sessions',
-      jsonInit('POST', { projectId, agentId: selectedAgentId, secret })
+      jsonInit('POST', {
+        projectId,
+        agentId: projectId ? undefined : selectedAgentId,
+        secret,
+      })
     );
     onSessionChange(result.sessionId);
     setDetail({
@@ -1362,13 +1403,17 @@ function ChatPane({
       setError('');
       setProcessing(true);
       try {
-        const creationKey = `xangi_linked_creation:${linkedDraft.id}`;
+        const creationKey = `xangi_linked_creation:${linkedDraft.projectId || linkedDraft.agentId}:${linkedDraft.channel.platform}:${linkedDraft.channel.channelId}`;
         const creationRequest = window.sessionStorage.getItem(creationKey) || newRequestId();
         window.sessionStorage.setItem(creationKey, creationRequest);
         const result = await requestJson<{ sessionId: string }>(
           '/api/sessions',
           jsonInit('POST', {
-            projectId: linkedDraft.id,
+            projectId: linkedDraft.projectId,
+            agentId: linkedDraft.projectId ? undefined : linkedDraft.agentId,
+            expectedAgentId: linkedDraft.agentId,
+            mode: 'linked',
+            expectedChannel: linkedDraft.channel,
             message: cleanMessage || files[0]?.name,
             requestId: creationRequest,
           })
@@ -1395,14 +1440,14 @@ function ChatPane({
       setPaletteOpen(false);
       if (!queued) setDraft('');
       const mode = privacyCommand;
-      if (mode === 'status' || (mode === 'on') === sessionId.startsWith('secret_')) {
+      if (mode === 'status' || (mode === 'on') === isSecretConversationId(sessionId)) {
         setError(
-          sessionId.startsWith('secret_')
+          isSecretConversationId(sessionId)
             ? 'シークレットモードはONです。終了・再起動で会話は失われます。'
             : 'シークレットモードはOFFです。'
         );
       } else {
-        if (sessionId.startsWith('secret_'))
+        if (isSecretConversationId(sessionId))
           await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
         await createSession(mode === 'on');
         if (!queued) setDraft('');
@@ -1447,7 +1492,7 @@ function ChatPane({
       await executeCommand(cleanMessage);
       return;
     }
-    if (!sessionId.startsWith('secret_') && !displayMessage) {
+    if (!isSecretConversationId(sessionId) && !displayMessage) {
       await sendShared(sessionId, submission(), Boolean(queued));
       return;
     }
@@ -1708,7 +1753,7 @@ function ChatPane({
     >
       <div className="pane-heading">
         <header
-          className={`pane-header ${sessionId?.startsWith('secret_') ? 'secret-pane-header' : ''}`}
+          className={`pane-header ${isSecretConversationId(sessionId) ? 'secret-pane-header' : ''}`}
         >
           <button
             type="button"
@@ -1720,7 +1765,7 @@ function ChatPane({
               linkedDraft?.name ||
               '(empty)'}
           </button>
-          {sessionId?.startsWith('secret_') && (
+          {isSecretConversationId(sessionId) && (
             <span className="secret-mode-label">シークレット · Webのみ</span>
           )}
           {summary && (
@@ -1761,7 +1806,7 @@ function ChatPane({
                   )
                 }
               >
-                {sessionId.startsWith('secret_') ? '終了して破棄' : '完了して閉じる'}
+                {isSecretConversationId(sessionId) ? '終了して破棄' : '完了して閉じる'}
               </button>
             )}
           <button
@@ -1797,11 +1842,7 @@ function ChatPane({
             セッションを選択
             <br />
             または
-            <button
-              type="button"
-              className="empty-cta"
-              onClick={() => runPaneAction(() => createSession())}
-            >
+            <button type="button" className="empty-cta" onClick={onCreateConversation}>
               ＋ 新しい会話
             </button>
           </div>
@@ -1809,7 +1850,7 @@ function ChatPane({
         {linkedDraft && !showRemoteEcho && (
           <div className="empty-state">{linkedDraft.name}の新しい会話</div>
         )}
-        {sessionId?.startsWith('secret_') && (
+        {isSecretConversationId(sessionId) && (
           <div className="secret-notice" role="status">
             <span>会話の保存を抑えています。終了・削除・サーバー再起動で会話を破棄します。</span>
             チャットサービス・AI提供元の記録、添付・作成ファイルは残る場合があります。
@@ -2047,6 +2088,14 @@ function ChatPane({
         }}
       >
         <div className="pane-command-shell">
+          {linkedDraft && (
+            <p className="pane-destination" role="status">
+              投稿先：{platformLabel(linkedDraft.channel.platform)} /{' '}
+              {destinationName?.draft === linkedDraft
+                ? destinationName.name
+                : `チャンネルID ${linkedDraft.channel.channelId}`}
+            </p>
+          )}
           <div className="pane-composer">
             <button
               type="button"
@@ -2385,9 +2434,11 @@ function SessionProjectDialog({
 
 function NewChatButton({
   onCreate,
+  disabled,
   children,
 }: {
-  onCreate: (secret?: boolean) => void;
+  onCreate: (secret: boolean) => void;
+  disabled: boolean;
   children?: ReactNode;
 }) {
   const menu = useRef<HTMLDetailsElement>(null);
@@ -2404,7 +2455,12 @@ function NewChatButton({
   };
   return (
     <div className="new-chat-control">
-      <button type="button" className="button sidebar-new-chat" onClick={() => select()}>
+      <button
+        type="button"
+        className="button sidebar-new-chat"
+        disabled={disabled}
+        onClick={() => select()}
+      >
         ＋ 新しい会話
       </button>
       <details
@@ -2439,9 +2495,6 @@ function NewChatButton({
         </summary>
         <div className="new-chat-options">
           {children}
-          <button type="button" onClick={() => select()}>
-            通常の会話
-          </button>
           <button type="button" onClick={() => select(true)}>
             シークレット会話<small>Web内だけで会話</small>
           </button>
@@ -2474,6 +2527,7 @@ export function Chat() {
     }
   }, [visibleSources]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [targetsLoaded, setTargetsLoaded] = useState(false);
   const [agents, setAgents] = useState<Project[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [activeAgentId, setActiveAgentId] = useState('');
@@ -2492,40 +2546,7 @@ export function Chat() {
   const [projectName, setProjectName] = useState('');
   const [projectPrompt, setProjectPrompt] = useState('');
   const [projectAgentId, setProjectAgentId] = useState('');
-  const [projectPlatform, setProjectPlatform] = useState<'' | 'discord' | 'slack'>('');
-  const [projectChannelId, setProjectChannelId] = useState('');
-  const [projectChannels, setProjectChannels] = useState<
-    { id: string; name: string; group?: string }[]
-  >([]);
-  const [channelStatus, setChannelStatus] = useState('');
-  const [channelRefresh, setChannelRefresh] = useState(0);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    setProjectChannels([]);
-    if (!projectPlatform || !projectFormOpen) {
-      setChannelStatus('');
-      return;
-    }
-    setChannelStatus('チャンネルを読み込み中…');
-    requestJson<{ channels: { id: string; name: string; group?: string }[]; message?: string }>(
-      `/api/runtime-settings/channels?platform=${projectPlatform}`
-    )
-      .then((result) => {
-        if (!cancelled) {
-          setProjectChannels(result.channels);
-          setChannelStatus(
-            result.message || (result.channels.length ? '' : '利用できるチャンネルがありません')
-          );
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setChannelStatus(error instanceof Error ? error.message : String(error));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectPlatform, projectFormOpen, channelRefresh]);
   const [savingProject, setSavingProject] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -2612,15 +2633,21 @@ export function Chat() {
     void Promise.all([
       loadSessions(0, '', false),
       requestJson<Config>('/api/config').then(setConfig),
-      requestJson<{ agents: Project[] }>('/api/agents').then((r) => setAgents(r.agents)),
       requestJson<{ teams: { id: string; name: string }[] }>('/api/teams').then((r) =>
         setTeams(r.teams)
       ),
-      requestJson<ProjectsResponse>('/api/projects').then((result) => {
-        setProjects(result.projects);
+      Promise.all([
+        requestJson<{ agents: Project[] }>('/api/agents'),
+        requestJson<ProjectsResponse>('/api/projects'),
+      ]).then(([agentResult, projectResult]) => {
+        setAgents(agentResult.agents);
+        setProjects(projectResult.projects);
         setActiveProjectId((current) =>
-          current && !result.projects.some((project) => project.id === current) ? '' : current
+          current && !projectResult.projects.some((project) => project.id === current)
+            ? ''
+            : current
         );
+        setTargetsLoaded(true);
       }),
     ]).catch((cause: unknown) => setNotice(cause instanceof Error ? cause.message : String(cause)));
   }, []);
@@ -2795,7 +2822,7 @@ export function Chat() {
     } else {
       setPanes((current) =>
         current.map((pane) =>
-          pane.key === activeKey ? { ...pane, sessionId, draftProjectId: undefined } : pane
+          pane.key === activeKey ? { ...pane, sessionId, linkedDraft: undefined } : pane
         )
       );
     }
@@ -2816,12 +2843,13 @@ export function Chat() {
     return () => window.removeEventListener('popstate', restore);
   });
 
-  async function createSession(secret = false) {
+  async function createSession(secret = false, paneKey = activeKey) {
+    if (!targetsLoaded) return;
     setAgentViewOpen(false);
     setProjectViewOpen(false);
     setProjectFormOpen(false);
-    const active = panes.find((pane) => pane.key === activeKey);
-    const needsNewPane = !active || Boolean(busyPanes[activeKey]);
+    const active = panes.find((pane) => pane.key === paneKey);
+    const needsNewPane = !active || Boolean(busyPanes[paneKey]);
     let targetKey = active?.key || '';
     if (needsNewPane) {
       const newPane = addPane();
@@ -2833,12 +2861,18 @@ export function Chat() {
       }
       targetKey = newPane.key;
     }
-    const project = projects.find((p) => p.id === activeProjectId);
-    if (project?.channel && !secret) {
+    if (!secret && linkedWorkChannel) {
+      const linkedDraft = {
+        projectId: activeProject?.id,
+        agentId: linkedAgentId,
+        name:
+          activeProject?.name ||
+          agents.find((agent) => agent.id === linkedAgentId)?.name ||
+          '作業チャンネル',
+        channel: linkedWorkChannel,
+      };
       setPanes((current) =>
-        current.map((p) =>
-          p.key === targetKey ? { ...p, sessionId: null, draftProjectId: project.id } : p
-        )
+        current.map((p) => (p.key === targetKey ? { ...p, sessionId: null, linkedDraft } : p))
       );
       setActiveKey(targetKey);
       setSidebarOpen(false);
@@ -2856,7 +2890,7 @@ export function Chat() {
       setPanes((current) =>
         current.map((pane) =>
           pane.key === targetKey
-            ? { ...pane, sessionId: result.sessionId, draftProjectId: undefined }
+            ? { ...pane, sessionId: result.sessionId, linkedDraft: undefined }
             : pane
         )
       );
@@ -2873,8 +2907,6 @@ export function Chat() {
     setProjectName('');
     setProjectPrompt('');
     setProjectAgentId('');
-    setProjectPlatform('');
-    setProjectChannelId('');
     setProjectFormOpen(true);
   }
 
@@ -2886,8 +2918,6 @@ export function Chat() {
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
     setProjectAgentId(project.defaultAgentId || '');
-    setProjectPlatform(project.channel?.platform || '');
-    setProjectChannelId(project.channel?.channelId || '');
     setProjectFormOpen(true);
   }
 
@@ -2900,9 +2930,6 @@ export function Chat() {
         name: projectName.trim(),
         prompt: projectPrompt.trim(),
         defaultAgentId: projectAgentId || null,
-        channel: projectPlatform
-          ? { platform: projectPlatform, channelId: projectChannelId }
-          : null,
       };
       const base = '/api/projects';
       const endpoint = editingProjectId ? `${base}/${encodeURIComponent(editingProjectId)}` : base;
@@ -2982,7 +3009,7 @@ export function Chat() {
       });
       setSessionToComplete(null);
       setUndoCompletion(
-        !target.session.id.startsWith('secret_') && target.session.canReopen !== false
+        !isSecretConversationId(target.session.id) && target.session.canReopen !== false
           ? target
           : null
       );
@@ -2990,7 +3017,7 @@ export function Chat() {
       if (target.paneKey) closePaneNow(target.paneKey);
       await loadSessions(0, query, false);
       setNotice(
-        target.session.id.startsWith('secret_')
+        isSecretConversationId(target.session.id)
           ? 'シークレット会話を破棄しました'
           : target.session.canReopen === false
             ? 'Sessionを完了しました'
@@ -3107,6 +3134,12 @@ export function Chat() {
     return result;
   }, [sessions, visibleSources, lifecycleFilter]);
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const linkedAgentId =
+    (activeProject ? activeProject.defaultAgentId : selectedAgentId) || defaultWorkAgentId;
+  const linkedWorkChannel = agents.find((agent) => agent.id === linkedAgentId)?.workChannel;
+  const editedWorkChannel = agents.find(
+    (agent) => agent.id === (projectAgentId || defaultWorkAgentId)
+  )?.workChannel;
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects]
@@ -3189,7 +3222,10 @@ export function Chat() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <NewChatButton onCreate={(secret) => void createSession(secret)}>
+          <NewChatButton
+            disabled={!targetsLoaded}
+            onCreate={(secret) => void createSession(secret)}
+          >
             {!activeProject && (
               <div className="new-conversation-agent">
                 <label>
@@ -3383,7 +3419,7 @@ export function Chat() {
                             ✓<span className="session-action-label">完了にする</span>
                           </button>
                         )}
-                        {session.platform === 'web' && (
+                        {session.platform === 'web' && !session.connectionId && (
                           <button
                             type="button"
                             aria-label="Projectへ移動"
@@ -3604,54 +3640,12 @@ export function Chat() {
                     </optgroup>
                   </select>
                 </label>
-                <label>
-                  <span>接続先</span>
-                  <select
-                    value={projectPlatform}
-                    onChange={(e) => {
-                      setProjectPlatform(e.target.value as '' | 'discord' | 'slack');
-                      setProjectChannelId('');
-                    }}
-                  >
-                    <option value="">Webのみ</option>
-                    <option value="discord">Discord</option>
-                    <option value="slack">Slack</option>
-                  </select>
-                </label>
-                {projectPlatform && (
-                  <>
-                    <label>
-                      <span>チャンネル</span>
-                      <select
-                        required
-                        value={projectChannelId}
-                        onChange={(e) => setProjectChannelId(e.target.value)}
-                      >
-                        <option value="">チャンネルを選択</option>
-                        {projectChannelId &&
-                          !projectChannels.some((c) => c.id === projectChannelId) && (
-                            <option value={projectChannelId}>{projectChannelId}（未確認）</option>
-                          )}
-                        {projectChannels.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.group ? `${c.group} / ` : ''}
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button type="button" onClick={() => setChannelRefresh((n) => n + 1)}>
-                      チャンネルを再読み込み
-                    </button>
-                    {channelStatus && <p role="status">{channelStatus}</p>}
-                  </>
-                )}
                 <p>
-                  保存後に始まる会話へ適用します。接続したチャンネルの新しい会話はこのProjectに表示され、Webからも続きを送信できます。過去ログは取り込みません。
-                </p>
-                <p>
-                  作業場所や使用するAIは<a href="/settings#agents">エージェント設定</a>
-                  で変更できます。
+                  作業チャンネル
+                  {editedWorkChannel
+                    ? ` ${platformLabel(editedWorkChannel.platform)} / ${editedWorkChannel.channelId}`
+                    : ' 未設定'}
+                  。<a href="/settings#agents">エージェント設定</a>で変更できます。
                 </p>
                 <div className="project-form-actions">
                   {editingProjectId && (
@@ -3874,9 +3868,6 @@ export function Chat() {
                   key={pane.key}
                   composerExtensions={composerExtensions}
                   pane={pane}
-                  linkedProject={projects.find(
-                    (p) => p.id === (pane.draftProjectId || activeProjectId)
-                  )}
                   active={pane.key === activeKey}
                   config={config}
                   projectId={activeProjectId || undefined}
@@ -3884,11 +3875,12 @@ export function Chat() {
                   summary={sessions.find((session) => session.id === pane.sessionId)}
                   onFocus={() => setActiveKey(pane.key)}
                   onClose={() => closePane(pane.key)}
+                  onCreateConversation={() => void createSession(false, pane.key)}
                   onSessionChange={(sessionId) =>
                     setPanes((current) =>
                       current.map((item) =>
                         item.key === pane.key
-                          ? { ...item, sessionId, draftProjectId: undefined }
+                          ? { ...item, sessionId, linkedDraft: undefined }
                           : item
                       )
                     )

@@ -1,3 +1,4 @@
+import { changeChannelAgent } from '../src/agent-selection.js';
 import type { PlatformCompletionRefs } from '../src/platform-completion.js';
 import { registerLineSchedulerBridge, LineChatQueue } from '../src/line.js';
 import { registerTelegramSchedulerBridge } from '../src/telegram.js';
@@ -5,6 +6,15 @@ import { registerTelegramSchedulerBridge } from '../src/telegram.js';
 vi.mock('../src/backend-auth-status.js', () => ({ backendAuthenticationSnapshot: async () => [] }));
 import { requestUserInput, normalizeQuestions } from '../src/user-input.js';
 import { instanceCliCommand } from '../src/instance-cli.js';
+import { AgentConnectionStore, agentConnectionStatus } from '../src/agent-connections.js';
+import { AgentConnectionRuntimes } from '../src/agent-connection-runtime.js';
+import {
+  receiveConnectionApi,
+  removeConnectionApi,
+  connectionApiHeader,
+} from '../src/agent-connection-http.js';
+import { agentConnectionMonitor, connectionSessionId } from '../src/agent-connection-monitor.js';
+import { connectionSessionRef } from '../src/connection-session-id.js';
 import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
 import { runTeamTurn } from '../src/team-runner.js';
@@ -15,6 +25,7 @@ import {
   executeWorkspaceCommand,
 } from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { ProjectCatalog } from '../src/project-catalog.js';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import { ensureSessionWithWorkspace } from '../src/session-workspace.js';
 import {
@@ -389,7 +400,259 @@ describe('web-chat HTTP API', () => {
 
   let webServer: ReturnType<typeof startWebChat>;
   let webConfig: Config;
+  it('includes a dedicated Bot running in a child process in the monitor API', async () => {
+    const catalog = new (await import('../src/project-catalog.js')).ProjectCatalog(
+      process.env.DATA_DIR!
+    );
+    const agent = catalog.saveAgent({ name: 'Dedicated worker', workspaceId: 'default' });
+    const connection = await new AgentConnectionStore(process.env.DATA_DIR!).save(agent.id, {
+      platform: 'discord',
+      botToken: 'monitor-fixture-token',
+      allowedUsers: '123',
+    });
+    const fixture = join(testDir, 'monitor-worker.cjs');
+    writeFileSync(
+      fixture,
+      `
+      const session = {id:'child-session',title:'Dedicated running turn',platform:'discord',
+        contextKey:'same-channel',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
+        messageCount:1,isActive:true,isCurrent:true,lifecycle:'open',executionOrigin:'manual',
+        activity:{state:'thinking',active:true,startedAt:Date.now(),updatedAt:Date.now()}};
+      process.send({type:'agent-connection-ready'});
+      process.send({type:'agent-connection-monitor',sessions:[session]});
+      let finished=false;
+      setInterval(()=>{
+        if(finished || !require('node:fs').existsSync(${JSON.stringify(join(testDir, 'finish-worker'))})) return;
+        finished=true; session.isActive=false;session.activity.active=false;session.activity.state='complete';
+        session.updatedAt=new Date().toISOString();
+        process.send({type:'agent-connection-monitor',sessions:[session]});
+      },20);
+      process.on('disconnect',()=>process.exit(0));
+      process.on('SIGTERM',()=>process.exit(0));
+    `
+    );
+    const registry = await WorkspaceRegistry.open({
+      dataDir: process.env.DATA_DIR!,
+      defaultWorkspacePath: testDir,
+    });
+    const runtimes = new AgentConnectionRuntimes(process.env.DATA_DIR!, testDir, registry, {
+      entry: fixture,
+    });
+    const abort = new AbortController();
+    let consume: Promise<void> | undefined;
+    try {
+      await runtimes.start();
+      await vi.waitFor(
+        async () => {
+          const result = await fetch(
+            `${baseUrl}/api/sessions?includeConnections=true&agentId=${agent.id}`
+          ).then((r) => r.json());
+          expect(result.sessions).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                title: 'Dedicated running turn',
+                selectedAgentId: agent.id,
+                isActive: true,
+                connectionId: connection.id,
+              }),
+            ])
+          );
+        },
+        { timeout: 2000 }
+      );
+      const ordinary = await fetch(`${baseUrl}/api/sessions?agentId=${agent.id}`).then((r) =>
+        r.json()
+      );
+      expect(ordinary.sessions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ connectionId: connection.id })])
+      );
+      const response = await fetch(
+        `${baseUrl}/api/sessions/stream?mode=changes&agentId=${agent.id}`,
+        { signal: abort.signal }
+      );
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let frames = '';
+      consume = (async () => {
+        try {
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            frames += decoder.decode(chunk.value, { stream: true });
+          }
+        } catch (error) {
+          if (!abort.signal.aborted) throw error;
+        }
+      })();
+      await vi.waitFor(() => expect(frames).toContain(`"connectionId":"${connection.id}"`));
+      writeFileSync(join(testDir, 'finish-worker'), 'finish');
+      await vi.waitFor(() => {
+        expect(frames).toContain('event: session_changes');
+        expect(frames).toContain('"isActive":false');
+      });
+      await runtimes.stop();
+      await vi.waitFor(() =>
+        expect(frames).toContain(`"removed":["connection:${connection.id}:child-session"]`)
+      );
+    } finally {
+      abort.abort();
+      await consume;
+      await runtimes.stop();
+    }
+    const stopped = await fetch(
+      `${baseUrl}/api/sessions?includeConnections=true&agentId=${agent.id}`
+    ).then((r) => r.json());
+    expect(stopped.sessions).toEqual([]);
+  });
   const previousCheckInterval = process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
+  it.each(['web', 'discord', 'slack'] as const)(
+    'opens history and sends through the owning private %s Bot API from the unified Web UI',
+    async (platform) => {
+      const agent = { id: 'xangi:default' };
+      const rawId =
+        platform === 'web'
+          ? createWebSession({ title: 'Private Bot history', selectedAgentId: agent.id })
+          : createSession('dedicated-' + platform, { platform, selectedAgentId: agent.id });
+      const contextKey = getSessionEntry(rawId)!.contextKey;
+      const deliverResult = vi.fn().mockResolvedValue(['owning-bot-message']);
+      const id = connectionSessionId('private', rawId);
+      logPrompt(testDir, rawId, 'previous dedicated message');
+      runner.persistResults = true;
+      const send = Object.getOwnPropertyDescriptor(process, 'send');
+      const connected = Object.getOwnPropertyDescriptor(process, 'connected');
+      const ipc: Record<string, unknown>[] = [];
+      Object.defineProperty(process, 'connected', { configurable: true, value: true });
+      Object.defineProperty(process, 'send', {
+        configurable: true,
+        value: (message: Record<string, unknown>, done?: () => void) => {
+          ipc.push(message);
+          receiveConnectionApi('private', message);
+          agentConnectionMonitor.receive('private', agent.id, message);
+          done?.();
+          return true;
+        },
+      });
+      vi.stubEnv('XANGI_AGENT_CONNECTION_ID', 'private');
+      const child = startWebChat({
+        agentRunner: runner,
+        scheduler,
+        resolver,
+        initializeOnly: true,
+        uiEnabled: false,
+        discordRemoteInputRef:
+          platform === 'discord' ? { current: { continueSession: vi.fn(), deliverResult } } : {},
+        slackRemoteInputRef:
+          platform === 'slack' ? { current: { continueSession: vi.fn(), deliverResult } } : {},
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(ipc.some((m) => m.type === 'agent-connection-api-ready')).toBe(true)
+        );
+        const endpoint = ipc.find((m) => m.type === 'agent-connection-api-ready')!;
+        expect((child.address() as { address: string }).address).toBe('127.0.0.1');
+        const privateUrl = `http://127.0.0.1:${endpoint.port}`;
+        expect((await fetch(`${privateUrl}/api/sessions/${rawId}`)).status).toBe(403);
+        expect(
+          (
+            await fetch(`${privateUrl}/api/settings`, {
+              headers: { [connectionApiHeader]: String(endpoint.key) },
+            })
+          ).status
+        ).toBe(403);
+        await vi.waitFor(async () => {
+          const response = await fetch(`${baseUrl}/api/sessions?agentId=${agent.id}`);
+          const list = await response.json();
+          expect(response.status, JSON.stringify(list)).toBe(200);
+          expect(list.sessions.some((s: { id: string }) => s.id === id)).toBe(true);
+        });
+        const detail = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`).then((r) =>
+          r.json()
+        );
+        expect(detail.id).toBe(id);
+        expect(detail.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ content: 'previous dedicated message' }),
+          ])
+        );
+        const submitted = await fetch(
+          `${baseUrl}/api/sessions/${encodeURIComponent(id)}/turn-requests`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'unified-request',
+              message: 'reply via owning Bot',
+              attachments: [],
+            }),
+          }
+        );
+        expect(submitted.status).toBe(202);
+        expect((await submitted.json()).turn.appSessionId).toBe(id);
+        await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+        expect(runner.options.at(-1)?.appSessionId).toBe(rawId);
+        runner.release(contextKey);
+        await vi.waitFor(async () => {
+          const receipt = await fetch(
+            `${baseUrl}/api/sessions/${encodeURIComponent(id)}/turn-requests/unified-request`
+          ).then((r) => r.json());
+          expect(receipt.turn.appSessionId).toBe(id);
+          expect(receipt.turn.state).toBe('completed');
+        });
+        const history = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`).then((r) =>
+          r.json()
+        );
+        expect(history.messages.some((m: { content: string }) => m.content === 'ok')).toBe(true);
+        if (platform !== 'web')
+          expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              appSessionId: rawId,
+              ...(platform === 'discord'
+                ? { webInput: { message: 'reply via owning Bot', attachments: [] } }
+                : { text: 'ok' }),
+            })
+          );
+        const closed = await fetch(`${baseUrl}/api/sessions/close-waiting`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ids: [id] }),
+        }).then((r) => r.json());
+        expect(closed.results).toEqual([{ id, status: 'closed' }]);
+        const command = await fetch(`${baseUrl}/api/web-commands`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ appSessionId: id, input: '/help' }),
+        });
+        expect(command.status).toBe(200);
+        expect(await command.json()).toMatchObject({ kind: 'message' });
+        const resumed = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/resume`, {
+          method: 'POST',
+        }).then((r) => r.json());
+        expect(resumed.sourceId).toBe(id);
+        expect(connectionSessionRef(resumed.sessionId)?.connectionId).toBe('private');
+        const events = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/events`);
+        expect(events.status).toBe(200);
+        const reader = events.body!.getReader();
+        let ready = '';
+        while (!ready.includes('event: ready'))
+          ready += new TextDecoder().decode((await reader.read()).value);
+        expect(ready).toContain(platform === 'web' ? `web:${rawId}` : `${platform}:${contextKey}`);
+        await reader.cancel();
+      } finally {
+        runner.release(contextKey);
+        await new Promise<void>((resolve) => {
+          child.closeAllConnections();
+          child.close(() => resolve());
+        });
+        removeConnectionApi('private');
+        agentConnectionMonitor.remove('private');
+        if (send) Object.defineProperty(process, 'send', send);
+        else Reflect.deleteProperty(process, 'send');
+        if (connected) Object.defineProperty(process, 'connected', connected);
+        else Reflect.deleteProperty(process, 'connected');
+        vi.unstubAllEnvs();
+      }
+    }
+  );
   beforeEach(async () => {
     process.env.AGENT_PARENT_CHECK_INTERVAL_MS = '1000';
     clearSessions();
@@ -4451,21 +4714,31 @@ process.stdin.on('end', () => process.exit(0));
     const { project } = await (
       await post('/api/projects', {
         name: 'Linked',
-        channel: { platform: 'slack', channelId: 'C123' },
       })
     ).json();
-    expect((await post('/api/sessions', { projectId: project.id })).status).toBe(400);
-    expect((await post('/api/sessions', { projectId: project.id, message: '  ' })).status).toBe(
+    await changeChannelAgent('slack', 'C123', 'xangi:default');
+    expect((await post('/api/sessions', { mode: 'linked', projectId: project.id })).status).toBe(
       400
     );
+    expect(
+      (await post('/api/sessions', { mode: 'linked', projectId: project.id, message: '  ' })).status
+    ).toBe(400);
     expect(create).not.toHaveBeenCalled();
     const linkedId = createSession('C123:linked', { platform: 'slack', projectId: project.id });
     const detail = await (await fetch(`${baseUrl}/api/sessions/${linkedId}`)).json();
     expect(detail.linkedChannel).toBe(true);
-    const result = await post('/api/sessions', { projectId: project.id, message: 'Start' });
+    const result = await post('/api/sessions', {
+      mode: 'linked',
+      projectId: project.id,
+      message: 'Start',
+    });
     expect(result.status).toBe(200);
     expect((await result.json()).sessionId).toBe(remoteId);
-    expect(create).toHaveBeenCalledExactlyOnceWith('C123', 'Start');
+    expect(create).toHaveBeenCalledExactlyOnceWith(
+      'C123',
+      'Start',
+      expect.objectContaining({ id: project.id })
+    );
     const secret = await (
       await post('/api/sessions', { projectId: project.id, secret: true })
     ).json();
@@ -4486,15 +4759,207 @@ process.stdin.on('end', () => process.exit(0));
     expect(
       (await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'offline' })).status
     ).toBe(503);
-    expect((await post('/api/sessions', { projectId: project.id, message: 'Start' })).status).toBe(
-      503
-    );
+    expect(
+      (await post('/api/sessions', { mode: 'linked', projectId: project.id, message: 'Start' }))
+        .status
+    ).toBe(503);
   });
+
+  it.each(['discord', 'slack'] as const)(
+    'routes a Project to its dedicated %s Bot via the work channel, while explicit Web creation stays local',
+    async (platform) => {
+      const post = (path: string, body: unknown) =>
+        fetch(baseUrl + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      const { agent } = await (
+        await post('/api/agents', { name: 'Dedicated Agent', prompt: 'Agent instructions' })
+      ).json();
+      const channel = {
+        platform,
+        channelId: platform === 'discord' ? 'dedicated-channel' : 'C_DEDICATED',
+      };
+      await changeChannelAgent(platform, channel.channelId, agent.id);
+      const contextKey =
+        platform === 'discord' ? 'thread-in-dedicated-channel' : 'C_DEDICATED:1700.1';
+      const { project } = await (
+        await post('/api/projects', {
+          name: 'Discord project',
+          defaultAgentId: agent.id,
+          prompt: 'Project instructions',
+        })
+      ).json();
+      const catalog = new ProjectCatalog(process.env.DATA_DIR!);
+      const connection = await new AgentConnectionStore(process.env.DATA_DIR!).save(agent.id, {
+        platform,
+        botToken: `dedicated-${platform}-fixture`,
+        appToken: platform === 'slack' ? 'slack-app-fixture' : undefined,
+        allowedUsers: platform === 'slack' ? 'U123' : '123',
+      });
+      const input = {
+        projectId: project.id,
+        mode: 'linked',
+        expectedChannel: channel,
+        message: 'Start here',
+        requestId: 'project-dedicated-request',
+      };
+      const commonCreate = vi.fn();
+      const commonRef = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
+      commonRef.current = { createSession: commonCreate, continueSession: vi.fn() };
+      expect((await post('/api/sessions', input)).status).toBe(503);
+      expect(commonCreate).not.toHaveBeenCalled();
+      const web = await post('/api/sessions', { projectId: project.id });
+      expect(web.status).toBe(200);
+      expect(getSessionEntry((await web.json()).sessionId)).toMatchObject({
+        platform: 'web',
+        selectedAgentId: agent.id,
+        projectId: project.id,
+      });
+
+      const registry = await WorkspaceRegistry.open({
+        dataDir: process.env.DATA_DIR!,
+        defaultWorkspacePath: testDir,
+      });
+      const workerCreate = vi.fn(async (channelId, _title, snapshot) =>
+        ensureSessionWithWorkspace({
+          registry,
+          platform,
+          contextKey,
+          bindingKey: channelId,
+          project: snapshot,
+          webLinked: true,
+        }).then(({ appSessionId }) => ({ sessionId: appSessionId }))
+      );
+      const deliverResult = vi.fn().mockResolvedValue(['discord-reply-id']);
+      const send = Object.getOwnPropertyDescriptor(process, 'send');
+      const connected = Object.getOwnPropertyDescriptor(process, 'connected');
+      Object.defineProperty(process, 'connected', { configurable: true, value: true });
+      Object.defineProperty(process, 'send', {
+        configurable: true,
+        value: (message: Record<string, unknown>, done?: () => void) => {
+          receiveConnectionApi(connection.id, message);
+          agentConnectionMonitor.receive(connection.id, agent.id, message);
+          done?.();
+          return true;
+        },
+      });
+      vi.stubEnv('XANGI_AGENT_CONNECTION_ID', connection.id);
+      vi.stubEnv('XANGI_CONNECTION_AGENT_ID', agent.id);
+      const worker = startWebChat({
+        initializeOnly: true,
+        agentRunner: runner,
+        workspaceRegistry: registry,
+        resolver,
+        validateConnectionChat: (_platform, _channelId, projectId) =>
+          projectId ? catalog.get(projectId) : undefined,
+        settingsChannelListers: {
+          [platform]: async () => [{ id: channel.channelId, name: '#dedicated' }],
+        },
+        [platform === 'discord' ? 'discordRemoteInputRef' : 'slackRemoteInputRef']: {
+          current: {
+            createSession: workerCreate,
+            continueSession: vi.fn(),
+            deliverResult,
+          },
+        },
+      });
+
+      try {
+        await vi.waitFor(() => expect(worker.listening).toBe(true));
+        agentConnectionStatus.set(connection.id, 'ready');
+        const privateUrl = `http://127.0.0.1:${(worker.address() as { port: number }).port}`;
+        expect(
+          (await fetch(privateUrl + `/api/connection/${platform}-session`, { method: 'POST' }))
+            .status
+        ).toBe(403);
+        const candidates = await fetch(
+          `${baseUrl}/api/runtime-settings/channels?platform=${platform}&agentId=${agent.id}`
+        );
+        expect(await candidates.json()).toMatchObject({
+          channels: [{ id: channel.channelId, name: '#dedicated' }],
+        });
+        expect(
+          (
+            await post('/api/sessions', {
+              ...input,
+              expectedChannel: { ...channel, channelId: 'elsewhere' },
+            })
+          ).status
+        ).toBe(409);
+        expect(workerCreate).not.toHaveBeenCalled();
+        const created = await post('/api/sessions', input);
+        const createdBody = await created.json();
+        expect(created.status, JSON.stringify(createdBody)).toBe(200);
+        const { sessionId } = createdBody;
+        const rawId = connectionSessionRef(sessionId)!.sessionId;
+        expect(sessionId).toBe(connectionSessionId(connection.id, rawId));
+        expect(getSessionEntry(rawId)).toMatchObject({
+          platform,
+          projectId: project.id,
+          selectedAgentId: agent.id,
+          selectedAgentConfig: { prompt: 'Project instructions\n\nAgent instructions' },
+        });
+        expect(await (await post('/api/sessions', input)).json()).toMatchObject({ sessionId });
+        expect(workerCreate).toHaveBeenCalledExactlyOnceWith(
+          channel.channelId,
+          'Start here',
+          expect.objectContaining({ id: project.id })
+        );
+        expect(commonCreate).not.toHaveBeenCalled();
+        await vi.waitFor(async () => {
+          const { sessions } = await fetch(`${baseUrl}/api/sessions?projectId=${project.id}`).then(
+            (r) => r.json()
+          );
+          expect(sessions).toContainEqual(
+            expect.objectContaining({ id: sessionId, projectId: project.id })
+          );
+        });
+        const path = '/api/sessions/' + encodeURIComponent(sessionId);
+        expect(await fetch(baseUrl + path).then((r) => r.json())).toMatchObject({
+          linkedChannel: true,
+        });
+        expect(
+          (
+            await post(path + '/turns', {
+              requestId: 'dedicated-first-turn',
+              message: input.message,
+              attachments: [],
+            })
+          ).status
+        ).toBe(202);
+        await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+        runner.release(contextKey);
+        await vi.waitFor(() =>
+          expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              appSessionId: rawId,
+              webInput: { message: input.message, attachments: [] },
+            })
+          )
+        );
+      } finally {
+        runner.release(contextKey);
+        worker.closeAllConnections();
+        await new Promise<void>((resolve) => worker.close(() => resolve()));
+        agentConnectionStatus.delete(connection.id);
+        agentConnectionMonitor.remove(connection.id);
+        removeConnectionApi(connection.id);
+        vi.unstubAllEnvs();
+        if (send) Object.defineProperty(process, 'send', send);
+        else Reflect.deleteProperty(process, 'send');
+        if (connected) Object.defineProperty(process, 'connected', connected);
+        else Reflect.deleteProperty(process, 'connected');
+      }
+    }
+  );
 
   it.each(['discord', 'slack'] as const)(
     'titles new %s Project conversations from the first message',
     async (platform) => {
       const channelId = platform === 'discord' ? 'discord-channel-id' : 'C123';
+      await changeChannelAgent(platform, channelId, 'xangi:default');
       const ref = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
       const create = vi.fn().mockResolvedValue({ sessionId: 'new-conversation' });
       ref.current = { createSession: create, continueSession: vi.fn() };
@@ -4504,16 +4969,20 @@ process.stdin.on('end', () => process.exit(0));
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
         });
-      const { project } = await (
-        await post('/api/projects', { name: 'task', channel: { platform, channelId } })
-      ).json();
+      const { project } = await (await post('/api/projects', { name: 'task' })).json();
       for (const [message, title] of [
         [' タスクのテスト\n詳細 ', 'タスクのテスト 詳細'],
         ['別の相談', '別の相談'],
         ['😀'.repeat(40), '😀'.repeat(25)],
       ]) {
-        expect((await post('/api/sessions', { projectId: project.id, message })).status).toBe(200);
-        expect(create).toHaveBeenLastCalledWith(channelId, title);
+        expect(
+          (await post('/api/sessions', { mode: 'linked', projectId: project.id, message })).status
+        ).toBe(200);
+        expect(create).toHaveBeenLastCalledWith(
+          channelId,
+          title,
+          expect.objectContaining({ id: project.id })
+        );
       }
       ref.current = undefined;
     }
@@ -5889,9 +6358,7 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
-    expect(chatSource).toContain(
-      "jsonInit('POST', { projectId, agentId: selectedAgentId, secret })"
-    );
+    expect(chatSource).toContain('agentId: projectId ? undefined : selectedAgentId');
     expect(chatSource).toContain('session-project-tag');
     expect(chatSource).toContain('<SidebarProjects');
     expect(chatSource).toContain('className="project-view"');

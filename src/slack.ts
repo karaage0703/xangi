@@ -1,3 +1,5 @@
+import type { SharedProject } from './project-catalog.js';
+import { relayAgentConnectionSchedule } from './agent-connection-schedules.js';
 import { registerSlackCommands } from './slack-commands.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { tokenizeCommand } from './chat-command-input.js';
@@ -923,24 +925,66 @@ export interface SlackRemoteInputBridge {
     appSessionId: string;
     text: string;
     attachments: string[];
+    webInput?: { message: string; attachments: string[] };
   }): Promise<string[]>;
-  createSession(channelId: string, title: string): Promise<{ sessionId: string }>;
+  createSession(
+    channelId: string,
+    title: string,
+    project?: SharedProject
+  ): Promise<{ sessionId: string }>;
   continueSession(input: {
     appSessionId: string;
     message: string;
     attachments?: string[];
   }): Promise<{ response: null }>;
 }
+async function mirrorSlackWebInput(
+  client: WebClient,
+  channel: string,
+  thread_ts: string | undefined,
+  message: string,
+  files: string[]
+): Promise<string> {
+  if (files.length)
+    await client.filesUploadV2({
+      channel_id: channel,
+      thread_ts,
+      file_uploads: files.map((file) => ({ file })),
+    });
+  let firstTs: string | undefined;
+  for (const text of splitSlackResult(`🌐 Webから: ${message}`)) {
+    const posted = await client.chat.postMessage({
+      channel,
+      ...(thread_ts ? { thread_ts } : {}),
+      text,
+      mrkdwn: false,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    if (!posted.ts) throw new Error('Slackへの投稿に失敗しました');
+    firstTs ??= posted.ts;
+  }
+  return firstTs!;
+}
+
 export function createSlackRemoteInputBridge(
   client: WebClient,
   agentRunner: AgentRunner,
   config: Config
 ): SlackRemoteInputBridge {
   return {
-    async deliverResult({ appSessionId, text, attachments }) {
+    async deliverResult({ appSessionId, text, attachments, webInput }) {
       const entry = getSessionEntry(appSessionId);
       if (!entry || entry.platform !== 'slack') throw new Error('Slackセッションが見つかりません');
       const [channel, thread_ts] = entry.contextKey.split(':', 2);
+      if (webInput)
+        await mirrorSlackWebInput(
+          client,
+          channel,
+          thread_ts,
+          webInput.message,
+          webInput.attachments
+        );
       const ids: string[] = [];
       for (const chunk of splitSlackResult(markdownToSlackMrkdwn(text || '✅'))) {
         const posted = await client.chat.postMessage({
@@ -961,7 +1005,7 @@ export function createSlackRemoteInputBridge(
         });
       return ids;
     },
-    async createSession(channelId, title) {
+    async createSession(channelId, title, project) {
       const posted = await client.chat.postMessage({
         channel: channelId,
         text: title,
@@ -974,6 +1018,8 @@ export function createSlackRemoteInputBridge(
         platform: 'slack',
         contextKey: `${channelId}:${posted.ts}`,
         bindingKey: channelId,
+        project,
+        webLinked: true,
       });
       return { sessionId: result.appSessionId };
     },
@@ -1002,6 +1048,7 @@ export function createSlackRemoteInputBridge(
 }
 export interface SlackChannelOptions {
   remoteInputRef?: { current?: SlackRemoteInputBridge };
+  acceptWorkChannelMessage?: (channelId: string) => boolean;
   config: Config;
   agentRunner: AgentRunner;
   resolver: BackendResolver;
@@ -1075,6 +1122,16 @@ export function registerSlackSchedulerBridge(deps: {
     const releaseAgentTurn = beginAgentChannelTurn('slack', channelId);
     try {
       const agentSnapshot = await channelAgentSnapshot('slack', channelId);
+      const relayed = relayAgentConnectionSchedule(
+        agentSnapshot.selectedAgentId,
+        'slack',
+        prompt,
+        destination,
+        schedule,
+        runContext
+      );
+      if (relayed) return await relayed;
+      runContext?.onStart?.();
       const startedAt = Date.now();
       const initialText = '🤔 考え中...';
       const thinking = await client.chat.postMessage({
@@ -1515,6 +1572,18 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     return true;
   };
 
+  const acceptsWorkChannel = (channelId: string) => {
+    try {
+      return options.acceptWorkChannelMessage?.(channelId) !== false;
+    } catch (error) {
+      console.warn(
+        '[slack] Work channel Bot routing failed:',
+        error instanceof Error ? error.message : String(error)
+      );
+      return false;
+    }
+  };
+
   // メンション時の処理
   app.event('app_mention', async ({ event, say, client }) => {
     const userId = event.user;
@@ -1527,6 +1596,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
 
     if (await handleWorkInput(event)) return;
+    if (!acceptsWorkChannel(event.channel)) return;
     const text = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
 
     const files = (event as unknown as Record<string, unknown>).files as
@@ -1672,6 +1742,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
       return;
     }
 
+    if (!acceptsWorkChannel(messageEvent.channel)) return;
     await processSlackInbound({
       actorId: messageEvent.user,
       text: messageEvent.text || '',
@@ -1879,23 +1950,7 @@ export async function processMessage(
     acquiredRunLock = true;
     if (remoteSessionId) {
       activateSession(conversationKey, remoteSessionId);
-      if (remoteAttachments.length) {
-        await client.filesUploadV2({
-          channel_id: channelId,
-          thread_ts: threadTs,
-          file_uploads: remoteAttachments.map((file) => ({ file })),
-        });
-      }
-      const mirrored = await client.chat.postMessage({
-        channel: channelId,
-        text: `🌐 Webから: ${text}`,
-        mrkdwn: false,
-        unfurl_links: false,
-        unfurl_media: false,
-        ...(threadTs && { thread_ts: threadTs }),
-      });
-      if (!mirrored.ts) throw new Error('Slackへの投稿に失敗しました');
-      originalTs = mirrored.ts;
+      originalTs = await mirrorSlackWebInput(client, channelId, threadTs, text, remoteAttachments);
       eventCtx.turnId = turnIdFor('slack', originalTs);
     }
     const controlResult = await handleSecretConversationCommand({

@@ -18,6 +18,7 @@ import { buildCliEnv } from '../cli-process.js';
 import { loadSkills, type Skill } from '../skills.js';
 import { getMimeType, isImageFile } from './image-utils.js';
 import { resolveAttachmentPath } from '../file-utils.js';
+import { secretFilterFromEnv, withSecretAIWarning } from '../secret-filter.js';
 
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
 async function shellExec(
@@ -1125,16 +1126,25 @@ export async function executeTool(
   context: ToolContext
 ): Promise<ToolResult> {
   context.signal?.throwIfAborted();
+  const filter = secretFilterFromEnv();
   const allTools = getAllTools();
   const handler = allTools.find((t) => t.name === name);
-  if (!handler) return { success: false, output: '', error: `Unknown tool: ${name}` };
+  if (!handler)
+    return { success: false, output: '', error: filter.redactForAI(`Unknown tool: ${name}`) };
 
   try {
+    filter.assertValueSafe(args);
     const result = await handler.execute(args, context);
     context.signal?.throwIfAborted();
-    return result;
+    const detected = filter.containsValue(result);
+    const safe = filter.redactValue(result);
+    return { ...safe, output: withSecretAIWarning(safe.output, detected) };
   } catch (err) {
     context.signal?.throwIfAborted();
-    return { success: false, output: '', error: `Tool error: ${String(err)}` };
+    return {
+      success: false,
+      output: '',
+      error: secretFilterFromEnv().redactForAI(`Tool error: ${String(err)}`),
+    };
   }
 }

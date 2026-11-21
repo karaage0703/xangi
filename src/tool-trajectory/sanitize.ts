@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { homedir } from 'os';
+import { secretFilterFromEnv } from '../secret-filter.js';
 
 /**
  * tool-trajectory log の sanitize ヘルパ群。
@@ -77,7 +78,7 @@ export interface SanitizeOptions {
  */
 export function sanitizeArgs(args: unknown, opts: SanitizeOptions): unknown {
   // 循環参照対応のため visited を WeakSet で持つ
-  return walk(args, opts, new WeakSet());
+  return walk(secretFilterFromEnv().redactValue(args), opts, new WeakSet());
 }
 
 function walk(value: unknown, opts: SanitizeOptions, visited: WeakSet<object>): unknown {
@@ -119,20 +120,20 @@ export function sanitizeAndTruncateArgs(args: unknown, opts: SanitizeOptions): u
 /** tool 結果テキストを sanitize + truncate する。 */
 export function sanitizeAndTruncateResult(text: string, opts: SanitizeOptions): string {
   const max = opts.maxResultChars ?? 16384;
-  const masked = maskUrlSecrets(maskHomePath(text, opts.home));
+  const masked = secretFilterFromEnv().redact(maskUrlSecrets(maskHomePath(text, opts.home)));
   return truncate(masked, max);
 }
 
 /** drift rescue の raw_text_head を sanitize + truncate する (default 2KB)。 */
 export function sanitizeAndTruncateRawText(text: string, opts: SanitizeOptions): string {
   const max = opts.maxRawTextChars ?? 2048;
-  const masked = maskUrlSecrets(maskHomePath(text, opts.home));
+  const masked = secretFilterFromEnv().redact(maskUrlSecrets(maskHomePath(text, opts.home)));
   return truncate(masked, max);
 }
 
 /** signature 文字列を sanitize する (loop_detected の signature 用)。 */
 export function sanitizeSignature(sig: string, opts: SanitizeOptions): string {
   const max = opts.maxArgsChars ?? 8192;
-  const masked = maskUrlSecrets(maskHomePath(sig, opts.home));
+  const masked = secretFilterFromEnv().redact(maskUrlSecrets(maskHomePath(sig, opts.home)));
   return truncate(masked, Math.min(max, 4096));
 }

@@ -1,3 +1,24 @@
+import {
+  proxyConnectionSession,
+  connectionApiHeader,
+  isConnectionSessionRoute,
+  closeConnectionWaiting,
+  privateWorkChannelRoute,
+  requestDedicatedWorkChannel,
+} from './agent-connection-http.js';
+import { connectionSessionId, connectionSessionRef } from './connection-session-id.js';
+import { AgentConnectionStore } from './agent-connections.js';
+import {
+  workChannelConnection,
+  projectWorkAgentId,
+  sameWorkChannel,
+  type ConnectionRoute,
+  type WorkChannel,
+} from './agent-work-channel-routing.js';
+import {
+  agentConnectionMonitor,
+  installAgentConnectionMonitorWorker,
+} from './agent-connection-monitor.js';
 import { executeWebSelection } from './web-command-selection.js';
 import { parentHistorySnapshot } from './agent-context.js';
 import { serveWebAsset } from './web-assets.js';
@@ -27,7 +48,7 @@ import {
 } from './agent-selection.js';
 import { DocumentAttachments, AttachmentError, attachmentPaths } from './document-attachments.js';
 import { registerProjectAgents } from './project-agent-command.js';
-import { ProjectCatalog } from './project-catalog.js';
+import { ProjectCatalog, type SharedProject } from './project-catalog.js';
 import {
   ExtensionFavorites,
   parseFavoriteAction,
@@ -51,7 +72,7 @@ import { resolveRunningSession } from './running-session-context.js';
 import { createLinkedConversation, forgetLinkedConversation } from './conversation-creation.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { createServer } from 'http';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   readFileSync,
@@ -218,6 +239,7 @@ import { updateBackendTool, type BackendToolUpdateResult } from './backend-auth-
 import {
   listSettingsChannelsWithTimeout,
   settingsChannelListErrorMessage,
+  type SettingsChannel,
   type SettingsChannelListers,
   type SettingsPlatform,
 } from './settings-channels.js';
@@ -324,6 +346,8 @@ function hasInternalPromptMetadata(text: string): boolean {
 }
 
 interface WebChatOptions {
+  /** Initialize shared Agent/tool services without opening an HTTP listener. */
+  initializeOnly?: boolean;
   platformTurnBusy?: (contextKey: string) => boolean;
   agentRunner: AgentRunner;
   /**
@@ -345,6 +369,12 @@ interface WebChatOptions {
   completionBridgeRefs?: PlatformCompletionRefs;
   slackRemoteInputRef?: { current?: SlackRemoteInputBridge };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
+  connectionRoutes?: ConnectionRoute[];
+  validateConnectionChat?: (
+    platform: WorkChannel['platform'],
+    channelId: string,
+    projectId?: string
+  ) => SharedProject | undefined;
   host?: string;
   discoverModels?: typeof discoverBackendModels;
   extensionUpdateRequest?: typeof createExtensionUpdateRequest;
@@ -362,7 +392,11 @@ export function startWebChat(options: WebChatOptions) {
   };
   const port = resolveWebChatPort(options.port).port;
   const host = resolveWebChatHost(options.host);
-  const uiEnabled = options.uiEnabled ?? true;
+  const connectionApi = Boolean(
+    options.initializeOnly && process.env.XANGI_AGENT_CONNECTION_ID && process.send
+  );
+  const connectionKey = connectionApi ? randomBytes(32).toString('hex') : undefined;
+  const uiEnabled = (options.uiEnabled ?? true) || connectionApi;
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const workspaceRegistry = options.workspaceRegistry;
@@ -417,6 +451,23 @@ export function startWebChat(options: WebChatOptions) {
     webUploadDir,
   ]);
   const webProjects = new ProjectCatalog(dataDir);
+  const agentConnections = new AgentConnectionStore(dataDir);
+  const dedicatedChannels = (connectionId: string, platform: WorkChannel['platform']) =>
+    requestDedicatedWorkChannel<{ channels: SettingsChannel[] }>(connectionId, platform);
+  const dedicatedForAgent = async (platform: WorkChannel['platform'], agentId: string) => {
+    const configured = workChannelConnection(await agentConnections.read(), platform, agentId);
+    if (options.connectionRoutes) {
+      let runningId: string | undefined;
+      try {
+        runningId = workChannelConnection(options.connectionRoutes, platform, agentId)?.id;
+      } catch {
+        // The stored selection is now valid but the active configuration requires a restart.
+      }
+      if (runningId !== configured?.id)
+        throw new WebProjectError('専用Botの設定を反映するには再起動が必要です', 503);
+    }
+    return configured;
+  };
   const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
   const parentSessionAvailable = (id: string, contextKey: string, platform?: string) => {
@@ -849,6 +900,7 @@ ${delegatedTeam.prompt}`
   };
   registerTeamRunner({ registry: workspaceRegistry, runs: agentRuns, resolver: options.resolver });
   registerAgentSelection(dataDir, {
+    hasConnections: (id) => agentConnections.hasAgent(id),
     catalog: webProjects,
     registry: workspaceRegistry,
     runner: agentRunner,
@@ -1321,7 +1373,10 @@ ${delegatedTeam.prompt}`
       ];
     });
 
-    return { managed, unmanaged, managedIds };
+    // Child snapshots use the same display fields, but isolated IDs/context keys.
+    // They never enter the parent's session store or credential/routing state.
+    const connectionRows = agentConnectionMonitor.sessions() as unknown as typeof managed;
+    return { managed: [...managed, ...connectionRows], unmanaged, managedIds };
   };
 
   const buildSessionsResponse = (
@@ -1336,6 +1391,7 @@ ${delegatedTeam.prompt}`
       updatedSince?: string;
       all?: boolean;
       monitorSince?: string;
+      includeConnections?: boolean;
     } = {}
   ) => {
     const limit = Math.min(
@@ -1361,8 +1417,10 @@ ${delegatedTeam.prompt}`
       return title;
     };
 
+    const connectionIds = new Set(agentConnectionMonitor.sessions().map((row) => row.id));
     const matching = [...managed, ...unmanaged]
       .filter((candidate) => {
+        if (query.includeConnections === false && connectionIds.has(candidate.id)) return false;
         if (query.lifecycle && candidate.lifecycle !== query.lifecycle) return false;
         if (
           query.monitorSince &&
@@ -1421,14 +1479,15 @@ ${delegatedTeam.prompt}`
       title: resolveTitle(candidate),
       // Origins are display-only: avoid opening every transcript before pagination.
       origin:
-        managedIds.has(candidate.id) &&
+        agentConnectionMonitor.find(candidate.id)?.origin ??
+        (managedIds.has(candidate.id) &&
         (candidate.platform === 'discord' || candidate.platform === 'slack')
           ? query.all
             ? metadataValue(candidate.id, candidate.transcriptRevision, 'origin', () =>
                 deriveSessionOrigin(workdir, candidate.id)
               )
             : deriveSessionOrigin(workdir, candidate.id)
-          : undefined,
+          : undefined),
     }));
     const nextOffset = offset + sessions.length;
     const hasMore = !query.all && pageStart + sessions.length < cursorFiltered.length;
@@ -1480,6 +1539,7 @@ ${delegatedTeam.prompt}`
     });
   };
   const unsubscribeSessionChanges = subscribeSessionChanges(invalidateSessionSnapshots);
+  const unsubscribeConnectionMonitor = agentConnectionMonitor.subscribe(invalidateSessionSnapshots);
 
   const conversationService = uiEnabled
     ? new ConversationService({
@@ -1744,7 +1804,8 @@ ${delegatedTeam.prompt}`
             appSessionId: turn.appSessionId,
             text: turn.result || '',
             attachments: turn.resultAttachments || [],
-            ...(entry.platform === 'discord' && turn.source !== 'agent-completion'
+            ...((entry.platform === 'discord' || (entry.platform === 'slack' && entry.webLinked)) &&
+            turn.source !== 'agent-completion'
               ? {
                   webInput: { message: turn.message, attachments: turn.attachments },
                   assistantName: turn.assistantName,
@@ -1966,6 +2027,26 @@ ${delegatedTeam.prompt}`
       return;
     }
 
+    if (!connectionApi && (await proxyConnectionSession(req, res))) return;
+
+    const sessionEvents = url.match(/^\/api\/sessions\/([^/]+)\/events$/);
+    if (sessionEvents && req.method === 'GET') {
+      const entry = getSessionEntry(decodeURIComponent(sessionEvents[1]));
+      if (!entry) {
+        sendJson(res, 404, { error: '会話が見つかりません' });
+        return;
+      }
+      const threadId =
+        entry.platform === 'web' ? `web:${entry.id}` : `${entry.platform}:${entry.contextKey}`;
+      req.url = `/api/events/stream?thread_id=${encodeURIComponent(threadId)}`;
+      try {
+        handleEventsStreamRequest(req, res);
+      } finally {
+        req.url = rawUrl;
+      }
+      return;
+    }
+
     // Even Terminal compatibility API (`@evenrealities/even-terminal`)
     if (url.startsWith('/api/')) {
       try {
@@ -2116,10 +2197,31 @@ ${delegatedTeam.prompt}`
     }
 
     if (url === '/api/runtime-settings/channels' && req.method === 'GET') {
-      const platform = new URL(rawUrl, 'http://localhost').searchParams.get('platform');
+      const params = new URL(rawUrl, 'http://localhost').searchParams;
+      const platform = params.get('platform');
       if (platform !== 'discord' && platform !== 'slack') {
         sendJson(res, 400, { error: 'platform must be discord or slack' });
         return;
+      }
+      const agentId = params.get('agentId');
+      if (agentId) {
+        try {
+          const connection = await dedicatedForAgent(platform, agentId);
+          if (connection) {
+            const { channels } = await dedicatedChannels(connection.id, platform);
+            sendJson(res, 200, { platform, status: 'available', channels });
+            return;
+          }
+        } catch (error) {
+          sendJson(res, 200, {
+            platform,
+            status: 'unavailable',
+            channels: [],
+            message:
+              error instanceof WebProjectError ? error.message : '専用Botの設定を確認できません',
+          });
+          return;
+        }
       }
       const enabled = options.config?.[platform]?.enabled;
       const lister = options.settingsChannelListers?.[platform as SettingsPlatform];
@@ -2785,6 +2887,11 @@ ${delegatedTeam.prompt}`
     if (url === '/api/web-commands' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        if (
+          !connectionApi &&
+          (await proxyConnectionSession(req, res, String(body.appSessionId || ''), body))
+        )
+          return;
         const input = String(body.input || '').trim();
         if (!input.startsWith('/')) {
           sendJson(res, 400, { error: 'command must start with /' });
@@ -3092,6 +3199,30 @@ ${delegatedTeam.prompt}`
       );
       return;
     }
+    const connectionMatch = url.match(/^\/api\/agents\/([^/]+)\/connections(?:\/([^/]+))?$/);
+    if (connectionMatch && ['GET', 'POST', 'PATCH', 'DELETE'].includes(req.method || '')) {
+      await handleProjectMutation(res, async () => {
+        if (process.env.XANGI_AGENT_CONNECTION_ID)
+          throw new WebProjectError('個別接続はメインの設定画面から管理してください', 403);
+        const agentId = decodeURIComponent(connectionMatch[1]);
+        const id = connectionMatch[2] ? decodeURIComponent(connectionMatch[2]) : undefined;
+        if (agentId !== DEFAULT_TEAM_AGENT_ID && !webProjects.agent(agentId))
+          throw new WebProjectError('エージェントが見つかりません', 404);
+        res.setHeader('Cache-Control', 'no-store');
+        if (req.method === 'GET' && !id)
+          return { body: { connections: await agentConnections.list(agentId) } };
+        if (req.method === 'DELETE' && id) {
+          await agentConnections.remove(agentId, id);
+          return { body: { ok: true, applyMode: 'restart' } };
+        }
+        if ((req.method === 'POST' && !id) || (req.method === 'PATCH' && id)) {
+          const connection = await agentConnections.save(agentId, await readBody(req), id);
+          return { status: id ? 200 : 201, body: { connection, applyMode: 'restart' } };
+        }
+        throw new WebProjectError('操作が不正です', 400);
+      });
+      return;
+    }
     const agentChannelMatch = url.match(/^\/api\/agents\/([^/]+)\/channel$/);
     if (agentChannelMatch && req.method === 'PUT') {
       if (!acceptsSameHostMutation(req)) {
@@ -3245,6 +3376,7 @@ ${delegatedTeam.prompt}`
           q: searchParams.get('q') || '',
           projectId: searchParams.get('projectId') || undefined,
           agentId: searchParams.get('agentId') || undefined,
+          includeConnections: searchParams.get('includeConnections') !== 'false',
           lifecycle:
             searchParams.get('lifecycle') === 'open' || searchParams.get('lifecycle') === 'closed'
               ? (searchParams.get('lifecycle') as 'open' | 'closed')
@@ -3305,6 +3437,7 @@ ${delegatedTeam.prompt}`
               projectId: streamProjectId,
               agentId: streamAgentId,
               all: changesMode,
+              includeConnections: true,
               monitorSince,
             })
           );
@@ -3561,7 +3694,8 @@ ${delegatedTeam.prompt}`
             appSessionId,
           platform: entry?.platform,
           linkedChannel: Boolean(
-            entry?.projectId && (entry.platform === 'discord' || entry.platform === 'slack')
+            (entry?.projectId || entry?.webLinked) &&
+            (entry.platform === 'discord' || entry.platform === 'slack')
           ),
           lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
           canReopen: Boolean(entry && entry.scope !== 'scheduler' && !isSecretSession(entry.id)),
@@ -3735,6 +3869,47 @@ ${delegatedTeam.prompt}`
       return;
     }
 
+    const privateWorkRoute = connectionApi ? privateWorkChannelRoute(url) : undefined;
+    if (privateWorkRoute) {
+      const { platform, method } = privateWorkRoute;
+      try {
+        const lister = options.settingsChannelListers?.[platform];
+        const bridge =
+          platform === 'discord'
+            ? options.discordRemoteInputRef?.current
+            : options.slackRemoteInputRef?.current;
+        if (!lister || !bridge?.createSession)
+          throw new WebProjectError('専用Botの接続が利用できません', 503);
+        if (method === 'GET') {
+          sendJson(res, 200, { channels: await listSettingsChannelsWithTimeout(lister) });
+          return;
+        }
+        const body = await readBody(req);
+        if (
+          (body.projectId !== undefined && typeof body.projectId !== 'string') ||
+          typeof body.channelId !== 'string' ||
+          typeof body.title !== 'string' ||
+          !body.title.trim()
+        )
+          throw new WebProjectError('会話の作成情報が不正です', 400);
+        if (!(await lister()).some((channel) => channel.id === body.channelId))
+          throw new WebProjectError('専用Botがこのチャンネルで会話を開始できません', 409);
+        if (!options.validateConnectionChat)
+          throw new WebProjectError('専用Botの接続が利用できません', 503);
+        const project = options.validateConnectionChat(platform, body.channelId, body.projectId);
+        const result = await bridge.createSession(body.channelId, body.title, project);
+        sendJson(res, 200, { ok: true, ...result });
+      } catch (error) {
+        sendJson(res, error instanceof WebProjectError ? error.status : 502, {
+          error:
+            error instanceof WebProjectError
+              ? error.message
+              : '専用Botで会話を作成できませんでした',
+        });
+      }
+      return;
+    }
+
     // POST /api/sessions — 新規 Web セッション（既存セッションはそのまま並存）
     if (url === '/api/sessions' && req.method === 'POST') {
       try {
@@ -3752,37 +3927,79 @@ ${delegatedTeam.prompt}`
           throw new WebProjectError('parentAppSessionId must identify an existing session', 400);
         if (body.secret !== undefined && typeof body.secret !== 'boolean')
           throw new WebProjectError('secret must be a boolean', 400);
+        if (body.mode !== undefined && body.mode !== 'linked')
+          throw new WebProjectError('mode must be linked', 400);
         const project = resolveProject(body.projectId);
-        if (project?.channel && body.secret !== true) {
+        if (body.mode === 'linked' && body.secret === true)
+          throw new WebProjectError('シークレット会話はWeb専用です', 409);
+        if (body.mode === 'linked') {
           if (typeof body.message !== 'string' || !body.message.trim())
             throw new WebProjectError('最初のメッセージを入力してください', 400);
-          const { platform, channelId } = project.channel;
-          const bridge =
-            platform === 'discord'
-              ? options.discordRemoteInputRef?.current
-              : options.slackRemoteInputRef?.current;
-          if (!bridge?.createSession)
-            throw new WebProjectError(`${platform}接続が利用できません`, 503);
-          const lister = options.settingsChannelListers?.[platform];
-          if (!lister || !(await lister()).some((c) => c.id === channelId))
+          const agentId = project
+            ? projectWorkAgentId(project)
+            : (typeof body.agentId === 'string' && body.agentId) || DEFAULT_TEAM_AGENT_ID;
+          const workChannel = agentWorkChannel(agentId);
+          if (!workChannel)
+            throw new WebProjectError('担当エージェントの作業チャンネルを設定してください', 409);
+          const { platform, channelId } = workChannel;
+          if (
+            (body.expectedAgentId !== undefined && body.expectedAgentId !== agentId) ||
+            (body.expectedChannel !== undefined &&
+              !sameWorkChannel(workChannel, body.expectedChannel))
+          )
             throw new WebProjectError(
-              '接続先チャンネルを確認できません。Project設定を確認してください',
+              '担当または作業チャンネルが変更されました。会話を開き直してください',
               409
             );
-          const create = () =>
-            bridge.createSession!(
-              channelId,
-              truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '))
-            );
+          const title = truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '));
+          const connection = await dedicatedForAgent(platform, agentId);
+          let create: () => Promise<{ sessionId: string }>;
+          if (connection) {
+            const { channels } = await dedicatedChannels(connection.id, platform);
+            if (!channels.some((channel) => channel.id === channelId))
+              throw new WebProjectError(
+                '専用Botがこのチャンネルで会話を開始できません。作業チャンネルとBotの権限を確認してください',
+                409
+              );
+            create = async () => {
+              const result = await requestDedicatedWorkChannel<{ sessionId: string }>(
+                connection.id,
+                platform,
+                { projectId: project?.id, channelId, title }
+              );
+              return { sessionId: connectionSessionId(connection.id, result.sessionId) };
+            };
+          } else {
+            const bridge =
+              platform === 'discord'
+                ? options.discordRemoteInputRef?.current
+                : options.slackRemoteInputRef?.current;
+            if (!bridge?.createSession)
+              throw new WebProjectError(`${platform}接続が利用できません`, 503);
+            const lister = options.settingsChannelListers?.[platform];
+            if (!lister || !(await lister()).some((c) => c.id === channelId))
+              throw new WebProjectError('作業チャンネルとBotの権限を確認してください', 409);
+            if (
+              (await dedicatedForAgent(platform, agentId)) ||
+              !sameWorkChannel(workChannel, agentWorkChannel(agentId)) ||
+              (project && projectWorkAgentId(resolveProject(project.id)!) !== agentId)
+            )
+              throw new WebProjectError(
+                '担当または作業チャンネルが変更されました。会話を開き直してください',
+                409
+              );
+            create = () => bridge.createSession!(channelId, title, project);
+          }
           const result =
             body.requestId === undefined
               ? await create()
               : await createLinkedConversation(
                   join(dataDir, 'conversation-creations'),
                   body.requestId,
-                  project.id,
+                  project?.id || `agent:${agentId}`,
                   body.message.trim(),
-                  create
+                  create,
+                  JSON.stringify([agentId, platform, channelId, connection?.id])
                 );
           invalidateSessionSnapshots();
           sendJson(res, 200, { ok: true, sessionId: result.sessionId });
@@ -4026,10 +4243,14 @@ ${delegatedTeam.prompt}`
         sendJson(res, 400, { error: 'ids must be an array of non-empty session IDs' });
         return;
       }
-      const results: Array<{ id: string; status: string }> = [];
+      const uniqueIds = [...new Set(body.ids as string[])];
+      const remoteIds = uniqueIds.filter((id) => connectionSessionRef(id));
+      const results: Array<{ id: string; status: string }> = remoteIds.length
+        ? await closeConnectionWaiting(remoteIds)
+        : [];
       const targets: Parameters<typeof closeSessions>[0][number][] = [];
       // No awaits between rechecking activity and closing: a new turn cannot interleave.
-      for (const id of new Set(body.ids as string[])) {
+      for (const id of uniqueIds.filter((id) => !connectionSessionRef(id))) {
         const entry = getSessionEntry(id);
         if (!entry) {
           results.push({ id, status: 'not_found' });
@@ -4496,6 +4717,11 @@ ${delegatedTeam.prompt}`
       const requestReceivedAt = Date.now();
       try {
         const body = await readBody(req);
+        if (
+          !connectionApi &&
+          (await proxyConnectionSession(req, res, String(body.appSessionId || ''), body))
+        )
+          return;
         const message = (body.message || '').toString();
 
         if (!message.trim()) {
@@ -4970,6 +5196,17 @@ ${delegatedTeam.prompt}`
     res.end('Not found');
   };
   const server = createServer((req, res) => {
+    if (
+      connectionApi &&
+      (req.headers[connectionApiHeader] !== connectionKey ||
+        !(
+          isConnectionSessionRoute((req.url || '/').split('?')[0]) ||
+          (req.method && privateWorkChannelRoute(req.url || '/')?.method === req.method)
+        ))
+    ) {
+      sendJson(res, 403, { error: 'Private connection API' });
+      return;
+    }
     void handleRequest(req, res).catch((error: unknown) => {
       if (res.destroyed || res.writableEnded) return;
       if (res.headersSent) {
@@ -4986,6 +5223,7 @@ ${delegatedTeam.prompt}`
   server.on('close', unsubscribeIndexActivity);
   server.on('close', () => transcriptWatcher?.close());
   server.on('close', unsubscribeSessionChanges);
+  server.on('close', unsubscribeConnectionMonitor);
   server.on('close', () => {
     if (sessionSnapshotRefresh) clearImmediate(sessionSnapshotRefresh);
   });
@@ -4994,6 +5232,28 @@ ${delegatedTeam.prompt}`
 
   attachExtensionWebSockets(server, resolveDevelopmentExtensionService, uiEnabled);
 
+  if (options.initializeOnly) {
+    if (process.env.XANGI_AGENT_CONNECTION_ID) {
+      const stopMonitor = installAgentConnectionMonitorWorker(() => {
+        sessionIndex.invalidate();
+        return buildSessionsResponse({ all: true }).sessions.filter((row) =>
+          Boolean(getSessionEntry(row.id))
+        );
+      });
+      server.on('close', stopMonitor);
+      if (connectionApi)
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (address && typeof address === 'object')
+            process.send?.({
+              type: 'agent-connection-api-ready',
+              port: address.port,
+              key: connectionKey,
+            });
+        });
+    }
+    return server;
+  }
   server.listen(port, host, () => {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。
     if (uiEnabled) {

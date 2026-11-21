@@ -194,17 +194,17 @@ it('uses the renamed default workspace for new unassigned conversations and pres
   expect(channelAgent('discord', 'bound')?.name).toBe('borot');
 });
 
-it.each(['discord', 'slack'])('binds only future %s conversations and preserves snapshots after edits/unlink', async platform => {
+it.each(['discord', 'slack'])('applies Projects only to explicit %s conversations and retains their snapshots', async platform => {
   const f = await setup();
   const opts = { registry: f.registry, platform, contextKey: 'old-thread', bindingKey: 'channel' };
   const old = await ensureSessionWithWorkspace(opts);
-  const project = f.catalog.create({ name: 'Project', prompt: 'Shared instructions', defaultAgentId: f.agent.id, channel: { platform, channelId: 'channel' } });
+  const project = f.catalog.create({ name: 'Project', prompt: 'Shared instructions', defaultAgentId: f.agent.id });
   expect((await ensureSessionWithWorkspace(opts)).appSessionId).toBe(old.appSessionId);
   expect(getSessionEntry(old.appSessionId)?.projectId).toBeUndefined();
-  const fresh = await ensureSessionWithWorkspace({ ...opts, contextKey: 'new-thread' });
+  const fresh = await ensureSessionWithWorkspace({ ...opts, contextKey: 'new-thread', project });
   expect(getSessionEntry(fresh.appSessionId)).toMatchObject({ projectId: project.id, selectedAgentId: f.agent.id, workspaceId: f.workspace.id });
   expect(sessionAgent(fresh.appSessionId)?.prompt).toBe('Shared instructions\n\nReview code\n\nFind regressions');
-  f.catalog.update(project.id, { prompt: 'Changed', defaultAgentId: null, channel: null });
+  f.catalog.update(project.id, { prompt: 'Changed', defaultAgentId: null });
   expect((await ensureSessionWithWorkspace({ ...opts, contextKey: 'new-thread' })).appSessionId).toBe(fresh.appSessionId);
   expect(sessionAgent(fresh.appSessionId)?.prompt).toContain('Shared instructions');
   expect(getSessionEntry((await ensureSessionWithWorkspace({ ...opts, contextKey: 'after-unlink' })).appSessionId)?.projectId).toBeUndefined();
@@ -213,9 +213,9 @@ it.each(['discord', 'slack'])('binds only future %s conversations and preserves 
 it('keeps a project Team attached across turns and excludes secret sessions', async () => {
   const f = await setup();
   const team = f.catalog.saveTeam({ name: 'Review team', members: [{ agentId: f.agent.id, role: 'Review', dependsOn: [] }] });
-  const project = f.catalog.create({ name: 'Project', defaultAgentId: `team:${team.id}`, channel: { platform: 'discord', channelId: 'channel' } });
+  const project = f.catalog.create({ name: 'Project', defaultAgentId: `team:${team.id}` });
   const opts = { registry: f.registry, platform: 'discord', contextKey: 'team-thread', bindingKey: 'channel' };
-  const first = await ensureSessionWithWorkspace(opts);
+  const first = await ensureSessionWithWorkspace({ ...opts, project });
   expect(getSessionEntry(first.appSessionId)?.projectId).toBe(project.id);
   expect(sessionAgent(first.appSessionId)?.team?.id).toBe(team.id);
   expect((await ensureSessionWithWorkspace(opts)).appSessionId).toBe(first.appSessionId);
@@ -226,14 +226,26 @@ it('keeps a project Team attached across turns and excludes secret sessions', as
 it('creates a Discord thread from Web and resolves its Project before the first turn', async () => {
   const { registerDiscordMessageHandlers } = await import('../src/discord/message-handler.js');
   const f = await setup();
-  const project = f.catalog.create({ name: 'Development', defaultAgentId: f.agent.id, channel: { platform: 'discord', channelId: 'parent' } });
+  const project = f.catalog.create({ name: 'Development', defaultAgentId: f.agent.id });
   const create = vi.fn().mockResolvedValue({ id: 'new-discord-thread' });
   const fetch = vi.fn().mockResolvedValue({ type: 0, threads: { create } });
   const bridge = registerDiscordMessageHandlers({ client: { on: vi.fn(), channels: { fetch } } as never, config: { ...f.config, discord: {} } as Config, agentRunner: f.runner, workdir: root, workspaceRegistry: f.registry });
-  const { sessionId } = await bridge.createSession!('parent', 'Development');
+  const { sessionId } = await bridge.createSession!('parent', 'Development', project);
   expect(create).toHaveBeenCalledExactlyOnceWith({ name: 'Development', autoArchiveDuration: 1440 });
   expect(getSessionEntry(sessionId)).toMatchObject({ platform: 'discord', title: '', contextKey: 'new-discord-thread', projectId: project.id, selectedAgentId: f.agent.id });
   fetch.mockResolvedValueOnce({ type: 2, threads: { create } });
   await expect(bridge.createSession!('voice', 'Wrong')).rejects.toThrow('テキストチャンネル');
   expect(create).toHaveBeenCalledTimes(1);
+});
+
+it.each(['discord', 'slack'])('dedicated %s Bot pins its Agent and workspace across channels and scheduler snapshots', async platform => {
+  const f = await setup();
+  vi.stubEnv('XANGI_CONNECTION_AGENT_ID', f.agent.id);
+  const first = await ensureSessionWithWorkspace({registry:f.registry,platform,contextKey:'thread-one',bindingKey:'same-channel'});
+  const second = await ensureSessionWithWorkspace({registry:f.registry,platform,contextKey:'thread-two',bindingKey:'other-channel'});
+  expect(getSessionEntry(first.appSessionId)).toMatchObject({selectedAgentId:f.agent.id,workspacePath:f.workspace.path,selectedAgentConfig:{prompt:f.agent.prompt}});
+  expect(getSessionEntry(second.appSessionId)?.selectedAgentId).toBe(f.agent.id);
+  expect(await channelAgentSnapshot(platform,'schedule-channel')).toMatchObject({selectedAgentId:f.agent.id,workspacePath:f.workspace.path});
+  await expect(changeChannelAgent(platform,'same-channel')).rejects.toThrow('専用Bot');
+  expect(f.resolver.resolve('thread-one').backend).toBe('claude-code');
 });

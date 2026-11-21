@@ -51,6 +51,7 @@ export class ProjectCatalog {
       const state = JSON.parse(raw, migrateTeamState) as Catalog;
       if (state.version !== 1 || !Array.isArray(state.projects) || !Array.isArray(state.agents))
         throw new Error('Invalid project catalog');
+      for (const project of state.projects) Reflect.deleteProperty(project, 'channel');
       const legacyAgentRoles = new Map(state.agents.map((a) => [a.id, a.role]));
       // Retire the old fields once, retaining their text in the editable instructions.
       let retiredFields = JSON.stringify(state) !== JSON.stringify(JSON.parse(raw));
@@ -123,6 +124,17 @@ export class ProjectCatalog {
       this.persist(this.state);
     }
   }
+  /** Connection workers can read the live Project catalog without writing parent state. */
+  static readProjects(dataDir: string): SharedProject[] {
+    try {
+      return (JSON.parse(readFileSync(join(dataDir, 'project-catalog.json'), 'utf8')) as Catalog)
+        .projects;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
   list() {
     return structuredClone(this.state.projects);
   }
@@ -269,37 +281,11 @@ export class ProjectCatalog {
     };
     const defaultAgentId = merged.defaultAgentId ? String(merged.defaultAgentId) : undefined;
     if (defaultAgentId) this.execution(undefined, defaultAgentId);
-    let channel: SharedProject['channel'];
-    if (merged.channel != null) {
-      const value = merged.channel as Record<string, unknown>;
-      if (
-        !value ||
-        typeof value !== 'object' ||
-        !['discord', 'slack'].includes(String(value.platform)) ||
-        typeof value.channelId !== 'string' ||
-        !value.channelId.trim()
-      )
-        throw new WebProjectError('接続するプラットフォームとチャンネルを選択してください', 400);
-      channel = {
-        platform: value.platform as 'discord' | 'slack',
-        channelId: value.channelId.trim(),
-      };
-      if (
-        next.projects.some(
-          (p) =>
-            p.id !== id &&
-            p.channel?.platform === channel!.platform &&
-            p.channel.channelId === channel!.channelId
-        )
-      )
-        throw new WebProjectError('このチャンネルは別のProjectで使用中です', 409);
-    }
     const project: SharedProject = {
       id,
       name: normalizeName(String(merged.name || '')),
       prompt: normalizePrompt(String(merged.prompt || '')),
       ...(defaultAgentId ? { defaultAgentId } : {}),
-      ...(channel ? { channel } : {}),
       studioLegacyId:
         previous?.studioLegacyId ||
         (merged.studioLegacyId ? String(merged.studioLegacyId) : undefined),
@@ -310,11 +296,6 @@ export class ProjectCatalog {
     next.projects = [...next.projects.filter((p) => p.id !== id), project];
     this.persist(next);
     return structuredClone(project);
-  }
-  forChannel(platform: string, channelId: string): SharedProject | undefined {
-    return this.list().find(
-      (p) => p.channel?.platform === platform && p.channel.channelId === channelId
-    );
   }
   remove(id: string) {
     this.persist({ ...this.state, projects: this.state.projects.filter((p) => p.id !== id) });
