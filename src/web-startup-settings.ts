@@ -40,6 +40,16 @@ interface Definition extends Omit<WebStartupSetting, 'value' | 'applyMode'> {
 
 const DEFINITIONS: Definition[] = [
   {
+    group: 'security',
+    groupLabel: 'セキュリティ',
+    key: 'XANGI_SECRET_FILTER_ENABLED',
+    label: '既知の秘密情報フィルタ',
+    description:
+      '既知値のマスクと送信停止を有効にします。検知時はAIへ利用者への警告を指示しますが、通知を保証するものではありません。',
+    type: 'boolean',
+    defaultValue: 'true',
+  },
+  {
     group: 'questions',
     groupLabel: '質問への回答待ち',
     key: 'AGENT_USER_INPUT_TIMEOUT_MS',

@@ -287,7 +287,7 @@ describe('addToolHistory', () => {
     const history: string[] = [];
     addToolHistory(history, 'Bash', {
       command:
-        'cat /home/example/borot/AGENTS.md 2>/dev/null; cat /home/example/xangi-dev/AGENTS.md',
+        'cat /home/example-user/example-workspace/AGENTS.md 2>/dev/null; cat /home/example-user/example-project/AGENTS.md',
     });
 
     expect(history).toEqual(['🔧 AGENTS参照']);

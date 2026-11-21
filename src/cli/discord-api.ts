@@ -6,6 +6,7 @@
  */
 
 import { ValidationError } from '../errors.js';
+import { secretFilterFromEnv, withSecretAIWarning } from '../secret-filter.js';
 import { getActiveSessionId, updateSessionTitle } from '../sessions.js';
 
 const API_BASE = 'https://discord.com/api/v10';
@@ -58,6 +59,11 @@ async function fetchWithRateLimitRetry(
   errorMessage: (status: number, body: string) => string
 ): Promise<Response> {
   let lastBody = '';
+  const filter = secretFilterFromEnv();
+  filter.assertSafe(path);
+  if (typeof options.body === 'string' || Buffer.isBuffer(options.body)) {
+    filter.assertSafe(options.body);
+  }
   for (let attempt = 0; attempt <= MAX_DISCORD_RETRIES; attempt++) {
     const response = await fetch(`${API_BASE}${path}`, options);
     if (response.status === 429 && attempt < MAX_DISCORD_RETRIES) {
@@ -69,11 +75,11 @@ async function fetchWithRateLimitRetry(
     }
     if (!response.ok) {
       const body = await response.text().catch(() => lastBody);
-      throw new Error(errorMessage(response.status, body));
+      throw new Error(filter.redactForAI(errorMessage(response.status, body)));
     }
     return response;
   }
-  throw new Error(errorMessage(429, lastBody));
+  throw new Error(filter.redactForAI(errorMessage(429, lastBody)));
 }
 
 async function discordFetch(
@@ -212,11 +218,17 @@ async function discordHistory(
   const rangeEnd = offset + messages.length;
   const offsetLabel = offset > 0 ? `${rangeStart}〜${rangeEnd}件目` : `最新${messages.length}件`;
 
+  const filter = secretFilterFromEnv();
+  let detected = false;
   const lines = messages.map((m) => {
     const time = new Date(m.timestamp).toLocaleString('ja-JP', {
       timeZone: 'Asia/Tokyo',
     });
-    const content = (m.content || '(添付ファイルのみ)').slice(0, 200);
+    // Mask the original body before shortening; otherwise a truncated credential
+    // no longer matches its registered value and can leak a prefix.
+    const original = m.content || '(添付ファイルのみ)';
+    detected ||= filter.contains(original);
+    const content = filter.redact(original).slice(0, 200);
     const attachments =
       m.attachments.length > 0
         ? '\n' + m.attachments.map((a) => `  📎 ${a.filename} ${a.url}`).join('\n')
@@ -224,7 +236,7 @@ async function discordHistory(
     return `[${time}] (ID:${m.id}) ${m.author.username}: ${content}${attachments}`;
   });
 
-  return `📺 チャンネル履歴（${offsetLabel}）:\n${lines.join('\n')}`;
+  return withSecretAIWarning(`📺 チャンネル履歴（${offsetLabel}）:\n${lines.join('\n')}`, detected);
 }
 
 async function discordMessage(
@@ -333,17 +345,23 @@ async function discordSearch(
     return `🔍 「${keyword}」に一致するメッセージが見つかりませんでした`;
   }
 
+  const filter = secretFilterFromEnv();
+  let detected = false;
   const results = matched
     .slice(0, 10)
     .map((m) => {
       const time = new Date(m.timestamp).toLocaleString('ja-JP', {
         timeZone: 'Asia/Tokyo',
       });
-      return `[${time}] ${m.author.username}: ${m.content.slice(0, 200)}`;
+      detected ||= filter.contains(m.content);
+      return `[${time}] ${m.author.username}: ${filter.redact(m.content).slice(0, 200)}`;
     })
     .join('\n');
 
-  return `🔍 「${keyword}」の検索結果 (${matched.length}件):\n${results}`;
+  return withSecretAIWarning(
+    `🔍 「${keyword}」の検索結果 (${matched.length}件):\n${results}`,
+    detected
+  );
 }
 
 async function discordEdit(
@@ -504,6 +522,10 @@ async function mediaSend(
 
   const fileName = basename(filePath);
   const fileData = readFileSync(filePath);
+  // Inspect the same bytes that will be sent, not a separate read of a mutable file.
+  const filter = secretFilterFromEnv();
+  filter.assertSafe(filePath);
+  filter.assertSafe(fileData);
   const token = getToken();
 
   // multipart/form-data で送信
@@ -552,6 +574,9 @@ export async function discordApi(
   flags: Record<string, string>,
   context?: DiscordCommandContext
 ): Promise<string> {
+  const filter = secretFilterFromEnv();
+  // Check all original flags before JSON escaping, truncation, or API side effects.
+  for (const value of Object.values(flags)) filter.assertSafe(value);
   const tracker: DiscordRateLimitTracker = { waitMs: 0 };
   let result: string;
   switch (command) {
@@ -588,5 +613,5 @@ export async function discordApi(
     default:
       throw new ValidationError(`Unknown discord command: ${command}`);
   }
-  return withRateLimitNotice(result, tracker);
+  return filter.redactForAI(withRateLimitNotice(result, tracker));
 }

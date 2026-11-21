@@ -32,3 +32,5 @@ Team作成・3階層の報告先・編集/再読込・チャンネル割当/解�
 同じ添付検証は、受付前エラーからの再試行、受付後の再読込、受付応答欠落からの照会復帰、元チャットへの結果だけの再投稿、操作アイコンの右寄せも確認します。本文と写真が入力欄へ戻らず、同じ受付IDでAIを二重実行しない経路を模擬APIで再現します。
 
 チャットの幅調整は `uv run --with playwright python tests/browser/chat-sidebar-resize.py` で検証します。build後、ドラッグ・再読込・矢印キー・上下限・キャンセル・標準幅への復帰・開閉・モバイル表示・保存値不正／保存不可を隔離APIで確認します。`BROWSER_TEST_OUTPUT` で画像の保存先を指定できます。
+
+専用Bot接続は `uv run --with playwright python tests/browser/agent_connections.py` で検証します。build後、1280/390/320pxでDiscord・Slack接続の追加、保存失敗後の再試行、再読み込み、トークンの非表示、編集・無効化・削除・キャンセルを模擬APIで確認します。`BROWSER_TEST_OUTPUT` で証拠保存先を指定できます。実Botへの接続は行いません。

@@ -30,8 +30,8 @@ describe('tool-trajectory sanitize', () => {
   });
 
   it('maskHomePath replaces home prefix with $HOME literal', () => {
-    expect(maskHomePath('/home/example/foo.txt', '/home/example')).toBe('$HOME/foo.txt');
-    expect(maskHomePath('not a path', '/home/example')).toBe('not a path');
+    expect(maskHomePath('/home/example-user/foo.txt', '/home/example-user')).toBe('$HOME/foo.txt');
+    expect(maskHomePath('not a path', '/home/example-user')).toBe('not a path');
   });
 
   it('maskHomePath escapes regex special chars in home', () => {
@@ -81,9 +81,12 @@ describe('tool-trajectory sanitize', () => {
   });
 
   it('sanitizeArgs masks $HOME in string values', () => {
-    const args = { path: '/home/example/borot/notes/foo.md' };
-    const out = sanitizeArgs(args, { salt: 's', home: '/home/example' }) as Record<string, unknown>;
-    expect(out.path).toBe('$HOME/borot/notes/foo.md');
+    const args = { path: '/home/example-user/example-workspace/notes/foo.md' };
+    const out = sanitizeArgs(args, { salt: 's', home: '/home/example-user' }) as Record<
+      string,
+      unknown
+    >;
+    expect(out.path).toBe('$HOME/example-workspace/notes/foo.md');
   });
 
   it('sanitizeArgs preserves primitives (number, boolean, null)', () => {
@@ -106,10 +109,10 @@ describe('tool-trajectory sanitize', () => {
   });
 
   it('sanitizeAndTruncateResult applies $HOME + URL sanitize + truncate', () => {
-    const text = `error at /home/example/foo.ts\nhttps://api.example.com?token=ABC&x=1\n${'long '.repeat(500)}`;
+    const text = `error at /home/example-user/foo.ts\nhttps://api.example.com?token=ABC&x=1\n${'long '.repeat(500)}`;
     const out = sanitizeAndTruncateResult(text, {
       salt: 's',
-      home: '/home/example',
+      home: '/home/example-user',
       maxResultChars: 200,
     });
     expect(out).toContain('$HOME/foo.ts');

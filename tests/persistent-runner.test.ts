@@ -264,7 +264,7 @@ describe('PersistentRunner', () => {
             {
               type: 'tool_use',
               name: 'Bash',
-              input: { command: 'cat /home/example/borot/AGENTS.md' },
+              input: { command: 'cat /home/example-user/example-workspace/AGENTS.md' },
             },
           ],
         },
@@ -283,7 +283,7 @@ describe('PersistentRunner', () => {
 
     await expect(promise).resolves.toMatchObject({ result: 'ok' });
     expect(onToolUse).toHaveBeenCalledWith('Bash', {
-      command: 'cat /home/example/borot/AGENTS.md',
+      command: 'cat /home/example-user/example-workspace/AGENTS.md',
     });
   });
 
@@ -979,22 +979,35 @@ describe('PersistentRunner orphaned request prevention (issue #286)', () => {
   });
 
   it('R24 decodes UTF-8 output split within a character', async () => {
-    const {getMockProcess}=await import('child_process');const pending=runner.run('prompt');
-    await new Promise(resolve=>setTimeout(resolve,30));const proc=getMockProcess();
-    const bytes=Buffer.from(JSON.stringify({type:'result',result:'日本語🙂',session_id:'test-session-123'})+'\n');
-    for(const byte of bytes)proc.stdout.emit('data',Buffer.from([byte]));
+    const { getMockProcess } = await import('child_process');
+    const pending = runner.run('prompt');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const proc = getMockProcess();
+    const bytes = Buffer.from(
+      JSON.stringify({ type: 'result', result: '日本語🙂', session_id: 'test-session-123' }) + '\n'
+    );
+    for (const byte of bytes) proc.stdout.emit('data', Buffer.from([byte]));
     expect((await pending).result).toBe('日本語🙂');
   });
   it('R27 ignores late stdout from the cancelled process during a new turn', async () => {
-    const {getMockProcess}=await import('child_process');const first=runner.run('first');
-    const cancelled=expect(first).rejects.toThrow(/cancel/);
-    await new Promise(resolve=>setTimeout(resolve,30));const old=getMockProcess();
-    old.kill = () => { old.killed = true; }; // close deliberately arrives after the next process starts
-    runner.cancel();await cancelled;
-    const second=runner.run('second');await new Promise(resolve=>setTimeout(resolve,30));const next=getMockProcess();
-    const event=(text:string)=>JSON.stringify({type:'result',result:text,session_id:text})+'\n';
-    old.stdout.emit('data',event('old-response'));old.emit('close',143);next.stdout.emit('data',event('new-response'));
+    const { getMockProcess } = await import('child_process');
+    const first = runner.run('first');
+    const cancelled = expect(first).rejects.toThrow(/cancel/);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const old = getMockProcess();
+    old.kill = () => {
+      old.killed = true;
+    }; // close deliberately arrives after the next process starts
+    runner.cancel();
+    await cancelled;
+    const second = runner.run('second');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const next = getMockProcess();
+    const event = (text: string) =>
+      JSON.stringify({ type: 'result', result: text, session_id: text }) + '\n';
+    old.stdout.emit('data', event('old-response'));
+    old.emit('close', 143);
+    next.stdout.emit('data', event('new-response'));
     expect((await second).result).toBe('new-response');
   });
-
 });

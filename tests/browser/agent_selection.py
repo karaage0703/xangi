@@ -26,6 +26,7 @@ with sync_playwright() as pw:
                 if path.endswith('/stream'):
                     r.fulfill(content_type='text/event-stream',body=': ready\n\n'); return
                 if path == '/api/config': data={'uploadAccept':None,'uploadMaxBytes':64000000,'allowedBackends':['codex']}
+                elif path.startswith('/api/user-input/'): data={'questions':[]}
                 elif path == '/api/agents': data={'agents':agents}
                 elif path == '/api/models': data={'status':'available','models':[{'id':'test-model'}],'supportedEfforts':[]}
                 elif path == '/api/projects': data={'projects':[]}
@@ -90,7 +91,7 @@ with sync_playwright() as pw:
             page.get_by_label('新しい会話の種類と担当').click()
             page.get_by_label('新規会話の担当').select_option('a1')
             expect(page.get_by_label('新規会話の担当')).to_have_value('a1')
-            page.get_by_role('button',name='通常の会話',exact=True).click()
+            page.locator('.sidebar').get_by_role('button',name='＋ 新しい会話',exact=True).click()
             expect(page).to_have_url('http://agent-test.test/chat/new-session')
             assert calls[-1]['agentId']=='a1'
             print('settings', width, errors, flush=True)

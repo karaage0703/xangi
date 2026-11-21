@@ -1,3 +1,4 @@
+import { AgentConnectionSettings } from './AgentConnectionSettings';
 import {
   CatalogCreateButton,
   CatalogRow,
@@ -101,21 +102,37 @@ export function AgentSettings({
   const [loadingAgentModels, setLoadingAgentModels] = useState(false);
   const [savingAgent, setSavingAgent] = useState(false);
 
+  const channelAgentId = agentFormOpen ? editingAgentId : undefined;
   useEffect(() => {
+    let cancelled = false;
+    setChannels([]);
+    setChannelNotice('');
     for (const platform of ['discord', 'slack']) {
+      const query = new URLSearchParams({ platform });
+      if (channelAgentId) query.set('agentId', channelAgentId);
       void requestJson<{
         channels: Array<{ id: string; name: string; group?: string }>;
         message?: string;
-      }>(`/api/runtime-settings/channels?platform=${platform}`)
+      }>(`/api/runtime-settings/channels?${query}`)
         .then((r) => {
+          if (cancelled) return;
           setChannels((previous) => [
             ...previous.filter((c) => c.platform !== platform),
             ...r.channels.map((c) => ({ ...c, platform })),
           ]);
-          if (r.message) setChannelNotice(r.message);
+          if (r.message)
+            setChannelNotice((previous) => [previous, r.message].filter(Boolean).join(' / '));
         })
-        .catch((e) => setChannelNotice(String(e)));
+        .catch((e) => {
+          if (!cancelled) setChannelNotice(String(e));
+        });
     }
+    return () => {
+      cancelled = true;
+    };
+  }, [channelAgentId]);
+
+  useEffect(() => {
     void Promise.all([
       requestJson<{ agents: Agent[] }>('/api/agents').then((result) => setAgents(result.agents)),
       requestJson<{ allowedBackends: string[] }>('/api/config').then(setConfig),
@@ -613,6 +630,9 @@ export function AgentSettings({
               onCancel={() => setAgentFormOpen(false)}
             />
           </form>
+          {editingAgentId && (
+            <AgentConnectionSettings key={editingAgentId} agentId={editingAgentId} />
+          )}
         </>
       ) : (
         <nav className="project-view-list" aria-label="エージェント一覧">

@@ -43,6 +43,7 @@ xangiがAIへ渡す固定の指示文は、トークン消費を抑えるため�
 - ユーザーのメッセージ、予約本文、引用、ワークスペースの指示は元の言語・内容を保持します。最終応答の言語はユーザーの希望に従います。
 - 日本語の入力構文や実際のUI文言など、照合に必要な文字列はそのまま扱います。添付の内部ラベルは `[Attachment]` を生成し、読取側は過去の `[添付ファイル]` にも対応します。ファイル名・パス・ユーザー本文は変更しません。未対応の英語構文を例として追加しません。
 - 日本語の利用者向けUI・ドキュメント・開発用コメントを一律に英語化する方針ではありません。内部向け固定文を新規追加・変更するときに、共通プロンプトとツール説明の両方を確認します。
+- ツール結果やエラーへ付加するAI向け固定指示も対象です。例えば秘密情報検知時の `SECRET_AI_WARNING` は英語にし、利用者への警告は利用者の希望言語で行うよう指示します。利用者へ直接表示する停止通知（`SECRET_BLOCK_NOTICE`）とは分けて扱います。
 
 ## アーキテクチャ
 
@@ -748,7 +749,28 @@ CLI backendのストリーミング実行はDynamic Runner境界の共通recorde
 
 env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 no-op になりファイル作成もしない。runner.ts には観測ログ生成だけ持たせ、蓄積データの後段処理は別ツール側に分離する設計。詳細は `docs/usage.md`「Tool Trajectory Logger」セクション参照。
 
+### 専用Botのモニター連携
+
+`agent-connection-monitor.ts`は、子ランタイムのセッション・実行状態を親へIPCで送り、一覧APIとセッション更新ストリームへ統合します。更新は150ms単位でまとめ、IPC送信待ちでは最新状態を保持します。接続・セッション・会話の識別子を分離し、同じチャンネルで動くBot同士の状態を混ぜません。子の終了時はその接続の表示を除去し、再起動後の一覧で復元します。
+
+一覧通知には表示用メタデータだけを載せ、秘密セッション・会話プレビュー・認証情報・Agent指示を含めません。会話一覧・モニターは同じ子セッションを扱い、履歴閲覧・送信・編集・停止・完了は、その会話を所有する子へ中継します。履歴や認証の保存先は子ごとに分離します。
+
+子はloopbackの内部APIを起動し、起動ごとに生成した鍵をIPCだけで親へ渡します。鍵が一致しない要求と会話以外のAPIは拒否します。親はブラウザの同一ホスト検証後に、登録済みの子だけへ接続します。鍵はブラウザへ返さず、親のcookieや認証ヘッダーは子へ転送しません。名前空間付きのSession IDを中継時に変換し、本文・メッセージID・要求ID・provider IDは保持します。JSONとSSEの識別子を戻し、ブラウザ切断時は中継を閉じます。再送の重複抑止とDiscord／Slackへの投稿は子の既存会話サービスが担当します。
+
+専用Botの`system_restart`は`agent-connection-restart.ts`の要求ID付きIPCで所有する親へ依頼します。親が自身の実効権限と保存状態を確認し、既存のSIGTERM経路を使います。子の自己再起動権限はoffのままで、親URLや任意コマンドは要求に含めません。同じ要求IDは再実行せず、切断・応答待ちの時間切れでは結果不明として状態確認を促します。PM2 checkoutの同期delete/start経路はPIDとPPIDから自己・祖先への置換を削除前に拒否します。
+
+### 作業チャンネルで始める新規会話
+
+WebからDiscord／Slackへ会話を作るときは、担当Agentの作業チャンネルを `channel-agents.json` から解決します。親と子は同じ接続IDで担当を判定し、子へ渡す振り分け情報は接続ID、担当、サービス、有効状態に限ります。専用Botは自身の権限でチャンネルを確認し、スレッドを作成します。指定されたProjectの指示と担当を会話に保存し、Web上の会話IDに接続IDを付けます。以降の送信と履歴参照は既存の中継を使います。
+
 ### スケジューラー（scheduler.ts）
+
+チャンネル担当に専用Discord/Slack接続がある場合、platform bridgeは共通Botから投稿する前に`agent-connection-schedules.ts`へ実行を委譲します。親は予定と重複実行ガードを保持し、`agent-connection-runtime.ts`が担当・サービスに一致する1つの有効な子を選びます。子の登録済みplatform runnerが専用Botの認証・Agent設定で実行し、予定のコピーや移動は行いません。
+
+要求ID付きの親子IPCで開始・配信receipt・結果を対応付けます。子の終了は未完了要求を失敗にし、IPC層での再送や共通Botへの代行は行いません。子の起動中はreadyを最大60秒待ちます。専用接続なしの担当は従来経路を使い、専用接続が無効・複数・未接続なら配信を拒否します。子は再委譲しません。
+
+設定画面では`ApplyBadge`の反映時期表示を共有し、専用Bot・共通接続・起動設定の保存後に`RestartGuidance`で明示的な再起動依頼を案内します。保存だけでプロセスの再起動は行いません。
+
 
 `runWithBubbleEvents` は実行中Sessionをchannel単位で登録し、成功・失敗・cancelすべての終了経路で解除します。`progress_card` は一意な実行中Sessionを優先し、実行がない場合だけ通常のactive Sessionを参照します。同じchannelに異なるSessionが同時実行中なら更新を拒否します。これは更新先の解決であり、HTTP呼び出し元の認証機構ではありません。
 
@@ -801,6 +823,12 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 AI CLIが xangi の機能（Discord操作・スケジュール・システム）を安全に呼び出すための HTTP API サーバー。
 
 command実行とGitHub token発行は接続元socketのloopback判定とOrigin検証を通したlocal client専用とする。外部triggerは別のBearer認証境界を維持する。通常Web APIはGETを含め同一hostのOriginを検証し、拡張device ingressの独立した認証・CORS契約とは分離する。
+
+既知値の漏洩低減は `secret-filter.ts` が担う。起動環境へ解決済みの秘密値を変数名で選び、実値とJSON・URL表現を照合する。`DynamicRunnerManager` のプロンプト・応答境界、Local LLMツール、Tool Serverの結果・対象ログへマスクを適用し、Discordツールは送信引数と実際の添付バイト列をAPI呼出し前に検査する。
+
+`XANGI_SECRET_FILTER_ENABLED` は既定ONで、Web起動設定からも保存できる。OFF時は既知値の収集を行わず、空のフィルタで各経路のマスクと停止を無効にする。検知した管理対象入力・ツール結果・拒否エラーには固定のAI向け警告指示を添える。履歴・検索は省略前の検知を保持して返り値へ指示を付ける。指示に秘密値・元の引数は含めず、利用者への通知と再送回避を求める。最終応答検知は本体で停止通知へ置換し、追加の推論や独立した通知送信は行わない。AIへの指示の遵守は保証しない。
+
+ストリームでは秘密の先頭に一致する末尾を保留し、チャンクをまたぐ一致で以後の本文を抑止する。共通添付検査の拒否は自動復旧を起こさない。これは管理対象経路のフィルタであり、外部CLIの直接通信・内部ツール・既存管理APIや同一OSユーザーの任意コード実行を隔離しない。共通添付検査後のファイル書換え競合も残る。設定と対象外の詳細は [既知の秘密情報フィルタ](usage.md#既知の秘密情報フィルタ) を参照。
 
 ```
 AI CLI（Claude Code等）
@@ -1306,7 +1334,7 @@ src/
 
 詳しくは[チャンネルの担当と設定の優先順位](usage.md#チャンネルの担当と設定の優先順位)を参照してください。
 
-Projectの接続設定は`project-catalog.json`の`defaultAgentId`（Agent IDまたは`team:<ID>`）と`channel: { platform, channelId }`に保存する。`POST/PATCH /api/projects`で設定し、nullで解除する。継続APIは`POST /api/sessions/:id/discord-continue`と`POST /api/sessions/:id/slack-continue`。
+Projectの担当は `project-catalog.json` の `defaultAgentId` に保存する。投稿先は担当Agentの作業チャンネルで解決する。継続APIは`POST /api/sessions/:id/discord-continue`と`POST /api/sessions/:id/slack-continue`。
 
 Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションにIDを指定します。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
 

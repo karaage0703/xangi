@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../src/config.js';
 import type { AgentRunner } from '../src/agent-runner.js';
-import { initSessions, clearSessions } from '../src/sessions.js';
+import { initSessions, clearSessions, ensureSession } from '../src/sessions.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
 import { reserveConversation } from '../src/conversation-locks.js';
 
@@ -50,6 +50,7 @@ let config: Config;
 let runner: AgentRunner;
 const runStream = vi.fn();
 let sequence: number;
+const acceptsWorkChannel = vi.fn<(channelId: string) => boolean>();
 const flush = async () => {
   for (let i = 0; i < 150; i++) await Promise.resolve();
 };
@@ -65,6 +66,7 @@ beforeEach(async () => {
   initSessions(dir);
   initSettings(dir);
   sequence = 0;
+  acceptsWorkChannel.mockReturnValue(true);
   mocked.actions.clear();
   mocked.events.clear();
   mocked.client.chat.postMessage.mockImplementation(async () => ({ ts: `receipt-${++sequence}` }));
@@ -93,6 +95,7 @@ beforeEach(async () => {
     resolver: {} as never,
     skills: [],
     reloadSkills: () => [],
+    acceptWorkChannelMessage: acceptsWorkChannel,
   });
 });
 afterEach(() => {
@@ -151,6 +154,48 @@ async function click(index: number, actionId = 'xangi_pending_send', userId = 'a
   return respond;
 }
 
+it('checks the work channel owner for both Slack message and mention events', async () => {
+  acceptsWorkChannel.mockReturnValue(false);
+  await send('normal-skipped', 'Should stay with the owning App');
+  await send('mention-skipped', '<@BOT> Should stay with the owning App', undefined, 'app_mention');
+  expect(acceptsWorkChannel).toHaveBeenNthCalledWith(1, 'channel');
+  expect(acceptsWorkChannel).toHaveBeenNthCalledWith(2, 'channel');
+  expect(runStream).not.toHaveBeenCalled();
+
+  acceptsWorkChannel.mockReturnValue(true);
+  await send('normal-owned', 'Read by the owner');
+  expect(runStream).toHaveBeenCalledOnce();
+});
+
+it('posts the Web input and then its answer to the Slack work thread', async () => {
+  const appSessionId = ensureSession('channel:thread', { platform: 'slack', webLinked: true });
+  const bridge = createSlackRemoteInputBridge(mocked.client as never, runner, config);
+  const ids = await bridge.deliverResult!({
+    appSessionId,
+    text: 'Answer',
+    attachments: [],
+    webInput: { message: 'Question', attachments: [] },
+  });
+  expect(mocked.client.chat.postMessage).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      channel: 'channel',
+      thread_ts: 'thread',
+      mrkdwn: false,
+      text: '🌐 Webから: Question',
+    })
+  );
+  expect(mocked.client.chat.postMessage).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({
+      channel: 'channel',
+      thread_ts: 'thread',
+      text: 'Answer',
+    })
+  );
+  expect(ids).toEqual(['receipt-2']);
+});
+
 describe('Slack inbound pending-message integration', () => {
   it('queues ordinary and mention posts, preserves attachments and routing, cancels one and runs another after the active turn', async () => {
     const block = deferred();
@@ -207,7 +252,6 @@ describe('Slack inbound pending-message integration', () => {
       await click(0);
       expect(isSlackConversationBusy('channel')).toBe(true);
       // A new linked session has a different key; select the busy thread explicitly.
-      const { ensureSession } = await import('../src/sessions.js');
       const id = ensureSession('channel:thread', { platform: 'slack' });
       const bridge = createSlackRemoteInputBridge(mocked.client as never, runner, config);
       await expect(

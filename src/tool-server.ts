@@ -1,4 +1,5 @@
 import { getActiveSessionId, getSessionEntry } from './sessions.js';
+import { secretFilterFromEnv } from './secret-filter.js';
 import {
   executeProjectAgentCommand,
   executeTeamCommand,
@@ -488,15 +489,20 @@ export function startToolServer(options?: {
         secret = Boolean(
           context?.channelId && isSecretSession(getActiveSessionId(context.channelId))
         );
-        if (!secret) console.log(`[tool-server] ${command} ${JSON.stringify(flags || {})}`);
+        if (!secret)
+          console.log(
+            `[tool-server] ${secretFilterFromEnv().redact(command)} ${JSON.stringify(secretFilterFromEnv().redactValue(flags || {}))}`
+          );
         const result = await withPrivateDiagnostics(secret, () =>
           executeCommand(command, flags || {}, context)
         );
 
         res.writeHead(200);
-        res.end(JSON.stringify({ ok: true, result }));
+        res.end(JSON.stringify({ ok: true, result: secretFilterFromEnv().redactForAI(result) }));
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = secretFilterFromEnv().redact(
+          err instanceof Error ? err.message : String(err)
+        );
         // ValidationError はクライアント入力の問題なので 400、それ以外は 500。
         // name ベースで判定する（vitest 等で module が二重ロードされても安全）
         const isValidation =

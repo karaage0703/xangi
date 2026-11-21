@@ -230,22 +230,17 @@ it('merges legacy Agent roles once and migrates named hierarchy members without 
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
-describe('Project channel settings', () => {
-  it('persists, rejects ambiguous channels/invalid targets and clears settings', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'project-sync-'));
-    try {
-      let catalog = new ProjectCatalog(dir);
-      const a = catalog.saveAgent({ name: 'Writer' });
-      const p = catalog.create({ name: 'Project', defaultAgentId: a.id, channel: { platform: 'slack', channelId: 'C1' } });
-      catalog = new ProjectCatalog(dir);
-      expect(catalog.forChannel('slack', 'C1')).toMatchObject({ id: p.id, defaultAgentId: a.id });
-      expect(() => catalog.create({ name: 'Duplicate', channel: { platform: 'slack', channelId: 'C1' } })).toThrow('別のProject');
-      expect(() => catalog.update(p.id, { defaultAgentId: 'missing' })).toThrow('見つかりません');
-      expect(() => catalog.update(p.id, { channel: { platform: 'web', channelId: 'C1' } })).toThrow('プラットフォーム');
-      expect(catalog.get(p.id)?.defaultAgentId).toBe(a.id);
-      catalog.update(p.id, { defaultAgentId: null, channel: null });
-      expect(new ProjectCatalog(dir).forChannel('slack', 'C1')).toBeUndefined();
-      expect(catalog.get(p.id)?.defaultAgentId).toBeUndefined();
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+it('ignores the retired Project channel stored by an older release', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'project-sync-'));
+  try {
+    const catalog = new ProjectCatalog(dir);
+    const project = catalog.create({ name: 'Project' });
+    const file = join(dir, 'project-catalog.json');
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    data.projects[0].channel = { platform: 'slack', channelId: 'C1' };
+    writeFileSync(file, JSON.stringify(data));
+    expect(new ProjectCatalog(dir).get(project.id)).not.toHaveProperty('channel');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

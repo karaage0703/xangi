@@ -1,9 +1,11 @@
+import { Events, type Client, type Message } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   processPrompt,
+  registerDiscordMessageHandlers,
   sendDiscordCompletedResult,
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
@@ -11,7 +13,9 @@ import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 import { AntigravityTimeoutError, AntigravityTurnError } from '../src/errors.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
 import { clearSessions, initSessions, setSession } from '../src/sessions.js';
-import { initSettings } from '../src/settings.js';
+import { clearSettingsCache, initSettings, saveSettings } from '../src/settings.js';
+import { ProjectCatalog } from '../src/project-catalog.js';
+import { acceptsWorkChannelMessage } from '../src/agent-work-channel-routing.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 
@@ -33,6 +37,60 @@ describe('shouldProcessDiscordMessage', () => {
   it('does not process Discord system messages', () => {
     expect(shouldProcessDiscordMessage({ system: true })).toBe(false);
   });
+});
+
+it('lets only the assigned Discord Bot process an autoreply in a linked Project thread', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'discord-project-routing-'));
+  try {
+    initSettings(dataDir);
+    saveSettings({ discordAutoReplyChannels: { 'project-channel': true } });
+    const catalog = new ProjectCatalog(dataDir);
+    const agent = catalog.saveAgent({ name: 'Dedicated Agent' });
+    writeFileSync(join(dataDir, 'channel-agents.json'), JSON.stringify({
+      [JSON.stringify(['discord', 'project-channel'])]: agent.id,
+    }));
+    const bot = { id: 'dedicated-bot', agentId: agent.id, platform: 'discord' as const, enabled: true };
+    const contents = vi.fn(() => '');
+    const message = {
+      guild: {},
+      author: { bot: false, id: 'user' },
+      channel: { id: 'project-thread', isThread: () => true, parentId: 'project-channel' },
+      attachments: new Map(),
+      mentions: { has: () => false },
+      get content() {
+        return contents();
+      },
+    } as unknown as Message;
+
+    async function receive(connectionId: string | undefined, connections = [bot]) {
+      const on = vi.fn();
+      registerDiscordMessageHandlers({
+        client: { on, user: {} } as unknown as Client,
+        config: { discord: { allowedUsers: ['user'] }, agent: { config: {} } },
+        agentRunner: {},
+        workdir: dataDir,
+        workspaceRegistry: {},
+        acceptWorkChannelMessage: (channelId: string) =>
+          acceptsWorkChannelMessage(dataDir, connections, 'discord', channelId, connectionId),
+      } as unknown as Parameters<typeof registerDiscordMessageHandlers>[0]);
+      await on.mock.calls.find(([event]) => event === Events.MessageCreate)![1](message);
+    }
+
+    await receive(undefined);
+    await receive('other');
+    expect(contents).not.toHaveBeenCalled();
+    await receive('dedicated-bot');
+    expect(contents).toHaveBeenCalledTimes(1);
+    expect(() =>
+      acceptsWorkChannelMessage(dataDir, [{ ...bot, enabled: false }], 'discord', 'project-channel')
+    ).toThrow('専用Botが無効');
+    expect(() =>
+      acceptsWorkChannelMessage(dataDir, [bot, { ...bot, id: 'duplicate' }], 'discord', 'project-channel')
+    ).toThrow('専用Botを1つだけ');
+  } finally {
+    clearSettingsCache();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 describe('processPrompt error completion', () => {

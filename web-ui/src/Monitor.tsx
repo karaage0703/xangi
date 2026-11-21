@@ -89,6 +89,7 @@ interface UsageProvider {
 }
 
 export interface MonitorSession {
+  connectionId?: string;
   modelExecution?: ModelExecution;
   modelHistory?: ModelExecution[];
   id: string;
@@ -743,6 +744,7 @@ export function Monitor() {
           limit: String(PAGE_SIZE),
           offset: String(offset),
           lifecycle,
+          includeConnections: 'true',
         });
         if (lifecycle === 'closed') {
           const durationMs = monitorTimeRange(timeRange).durationMs;

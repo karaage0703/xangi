@@ -4117,6 +4117,13 @@ video.media-preview {
   flex: 1;
 }
 
+.pane-destination {
+  margin: 0 0 6px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .pane-composer {
   --composer-button-size: 44px;
   --composer-icon-size: 18px;

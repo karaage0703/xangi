@@ -1,4 +1,5 @@
-import { channelAgentSnapshot } from '../agent-selection.js';
+import { relayAgentConnectionSchedule } from '../agent-connection-schedules.js';
+import { channelAgentSnapshot, channelAgent } from '../agent-selection.js';
 import type { Client, Message } from 'discord.js';
 import type { Config } from '../config.js';
 import type { AgentRunner } from '../agent-runner.js';
@@ -51,7 +52,16 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
   // スケジューラにエージェント実行関数を登録
   scheduler.registerAgentRunner('discord', (prompt, channelId, schedule, runContext) =>
     turnCoordinator.enqueue(channelId, async () => {
-      runContext?.onStart?.();
+      const directAgent = channelAgent('discord', channelId);
+      const directRelay = relayAgentConnectionSchedule(
+        directAgent?.id,
+        'discord',
+        prompt,
+        channelId,
+        schedule,
+        runContext
+      );
+      if (directRelay) return await directRelay;
       const startedAt = Date.now();
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('send' in channel)) {
@@ -66,6 +76,16 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         settingsChannelId,
         workspaceRegistry
       );
+      const relayed = relayAgentConnectionSchedule(
+        agentSnapshot.selectedAgentId,
+        'discord',
+        prompt,
+        channelId,
+        schedule,
+        runContext
+      );
+      if (relayed) return await relayed;
+      runContext?.onStart?.();
       const workspace = agentSnapshot.workspacePath
         ? { id: agentSnapshot.workspaceId, path: agentSnapshot.workspacePath }
         : undefined;

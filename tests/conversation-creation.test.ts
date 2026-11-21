@@ -38,3 +38,20 @@ it('never blindly repeats uncertain external thread creation', async () => {
   ).rejects.toThrow('作成結果');
   expect(create).toHaveBeenCalledTimes(1);
 });
+
+it('binds a request ID to the original work channel and Bot', async () => {
+  const path = directory();
+  const create = vi.fn().mockResolvedValue({ sessionId: 'thread' });
+  await createLinkedConversation(
+    path,
+    'work-channel-change',
+    'project',
+    'hello',
+    create,
+    'old-route'
+  );
+  await expect(
+    createLinkedConversation(path, 'work-channel-change', 'project', 'hello', create, 'new-route')
+  ).rejects.toMatchObject({ status: 409 });
+  expect(create).toHaveBeenCalledOnce();
+});

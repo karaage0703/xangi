@@ -1,3 +1,5 @@
+import { ApplyBadge } from './ApplyBadge';
+import { RestartGuidance } from './RestartGuidance';
 import { ConfiguredChannels } from './ConfiguredChannels';
 import {
   CatalogCreateButton,
@@ -120,12 +122,6 @@ interface ChannelRuntimeSettings extends ChannelBackendSnapshot {
   threadMode?: { value: string; effective: string };
 }
 
-function ApplyBadge({ mode }: { mode: ApplyMode | 'restart' }) {
-  const label =
-    mode === 'immediate' ? '即時反映' : mode === 'next-turn' ? '次のturnから' : '再起動後';
-  return <span className={`settings-apply-badge ${mode}`}>{label}</span>;
-}
-
 function StartupField({
   setting,
   saving,
@@ -228,6 +224,7 @@ export function Settings() {
   const [saving, setSaving] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [showRestartGuidance, setShowRestartGuidance] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<BackendAuthenticationStatus>();
   const [updatingBackend, setUpdatingBackend] = useState('');
   const [updateStatus, setUpdateStatus] = useState('');
@@ -411,6 +408,7 @@ export function Settings() {
   };
 
   const updateStartup = async (key: string, value: string) => {
+    setShowRestartGuidance(false);
     setSaving(key);
     setError('');
     setMessage('');
@@ -420,6 +418,7 @@ export function Settings() {
         { method: 'POST', body: JSON.stringify({ key, value }) }
       );
       setStartupGroups(result.groups);
+      setShowRestartGuidance(true);
       setMessage(result.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -429,6 +428,7 @@ export function Settings() {
   };
 
   const updateConnection = async (key: string) => {
+    setShowRestartGuidance(false);
     const value = connectionValues[key]?.trim();
     if (!value) {
       setError('新しい値を入力してください');
@@ -445,6 +445,7 @@ export function Settings() {
       setConnectionGroups(result.groups);
       setBackendAuthentication(result.backends);
       setConnectionValues((current) => ({ ...current, [key]: '' }));
+      setShowRestartGuidance(true);
       setMessage(result.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -542,6 +543,8 @@ export function Settings() {
             {message}
           </p>
         ) : null}
+
+        {showRestartGuidance && <RestartGuidance />}
 
         {settings ? (
           <div className="settings-sections">

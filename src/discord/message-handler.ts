@@ -93,6 +93,7 @@ import {
 } from './message-utils.js';
 import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
 import type { WorkspaceRegistry } from '../workspace-registry.js';
+import type { SharedProject } from '../project-catalog.js';
 import { ensureSessionWithWorkspace } from '../session-workspace.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
 import { DiscordPendingMessages, PENDING_MESSAGE_PREFIX } from './pending-messages.js';
@@ -991,6 +992,7 @@ export interface MessageHandlerDeps {
   workdir: string;
   workspaceRegistry: WorkspaceRegistry;
   turnCoordinator?: DiscordTurnCoordinator;
+  acceptWorkChannelMessage?: (channelId: string) => boolean;
 }
 
 export interface DiscordRemoteInput {
@@ -1012,7 +1014,11 @@ export interface DiscordRemoteInputBridge {
     webInput?: { message: string; attachments: string[] };
     assistantName?: string;
   }): Promise<string[]>;
-  createSession?(channelId: string, title: string): Promise<{ sessionId: string }>;
+  createSession?(
+    channelId: string,
+    title: string,
+    project?: SharedProject
+  ): Promise<{ sessionId: string }>;
 
   continueSession(input: DiscordRemoteInput): Promise<{ response: string | null }>;
 }
@@ -1191,6 +1197,16 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       } catch (error) {
         await message.reply({ content: String(error), allowedMentions: { parse: [] } });
       }
+      return;
+    }
+
+    try {
+      if (deps.acceptWorkChannelMessage?.(parentChannelId ?? message.channel.id) === false) return;
+    } catch (error) {
+      console.warn(
+        '[discord] Work channel Bot routing failed:',
+        error instanceof Error ? error.message : String(error)
+      );
       return;
     }
 
@@ -1373,7 +1389,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       // Callers attach ids[0] to the assistant transcript, so keep the answer first.
       return [...ids, ...inputIds];
     },
-    async createSession(channelId, title) {
+    async createSession(channelId, title, project) {
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('threads' in channel) || channel.type !== 0)
         throw new Error('Discordのテキストチャンネルを選択してください');
@@ -1386,6 +1402,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         contextKey: thread.id,
         bindingKey: channelId,
         registry: workspaceRegistry,
+        project,
+        webLinked: true,
       });
       pendingThreadTitles.set(result.appSessionId, title);
       return { sessionId: result.appSessionId };

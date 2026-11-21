@@ -318,6 +318,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     usage: 'xangi tool system_restart',
     notes: [
       'Call directly from the current xangi in this turn; do not delay or delegate to child processes or schedulers.',
+      'Dedicated Bots request their parent instance through IPC; the parent checks its own restart permission. Its dedicated Bots also disconnect temporarily.',
       'Acceptance is not completion. After recovery, verify status, startup time, and logs.',
     ],
   },

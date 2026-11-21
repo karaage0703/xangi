@@ -1,5 +1,5 @@
 import { WebClient, type WebClientOptions } from '@slack/web-api';
-import type { Client } from 'discord.js';
+import { ChannelType, PermissionFlagsBits, type Client } from 'discord.js';
 import { formatDiscordDestinationLabel } from './discord/destination-label.js';
 
 export type SettingsPlatform = 'discord' | 'slack';
@@ -78,11 +78,27 @@ export function listSettingsChannelsWithTimeout(
   });
 }
 
-export async function listDiscordSettingsChannels(client: Client): Promise<SettingsChannel[]> {
+export async function listDiscordSettingsChannels(
+  client: Client,
+  requireThreadPermissions = false
+): Promise<SettingsChannel[]> {
   const channels: SettingsChannel[] = [];
 
   for (const channel of client.channels.cache.values()) {
     if (!('guildId' in channel) || !channel.isTextBased() || channel.isThread()) continue;
+    if (
+      requireThreadPermissions &&
+      (channel.type !== ChannelType.GuildText ||
+        !channel.guild.members.me ||
+        !channel
+          .permissionsFor(channel.guild.members.me)
+          .has([
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.CreatePublicThreads,
+            PermissionFlagsBits.SendMessagesInThreads,
+          ]))
+    )
+      continue;
     const name = formatDiscordDestinationLabel(channel);
     if (!name) continue;
     const group = 'guild' in channel ? channel.guild.name : undefined;

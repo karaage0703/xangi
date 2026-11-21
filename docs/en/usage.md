@@ -927,6 +927,8 @@ The above response is sent as two separate messages to Discord or Slack. When ac
 
 To restart only the app handling the current conversation, call `xangi tool system_restart` directly. To restart both the app and local worker, use `xangi restart`. A successful response means that the restart request was accepted; confirm completion from the new process status, start time, and startup log. To operate a different clone, run that clone's `./bin/xangi service restart` directly and wait for completion.
 
+A dedicated Bot's `system_restart` requests a restart of its main instance over the existing parent-child IPC channel. The child's own restart permission remains disabled; the parent checks its own `XANGI_SELF_LIFECYCLE` permission and persisted state before accepting. Restarting the parent temporarily disconnects its dedicated Bots too. The response confirms acceptance, not recovery. An IPC disconnect or timeout reports an unknown outcome and asks for a status check without retrying automatically. For PM2 checkouts, `service start/restart` deletes and recreates an existing registration, so it refuses to replace the caller itself or an ancestor process before deleting anything. It also stops if target PIDs or caller ancestry cannot be verified. Calls from an independent administrator terminal and the independent job used by `xangi restart` remain supported.
+
 Self restart permission is configured by the administrator in `.env` with `XANGI_SELF_LIFECYCLE`. It is not a runtime setting that the AI changes. Shutdown cannot be guaranteed from inside xangi itself, so stopping xangi is handled by the external lifecycle manager such as Docker, pm2, or systemd.
 
 ```mermaid
@@ -1535,6 +1537,22 @@ Writes that fail are reported via `console.warn` only — the logger never throw
 
 ## Security
 
+### Known secret filter
+
+`XANGI_SECRET_FILTER_ENABLED` defaults to `true` (ON). Set it to `false` to disable this known-value filter's masking, send blocking, and AI warning instructions. It is also available under Settings → Security → Known secret filter in the Web UI (Japanese label: 既知の秘密情報フィルタ). Saved changes apply after restart.
+
+The filter matches exact secret values already loaded into the environment, including their JSON-escaped and URL-encoded representations. It includes variables named `TOKEN`, `PASSWORD`, `PASSWD`, `SECRET`, `API_KEY`, or `PRIVATE_KEY`, and names ending in an underscore followed by one of those suffixes. Empty values are excluded. Register custom names with `XANGI_SECRET_FILTER_ENV_KEYS=DATABASE_URL,MY_CREDENTIAL`; list names, never secret values.
+
+- Prompts, userText, hook-added context at the common runner boundary, and Local LLM tool results are masked with `[REDACTED_SECRET]`. Local LLM tool arguments containing known values are rejected before execution.
+- A common-runner response containing a known value becomes a blocked-send notice and loses its structured attachments. Streaming holds possible secret prefixes across chunks. Previously delivered ordinary text is not recalled.
+- Discord tools inspect original arguments, request bodies, and actual attachment bytes before API calls. Authentication headers are intentionally excluded. History and search previews mask the full original message body before shortening it to 200 characters.
+- The shared attachment-result builder checks filenames and UTF-8 file contents, blocking unreadable files too. Security rejections do not trigger attachment recovery.
+- `/api/execute` results/errors, common-runner tool displays/questions, `privacyConsole` diagnostics, and supported trajectory fields are also masked.
+
+When managed input or tool results are masked, or a tool operation is blocked, the AI receives a fixed instruction to warn the user, avoid reproducing the secret or original text, and avoid resending through encoding, splitting, or another route. This is advisory: it does not guarantee user notification and is not an independent application alert. If the final response itself contains a secret, the application still replaces it with the blocked-send notice. No extra LLM request is made solely to deliver a warning.
+
+This reduces leakage only on covered paths. It does not guarantee detection of unknown secrets, partial disclosure, arbitrary encoding/splitting, images, or compressed files. Entropy and ML behavior detection are not included. External CLI file access, internal tool results, CLI-owned logs/history, direct network traffic, existing management APIs, and secrets outside the loaded environment are not covered. Files can change after shared attachment inspection; `media_send` instead uploads the same bytes it inspected. This is not isolation against arbitrary code running as the same OS user. Restrict unmonitored egress separately. Short values also match exactly and can cause false blocks; avoid non-secret values in automatically detected credential variables.
+
 ### Environment Variable Whitelist
 
 Environment variables passed to the AI agent (CLI spawn / Local LLM exec) are managed in `src/safe-env.ts`. Only variables listed in the whitelist are passed; secrets like `DISCORD_TOKEN` are not accessible to the AI.
@@ -2120,13 +2138,13 @@ Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-d
 
 ## Shared projects and agents
 
-Select a project in the chat sidebar to show its conversations, or select “All conversations” to clear the project filter. Use “+” beside the Projects heading to create a project and the row’s “…” to open settings directly and edit its name, shared instructions, default agent and connected channel. Click the Projects heading to hide or show the entire list; the collapsed state persists across reloads in the same browser. Collapsing keeps the selected project and conversation filter; use “All conversations” to clear the filter. With more than five projects, expand the list with “Show all”. Open app-wide settings from the bottom of the sidebar.
+Select a project in the chat sidebar to show its conversations, or select “All conversations” to clear the project filter. Use “+” beside the Projects heading to create a project and the row’s “…” to open settings directly and edit its name, shared instructions, and default agent. Click the Projects heading to hide or show the entire list; the collapsed state persists across reloads in the same browser. Collapsing keeps the selected project and conversation filter; use “All conversations” to clear the filter. With more than five projects, expand the list with “Show all”. Open app-wide settings from the bottom of the sidebar.
 
 Use “Conversation status” below “All conversations” to filter by All (the default), Incomplete, or Completed. The filter combines with project, agent, search, and source filters. Reloading resets the status filter to All.
 
 On desktop, drag the right edge of the chat sidebar to resize it; the width persists across reloads in the same browser. Focus the divider to use Left/Right (Shift for larger steps) or Home/End. Double-click to restore the default width, or press Escape during a drag to cancel. Narrowing the window keeps your saved width. Mobile keeps the existing drawer controls.
 
-Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. Projects can select a default Agent or Team for new conversations and connect a Discord or Slack channel. Outside a Project, new conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
+Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. Projects can select a default Agent or Team for new conversations. Outside a Project, new conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
 
 See [Shared projects and agents](design.md#shared-projects-and-agents).
 
@@ -2139,11 +2157,9 @@ If deleting an agent fails, the confirmation dialog stays open and displays the 
 
 ### Channel agents and precedence
 
-Select a Project in the Web sidebar and configure its default Agent or Team and connected Discord or Slack channel. Manage Agents and Teams in Settings.
+In Agent Settings, choose one Discord or Slack work channel per Agent. Select New conversation to start a chat. If the Agent has a work channel, the composer shows the destination and the first message creates a thread there. Otherwise the conversation stays on the Web. A Project without an explicit assignee uses the default Agent.
 
-Each Project can connect one channel, and a channel cannot belong to multiple Projects. New conversations and scheduled channel runs use the Project's shared instructions and assignee. Existing conversations and past logs are not imported; existing conversations retain their settings after changes or unlinking. If no Project assignee is set, the channel Agent takes precedence over the global default. Agents and Teams assigned to a Project cannot be deleted.
-
-Send a message from New in a connected Project to create a thread in its channel. Continue the same conversation from Web or Discord/Slack; Web input also appears in the connected channel. Normal mention and auto-reply settings apply. Web supports text and file attachments in this mode. Select files with the attachment button; files can be sent without text (up to 10 per send). Attachments are retained after a failed send. Web-only commands and bidirectional edit/delete synchronization are not supported.
+Continue the same thread from Web or Discord/Slack. Web input appears in the thread, and text and attachments are supported. When an Agent has a dedicated Bot or App for that service, its account lists the available channels, creates the thread, and handles replies. Check the connection if the dedicated Bot is unavailable, disabled, or more than one connection is enabled.
 
 Choose a secret conversation from the dropdown beside New. Secret conversations stay in Web and do not inherit the Project's default assignee. Use End and discard to finish them.
 
@@ -2209,7 +2225,7 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 `run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Without a Team grant, children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
-Project forms contain a name, shared instructions, a default Agent or Team, and an optional connected channel. Agent forms contain a name, workspace, basic instructions and AI settings.
+Project forms contain a name, shared instructions, and a default Agent or Team. Agent forms contain a name, workspace, basic instructions and AI settings.
 
 A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Runs without an agent and self runs with --workspace-id accept a caller-selected workspace.
 

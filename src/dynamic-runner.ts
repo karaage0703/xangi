@@ -1,4 +1,6 @@
 import { cancelTeamDelegation } from './team-delegation.js';
+import { secretFilterFromEnv, withSecretAIWarning } from './secret-filter.js';
+import { filterRunError, filterRunResult, filterStreamCallbacks } from './secret-filter-runner.js';
 import { withPrivateDiagnostics } from './privacy-console.js';
 import { setSecretTurnInput } from './transcript-logger.js';
 import { isSecretSession } from './secret.js';
@@ -270,6 +272,9 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    const filter = secretFilterFromEnv();
+    prompt = filter.redactForAI(prompt);
+    if (options?.userText) options = { ...options, userText: filter.redact(options.userText) };
     if (!this.initializedDefaultRunner) await this.defaultRunnerReady;
     const control = handleSecretCommand(options);
     if (control) {
@@ -290,15 +295,16 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     if (runOptions?.channelId) this.activeChannelRunners.set(runOptions.channelId, runner);
     if (runOptions?.runnerKey) this.activeChannelRunners.set(runOptions.runnerKey, runner);
     try {
-      const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
+      const rawResult = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
         runner.run(enrichedPrompt, runOptions)
       );
+      const result = filterRunResult(rawResult, filter);
       this.recordResolvedBackend(runOptions, resolved, result);
       await this.finishModelExecution(runOptions, execution, result);
       return result;
     } catch (error) {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
-      throw runOptions?.secret ? privateRunError(error) : error;
+      throw runOptions?.secret ? privateRunError(error) : filterRunError(error, filter);
     } finally {
       for (const key of [runOptions?.channelId, runOptions?.runnerKey]) {
         if (key && this.activeChannelRunners.get(key) === runner)
@@ -321,6 +327,9 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    const filter = secretFilterFromEnv();
+    prompt = filter.redactForAI(prompt);
+    if (options?.userText) options = { ...options, userText: filter.redact(options.userText) };
     if (!this.initializedDefaultRunner) await this.defaultRunnerReady;
     options?.signal?.throwIfAborted();
     const control = handleSecretCommand(options);
@@ -381,22 +390,23 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       // Complete consumers only after the result and model snapshot have been persisted.
       onComplete: undefined,
     };
+    const guarded = filterStreamCallbacks(
+      recorder?.callbacks(observedCallbacks) ?? observedCallbacks,
+      filter
+    );
     try {
       runOptions?.signal?.throwIfAborted();
-      const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
-        runner.runStream(
-          enrichedPrompt,
-          recorder?.callbacks(observedCallbacks) ?? observedCallbacks,
-          runOptions
-        )
+      const rawResult = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
+        runner.runStream(enrichedPrompt, guarded.callbacks, runOptions)
       );
+      const result = guarded.finish(rawResult);
       this.recordResolvedBackend(runOptions, resolved, result);
       await this.finishModelExecution(runOptions, execution, result);
       callbacks.onComplete?.(result);
       return result;
     } catch (error) {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
-      throw runOptions?.secret ? privateRunError(error) : error;
+      throw runOptions?.secret ? privateRunError(error) : filterRunError(error, filter);
     } finally {
       for (const key of [runOptions?.channelId, runOptions?.runnerKey]) {
         if (key && this.activeChannelRunners.get(key) === runner)
@@ -414,6 +424,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private async prepareExecution(prompt: string, options?: RunOptions) {
     const startedAt = Date.now();
     const secret = isSecretSession(options?.appSessionId);
+    const inputFilter = secretFilterFromEnv();
+    let historyMasked = false;
     if (secret) {
       options = {
         ...options,
@@ -465,15 +477,17 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
         options?.workdir ?? this.workdir,
         options!.appSessionId!
       ).slice(-20);
-      const history = previous.map((e) => ({
-        role: e.role,
-        content: String(typeof e.content === 'string' ? e.content : (e.content.result ?? '')).slice(
-          -32_000
-        ),
-      }));
+      const history = previous.map((e) => {
+        const original = String(
+          typeof e.content === 'string' ? e.content : (e.content.result ?? '')
+        );
+        historyMasked ||= inputFilter.contains(original);
+        return { role: e.role, content: inputFilter.redact(original).slice(-32_000) };
+      });
       while (JSON.stringify(history).length > 64_000 && history.length > 1) history.shift();
       enrichedPrompt = `<secret-history>\n${JSON.stringify(history)}\n</secret-history>\n\n${enrichedPrompt}`;
     }
+    enrichedPrompt = withSecretAIWarning(inputFilter.redactForAI(enrichedPrompt), historyMasked);
     const configuredModel = normalizeModelId(resolved.model);
     const configuredEffort = runOptions?.effort ?? resolved.effort;
     const execution: ModelExecution = {

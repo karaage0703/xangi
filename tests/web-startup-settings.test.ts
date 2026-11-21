@@ -67,6 +67,35 @@ describe('Web startup settings', () => {
     expect(settings().find((f) => f.key === 'OPENROUTER_NO_TRAINING')?.value).toBe('false');
   });
 
+  it('defaults known-secret filtering ON and saves the switch for restart without changing the process', () => {
+    vi.stubEnv('XANGI_SECRET_FILTER_ENABLED', 'true');
+    try {
+      const field = () =>
+        webStartupSettingsSnapshot()
+          .flatMap((g) => g.settings)
+          .find((s) => s.key === 'XANGI_SECRET_FILTER_ENABLED');
+      expect(field()).toMatchObject({
+        type: 'boolean',
+        defaultValue: 'true',
+        value: 'true',
+        applyMode: 'restart',
+      });
+      expect(
+        updateWebStartupSetting({ key: 'XANGI_SECRET_FILTER_ENABLED', value: 'false' })
+      ).toContain('再起動後');
+      expect(field()?.value).toBe('false');
+      expect(process.env.XANGI_SECRET_FILTER_ENABLED).toBe('true');
+      expect(parse(readFileSync(process.env.XANGI_ENV_PATH!)).XANGI_SECRET_FILTER_ENABLED).toBe(
+        'false'
+      );
+      expect(() =>
+        updateWebStartupSetting({ key: 'XANGI_SECRET_FILTER_ENABLED', value: 'oops' })
+      ).toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('returns only allowlisted non-secret settings with restart timing', () => {
     const settings = webStartupSettingsSnapshot().flatMap((group) => group.settings);
     expect(settings.find((setting) => setting.key === 'DISCORD_STREAMING')).toMatchObject({

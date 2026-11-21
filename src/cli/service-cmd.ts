@@ -186,6 +186,49 @@ function isPm2UnstartupGuidance(output: string): boolean {
   return /\bsudo\b/.test(output) && /\bpm2\s+unstartup\b/.test(output);
 }
 
+/** A synchronous delete/start must not remove the process that owns this caller. */
+function assertIndependentPm2Caller(flags: Record<string, string | boolean>, name: string): void {
+  const result = runPm2(['pid', name], flags);
+  const values = result.output.trim().split(/\s+/);
+  if (result.status !== 0 || !values.every((value) => /^\d+$/.test(value))) {
+    throw new Error('Cannot verify PM2 target PIDs; service replacement was not attempted.');
+  }
+  const targets = new Set(values.map(Number));
+  targets.delete(0); // PM2 reports zero for stopped registrations.
+  if (!targets.size) return;
+
+  // Only numeric process metadata is read; never collect command lines or environments.
+  const table = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], {
+    encoding: 'utf8',
+    env: checkoutHostEnv(),
+    timeout: 5_000,
+  });
+  if (table.error || table.status !== 0) {
+    throw new Error('Cannot verify caller ancestry; service replacement was not attempted.');
+  }
+  const parents = new Map<number, number>();
+  for (const line of table.stdout.trim().split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match) parents.set(Number(match[1]), Number(match[2]));
+  }
+  const visited = new Set<number>();
+  let pid = process.pid;
+  while (pid > 0) {
+    if (targets.has(pid)) {
+      throw new Error(
+        'Refusing to replace this process or an ancestor PM2 app. ' +
+          'Use system_restart on the authorized main instance, or an independent administrator terminal. ' +
+          'No PM2 process was deleted.'
+      );
+    }
+    if (visited.has(pid) || !parents.has(pid)) {
+      throw new Error('Cannot verify caller ancestry; service replacement was not attempted.');
+    }
+    visited.add(pid);
+    pid = parents.get(pid)!;
+  }
+}
+
 function replacePm2ProcessFromConfig(
   flags: Record<string, string | boolean>,
   name: string
@@ -196,6 +239,7 @@ function replacePm2ProcessFromConfig(
   }
   const existing = runPm2(['describe', name], flags);
   if (existing.status === 0) {
+    assertIndependentPm2Caller(flags, name);
     const removed = runPm2(['delete', name], flags);
     if (removed.status !== 0) {
       throw new Error(removed.output || `pm2 delete ${name} failed`);

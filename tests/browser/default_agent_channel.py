@@ -2,7 +2,7 @@
 import mimetypes
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import parse_qs, urlparse, unquote
 from playwright.sync_api import sync_playwright, expect
 
 root = Path(__file__).resolve().parents[2] / 'web/app'
@@ -16,6 +16,7 @@ with sync_playwright() as pw:
             agent = {'id': 'xangi:default', 'name': 'デフォルト（普段のxangi）', 'prompt': '', 'workspaceId': 'default', 'workChannel': None}
             saves, errors, ai_saves = [], [], []
             fail_ai = [False]
+            channel_queries = []
             member = {'id': 'member', 'name': '通常担当', 'prompt': '', 'workspaceId': 'default'}
             runtime = {'backend': {'enabled': True, 'value': {'backend': 'codex'}, 'options': ['codex'], 'applyMode': 'next-turn'}, 'replySuggestions': {'enabled': True, 'value': 'inherit', 'effective': {'web': True, 'discord': True, 'slack': True}, 'applyMode': 'immediate'}, 'respondToBots': {'enabled': True, 'value': False, 'applyMode': 'immediate'}}
             def route(r):
@@ -35,6 +36,7 @@ with sync_playwright() as pw:
                     agent['workChannel'] = {'platform': body['platform'], 'channelId': body['channelId']} if body['action'] == 'set' else None
                     data = {'workChannel': agent['workChannel']}
                 elif path == '/api/agents': data = {'agents': [agent, member]}
+                elif path.startswith('/api/agents/') and path.endswith('/connections'): data = {'connections': []}
                 elif path == '/api/config': data = {'allowedBackends': ['codex']}
                 elif path == '/api/runtime-settings':
                     data = runtime
@@ -45,6 +47,7 @@ with sync_playwright() as pw:
                         runtime['backend']['value'] = {k: v for k, v in r.request.post_data_json.items() if k in ['backend', 'model', 'effort']}
                         data = {'message': '保存しました', 'settings': data}
                 elif path == '/api/runtime-settings/channels':
+                    channel_queries.append(parse_qs(u.query))
                     data = {'channels': [{'id': 'C1', 'name': 'default-work'}]}
                 elif path in ['/api/startup-settings', '/api/connection-settings']: data = {'groups': [], 'backends': []}
                 elif path == '/api/workspaces': data = {'workspaces': [{'id': 'default', 'name': 'default', 'path': '/srv', 'isDefault': True}, {'id': 'writing', 'name': 'writing', 'path': '/writing', 'isDefault': False}]}
@@ -98,6 +101,8 @@ with sync_playwright() as pw:
             section.get_by_role('button', name='キャンセル').click()
             expect(section.get_by_role('button', name='borotを削除')).to_have_count(0)
             assert [s['action'] for s in saves] == ['set', 'reset', 'set']
+            for platform in ('discord', 'slack'):
+                assert {'platform': [platform], 'agentId': [agent['id']]} in channel_queries
             section.get_by_role('button', name='borotを編集').click()
             section.get_by_label('名前', exact=True).fill('borot retry')
             fail_ai[0] = True
