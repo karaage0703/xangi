@@ -1,5 +1,6 @@
 import {
   channelAgent,
+  channelAgentSettingsChanged,
   projectSessionAgent,
   defaultAgentWorkspaceId,
   agentWorkspaceRegistry,
@@ -25,8 +26,8 @@ export interface ResolvedSessionWorkspace {
 /**
  * Resolves the immutable workspace snapshot for a chat session.
  *
- * Bindings are consulted only when the session is first created. Existing
- * sessions continue using their snapshot even after the channel binding changes.
+ * Ordinary workspace bindings apply at session creation. When an assigned Agent
+ * is edited through channel settings, the next turn starts with a fresh snapshot.
  */
 type WorkspaceOptions = {
   registry?: WorkspaceRegistry;
@@ -52,13 +53,13 @@ export async function ensureSessionWithWorkspace(
 async function resolveSessionWithWorkspace(
   options: WorkspaceOptions
 ): Promise<ResolvedSessionWorkspace> {
-  const { platform, contextKey, bindingKey, scope } = options;
+  const { platform, contextKey, bindingKey } = options;
   const registry = options.registry ?? agentWorkspaceRegistry();
   if (!registry) {
     return {
       appSessionId: ensureSession(contextKey, {
         platform,
-        scope,
+        scope: options.scope,
         secret: options.secret,
         webLinked: options.webLinked,
       }),
@@ -68,13 +69,25 @@ async function resolveSessionWithWorkspace(
   let activeId = getActiveSessionId(contextKey);
   let activeEntry = activeId ? getSessionEntry(activeId) : undefined;
   const secret = activeEntry?.secret ?? options.secret ?? false;
+  const webLinked = options.webLinked ?? activeEntry?.webLinked;
+  const scope = options.scope ?? activeEntry?.scope;
   const project = secret ? undefined : options.project;
-  const agent = project ? projectSessionAgent(project) : channelAgent(platform, bindingKey);
+  const boundAgent = project ? undefined : channelAgent(platform, bindingKey);
+  const agent = project ? projectSessionAgent(project) : boundAgent;
+  const bindingChanged = () => {
+    const current = channelAgent(platform, bindingKey);
+    return (
+      current?.id !== boundAgent?.id ||
+      current?.channelSettingsRevision !== boundAgent?.channelSettingsRevision
+    );
+  };
   if (
     activeId &&
     !project &&
     !activeEntry?.projectId &&
-    (activeEntry?.selectedAgentId !== agent?.id || activeEntry?.selectedAgentConfig?.team)
+    (activeEntry?.selectedAgentId !== agent?.id ||
+      activeEntry?.selectedAgentConfig?.team ||
+      channelAgentSettingsChanged(activeEntry, boundAgent))
   ) {
     retireAgentSession(contextKey);
     closeSession(activeId);
@@ -88,7 +101,7 @@ async function resolveSessionWithWorkspace(
       : await registry.resolveById(workspaceId);
     if (
       getActiveSessionId(contextKey) !== activeId ||
-      (!project && !activeEntry.projectId && channelAgent(platform, bindingKey)?.id !== agent?.id)
+      (!project && !activeEntry.projectId && bindingChanged())
     )
       return resolveSessionWithWorkspace(options);
     if (!activeEntry.agentBindingKey) updateSessionAgentBindingKey(activeId, bindingKey);
@@ -101,14 +114,13 @@ async function resolveSessionWithWorkspace(
       : await registry.resolveById(
           registry.getBinding(platform, bindingKey) || defaultAgentWorkspaceId()
         );
-  if (!project && channelAgent(platform, bindingKey)?.id !== agent?.id)
-    return ensureSessionWithWorkspace(options);
+  if (!project && bindingChanged()) return resolveSessionWithWorkspace(options);
   const appSessionId = ensureSession(contextKey, {
     platform,
     secret,
     scope,
     projectId: project?.id,
-    webLinked: options.webLinked,
+    webLinked,
     selectedAgentId: agent?.id,
     selectedAgentConfig: agent
       ? {

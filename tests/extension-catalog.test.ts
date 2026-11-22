@@ -218,6 +218,24 @@ describe('development extension catalog', () => {
         actionsAvailable: true,
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-feed',
       }),
+      expect.objectContaining({
+        id: 'xangi-report',
+        displayName: 'xangi-report',
+        capabilities: ['xangi-report.manage'],
+        installed: false,
+        uiAvailable: true,
+        actionsAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-report',
+      }),
+      expect.objectContaining({
+        id: 'xangi-location',
+        displayName: 'Location',
+        capabilities: ['location.read'],
+        installed: false,
+        uiAvailable: false,
+        actionsAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-location',
+      }),
     ]);
     expect(entries.every((entry) => !('version' in entry))).toBe(true);
     const readmes = await Promise.all([
@@ -230,18 +248,18 @@ describe('development extension catalog', () => {
     }
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed', 'xangi-report', 'xangi-location']);
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/example/other'),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed', 'xangi-report', 'xangi-location']);
     expect([
       ...(await loadExtensionIdsReservedForRepository(
         'https://github.com/karaage0703/xangi-search'
       )),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed', 'xangi-report', 'xangi-location']);
     expect([
       ...(await loadExtensionIdsReservedForRepository('https://github.com/example/other')),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed', 'xangi-report', 'xangi-location']);
   });
 
   it('isolates an unsupported repository manifest and keeps the official catalog visible', async () => {
@@ -271,6 +289,8 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-remote-desktop' }),
         expect.objectContaining({ id: 'xangi-studio' }),
         expect.objectContaining({ id: 'xangi-feed' }),
+        expect.objectContaining({ id: 'xangi-report' }),
+        expect.objectContaining({ id: 'xangi-location' }),
       ],
       issues: [
         expect.objectContaining({
@@ -311,6 +331,8 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-remote-desktop', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-studio', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-feed', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-report', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-location', statusKnown: false }),
       ],
       issues: expect.arrayContaining([
         expect.objectContaining({ code: 'source-store-invalid' }),
@@ -370,6 +392,8 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
       expect.objectContaining({ id: 'xangi-studio', installed: false }),
       expect.objectContaining({ id: 'xangi-feed', installed: false }),
+      expect.objectContaining({ id: 'xangi-report', installed: false }),
+      expect.objectContaining({ id: 'xangi-location', installed: false }),
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ code: 'manifest-invalid' })]);
   });
@@ -493,6 +517,8 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
       expect.objectContaining({ id: 'xangi-studio', installed: false }),
       expect.objectContaining({ id: 'xangi-feed', installed: false }),
+      expect.objectContaining({ id: 'xangi-report', installed: false }),
+      expect.objectContaining({ id: 'xangi-location', installed: false }),
     ]);
     expect(result.extensions.some((entry) => entry.id === 'changed-id')).toBe(false);
     expect(result.issues).toEqual([
@@ -539,7 +565,7 @@ describe('development extension catalog', () => {
 
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/karaage0703/xangi-search')
-    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed']));
+    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop', 'xangi-studio', 'xangi-feed', 'xangi-report', 'xangi-location']));
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/example/other')
     ).rejects.toThrow('invalid extension manifest');

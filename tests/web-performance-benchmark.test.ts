@@ -1,4 +1,4 @@
-import { it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 vi.mock('../src/backend-auth-status.js', () => ({ backendAuthenticationSnapshot: async () => [] }));
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ import { startWebChat } from '../src/web-chat.js';
 import { initSessions, clearSessions } from '../src/sessions.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
 import type { AgentRunner } from '../src/agent-runner.js';
+import { agentConnectionMonitor } from '../src/agent-connection-monitor.js';
 
 it.skipIf(!process.env.XANGI_PERF_OUTPUT)(
   'measures synthetic session list scaling without external backends',
@@ -94,6 +95,99 @@ it.skipIf(!process.env.XANGI_PERF_OUTPUT)(
       }
     }
     writeFileSync(process.env.XANGI_PERF_OUTPUT!, JSON.stringify(results, null, 2) + '\n');
+  },
+  120_000
+);
+
+it.skipIf(!process.env.XANGI_CONNECTION_PERF_OUTPUT)(
+  'measures Chat lists and Monitor snapshots with synthetic dedicated Bot sessions',
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-connection-perf-'));
+    const dataDir = join(root, '.xangi');
+    mkdirSync(dataDir);
+    vi.stubEnv('WORKSPACE_PATH', root);
+    vi.stubEnv('DATA_DIR', dataDir);
+    vi.stubEnv('XANGI_EXTENSIONS_FILE', join(dataDir, 'extensions.json'));
+    initSessions(dataDir);
+    initSettings(dataDir);
+    const probe = createServer().listen(0, '127.0.0.1');
+    await once(probe, 'listening');
+    const port = (probe.address() as { port: number }).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const server = startWebChat({ port, host: '127.0.0.1', agentRunner: {} as AgentRunner });
+    if (!server.listening) await once(server, 'listening');
+    const base = `http://127.0.0.1:${port}/api/sessions`;
+    const stamp = new Date().toISOString();
+    const results = [];
+    try {
+      for (const count of [500, 1000, 5000]) {
+        agentConnectionMonitor.receive('bench', 'fixture-agent', {
+          type: 'agent-connection-monitor',
+          sessions: Array.from({ length: count }, (_, i) => ({
+            id: `fixture-${i}`,
+            title: `Synthetic ${i}`,
+            platform: 'discord',
+            contextKey: `fixture:${i}`,
+            lifecycle: 'open',
+            createdAt: stamp,
+            updatedAt: stamp,
+            origin: { channelId: 'fixture-channel' },
+          })),
+        });
+        for (const mode of ['chat', 'monitor']) {
+          const samples: number[] = [];
+          for (let i = 0; i < 12; i++) {
+            const start = performance.now();
+            const response = await fetch(
+              mode === 'chat' ? `${base}?limit=100` : `${base}/stream?mode=changes`
+            );
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            let body: string;
+            if (mode === 'monitor') {
+              const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+              try {
+                body = '';
+                while (!body.includes('\n\n')) {
+                  const read = await reader.read();
+                  if (read.done) throw new Error('Incomplete SSE snapshot');
+                  body += read.value;
+                }
+              } finally {
+                await reader.cancel();
+              }
+              body = body.split('\n')[1].slice('data: '.length);
+            } else {
+              body = await response.text();
+            }
+            const elapsed = performance.now() - start;
+            const { sessions, meta } = JSON.parse(body);
+            expect(meta.total).toBe(count);
+            expect(sessions).toHaveLength(mode === 'chat' ? 100 : count);
+            expect(sessions[0].origin.channelId).toBe('fixture-channel');
+            if (i >= 2) samples.push(elapsed);
+          }
+          samples.sort((a, b) => a - b);
+          results.push({
+            mode,
+            count,
+            samples: samples.length,
+            p50ms: +((samples[4] + samples[5]) / 2).toFixed(2),
+          });
+        }
+      }
+    } finally {
+      agentConnectionMonitor.remove('bench');
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      clearSessions();
+      clearSettingsCache();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+    writeFileSync(
+      process.env.XANGI_CONNECTION_PERF_OUTPUT!,
+      JSON.stringify(results, null, 2) + '\n'
+    );
   },
   120_000
 );

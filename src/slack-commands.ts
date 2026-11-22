@@ -8,7 +8,12 @@ import { commandHelp, getChatCommands, skillCommandAliases } from './chat-comman
 import { tokenizeCommand } from './chat-command-input.js';
 import { executeChatSettings } from './chat-command-settings.js';
 import { executeRuntimeSettingsCommand } from './runtime-settings-command.js';
-import { channelAgent, listSelectableAgents } from './agent-selection.js';
+import {
+  channelAgent,
+  channelAgentSettingsChanged,
+  listSelectableAgents,
+  setChannelWorkspace,
+} from './agent-selection.js';
 import { getActiveSessionId, getSessionEntry } from './sessions.js';
 import { loadSkills, formatSkillList, type Skill } from './skills.js';
 import { formatScheduleList, parseScheduleInput, type Scheduler } from './scheduler.js';
@@ -45,10 +50,11 @@ async function currentSkills(channel: string, deps: SlackCommandDependencies): P
   const id = getActiveSessionId(channel);
   const entry = id ? getSessionEntry(id) : undefined;
   const agent = channelAgent('slack', channel);
-  const workspace = entry?.workspacePath
-    ? await deps.registry.resolveSnapshot(entry.workspaceId || 'default', entry.workspacePath)
-    : entry?.workspaceId
-      ? await deps.registry.resolveById(entry.workspaceId)
+  const snapshot = channelAgentSettingsChanged(entry, agent) ? undefined : entry;
+  const workspace = snapshot?.workspacePath
+    ? await deps.registry.resolveSnapshot(snapshot.workspaceId || 'default', snapshot.workspacePath)
+    : snapshot?.workspaceId
+      ? await deps.registry.resolveById(snapshot.workspaceId)
       : agent
         ? await deps.registry.resolveById(agent.workspaceId || 'default')
         : await deps.registry.resolve('slack', channel);
@@ -85,20 +91,22 @@ async function workspaceCommand(
       `チャンネル設定: ${configured.name}\n${configured.path}`,
       ...(agentWorkspace ? [`担当Agentの作業場所: ${agentWorkspace.path}`] : []),
       ...(entry?.workspacePath ? [`現在のチャンネル会話: ${entry.workspacePath}`] : []),
-      '設定変更は次の /new から反映します。既存スレッドの作業場所は保持します。',
+      agent
+        ? '担当Agentの作業場所は次のターンから反映します。'
+        : '設定変更は次の /new から反映します。既存スレッドの作業場所は保持します。',
     ].join('\n');
   }
-  let selected;
-  if (action === 'reset') {
-    await registry.resetBinding('slack', channel);
-    selected = await registry.resolve('slack', channel);
-  } else {
-    selected =
+  let workspaceId: string | undefined;
+  if (action !== 'reset') {
+    const selected =
       action === 'set' ? await registry.register(args[1], args[2]) : registry.getByName(args[1]);
     if (!selected) throw new Error(`Workspace not found: ${args[1]}`);
-    selected = await registry.bind('slack', channel, selected.id);
+    workspaceId = selected.id;
   }
-  return `${selected.name} を設定しました。次の /new から ${selected.path} を使います。`;
+  const { workspace, agent } = await setChannelWorkspace(registry, 'slack', channel, workspaceId);
+  return agent
+    ? `${agent.name} の作業場所を ${workspace.path} に設定しました。次のターンから適用されます。`
+    : `${workspace.name} を設定しました。次の /new から ${workspace.path} を使います。`;
 }
 
 function scheduleCommand(channel: string, args: string[], deps: SlackCommandDependencies): string {

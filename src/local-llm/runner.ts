@@ -970,11 +970,11 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * activeAbortControllers と同じく per-channel 直列実行を前提に channelId でキーする。
    */
   private readonly pendingAttachments = new Map<string, Set<string>>();
-  /** channelごとの当該turn累積usage。Local LLMの複数agentic callを合算する。 */
   private readonly pendingModels = new Map<string, ProviderModels>();
+  /** The total for the turn, or null if a completed request did not report usage. */
   private readonly pendingUsage = new Map<
     string,
-    { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+    { inputTokens: number; cachedInputTokens?: number; outputTokens: number } | null
   >();
   /** 個別機能フラグ */
   readonly enableTools: boolean;
@@ -1234,28 +1234,40 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.pendingAttachments.set(channelId, new Set());
   }
 
-  private resetUsage(channelId: string): void {
-    this.pendingUsage.set(channelId, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
-  }
-
-  private addUsage(
-    channelId: string,
-    response: { usage?: import('./types.js').LLMChatResponse['usage'] }
-  ): void {
-    if (!response.usage) return;
-    const total = this.pendingUsage.get(channelId) ?? {
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      outputTokens: 0,
-    };
-    total.inputTokens += response.usage.inputTokens ?? 0;
-    total.cachedInputTokens += response.usage.cachedInputTokens ?? 0;
-    total.outputTokens += response.usage.outputTokens ?? 0;
-    this.pendingUsage.set(channelId, total);
+  private addUsage(channelId: string, { usage }: { usage?: LLMChatResponse['usage'] }): void {
+    const total = this.pendingUsage.get(channelId);
+    if (total === null) return;
+    const { inputTokens, outputTokens, cachedInputTokens } = usage ?? {};
+    if (
+      inputTokens === undefined ||
+      outputTokens === undefined ||
+      !Number.isSafeInteger(inputTokens) ||
+      inputTokens < 0 ||
+      !Number.isSafeInteger(outputTokens) ||
+      outputTokens < 0
+    ) {
+      this.pendingUsage.set(channelId, null);
+      return;
+    }
+    const cached =
+      cachedInputTokens !== undefined &&
+      Number.isSafeInteger(cachedInputTokens) &&
+      cachedInputTokens >= 0 &&
+      cachedInputTokens <= inputTokens
+        ? cachedInputTokens
+        : undefined;
+    this.pendingUsage.set(channelId, {
+      inputTokens: (total?.inputTokens ?? 0) + inputTokens,
+      outputTokens: (total?.outputTokens ?? 0) + outputTokens,
+      cachedInputTokens:
+        cached !== undefined && (!total || total.cachedInputTokens !== undefined)
+          ? (total?.cachedInputTokens ?? 0) + cached
+          : undefined,
+    });
   }
 
   private currentUsage(channelId: string) {
-    return this.pendingUsage.get(channelId);
+    return this.pendingUsage.get(channelId) ?? undefined;
   }
 
   private prepareTurn(
@@ -1279,7 +1291,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     this.channelSessionIds.set(channelId, sessionId);
     session.lastTurnToolNames = [];
     this.resetAttachments(channelId);
-    this.resetUsage(channelId);
+    this.pendingUsage.delete(channelId);
     this.pendingModels.set(channelId, new ProviderModels());
     this.maybeEmitSessionStart(appSid, channelId);
     this.bumpTurnIndex(appSid);
@@ -2310,6 +2322,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           tools: finalIterTools.length > 0 ? finalIterTools : undefined,
           toolChoice: 'none',
           signal: abortController.signal,
+          onUsage: (usage) => this.addUsage(channelId, { usage }),
           onModel: (model) => this.pendingModels.get(channelId)?.add(model),
           reasoningEffort: options?.localLlmReasoningEffort,
         })) {

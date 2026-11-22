@@ -1,5 +1,10 @@
-import { channelIndividualAgent, defaultAgentWorkspaceId } from './agent-selection.js';
-import { channelAgent, resolveAgentBackend } from './agent-selection.js';
+import {
+  channelAgent,
+  defaultAgentWorkspaceId,
+  resolveAgentBackend,
+  setChannelWorkspace,
+} from './agent-selection.js';
+import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
 import type { Config } from './config.js';
@@ -84,8 +89,9 @@ export function webChannelRuntimeSettingsSnapshot(
   workspaceRegistry?: WorkspaceRegistry
 ) {
   const settings = loadSettings();
-  const override = resolver.getChannelOverride(channelId);
   const agent = channelAgent(platform, channelId);
+  const override = agent ?? resolver.getChannelOverride(channelId);
+  const dedicated = Boolean(process.env.XANGI_CONNECTION_AGENT_ID);
   const resolved =
     agent && !(agent.team?.leadership === 'caller' && agent.id.startsWith('team:'))
       ? resolveAgentBackend(resolver, agent)
@@ -110,24 +116,27 @@ export function webChannelRuntimeSettingsSnapshot(
   )?.[channelId];
   const workspaceBinding = workspaceRegistry?.getBinding(platform, channelId);
   const workspace = workspaceRegistry?.getById(
-    agent?.workspaceId || workspaceBinding || defaultAgentWorkspaceId()
+    agent ? agent.workspaceId || 'default' : workspaceBinding || defaultAgentWorkspaceId()
   );
 
   return {
     workspace: {
-      enabled: Boolean(workspaceRegistry) && config.features?.workspaceSwitching !== false,
-      value: workspaceBinding ?? 'inherit',
+      enabled:
+        !dedicated && Boolean(workspaceRegistry) && config.features?.workspaceSwitching !== false,
+      value: agent ? agent.workspaceId || 'default' : (workspaceBinding ?? 'inherit'),
       effective: workspace,
     },
     team: agent?.team
       ? { id: agent.team.id, name: agent.team.name, leadership: agent.team.leadership }
       : null,
-    agent:
-      agent &&
-      (!agent.team ||
-        (agent.team.leadership === 'caller' && channelIndividualAgent(platform, channelId)))
-        ? { id: agent.id, name: agent.name, workspaceId: agent.workspaceId || 'default' }
-        : null,
+    agent: agent
+      ? {
+          id: agent.id,
+          name: agent.name,
+          workspaceId: agent.workspaceId || 'default',
+          backendEditable: !dedicated && agent.id !== DEFAULT_TEAM_AGENT_ID,
+        }
+      : null,
     backend: {
       value: override?.backend ?? 'inherit',
       model: override?.model,
@@ -203,14 +212,21 @@ export async function updateWebRuntimeSetting(
       throw new Error('platform must be discord or slack');
     if (typeof input.channelId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.channelId))
       throw new Error('channelId is invalid');
-    if (input.action === 'reset') {
-      await registry.resetBinding(input.platform, input.channelId);
-    } else if (input.action === 'set' && typeof input.value === 'string' && input.value.trim()) {
-      await registry.bind(input.platform, input.channelId, input.value);
-    } else {
+    if (
+      input.action !== 'reset' &&
+      !(input.action === 'set' && typeof input.value === 'string' && input.value.trim())
+    ) {
       throw new Error('workspace requires set with a workspace ID, or reset');
     }
-    return 'ワークスペースを保存しました。次の /new から適用されます。';
+    const { agent } = await setChannelWorkspace(
+      registry,
+      input.platform,
+      input.channelId,
+      input.action === 'set' ? String(input.value) : undefined
+    );
+    return agent
+      ? `${agent.name} のワークスペースを保存しました。次のターンから適用されます。`
+      : 'ワークスペースを保存しました。次の /new から適用されます。';
   }
   if (
     ![

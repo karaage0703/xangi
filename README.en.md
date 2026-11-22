@@ -165,6 +165,8 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Japanese input using Chrome speech recognition
 - [xangi-studio](https://github.com/karaage0703/xangi-studio) - Review PRs and documents, and edit drafts
 - [xangi-feed](https://github.com/karaage0703/xangi-feed) - A feed reader for RSS, blogs, papers, podcasts, and YouTube, with article discussions through xangi
+- [xangi-report](https://github.com/karaage0703/xangi-report) - Save and organize HTML reports created in AI conversations, and read them on desktop or mobile
+- [xangi-location](https://github.com/karaage0703/xangi-location) - Look up your latest OwnTracks location in xangi, including its timestamp and accuracy
 
 ## Related projects
 

@@ -123,7 +123,7 @@ export interface SessionEntry {
   webLinked?: boolean;
   selectedAgentId?: string;
   agentBindingKey?: string;
-  selectedAgentConfig?: import('./web-projects.js').WebProject;
+  selectedAgentConfig?: import('./project-catalog.js').SharedAgent;
   /** xangi間HTTP会話で、このセッションに対応する送信元instance。 */
   interAgentPeerId?: string;
   /** 最後に完了したturn時点のprovider context使用量。 */
@@ -152,7 +152,7 @@ interface SessionSnapshotOptions {
   webLinked?: boolean;
   selectedAgentId?: string;
   agentBindingKey?: string;
-  selectedAgentConfig?: import('./web-projects.js').WebProject;
+  selectedAgentConfig?: import('./project-catalog.js').SharedAgent;
 }
 
 let sessionsPath: string | null = null;

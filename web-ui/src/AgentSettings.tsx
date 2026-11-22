@@ -1,3 +1,5 @@
+import { AgentAvatarSettings } from './AgentAvatar';
+import { AgentPetSettings } from './AgentPet';
 import { AgentConnectionSettings } from './AgentConnectionSettings';
 import {
   CatalogCreateButton,
@@ -12,6 +14,8 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { CatalogFilter } from './CatalogFilter';
 
 interface Agent {
+  avatarUrl?: string;
+  petPortraitUrl?: string;
   workChannel?: { platform: string; channelId: string } | null;
   role?: string;
   id: string;
@@ -134,7 +138,12 @@ export function AgentSettings({
 
   useEffect(() => {
     void Promise.all([
-      requestJson<{ agents: Agent[] }>('/api/agents').then((result) => setAgents(result.agents)),
+      requestJson<{ agents: Agent[] }>('/api/agents').then((result) => {
+        setAgents(result.agents);
+        const targetId = new URLSearchParams(window.location.search).get('agent');
+        const target = result.agents.find((agent) => agent.id === targetId);
+        if (target) openAgentEditor(target);
+      }),
       requestJson<{ allowedBackends: string[] }>('/api/config').then(setConfig),
     ])
       .catch((cause) => setNotice(cause instanceof Error ? cause.message : String(cause)))
@@ -421,6 +430,34 @@ export function AgentSettings({
                   required
                 />
               </label>
+              {editingAgentId && (
+                <AgentAvatarSettings
+                  key={`avatar:${editingAgentId}`}
+                  agentId={editingAgentId}
+                  name={agentName}
+                  url={agents.find((agent) => agent.id === editingAgentId)?.avatarUrl}
+                  petPortraitUrl={
+                    agents.find((agent) => agent.id === editingAgentId)?.petPortraitUrl
+                  }
+                  onSaved={(avatarUrl) =>
+                    setAgents((current) =>
+                      current.map((agent) =>
+                        agent.id === editingAgentId ? { ...agent, avatarUrl } : agent
+                      )
+                    )
+                  }
+                />
+              )}
+              {editingAgentId && (
+                <AgentPetSettings
+                  key={editingAgentId}
+                  agentId={editingAgentId}
+                  workspaceChanged={
+                    agentWorkspaceId !==
+                    (agents.find((agent) => agent.id === editingAgentId)?.workspaceId || 'default')
+                  }
+                />
+              )}
               {!editingDefault && (
                 <label>
                   <span>基本指示</span>

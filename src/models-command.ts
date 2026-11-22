@@ -1,3 +1,5 @@
+import { channelAgent, saveChannelAgentSettings } from './agent-selection.js';
+import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 import type { AgentBackend, EffortLevel } from './config.js';
 import type { BackendResolver } from './backend-resolver.js';
 import { discoverBackendModels, formatBackendModels } from './backend-models.js';
@@ -50,6 +52,7 @@ export interface SelectModelOptions {
   model?: string;
   effort?: string;
   channelId?: string;
+  platform?: string;
 }
 
 /**
@@ -78,6 +81,12 @@ export async function selectModelForNextTurn(
       'models --use: channel is unavailable. Run inside xangi or pass --channel <channel ID>'
     );
   }
+  const { platform, channelId } = options;
+  const boundAgent = () =>
+    platform === 'discord' || platform === 'slack' ? channelAgent(platform, channelId) : undefined;
+  const agent = boundAgent();
+  if (agent?.id === DEFAULT_TEAM_AGENT_ID)
+    throw new ValidationError('デフォルト担当のAI設定は全体設定から変更してください');
   const discovery = await discover(backend);
   if (discovery.status !== 'available') {
     throw new ValidationError(
@@ -106,11 +115,23 @@ export async function selectModelForNextTurn(
       );
     }
   }
-  resolver.setChannelOverride(options.channelId, {
-    backend,
-    model: selected.id,
-    effort,
-  });
+  const currentAgent = boundAgent();
+  if (currentAgent?.id !== agent?.id)
+    throw new ValidationError('担当が変更されました。現在の担当を確認してから保存してください');
+  if (currentAgent) {
+    saveChannelAgentSettings(platform!, channelId, currentAgent.id, {
+      backend,
+      model: selected.id,
+      effort,
+      localLlmMode: currentAgent.backend === backend ? currentAgent.localLlmMode : undefined,
+      localLlmReasoningEffort:
+        currentAgent.backend === backend && currentAgent.model === selected.id
+          ? currentAgent.localLlmReasoningEffort
+          : undefined,
+    });
+  } else {
+    resolver.setChannelOverride(channelId, { backend, model: selected.id, effort });
+  }
   return [
     'モデル設定を保存しました。次のturnから適用されます。',
     `- backend: ${backend}`,

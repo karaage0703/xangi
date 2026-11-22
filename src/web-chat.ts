@@ -23,6 +23,13 @@ import { executeWebSelection } from './web-command-selection.js';
 import { parentHistorySnapshot } from './agent-context.js';
 import { serveWebAsset } from './web-assets.js';
 import { RevisionCache } from './revision-cache.js';
+import {
+  AVATAR_BODY_LIMIT,
+  findAgentAvatar,
+  removeAgentAvatar,
+  saveAgentAvatar,
+} from './web-agent-avatar.js';
+import { agentPetCreationPrompt, findAgentPet } from './web-agent-pet.js';
 import { sessionExecutionOrigin } from './session-source.js';
 import type { PlatformCompletionRefs } from './platform-completion.js';
 import { answerUserInput, listUserInputs, requestUserInput } from './user-input.js';
@@ -1375,8 +1382,14 @@ ${delegatedTeam.prompt}`
 
     // Child snapshots use the same display fields, but isolated IDs/context keys.
     // They never enter the parent's session store or credential/routing state.
-    const connectionRows = agentConnectionMonitor.sessions() as unknown as typeof managed;
-    return { managed: [...managed, ...connectionRows], unmanaged, managedIds };
+    const connectionRows = agentConnectionMonitor.sessions() as unknown as Array<
+      (typeof managed)[number] & { origin?: ReturnType<typeof deriveSessionOrigin> }
+    >;
+    const connectionsById = new Map(connectionRows.map((row) => [row.id, row]));
+    const candidates = [...managed, ...connectionRows, ...unmanaged].sort(
+      (a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id)
+    );
+    return { candidates, connectionsById, managedIds };
   };
 
   const buildSessionsResponse = (
@@ -1401,9 +1414,9 @@ ${delegatedTeam.prompt}`
     const offset = Math.max(0, Math.floor(query.offset ?? 0));
     const normalizedQuery = (query.q || '').trim().toLowerCase();
 
-    const { managed, unmanaged, managedIds } = sessionIndex.get(collectSessionCandidates);
+    const { candidates, connectionsById, managedIds } = sessionIndex.get(collectSessionCandidates);
     const titleCache = new Map<string, string>();
-    const resolveTitle = (candidate: (typeof managed)[number] | (typeof unmanaged)[number]) => {
+    const resolveTitle = (candidate: (typeof candidates)[number]) => {
       const cached = titleCache.get(candidate.id);
       if (cached !== undefined) return cached;
       const title =
@@ -1417,45 +1430,35 @@ ${delegatedTeam.prompt}`
       return title;
     };
 
-    const connectionIds = new Set(agentConnectionMonitor.sessions().map((row) => row.id));
-    const matching = [...managed, ...unmanaged]
-      .filter((candidate) => {
-        if (query.includeConnections === false && connectionIds.has(candidate.id)) return false;
-        if (query.lifecycle && candidate.lifecycle !== query.lifecycle) return false;
-        if (
-          query.monitorSince &&
-          candidate.lifecycle === 'closed' &&
-          candidate.updatedAt < query.monitorSince
-        )
-          return false;
-        if (query.updatedSince) {
-          const updatedAt = Date.parse(candidate.updatedAt);
-          const updatedSince = Date.parse(query.updatedSince);
-          if (
-            Number.isFinite(updatedSince) &&
-            (!Number.isFinite(updatedAt) || updatedAt < updatedSince)
-          ) {
-            return false;
-          }
-        }
-        if (query.agentId && candidate.selectedAgentId !== query.agentId) return false;
-        if (query.projectId === '__none__' && candidate.projectId) return false;
-        if (
-          query.projectId &&
-          query.projectId !== '__none__' &&
-          candidate.projectId !== query.projectId
-        ) {
-          return false;
-        }
-        if (!normalizedQuery) return true;
-        return [
-          resolveTitle(candidate),
-          candidate.id,
-          candidate.platform,
-          candidate.contextKey,
-        ].some((value) => value.toLowerCase().includes(normalizedQuery));
-      })
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const updatedSince = query.updatedSince ? Date.parse(query.updatedSince) : NaN;
+    const matching = candidates.filter((candidate) => {
+      if (query.includeConnections === false && connectionsById.has(candidate.id)) return false;
+      if (query.lifecycle && candidate.lifecycle !== query.lifecycle) return false;
+      if (
+        query.monitorSince &&
+        candidate.lifecycle === 'closed' &&
+        candidate.updatedAt < query.monitorSince
+      )
+        return false;
+      if (Number.isFinite(updatedSince)) {
+        const updatedAt = Date.parse(candidate.updatedAt);
+        if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
+      }
+      if (query.agentId && (candidate.selectedAgentId || DEFAULT_TEAM_AGENT_ID) !== query.agentId)
+        return false;
+      if (query.projectId === '__none__' && candidate.projectId) return false;
+      if (
+        query.projectId &&
+        query.projectId !== '__none__' &&
+        candidate.projectId !== query.projectId
+      ) {
+        return false;
+      }
+      if (!normalizedQuery) return true;
+      return [resolveTitle(candidate), candidate.id, candidate.platform, candidate.contextKey].some(
+        (value) => value.toLowerCase().includes(normalizedQuery)
+      );
+    });
     const cursorSeparator = query.cursor?.indexOf('\t') ?? -1;
     const cursorUpdatedAt =
       cursorSeparator >= 0 ? query.cursor?.slice(0, cursorSeparator) : undefined;
@@ -1479,7 +1482,7 @@ ${delegatedTeam.prompt}`
       title: resolveTitle(candidate),
       // Origins are display-only: avoid opening every transcript before pagination.
       origin:
-        agentConnectionMonitor.find(candidate.id)?.origin ??
+        connectionsById.get(candidate.id)?.origin ??
         (managedIds.has(candidate.id) &&
         (candidate.platform === 'discord' || candidate.platform === 'slack')
           ? query.all
@@ -1516,7 +1519,12 @@ ${delegatedTeam.prompt}`
   // Keep the cancellation token alive through workspace/backend preparation and reopen.
   const legacyChatTurns = new Map<string, AbortController>();
   let sessionSnapshotRefresh: NodeJS.Immediate | undefined;
-  let sessionSnapshotPayloads: Map<string, string> | undefined;
+  type SessionSnapshot = {
+    response: ReturnType<typeof buildSessionsResponse>;
+    json?: string;
+    rows?: Map<string, string>;
+  };
+  let sessionSnapshotPayloads: Map<string, SessionSnapshot> | undefined;
   const invalidateSessionSnapshots = () => {
     sessionIndex.invalidate();
     if (sessionSnapshotListeners.size === 0 || sessionSnapshotRefresh) return;
@@ -1821,6 +1829,7 @@ ${delegatedTeam.prompt}`
       })
     : undefined;
   conversationService?.resume();
+  const petCreations = new Map<string, { sessionId: string; requestId: string; message: string }>();
 
   let catalogPending: ReturnType<typeof listDevelopmentExtensionCatalog> | undefined;
   let catalogExpires = 0;
@@ -1886,11 +1895,11 @@ ${delegatedTeam.prompt}`
 
   const handleProjectMutation = async (
     res: ServerResponse,
-    operation: () => Promise<{ status?: number; body: Record<string, unknown> }>
+    operation: () => Promise<{ status?: number; body: Record<string, unknown> } | void>
   ): Promise<void> => {
     try {
       const result = await operation();
-      sendJson(res, result.status ?? 200, result.body);
+      if (result) sendJson(res, result.status ?? 200, result.body);
     } catch (error) {
       const status = error instanceof WebProjectError ? error.status : 400;
       sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
@@ -3187,16 +3196,171 @@ ${delegatedTeam.prompt}`
       return;
     }
     if (url === '/api/agents' && req.method === 'GET') {
-      sendJson(
-        res,
-        200,
-        {
-          agents: webProjects
-            .teamAgents()
-            .map((agent) => ({ ...agent, workChannel: agentWorkChannel(agent.id) || null })),
-        },
-        { 'Cache-Control': 'no-store' }
+      const workspaces = new Map<string, Promise<WorkspaceEntry | undefined>>();
+      const portraits = new Map<string, string>();
+      const agents = await Promise.all(
+        webProjects.teamAgents().map(async (agent) => {
+          const workspaceId = agent.workspaceId || 'default';
+          let pending = workspaces.get(workspaceId);
+          if (!pending) {
+            pending = resolveWorkspace(workspaceId).catch(() => undefined);
+            workspaces.set(workspaceId, pending);
+          }
+          const workspace = await pending;
+          const pet = workspace && findAgentPet(workspace.path, agent.id);
+          let petPortraitUrl: string | undefined;
+          if (pet?.status === 'ready') {
+            petPortraitUrl =
+              portraits.get(pet.image) ||
+              `/api/agents/${encodeURIComponent(agent.id)}/pet/portrait?v=${pet.revision}`;
+            portraits.set(pet.image, petPortraitUrl);
+          }
+          return {
+            ...agent,
+            workChannel: agentWorkChannel(agent.id) || null,
+            avatarUrl: findAgentAvatar(dataDir, agent.id)?.url,
+            petPortraitUrl,
+          };
+        })
       );
+      sendJson(res, 200, { agents }, { 'Cache-Control': 'no-store' });
+      return;
+    }
+    const avatarMatch = url.match(/^\/api\/agents\/([^/]+)\/avatar$/);
+    if (avatarMatch && ['GET', 'PUT', 'DELETE'].includes(req.method || '')) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.method !== 'GET' && !acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      await handleProjectMutation(res, async () => {
+        const id = decodeURIComponent(avatarMatch[1]);
+        const exists = () => id === DEFAULT_TEAM_AGENT_ID || Boolean(webProjects.agent(id));
+        if (!exists()) throw new WebProjectError('エージェントが見つかりません', 404);
+        if (req.method === 'GET') {
+          const avatar = findAgentAvatar(dataDir, id);
+          if (!avatar) throw new WebProjectError('アバターが見つかりません', 404);
+          serveFile(req, res, avatar.file, 'image/png', undefined, {
+            'Cross-Origin-Resource-Policy': 'same-origin',
+          });
+          return;
+        }
+        if (req.method === 'DELETE') {
+          removeAgentAvatar(dataDir, id);
+          return { body: { avatarUrl: null } };
+        }
+        let input: string;
+        try {
+          input = await readRawBody(req, AVATAR_BODY_LIMIT);
+        } catch {
+          throw new WebProjectError('アバター画像が大きすぎます', 413);
+        }
+        if (!exists()) throw new WebProjectError('エージェントが見つかりません', 404);
+        const { png } = JSON.parse(input);
+        return { body: { avatarUrl: saveAgentAvatar(dataDir, id, png).url } };
+      });
+      return;
+    }
+    const agentPetMatch = url.match(/^\/api\/agents\/([^/]+)\/pet(?:\/(image|portrait|create))?$/);
+    if (agentPetMatch) {
+      const [, encodedId, action] = agentPetMatch;
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.method !== 'GET' && !acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin settings changes are not allowed' });
+        return;
+      }
+      try {
+        const id = decodeURIComponent(encodedId);
+        const currentAgent = () =>
+          id === DEFAULT_TEAM_AGENT_ID ? webProjects.defaultAgent() : webProjects.agent(id);
+        const agent = currentAgent();
+        if (!agent) throw new WebProjectError('エージェントが見つかりません', 404);
+        if (req.method === 'PATCH' && !action) {
+          const { enabled } = await readBody(req);
+          if (typeof enabled !== 'boolean')
+            throw new WebProjectError('ペット表示はオンかオフを指定してください', 400);
+          if (!currentAgent()) throw new WebProjectError('エージェントが見つかりません', 404);
+          if (id === DEFAULT_TEAM_AGENT_ID) webProjects.saveDefaultAgent({ petEnabled: enabled });
+          else webProjects.saveAgent({ petEnabled: enabled }, id);
+          sendJson(res, 200, { enabled });
+          return;
+        }
+        const enabled = agent.petEnabled !== false;
+        if (!enabled && !action && req.method === 'GET') {
+          sendJson(res, 200, { enabled, status: 'hidden' });
+          return;
+        }
+        const portrait = req.method === 'GET' && action === 'portrait';
+        if (!enabled && !portrait) throw new WebProjectError('ペット表示をオンにしてください', 409);
+        const workspace = await resolveWorkspace(agent.workspaceId || 'default');
+        const latest = currentAgent();
+        if (
+          !latest ||
+          (!portrait && latest.petEnabled === false) ||
+          latest.workspaceId !== agent.workspaceId
+        )
+          throw new WebProjectError(
+            'エージェントの設定が変わりました。再読み込みしてください',
+            409
+          );
+        const pet = findAgentPet(workspace.path, id);
+        if (req.method === 'GET' && !action) {
+          const sprite =
+            pet.status === 'ready'
+              ? { name: pet.name || agent.name, imageUrl: `${url}/image?v=${pet.revision}` }
+              : {};
+          sendJson(res, 200, { enabled, status: pet.status, ...sprite });
+        } else if (req.method === 'GET' && (action === 'image' || portrait)) {
+          if (pet.status !== 'ready') throw new WebProjectError('ペット画像が見つかりません', 404);
+          serveFile(req, res, pet.image, 'image/webp', undefined, {
+            'X-Content-Type-Options': 'nosniff',
+            'Cross-Origin-Resource-Policy': 'same-origin',
+          });
+        } else if (req.method === 'POST' && action === 'create' && conversationService) {
+          const key = JSON.stringify([id, workspace.path]);
+          const pending = petCreations.get(key);
+          if (pending) {
+            sendJson(res, 202, pending);
+            return;
+          }
+          if (pet.status !== 'missing')
+            throw new WebProjectError('ワークスペースにペットの設定があります', 409);
+          const sessionId = createWebSession({
+            title: `${latest.name}のペットを作成`,
+            selectedAgentId: id,
+            selectedAgentConfig: latest,
+            workspaceId: workspace.id,
+            workspacePath: workspace.path,
+          });
+          const requestId = randomBytes(16).toString('hex');
+          const creation = { sessionId, requestId, message: agentPetCreationPrompt(id) };
+          try {
+            conversationService.submit({
+              appSessionId: sessionId,
+              contextKey: webContextKey(sessionId),
+              requestId,
+              message: creation.message,
+              attachments: [],
+            });
+          } catch (error) {
+            closeSession(sessionId);
+            throw error;
+          }
+          petCreations.set(key, creation);
+          void conversationService.settled(sessionId, requestId).then(
+            () => petCreations.delete(key),
+            () => petCreations.delete(key)
+          );
+          sendJson(res, 202, creation);
+        } else {
+          sendJson(res, 405, { error: 'Method not allowed' });
+        }
+      } catch (error) {
+        const known = error instanceof WebProjectError || error instanceof ConversationError;
+        sendJson(res, known ? error.status : 500, {
+          error: known ? error.message : 'ペットの設定を取得・保存できませんでした',
+        });
+      }
       return;
     }
     const connectionMatch = url.match(/^\/api\/agents\/([^/]+)\/connections(?:\/([^/]+))?$/);
@@ -3287,6 +3451,7 @@ ${delegatedTeam.prompt}`
           throw new WebProjectError('エージェントが見つかりません', 404);
         if (req.method === 'DELETE') {
           removeRegisteredAgent(id!, webProjects, (sessionId) => busySessions.has(sessionId));
+          removeAgentAvatar(dataDir, id!);
           return { body: { ok: true } };
         }
         const body = await readBody(req);
@@ -3430,34 +3595,36 @@ ${delegatedTeam.prompt}`
           return;
         }
         const key = JSON.stringify([streamProjectId, streamAgentId, changesMode, monitorSince]);
-        let payload = sessionSnapshotPayloads?.get(key);
-        if (payload === undefined) {
-          payload = JSON.stringify(
-            buildSessionsResponse({
+        let snapshot = sessionSnapshotPayloads?.get(key);
+        if (!snapshot) {
+          snapshot = {
+            response: buildSessionsResponse({
               projectId: streamProjectId,
               agentId: streamAgentId,
               all: changesMode,
               includeConnections: true,
               monitorSince,
-            })
-          );
-          sessionSnapshotPayloads?.set(key, payload);
+            }),
+          };
+          sessionSnapshotPayloads?.set(key, snapshot);
+        }
+        if (!changesMode || !previousRows) {
+          snapshot.json ??= JSON.stringify(snapshot.response);
+          writeSse(`event: sessions\ndata: ${snapshot.json}\n\n`);
         }
         if (changesMode) {
-          const snapshot = JSON.parse(payload) as ReturnType<typeof buildSessionsResponse>;
-          const rows = new Map(snapshot.sessions.map((row) => [row.id, JSON.stringify(row)]));
+          const { sessions } = snapshot.response;
+          const rows = (snapshot.rows ??= new Map(
+            sessions.map((row) => [row.id, JSON.stringify(row)])
+          ));
           if (previousRows) {
-            const upsert = snapshot.sessions.filter(
-              (row) => previousRows!.get(row.id) !== rows.get(row.id)
-            );
+            const upsert = sessions.filter((row) => previousRows!.get(row.id) !== rows.get(row.id));
             const removed = [...previousRows.keys()].filter((id) => !rows.has(id));
             if (upsert.length || removed.length)
               writeSse(`event: session_changes\ndata: ${JSON.stringify({ upsert, removed })}\n\n`);
-          } else {
-            writeSse(`event: sessions\ndata: ${payload}\n\n`);
           }
           previousRows = rows;
-        } else writeSse(`event: sessions\ndata: ${payload}\n\n`);
+        }
       };
       const handleDrain = () => {
         backpressured = false;
@@ -3693,6 +3860,10 @@ ${delegatedTeam.prompt}`
             ) ||
             appSessionId,
           platform: entry?.platform,
+          petAgentId:
+            entry?.selectedAgentConfig?.team?.leaderAgentId ||
+            (entry?.selectedAgentId?.startsWith('team:') ? undefined : entry?.selectedAgentId) ||
+            DEFAULT_TEAM_AGENT_ID,
           linkedChannel: Boolean(
             (entry?.projectId || entry?.webLinked) &&
             (entry.platform === 'discord' || entry.platform === 'slack')

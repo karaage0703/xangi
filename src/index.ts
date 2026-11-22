@@ -1,3 +1,5 @@
+import { installDedicatedAgentSettingsReceiver } from './agent-connection-settings.js';
+import { discoverBackendModels } from './backend-models.js';
 import { installAgentConnectionScheduleWorker } from './agent-connection-schedules.js';
 import {
   acceptsWorkChannelMessage,
@@ -251,6 +253,8 @@ async function main() {
     });
   }
 
+  if (connectionWorker && config.discord.enabled) installDedicatedAgentSettingsReceiver();
+
   // Telegram Bot 起動。一時的な接続失敗は startTelegramBot 内で再試行する。
   // 他platformと同時に開始し、恒久エラーは全体の起動失敗としてservice managerへ伝える。
   if (config.telegram.enabled) {
@@ -473,7 +477,9 @@ async function main() {
     process.exit(1);
   }
 
-  const connectionRuntimes = new AgentConnectionRuntimes(dataDir, workdir, workspaceRegistry);
+  const connectionRuntimes = new AgentConnectionRuntimes(dataDir, workdir, workspaceRegistry, {
+    runtimeSettings: { config, resolver, modelDiscovery: discoverBackendModels, agentRunner },
+  });
   if (!connectionWorker) await connectionRuntimes.start(connections);
 
   // Discord/Slackは同時に接続する。一方が再試行中でも他方とWebは利用できる。

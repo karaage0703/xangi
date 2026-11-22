@@ -1,3 +1,4 @@
+import type { ChannelOverride } from './backend-resolver.js';
 import { migrateTeamState } from './team-migration.js';
 import {
   normalizeTeam,
@@ -25,7 +26,13 @@ import {
 
 export interface SharedAgent extends WebProject {
   role?: string;
+  petEnabled?: boolean;
+  channelSettingsRevision?: string;
 }
+export type DedicatedAgentSettings = Pick<
+  SharedAgent,
+  'id' | 'backend' | 'model' | 'effort' | 'localLlmMode' | 'localLlmReasoningEffort' | 'workspaceId'
+> & { channelSettingsRevision: string };
 export interface SharedProject extends WebProject {
   studioLegacyId?: string;
 }
@@ -153,6 +160,7 @@ export class ProjectCatalog {
       {
         name: input.name ?? current.name,
         workspaceId: input.workspaceId ?? current.workspaceId,
+        petEnabled: input.petEnabled ?? current.petEnabled,
         prompt: '',
       },
       DEFAULT_TEAM_AGENT_ID
@@ -172,7 +180,31 @@ export class ProjectCatalog {
     if (items.some((x) => x.id !== id && x.name.toLocaleLowerCase() === name.toLocaleLowerCase()))
       throw new WebProjectError('同じ名前がすでにあります', 409);
   }
-  saveAgent(input: Input, id: string = randomUUID()): SharedAgent {
+  saveChannelAgentSettings(id: string, settings: ChannelOverride & { workspaceId?: string }): void {
+    const agent = id === DEFAULT_TEAM_AGENT_ID ? this.defaultAgent() : this.agent(id);
+    if (!agent) throw new WebProjectError('エージェントが見つかりません', 404);
+    this.saveAgent({ name: agent.name, prompt: agent.prompt, ...settings }, id, randomUUID());
+  }
+  /** The parent has persisted these fields. Update the worker's copy for subsequent turns. */
+  applyDedicatedAgentSettings(settings: DedicatedAgentSettings): void {
+    const agent = this.state.agents.find((candidate) => candidate.id === settings.id);
+    if (!agent) throw new WebProjectError('更新したエージェントが見つかりません', 404);
+    agent.backend = settings.backend;
+    agent.model = settings.model;
+    agent.effort = settings.effort;
+    agent.localLlmMode = settings.localLlmMode;
+    agent.localLlmReasoningEffort = settings.localLlmReasoningEffort;
+    agent.workspaceId = settings.workspaceId;
+    agent.channelSettingsRevision = settings.channelSettingsRevision;
+  }
+
+  saveAgent(
+    input: Input,
+    id: string = randomUUID(),
+    channelSettingsRevision?: string
+  ): SharedAgent {
+    if (input.petEnabled !== undefined && typeof input.petEnabled !== 'boolean')
+      throw new WebProjectError('ペット表示はオンかオフを指定してください', 400);
     const next = structuredClone(this.state);
     const previous = next.agents.find((a) => a.id === id);
     const merged = { ...previous, ...input };
@@ -185,11 +217,15 @@ export class ProjectCatalog {
       prompt: normalizePrompt([merged.role, merged.prompt].filter(Boolean).join('\n\n')),
       ...settings,
       ...normalizeAgentOptions(merged),
+      petEnabled: merged.petEnabled !== false,
+      channelSettingsRevision: channelSettingsRevision ?? previous?.channelSettingsRevision,
       createdAt: previous?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     this.unique(next.agents, agent.name, id);
-    next.agents = [...next.agents.filter((a) => a.id !== id), agent];
+    next.agents = previous
+      ? next.agents.map((a) => (a.id === id ? agent : a))
+      : [...next.agents, agent];
     this.persist(next);
     return structuredClone(agent);
   }

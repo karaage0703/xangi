@@ -1,3 +1,4 @@
+import { requestDedicatedAgentSettings } from '../agent-connection-settings.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
 import { executeChatSettings } from '../chat-command-settings.js';
 import {
@@ -10,7 +11,12 @@ import type { ChatCommandOption } from '../chat-commands.js';
 import { PENDING_MESSAGE_PREFIX } from './pending-messages.js';
 import { handleQuestionInteraction } from './user-input.js';
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
-import { channelAgent, listSelectableAgents } from '../agent-selection.js';
+import {
+  channelAgent,
+  channelAgentSettingsChanged,
+  listSelectableAgents,
+  setChannelWorkspace,
+} from '../agent-selection.js';
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
@@ -723,19 +729,19 @@ export function createInteractionHandler(
     );
     const activeId = getActiveSessionId(interaction.channelId);
     const entry = activeId ? getSessionEntry(activeId) : undefined;
+    const agent = channelAgent('discord', bindingKey);
+    const snapshot = channelAgentSettingsChanged(entry, agent) ? undefined : entry;
     let path = workdir;
     if (workspaceRegistry) {
-      const workspace = entry?.workspacePath
+      const workspace = snapshot?.workspacePath
         ? await workspaceRegistry.resolveSnapshot(
-            entry.workspaceId || 'default',
-            entry.workspacePath
+            snapshot.workspaceId || 'default',
+            snapshot.workspacePath
           )
-        : entry?.workspaceId
-          ? await workspaceRegistry.resolveById(entry.workspaceId)
-          : channelAgent('discord', bindingKey)
-            ? await workspaceRegistry.resolveById(
-                channelAgent('discord', bindingKey)!.workspaceId || 'default'
-              )
+        : snapshot?.workspaceId
+          ? await workspaceRegistry.resolveById(snapshot.workspaceId)
+          : agent
+            ? await workspaceRegistry.resolveById(agent.workspaceId || 'default')
             : await workspaceRegistry.resolve('discord', bindingKey);
       path = workspace.path;
     }
@@ -1048,7 +1054,7 @@ export function createInteractionHandler(
                   ]
                 : []),
               activeWorkspace
-                ? `現在のセッション: ${activeWorkspace.name}（変更は次の /new から反映）`
+                ? `現在のセッション: ${activeWorkspace.name}`
                 : '現在のセッション: この場所では未固定（スレッド内のセッションは各スレッドで確認）',
               ...(active?.workspacePath || activeWorkspace?.path
                 ? [`現在のセッションのパス: \`${active?.workspacePath || activeWorkspace?.path}\``]
@@ -1071,37 +1077,61 @@ export function createInteractionHandler(
           });
           return;
         }
+        if (process.env.XANGI_CONNECTION_AGENT_ID) {
+          await interaction.deferReply({ ephemeral: true });
+          const target = {
+            name: 'workspace' as const,
+            channelId: settingsChannelId,
+            userId: interaction.user.id,
+          };
+          const message = await requestDedicatedAgentSettings(
+            subcommand === 'set'
+              ? {
+                  ...target,
+                  action: 'set',
+                  workspaceName: interaction.options.getString('name', true),
+                  path: interaction.options.getString('path', true),
+                }
+              : subcommand === 'use'
+                ? {
+                    ...target,
+                    action: 'use',
+                    workspaceName: interaction.options.getString('name', true),
+                  }
+                : { ...target, action: 'reset' }
+          );
+          await interaction.editReply(message);
+          return;
+        }
+        let workspaceId: string | undefined;
         if (subcommand === 'set') {
           const workspace = await workspaceRegistry.register(
             interaction.options.getString('name', true),
             interaction.options.getString('path', true)
           );
-          await workspaceRegistry.bind('discord', settingsChannelId, workspace.id);
-          await interaction.reply({
-            content: `${workspace.name} を登録・設定しました。次の /new から \`${workspace.path}\` を使います。`,
-            ephemeral: true,
-          });
-          return;
-        }
-        if (subcommand === 'use') {
+          workspaceId = workspace.id;
+        } else if (subcommand === 'use') {
           const name = interaction.options.getString('name', true);
           const workspace = workspaceRegistry.getByName(name);
           if (!workspace) throw new Error(`Workspace not found: ${name}`);
-          await workspaceRegistry.bind('discord', settingsChannelId, workspace.id);
-          await interaction.reply({
-            content: `${workspace.name} を設定しました。次の /new から \`${workspace.path}\` を使います。`,
-            ephemeral: true,
-          });
-          return;
+          workspaceId = workspace.id;
         }
-        await workspaceRegistry.resetBinding('discord', settingsChannelId);
-        const workspace = await workspaceRegistry.resolve('discord', settingsChannelId);
+        const { workspace, agent } = await setChannelWorkspace(
+          workspaceRegistry,
+          'discord',
+          settingsChannelId,
+          workspaceId
+        );
         await interaction.reply({
-          content: `defaultへ戻しました。次の /new から \`${workspace.path}\` を使います。`,
+          content: agent
+            ? `${agent.name} の作業場所を \`${workspace.path}\` に設定しました。次のターンから適用されます。`
+            : `${workspace.name} を設定しました。次の /new から \`${workspace.path}\` を使います。`,
           ephemeral: true,
         });
       } catch (error) {
-        await interaction.reply({ content: formatAgentErrorForUser(error), ephemeral: true });
+        const content = formatAgentErrorForUser(error);
+        if (interaction.deferred) await interaction.editReply(content);
+        else await interaction.reply({ content, ephemeral: true });
       }
       return;
     }
@@ -1206,12 +1236,25 @@ export function createInteractionHandler(
     if (interaction.commandName === 'settings') {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const message = await executeChatSettings(
-          interaction.options.getString('item') || undefined,
-          interaction.options.getString('value') || undefined,
-          { platform: 'discord', channelId: settingsChannelId },
-          { config, resolver, agentRunner, modelDiscovery: autocompleteDiscoverModels }
-        );
+        const item = interaction.options.getString('item') || undefined;
+        const value = interaction.options.getString('value') || undefined;
+        const message =
+          process.env.XANGI_CONNECTION_AGENT_ID &&
+          (item === 'llmmode' || item === 'llmeffort') &&
+          value &&
+          value !== 'status'
+            ? await requestDedicatedAgentSettings({
+                name: item,
+                value,
+                channelId: settingsChannelId,
+                userId: interaction.user.id,
+              })
+            : await executeChatSettings(
+                item,
+                value,
+                { platform: 'discord', channelId: settingsChannelId },
+                { config, resolver, agentRunner, modelDiscovery: autocompleteDiscoverModels }
+              );
         const chunks = splitDiscordMessage(message, DISCORD_SAFE_LENGTH);
         await interaction.editReply({ content: chunks[0] });
         for (const content of chunks.slice(1))
@@ -1257,7 +1300,11 @@ export function createInteractionHandler(
         const sub = interaction.options.getSubcommand();
         if (sub === 'models') {
           await interaction.editReply(
-            await executeModelsCommand(interaction.options.getString('type') || undefined, resolver)
+            await executeModelsCommand(
+              interaction.options.getString('type') || undefined,
+              resolver,
+              discoverModels
+            )
           );
           return;
         }
@@ -1269,6 +1316,23 @@ export function createInteractionHandler(
         const scope = interaction.options.getString('scope') ?? 'channel';
         const effortValue =
           rawEffort && rawEffort !== 'none' ? (rawEffort as EffortLevel) : undefined;
+        if (
+          process.env.XANGI_CONNECTION_AGENT_ID &&
+          scope === 'channel' &&
+          (sub === 'set' || sub === 'reset')
+        ) {
+          const result = await requestDedicatedAgentSettings({
+            name: 'backend',
+            action: sub,
+            channelId: settingsChannelId,
+            userId: interaction.user.id,
+            backend: backendValue,
+            model: modelValue,
+            effort: effortValue,
+          });
+          await interaction.editReply(result);
+          return;
+        }
         const result = await executeRuntimeSettingsCommand(
           {
             name: 'backend',
@@ -1283,7 +1347,8 @@ export function createInteractionHandler(
           },
           { config, resolver, modelDiscovery: discoverModels, agentRunner }
         );
-        if (sub !== 'status' && scope === 'channel') agentRunner.switchBackend?.(settingsChannelId);
+        if (sub !== 'status' && scope === 'channel' && !channelAgent('discord', settingsChannelId))
+          agentRunner.switchBackend?.(settingsChannelId);
         await interaction.editReply(result);
       } catch (error) {
         await interaction.editReply(formatAgentErrorForUser(error));

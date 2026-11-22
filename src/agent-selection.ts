@@ -3,10 +3,15 @@ import { DEFAULT_TEAM_AGENT_ID, teamCallerInstructions, upgradeLegacyTeam } from
 import { migrateTeamId } from './team-migration.js';
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ProjectCatalog, SharedProject } from './project-catalog.js';
-import type { WorkspaceRegistry } from './workspace-registry.js';
+import type {
+  DedicatedAgentSettings,
+  ProjectCatalog,
+  SharedAgent,
+  SharedProject,
+} from './project-catalog.js';
+import type { WorkspaceEntry, WorkspaceRegistry } from './workspace-registry.js';
 import type { AgentRunner } from './agent-runner.js';
-import type { BackendResolver } from './backend-resolver.js';
+import type { BackendResolver, ChannelOverride } from './backend-resolver.js';
 import {
   getActiveSessionId,
   getSessionEntry,
@@ -15,6 +20,7 @@ import {
   clearClosedSessionAgentSelections,
   clearClosedSessionTeamSelections,
   getSessionLifecycle,
+  type SessionEntry,
 } from './sessions.js';
 import { projectWorkAgentId, type WorkChannel } from './agent-work-channel-routing.js';
 import { WebProjectError } from './web-projects.js';
@@ -173,6 +179,63 @@ export function channelAgent(platform: string, channel: string) {
   return agent;
 }
 export const channelIndividualAgent = channelAgent;
+/** Existing Project and secret conversations retain their original snapshots. */
+export function channelAgentSettingsChanged(
+  entry: SessionEntry | undefined,
+  agent: SharedAgent | undefined
+): boolean {
+  return Boolean(
+    entry &&
+    agent &&
+    !entry.secret &&
+    !entry.projectId &&
+    entry.selectedAgentId === agent.id &&
+    entry.selectedAgentConfig?.channelSettingsRevision !== agent.channelSettingsRevision
+  );
+}
+
+export function applyDedicatedAgentSettings(
+  settings: DedicatedAgentSettings,
+  workspace?: WorkspaceEntry
+): void {
+  if (!active || settings.id !== process.env.XANGI_CONNECTION_AGENT_ID)
+    throw new Error('更新した専用Botの担当設定を確認できません');
+  if (workspace) active.registry?.applyDedicatedWorkspace(workspace);
+  active.catalog.applyDedicatedAgentSettings(settings);
+}
+
+export function saveChannelAgentSettings(
+  platform: string,
+  channel: string,
+  expectedAgentId: string,
+  settings: ChannelOverride | { workspaceId: string }
+): void {
+  if (process.env.XANGI_CONNECTION_AGENT_ID)
+    throw new Error('専用Botの担当設定はメインのエージェント設定から変更してください');
+  if (!active || channelAgent(platform, channel)?.id !== expectedAgentId)
+    throw new Error('担当が変更されました。現在の担当を確認してから保存してください');
+  active.catalog.saveChannelAgentSettings(expectedAgentId, { ...settings });
+}
+
+/** Channel workspace commands share the same routing on Discord, Slack and Web. */
+export async function setChannelWorkspace(
+  registry: WorkspaceRegistry,
+  platform: 'discord' | 'slack',
+  channel: string,
+  workspaceId?: string
+) {
+  const agent = channelAgent(platform, channel);
+  if (agent) {
+    const workspace = await registry.resolveById(workspaceId ?? 'default');
+    if (!registry.getById(workspace.id)) throw new Error('Workspaceが見つかりません');
+    saveChannelAgentSettings(platform, channel, agent.id, { workspaceId: workspace.id });
+    return { workspace, agent };
+  }
+  if (workspaceId) return { workspace: await registry.bind(platform, channel, workspaceId) };
+  await registry.resetBinding(platform, channel);
+  return { workspace: await registry.resolve(platform, channel) };
+}
+
 export function agentWorkChannel(agentId: string): WorkChannel | undefined {
   const binding = Object.entries(bindings).find(([, id]) => id === agentId);
   if (!binding) return undefined;

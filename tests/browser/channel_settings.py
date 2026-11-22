@@ -14,16 +14,18 @@ with sync_playwright() as pw:
         context = browser.new_context(viewport={'width': width, 'height': 1000})
         saved, calls, errors = {}, [], []
         workspace_bindings, agent_bindings = {}, {}
+        agent_workspace = ['dev']
+        agent_backend = {}
         fail_workspace = [False]
         workspace_enabled = [True]
         workspaces = [{'id': 'default', 'name': 'default', 'path': '/workspace'}, {'id': 'dev', 'name': '開発工房', 'path': '/home/test/' + 'long-path/' * 15}]
         fail_models = [False]
         def snapshot(channel, platform):
-            data = saved.get(channel, {})
             key = (platform, channel)
-            agent = {'id': 'worker', 'name': '担当', 'workspaceId': 'dev'} if agent_bindings.get(key) else None
-            workspace_id = workspace_bindings.get(key, 'inherit')
-            effective = 'dev' if agent else workspace_id
+            data = agent_backend if agent_bindings.get(key) else saved.get(channel, {})
+            agent = {'id': 'worker', 'name': '担当', 'workspaceId': agent_workspace[0]} if agent_bindings.get(key) else None
+            workspace_id = agent['workspaceId'] if agent else workspace_bindings.get(key, 'inherit')
+            effective = workspace_id
             workspace = next((w for w in workspaces if w['id'] == effective), workspaces[0])
             return {'agent': agent, 'workspace': {'enabled': workspace_enabled[0], 'value': workspace_id, 'effective': workspace}, 'backend': {'value': data.get('backend', 'inherit'), 'model': data.get('model'), 'effort': data.get('effort'), 'localLlmReasoningEffort': data.get('localLlmReasoningEffort'), 'effective': {'backend': data.get('backend', 'codex'), 'model': data.get('model'), 'localLlmReasoningEffort': data.get('localLlmReasoningEffort')}}, 'llmMode': {'value': data.get('localLlmMode') or 'inherit', 'effective': data.get('localLlmMode') or 'agent'}, 'autoReply': {'value': 'inherit', 'effective': 'off'}}
         runtime = {'backend': {'enabled': True, 'value': {'backend': 'codex'}, 'options': ['codex', 'openrouter', 'local-llm'], 'applyMode': 'next-turn'}, 'replySuggestions': {'enabled': True, 'value': 'inherit', 'effective': {'web': True, 'discord': True, 'slack': True}}, 'respondToBots': {'enabled': True, 'value': False}}
@@ -36,6 +38,9 @@ with sync_playwright() as pw:
                     if data['name'] == 'workspace':
                         if fail_workspace[0]:
                             r.fulfill(status=400, json={'error': '保存できませんでした'}); return
+                        if agent_bindings.get(key):
+                            agent_workspace[0] = data['value']
+                            r.fulfill(json={'message': '次のターンから適用されます。', 'settings': runtime}); return
                         if data['action'] == 'reset': workspace_bindings.pop(key, None)
                         else: workspace_bindings[key] = data['value']
                         r.fulfill(json={'message': 'ワークスペースを保存しました。次の /new から適用されます。', 'settings': runtime}); return
@@ -43,9 +48,12 @@ with sync_playwright() as pw:
                         if data['action'] == 'reset': agent_bindings.pop(key, None)
                         else: agent_bindings[key] = data['value']
                         r.fulfill(json={'message': 'saved', 'settings': runtime}); return
-                    if data['action'] == 'reset': saved.pop(data['channelId'], None)
+                    if agent_bindings.get(key):
+                        agent_backend.clear()
+                        if data['action'] == 'set': agent_backend.update(data)
+                    elif data['action'] == 'reset': saved.pop(data['channelId'], None)
                     else: saved[data['channelId']] = data
-                    r.fulfill(json={'message': '保存しました', 'settings': runtime}); return
+                    r.fulfill(json={'message': '保存しました。次のturnから適用されます。', 'settings': runtime}); return
                 data = runtime
             elif path == '/api/runtime-settings/channel': data = snapshot(parse_qs(u.query)['channelId'][0], parse_qs(u.query)['platform'][0])
             elif path == '/api/runtime-settings/channels': data = {'status': 'available', 'channels': [{'id': 'C1', 'name': '#test-one'}, {'id': 'C2', 'name': '#test-two'}]}
@@ -95,13 +103,23 @@ with sync_playwright() as pw:
         assert ('discord', 'C1') not in workspace_bindings
         card.get_by_label('エージェント', exact=True).select_option('worker')
         card.get_by_role('button', name='担当を保存', exact=True).click()
-        expect(workspace_select).to_be_disabled()
-        expect(workspace_save).to_be_disabled()
-        expect(card).to_contain_text('担当エージェントの作業場所を使います')
-        expect(card.get_by_role('link', name='エージェント設定')).to_have_attribute('href', '#agents')
+        expect(workspace_select).to_have_value('dev')
+        expect(workspace_select).to_be_enabled()
+        expect(workspace_save).to_be_enabled()
+        expect(card.get_by_label('バックエンド')).to_be_enabled()
+        workspace_select.select_option('default'); workspace_save.click()
+        expect(card.get_by_role('status')).to_contain_text('次のターンから')
+        assert agent_workspace[0] == 'default'
+        assert ('discord', 'C1') not in workspace_bindings
+        card.get_by_label('バックエンド').select_option('openrouter')
+        card.get_by_label('モデル', exact=True).select_option('vendor/one')
+        card.get_by_role('button', name='チャンネルのモデル設定を保存').click()
+        expect(card.get_by_role('status')).to_have_text('保存しました。次のturnから適用されます。')
+        assert agent_backend['model'] == 'vendor/one' and 'C1' not in saved
         card.get_by_label('エージェント', exact=True).select_option('')
         card.get_by_role('button', name='担当を保存', exact=True).click()
         expect(workspace_select).to_be_enabled()
+        expect(card.get_by_label('バックエンド')).to_have_value('inherit')
         card.get_by_label('プラットフォーム').select_option('slack')
         card.get_by_label('チャンネル', exact=True).select_option('C1')
         expect(workspace_select).to_have_value('inherit')

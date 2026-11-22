@@ -270,6 +270,41 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-feed',
   },
+  {
+    id: 'xangi-report',
+    displayName: 'xangi-report',
+    description: 'AIとの会話で作ったHTMLレポートを保存・整理し、PCやスマホで閲覧します。',
+    permissions: [
+      'workspaceの専用ストレージへレポートと過去の版を保存',
+      'Notion保存を有効にした場合や利用者が保存を依頼した場合に、設定した保存担当AIへレポートを渡してNotionへ保存',
+    ],
+    capabilities: ['xangi-report.manage'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-report',
+  },
+  {
+    id: 'xangi-location',
+    displayName: 'Location',
+    description: 'OwnTracksから本人の最新位置を受信し、取得時刻と精度をxangiへ提供します。',
+    permissions: [
+      '認証したOwnTracks端末から緯度・経度・精度・取得時刻を受信',
+      '拡張専用ディレクトリへ最新位置1件を保存',
+      'xangiの認証済みAPI要求へ最新位置と経過時間を返す',
+    ],
+    capabilities: ['location.read'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: false,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-location',
+  },
 ];
 
 export interface ExtensionSetupRequest {

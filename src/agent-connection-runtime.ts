@@ -1,3 +1,5 @@
+import { attachDedicatedAgentSettingsHandler } from './agent-connection-settings.js';
+import type { RuntimeSettingsDependencies } from './runtime-settings-command.js';
 import { receiveConnectionApi, removeConnectionApi } from './agent-connection-http.js';
 import { attachParentRestartHandler } from './agent-connection-restart.js';
 import { systemCmd } from './cli/system-cmd.js';
@@ -22,13 +24,15 @@ import type { WorkspaceRegistry } from './workspace-registry.js';
 import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 import type { ConnectionRoute } from './agent-work-channel-routing.js';
 import { agentConnectionMonitor } from './agent-connection-monitor.js';
+import { readEnvFile } from './env-file.js';
 
 /** Each transport gets its own sessions, tools, scheduler and platform globals. */
 export function connectionEnvironment(
   connection: AgentConnection,
   dataDir: string,
   workdir: string,
-  base: NodeJS.ProcessEnv = process.env
+  base: NodeJS.ProcessEnv = process.env,
+  saved: Record<string, string> = {}
 ): NodeJS.ProcessEnv {
   const env = { ...base };
   for (const key of Object.keys(env)) {
@@ -59,6 +63,18 @@ export function connectionEnvironment(
           SLACK_ALLOWED_USER: connection.allowedUsers,
         }),
   });
+  if (connection.platform === 'discord') {
+    // Only these preferences belong to a dedicated Discord Bot's private env file.
+    if (saved.XANGI_GLOBAL_BACKEND_OVERRIDE === 'true' && saved.AGENT_BACKEND) {
+      env.AGENT_BACKEND = saved.AGENT_BACKEND;
+      for (const key of ['AGENT_MODEL', 'AGENT_EFFORT']) {
+        if (saved[key] === undefined) delete env[key];
+        else env[key] = saved[key];
+      }
+    }
+    if (saved.RESPOND_TO_BOTS_ENABLED !== undefined)
+      env.RESPOND_TO_BOTS_ENABLED = saved.RESPOND_TO_BOTS_ENABLED;
+  }
   return env;
 }
 
@@ -80,6 +96,7 @@ export class AgentConnectionRuntimes {
   private children = new Set<ChildProcess>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private stopping = false;
+  private connections: AgentConnection[] = [];
   private connectionRoutes: ConnectionRoute[] = [];
   private scheduleClients = new Map<
     string,
@@ -90,11 +107,12 @@ export class AgentConnectionRuntimes {
     private dataDir: string,
     private workdir: string,
     private registry: WorkspaceRegistry,
-    private options: { entry?: string } = {}
+    private options: { entry?: string; runtimeSettings?: RuntimeSettingsDependencies } = {}
   ) {}
 
   async start(connections?: AgentConnection[]) {
     connections ??= await new AgentConnectionStore(this.dataDir).read();
+    this.connections = connections;
     this.connectionRoutes = connections.map(({ id, agentId, platform, enabled }) => ({
       id,
       agentId,
@@ -144,7 +162,13 @@ export class AgentConnectionRuntimes {
     try {
       await mkdir(dataDir, { recursive: true, mode: 0o700 });
       const release = await acquireDataDirLock(dataDir);
+      let saved: Record<string, string> = {};
       try {
+        if (connection.platform === 'discord') {
+          const envPath = join(dataDir, '.env');
+          await (await open(envPath, 'a', 0o600)).close();
+          saved = readEnvFile(envPath);
+        }
         const catalog = new ProjectCatalog(this.dataDir);
         const agent =
           connection.agentId === DEFAULT_TEAM_AGENT_ID
@@ -179,7 +203,7 @@ export class AgentConnectionRuntimes {
           cwd: this.workdir,
           execArgv: connectionExecArgv(process.execArgv),
           env: {
-            ...connectionEnvironment(connection, dataDir, this.workdir),
+            ...connectionEnvironment(connection, dataDir, this.workdir, process.env, saved),
             XANGI_CONNECTION_PARENT_DATA_DIR: this.dataDir,
             XANGI_CONNECTION_WORK_CHANNEL_ROUTES: JSON.stringify(this.connectionRoutes),
           },
@@ -194,6 +218,15 @@ export class AgentConnectionRuntimes {
         () => systemCmd('system_restart', {}),
         () => this.stopping
       );
+      if (connection.platform === 'discord' && this.options.runtimeSettings)
+        attachDedicatedAgentSettingsHandler(
+          child,
+          connection,
+          this.connections,
+          this.options.runtimeSettings,
+          this.registry,
+          () => this.stopping
+        );
       const scheduleClient = new AgentConnectionScheduleClient(child, connection.platform);
       this.scheduleClients.set(connection.id, { child, client: scheduleClient });
       child.on('message', (message) => {

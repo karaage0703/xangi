@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 
 const COLLAPSED_KEY = 'xangi.chat.projectsCollapsed';
 
@@ -10,6 +10,8 @@ interface SidebarProject {
 export function SidebarProjects({
   projects,
   activeId,
+  agentActive,
+  agents,
   lifecycleFilter,
   onLifecycleFilterChange,
   onSelect,
@@ -18,6 +20,8 @@ export function SidebarProjects({
 }: {
   projects: SidebarProject[];
   activeId: string;
+  agentActive?: boolean;
+  agents?: ReactNode;
   lifecycleFilter: 'all' | 'open' | 'closed';
   onLifecycleFilterChange: (value: 'all' | 'open' | 'closed') => void;
   onSelect: (id: string) => void;
@@ -42,7 +46,7 @@ export function SidebarProjects({
       <button
         type="button"
         className="sidebar-all-chats"
-        aria-pressed={!activeId}
+        aria-pressed={!activeId && !agentActive}
         onClick={() => onSelect('')}
       >
         すべての会話
@@ -60,6 +64,7 @@ export function SidebarProjects({
           <option value="closed">完了</option>
         </select>
       </label>
+      {agents}
       <div className="sidebar-section-heading">
         <h2>
           <button

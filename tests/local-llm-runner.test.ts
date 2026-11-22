@@ -1581,7 +1581,7 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
     rmSync(workdir, { recursive: true, force: true });
   });
 
-  function makeRunnerReturning(content: string, withUsage = false): LocalLlmRunner {
+  function makeRunnerReturning(content: string): LocalLlmRunner {
     const runner = new LocalLlmRunner({ workdir, model: 'test' });
     // 実ネットワークを使わず固定応答を返す mock に差し替える
     (runner as unknown as { llm: { chat: () => Promise<unknown> } }).llm = {
@@ -1589,9 +1589,6 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
         content,
         finishReason: 'stop',
         toolCalls: [],
-        usage: withUsage
-          ? { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 }
-          : undefined,
       }),
     };
     return runner;
@@ -1626,23 +1623,187 @@ describe('non-streaming path drift strip (executeAgentLoop / run)', () => {
     const { result } = await runner.run('天気は？', { sessionId: 's3', channelId: 'c3' });
     expect(result).toBe('明日は晴れ、最高25℃だよ');
   });
+});
 
-  it('persists provider usage in the assistant transcript', async () => {
-    const runner = makeRunnerReturning('done', true);
-    await runner.run('q', {
-      sessionId: 'provider-session',
-      channelId: 'usage-channel',
-      appSessionId: 'usage-app',
-    });
+describe('LocalLlmRunner token usage', () => {
+  let workdir: string;
 
-    const assistant = readSessionMessages(workdir, 'usage-app').find(
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), 'xangi-token-usage-'));
+    vi.stubEnv('LOCAL_LLM_MODE', 'chat');
+    vi.stubEnv('LOCAL_LLM_THINKING', 'false');
+    vi.stubEnv('LOCAL_LLM_BASE_URL', 'http://localhost:8001');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  function run(streaming = true) {
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const options = {
+      channelId: 'usage',
+      appSessionId: 'usage',
+      localLlmMode: 'chat' as const,
+    };
+    return streaming ? runner.runStream('q', {}, options) : runner.run('q', options);
+  }
+
+  function recordedUsage() {
+    const response = readSessionMessages(workdir, 'usage').find(
       (entry) => entry.role === 'assistant'
     );
-    expect(assistant?.content).toMatchObject({
-      result: 'done',
-      sessionId: 'provider-session',
-      usage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 },
+    return (response?.content as { usage?: unknown } | undefined)?.usage;
+  }
+
+  it.each([
+    {
+      provider: 'OpenAI-compatible',
+      port: 8001,
+      endpoint: '/v1/chat/completions',
+      payload: {
+        choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 12,
+          prompt_tokens_details: { cached_tokens: 80 },
+        },
+      },
+      expected: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 },
+    },
+    {
+      provider: 'Ollama',
+      port: 11434,
+      endpoint: '/api/chat',
+      payload: { message: { content: 'answer' }, prompt_eval_count: 12, eval_count: 0 },
+      expected: { inputTokens: 12, outputTokens: 0 },
+    },
+    {
+      provider: 'OpenAI-compatible with incomplete counts',
+      port: 8001,
+      endpoint: '/v1/chat/completions',
+      payload: {
+        choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 120 },
+      },
+      expected: undefined,
+    },
+    {
+      provider: 'Ollama without counts',
+      port: 11434,
+      endpoint: '/api/chat',
+      payload: { message: { content: 'answer' } },
+      expected: undefined,
+    },
+  ])(
+    'records non-streaming usage from $provider',
+    async ({ port, endpoint, payload, expected }) => {
+      const baseUrl = `http://localhost:${port}`;
+      vi.stubEnv('LOCAL_LLM_BASE_URL', baseUrl);
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json(payload));
+
+      const result = await run(false);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0][0]).toBe(baseUrl + endpoint);
+      expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({ stream: false });
+      expect(result.result).toBe('answer');
+      expect(result.usage).toEqual(expected);
+      expect(recordedUsage()).toEqual(expected);
+    }
+  );
+
+  it('persists OpenAI-compatible usage from the final SSE event', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          'data: {"choices":[{"delta":{"content":"answer"}}],"usage":null}\n\n' +
+            'data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":80}}}\n\n' +
+            'data: [DONE]\n\n'
+        )
+      );
+
+    const result = await run();
+
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+      stream_options: { include_usage: true },
     });
+    expect(result.result).toBe('answer');
+    expect(result.usage).toEqual({ inputTokens: 120, cachedInputTokens: 80, outputTokens: 12 });
+    expect(recordedUsage()).toEqual(result.usage);
+  });
+
+  it('persists Ollama usage from the final NDJSON object without a trailing newline', async () => {
+    vi.stubEnv('LOCAL_LLM_BASE_URL', 'http://localhost:11434');
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          '{"message":{"content":"answer"},"done":false}\n' +
+            '{"done":true,"prompt_eval_count":12,"eval_count":4}'
+        )
+      );
+
+    const result = await run();
+
+    expect(fetch.mock.calls[0][0]).toBe('http://localhost:11434/api/chat');
+    expect(result.result).toBe('answer');
+    expect(recordedUsage()).toEqual({ inputTokens: 12, outputTokens: 4 });
+  });
+
+  it('keeps usage unmeasured when an older server rejects the option and omits counts', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('Unknown field: stream_options', { status: 400 }))
+      .mockResolvedValueOnce(
+        new Response('data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n')
+      );
+
+    const result = await run();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).not.toHaveProperty('stream_options');
+    expect(result.result).toBe('answer');
+    expect(result.usage).toBeUndefined();
+    expect(recordedUsage()).toBeUndefined();
+  });
+
+  it('adds usage from the empty stream and the non-streaming fallback once each', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0}}\n\n')
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        })
+      );
+
+    const result = await run();
+
+    expect(result.result).toBe('answer');
+    expect(recordedUsage()).toEqual({ inputTokens: 20, outputTokens: 2 });
+  });
+
+  it('omits the turn total when the stream lacked usage but its fallback reported counts', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('data: [DONE]\n\n'))
+      .mockResolvedValueOnce(
+        Response.json({
+          choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        })
+      );
+
+    const result = await run();
+
+    expect(result.result).toBe('answer');
+    expect(result.usage).toBeUndefined();
+    expect(recordedUsage()).toBeUndefined();
   });
 });
 
