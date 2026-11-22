@@ -822,9 +822,9 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 On Discord, `/workspace status` also shows the selected agent and its workspace path. The current session refers only to the channel or thread where the command is invoked. An unassigned session in the parent channel does not mean that its threads have no workspace; check each thread for its session path.
 
-In Settings → Channels, select a Discord or Slack channel and save a registered workspace. Choose “既定のワークスペースを継承” to clear the channel override. Changes apply after the next `/new`; existing conversations keep their workspace. When an agent is assigned, its workspace is shown and individual workspace changes are disabled. Edit that workspace in the agent settings.
+In Settings → Channels, select a Discord or Slack channel and save a registered workspace. Choose “既定のワークスペースを継承” to clear the channel override. With no Agent assigned, changes apply after the next `/new`. With an Agent assigned, the channel setting updates the Agent’s workspace and applies from the next normal turn in the channel and its threads.
 
-Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A binding change never rewrites an existing session; it takes effect for the next session after `/new`.
+Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A turn in progress keeps the workspace selected when it started.
 
 | Command                                 | Description                                            |
 | --------------------------------------- | ------------------------------------------------------ |
@@ -1174,6 +1174,12 @@ The adapter token is not a platform credential, but it authorizes callers to inj
 ## Local LLM
 
 xangi's Local LLM backend uses the OpenAI-compatible API (`/v1/chat/completions`). It supports Ollama, vLLM, and other OpenAI-compatible servers (LM Studio, llama.cpp, etc.).
+
+### Token usage
+
+For non-streaming requests, xangi reads the input and output token counts from the inference server's response. For streaming requests, it reads those counts from a usage event in the stream. Both paths use the same format in the conversation log.
+
+When a turn receives multiple responses, such as after a tool call or regeneration, xangi adds their counts together. If any response lacks either count, xangi leaves the turn's token counts unset and analytics treats them as unmeasured. A zero reported by the inference server is recorded as measured usage.
 
 ### Stopping a running task
 
@@ -2140,6 +2146,10 @@ Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-d
 
 Select a project in the chat sidebar to show its conversations, or select “All conversations” to clear the project filter. Use “+” beside the Projects heading to create a project and the row’s “…” to open settings directly and edit its name, shared instructions, and default agent. Click the Projects heading to hide or show the entire list; the collapsed state persists across reloads in the same browser. Collapsing keeps the selected project and conversation filter; use “All conversations” to clear the filter. With more than five projects, expand the list with “Show all”. Open app-wide settings from the bottom of the sidebar.
 
+Select an agent above Projects to filter the conversation list. “New conversation” starts a conversation with that agent, and the gear on the agent row opens its settings directly. Choose an image under Avatar to show it in the sidebar and full agent list. Without a custom avatar, the UI shows a still frame of the agent’s pet when available, or the agent’s initial. The still frame is available even if conversation pet display is off. Resetting restores this display.
+
+“Show pet in conversations” is saved per agent and on by default. When an agent has a pet, its sprite appears in the center of the conversation header and reacts to idle, thinking and responding states. Reduced-motion preferences show a still frame. If an agent has no pet, “Request creation” opens a Web conversation with that agent and asks xangi to create a compatible sprite. The Web UI looks for `assets/xangi-pets/<URL-encoded agent ID>/pet.json` in the workspace first, then uses the shared xangi-pets location `assets/xangi-pets/pet.json`.
+
 Use “Conversation status” below “All conversations” to filter by All (the default), Incomplete, or Completed. The filter combines with project, agent, search, and source filters. Reloading resets the status filter to All.
 
 On desktop, drag the right edge of the chat sidebar to resize it; the width persists across reloads in the same browser. Focus the divider to use Left/Right (Shift for larger steps) or Home/End. Double-click to restore the default width, or press Escape during a drag to cancel. Narrowing the window keeps your saved width. Mobile keeps the existing drawer controls.
@@ -2168,9 +2178,9 @@ Team and child-agent conversations appear in the same Project as their parent. U
 
 Discord/Slack support `/agent list`, `/agent status`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option, with live choices searchable by agent name or ID). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
 
-A selected Agent supplies the complete backend/model/reasoning/workspace bundle. Individual channel settings remain stored but inactive; clearing the Agent restores them. Missing values use instance or backend defaults, never a model belonging to another backend. Individual model/workspace mutations are rejected while an Agent is selected.
+A selected Agent supplies the complete backend/model/reasoning/workspace bundle. Individual channel settings remain stored but inactive; clearing the Agent restores them. Missing values use instance or backend defaults, never a model belonging to another backend. On a channel with an assigned Agent, changes to backend, model, reasoning, Local LLM mode, and workspace are saved to the Agent. The next normal turn starts a new session with the updated settings and preserves the previous conversation history. In-flight turns, secret chats, existing Project conversations, and follow-ups in existing Agent work threads retain their snapshots. Notifications, auto-reply, and thread mode remain channel settings. Edit the default Agent’s AI in the global settings. A dedicated Discord Bot also accepts `/backend set` in its assigned work channel.
 
-Changing or clearing an Agent is rejected during processing and starts a new session on the next message, preserving messages and files. Discord threads use their parent channel's Agent; Slack threads use their channel's Agent. Per-thread Agent overrides are outside this version. External sessions snapshot Agent settings at creation, so edits apply to new sessions. Scheduled runs also use Agent instructions and workspace.
+Changing or clearing an Agent is rejected during processing and starts a new session on the next message, preserving messages and files. Discord threads use their parent channel's Agent; Slack threads use their channel's Agent. Per-thread Agent overrides are outside this version. External sessions snapshot Agent settings at creation. Edits made directly in Agent Settings apply to new sessions. Scheduled runs also use Agent instructions and workspace.
 
 `xangi agent delete <ID>` shares Web deletion rules. Channel bindings and open/running conversations block deletion and are identified in the error. After unbinding and closing conversations, deleting an Agent preserves conversation text and workspace files.
 

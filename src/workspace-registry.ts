@@ -144,6 +144,13 @@ export class WorkspaceRegistry {
     return workspace ? this.toEntry(workspace) : undefined;
   }
 
+  /** Update the worker's in-memory registry with the parent-assigned ID. */
+  applyDedicatedWorkspace({ id, name, path }: WorkspaceEntry): void {
+    const existing = this.state.workspaces.find((workspace) => workspace.id === id);
+    if (existing) Object.assign(existing, { name, path });
+    else this.state.workspaces.unshift({ id, name, path });
+  }
+
   async register(name: string, workspacePath: string): Promise<WorkspaceEntry> {
     return this.mutate(async () => {
       const normalizedName = normalizeName(name);
@@ -232,11 +239,11 @@ export class WorkspaceRegistry {
   }
 
   async bind(platform: string, channelId: string, workspaceId: string): Promise<WorkspaceEntry> {
-    assertIndividualAgentSettings(channelId);
     return this.mutate(async () => {
       const normalizedPlatform = normalizeNamespace(platform, 'platform');
       const normalizedChannel = normalizeNamespace(channelId, 'channel ID');
       const resolvedWorkspace = await this.resolveById(workspaceId);
+      assertIndividualAgentSettings(normalizedChannel);
       const workspace = this.state.workspaces.find(
         (candidate) => candidate.id === resolvedWorkspace.id
       )!;
@@ -258,8 +265,8 @@ export class WorkspaceRegistry {
   }
 
   async resetBinding(platform: string, channelId: string): Promise<boolean> {
-    assertIndividualAgentSettings(channelId);
     return this.mutate(async () => {
+      assertIndividualAgentSettings(channelId);
       const normalizedPlatform = normalizeNamespace(platform, 'platform');
       const normalizedChannel = normalizeNamespace(channelId, 'channel ID');
       const platformBindings = this.state.bindings[normalizedPlatform];

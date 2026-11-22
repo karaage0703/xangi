@@ -11,7 +11,7 @@ import { handleSecretConversationCommand } from './secret-conversation-command.j
 import { isSecretSession, parseSecretCommand } from './secret.js';
 import { closeAgentWork, findAgentWork, submitAgentWork } from './agent-work.js';
 import { registerSlackAgentWork } from './slack-agent-work.js';
-import { channelAgentSnapshot, beginAgentChannelTurn } from './agent-selection.js';
+import { channelAgent, channelAgentSnapshot, beginAgentChannelTurn } from './agent-selection.js';
 import { ensureSessionWithWorkspace } from './session-workspace.js';
 import { App, LogLevel, type SayFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
@@ -704,7 +704,7 @@ export async function executeSlackBackendCommand(options: {
   );
   if (action !== 'status') {
     if (scope === 'global') sessions.clear();
-    else resetSlackBackendSessions(channelId, agentRunner);
+    else if (!channelAgent('slack', channelId)) resetSlackBackendSessions(channelId, agentRunner);
   }
   return result;
 }

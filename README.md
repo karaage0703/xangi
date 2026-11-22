@@ -165,6 +165,8 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 - [xangi-voice-input](https://github.com/airpocket-soundman/xangi-voice-input) - Chromeの音声認識で日本語入力
 - [xangi-studio](https://github.com/karaage0703/xangi-studio) - PR・資料のレビューと原稿の編集
 - [xangi-feed](https://github.com/karaage0703/xangi-feed) - RSS・ブログ・論文・Podcast・YouTubeをまとめて読み、記事についてxangiと話せるフィードリーダー
+- [xangi-report](https://github.com/karaage0703/xangi-report) - AIとの会話で作ったHTMLレポートを保存・整理し、PCやスマホで閲覧
+- [xangi-location](https://github.com/karaage0703/xangi-location) - OwnTracksから本人の最新位置を受信し、取得時刻と精度とともにxangiから参照
 
 ## 関連プロジェクト
 

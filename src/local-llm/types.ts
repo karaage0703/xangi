@@ -56,6 +56,8 @@ export type LLMToolChoice =
 
 export interface LLMChatOptions {
   onModel?: (model: string) => void;
+  /** Usage reported by each completed streaming request, including any fallback request. */
+  onUsage?: (usage: LLMChatResponse['usage']) => void;
   tools?: LLMTool[];
   toolChoice?: LLMToolChoice;
   temperature?: number;

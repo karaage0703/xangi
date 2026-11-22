@@ -8,7 +8,7 @@ export interface ChannelBackendSnapshot {
     effective?: { id: string; name: string; path: string };
   };
   team?: { id: string; name: string; leadership?: string } | null;
-  agent?: { id: string; name: string; workspaceId: string } | null;
+  agent?: { id: string; name: string; workspaceId: string; backendEditable?: boolean } | null;
   backend: {
     value: string;
     model?: string;
@@ -47,9 +47,7 @@ export function ChannelBackendSettings({
 }) {
   const [current, setCurrent] = useState(snapshot);
   const [workspaceId, setWorkspaceId] = useState(snapshot.workspace?.value ?? 'inherit');
-  const [agents, setAgents] = useState<
-    Array<{ id: string; name: string; backend?: string; model?: string; workspaceId?: string }>
-  >([]);
+  const [agents, setAgents] = useState<Array<{ id: string; name: string }>>([]);
   const [agentId, setAgentId] = useState(snapshot.agent?.id || '');
   useEffect(() => {
     requestJson<{ agents: typeof agents }>('/api/agents')
@@ -73,8 +71,7 @@ export function ChannelBackendSettings({
       const next = await requestJson<ChannelBackendSnapshot>(
         `/api/runtime-settings/channel?platform=${encodeURIComponent(platform)}&channelId=${encodeURIComponent(channelId)}`
       );
-      setCurrent(next);
-      setWorkspaceId(next.workspace?.value ?? 'inherit');
+      applySnapshot(next);
       setNotice('担当を保存しました。次の投稿から新しいセッションで開始します。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -94,6 +91,15 @@ export function ChannelBackendSettings({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [reload, setReload] = useState(0);
+  function applySnapshot(next: ChannelBackendSnapshot) {
+    setCurrent(next);
+    setWorkspaceId(next.workspace?.value ?? 'inherit');
+    setBackend(next.backend.value);
+    setModel(next.backend.model || '');
+    setEffort(next.backend.effort || '');
+    setReasoning(next.backend.localLlmReasoningEffort || '');
+    setMode(next.llmMode.value === 'inherit' ? '' : next.llmMode.value);
+  }
   const local = backend === 'openrouter' || backend === 'local-llm';
   const selected = models?.models.find((entry) => entry.id === model);
   const efforts =
@@ -166,7 +172,7 @@ export function ChannelBackendSettings({
     setSaving(true);
     setNotice('');
     try {
-      await requestJson('/api/runtime-settings', {
+      const saved = await requestJson<{ message: string }>('/api/runtime-settings', {
         method: 'POST',
         body: JSON.stringify({
           name: 'backend',
@@ -188,8 +194,8 @@ export function ChannelBackendSettings({
       const result = await getJson<ChannelBackendSnapshot>(
         `/api/runtime-settings/channel?platform=${platform}&channelId=${encodeURIComponent(channelId)}`
       );
-      setCurrent(result);
-      setNotice('保存しました。次のturnから適用されます。');
+      applySnapshot(result);
+      setNotice(saved.message);
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -226,39 +232,34 @@ export function ChannelBackendSettings({
       <p>
         Agentを設定できるチャンネルは最大1つです。依頼はこのチャンネルの専用スレッドで確認・追加指示できます。
       </p>
-      {agentId && (
-        <p>
-          {(() => {
-            const a = agents.find((a) => a.id === agentId);
-            return a
-              ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
-              : '';
-          })()}
-        </p>
-      )}
       {current.agent && (
         <p>
-          担当: {current.agent.name}
-          。個別設定は保持されています。変更するには担当を解除してください。
+          担当: {current.agent.name}。
+          {current.agent.backendEditable === false
+            ? 'AI設定はエージェント設定で変更できます。'
+            : 'ここで保存したAI設定と作業場所は担当Agentに反映されます。'}
         </p>
       )}
       {current.workspace && (
         <>
           <fieldset
-            disabled={saving || !current.workspace.enabled || Boolean(current.agent)}
+            disabled={saving || !current.workspace.enabled}
             style={{ border: 0, padding: 0, margin: 0 }}
           >
             <div className="settings-runtime-grid">
               <label>
                 <span>
-                  ワークスペース <span className="settings-apply-badge">次の /new から</span>
+                  ワークスペース{' '}
+                  <span className="settings-apply-badge">
+                    {current.agent ? '次のターンから' : '次の /new から'}
+                  </span>
                 </span>
                 <select
                   aria-label="チャンネルのワークスペース"
                   value={workspaceId}
                   onChange={(event) => setWorkspaceId(event.target.value)}
                 >
-                  <option value="inherit">既定のワークスペースを継承</option>
+                  {!current.agent && <option value="inherit">既定のワークスペースを継承</option>}
                   {workspaceId !== 'inherit' &&
                     !workspaces.some((entry) => entry.id === workspaceId) && (
                       <option value={workspaceId}>保存済み（一覧未取得）</option>
@@ -286,18 +287,10 @@ export function ChannelBackendSettings({
               </>
             )}
           </p>
-          {current.agent ? (
-            <p>
-              担当エージェントの作業場所を使います。変更は<a href="#agents">エージェント設定</a>
-              で行えます。
-            </p>
-          ) : (
-            <p>変更は次の /new から適用されます。既存の会話は元の作業場所を使います。</p>
-          )}
         </>
       )}
       <fieldset
-        disabled={!enabled || saving || Boolean(current.agent)}
+        disabled={!enabled || saving || current.agent?.backendEditable === false}
         style={{ border: 0, padding: 0, margin: 0 }}
       >
         <div className="settings-runtime-grid channel-backend-grid">

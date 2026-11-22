@@ -156,11 +156,24 @@ try {
     if (compact) {
       await evaluate('document.querySelector(".app-more-trigger").click()');
       await wait('document.querySelector(".app-more-links .extension-favorite-link")');
+    } else {
+      const sizes = await evaluate(`(() => {
+        const measure = (link) => {
+          const label = getComputedStyle(link.querySelector('span'));
+          const icon = getComputedStyle(link.querySelector('svg'));
+          return { fontSize: label.fontSize, lineHeight: label.lineHeight, width: icon.width, height: icon.height };
+        };
+        return {
+          builtIn: measure(document.querySelector('.app-navigation-primary a')),
+          favorite: measure(document.querySelector('.app-navigation-favorites a')),
+        };
+      })()`);
+      assert.deepEqual(sizes.favorite, sizes.builtIn, 'Sidebar favorites use the built-in label and icon sizes');
     }
     await evaluate(`document.querySelector('${compact ? '.app-more-links' : '.app-navigation-favorites'} a[href="/extensions/studio"]').click()`);
     await wait('document.querySelector("iframe")?.contentDocument?.body?.textContent.includes("Extension opened: studio")');
     assert.equal(await evaluate('!!document.querySelector(".app-topbar")'), true);
-    await wait('document.querySelector("iframe").contentDocument.querySelectorAll("a").length === 0');
+    await wait('document.querySelector("iframe").contentDocument.querySelector("#home")');
     assert.equal(await evaluate('location.pathname'), '/extensions/studio');
     await evaluate('document.querySelector("iframe").contentDocument.querySelector("button").click()');
     assert.equal(await evaluate('document.querySelector("iframe").contentDocument.querySelector("button").textContent'), '123');
@@ -191,7 +204,7 @@ try {
     await writeFile(join(output, `shell-${width}-${height}.png`), Buffer.from(shot.data, 'base64'));
     await evaluate("document.body.dataset.beforeReload = 'true'");
     await send('Page.reload');
-    await wait("document.body.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
+    await wait("document.body?.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
     await wait('document.querySelector("iframe")?.contentDocument?.body?.textContent.includes("Extension opened: tasks")');
     assert.equal(await evaluate(`!!document.querySelector('a[href="/workspace"]')`), true);
     assert.equal(await evaluate(`document.querySelector('a[href="/monitor"]').textContent`), 'モニター');
@@ -202,7 +215,7 @@ try {
   favoritesDelay = 2500;
   await evaluate("document.body.dataset.beforeReload = 'true'");
   await send('Page.navigate', {url: origin + '/extensions/studio'});
-  await wait("document.body.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
+  await wait("document.body?.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
   await wait(`document.querySelector('.app-navigation-favorites a[href="/extensions/studio"]')`);
   const cacheVisibleMs = await evaluate('performance.now()');
   assert.ok(cacheVisibleMs < 2000, 'cached navigation waited for favorites API');
@@ -213,7 +226,7 @@ try {
   failReads = true;
   await evaluate("document.body.dataset.beforeReload = 'true'");
   await send('Page.reload');
-  await wait("document.body.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
+  await wait("document.body?.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
   await wait(`document.querySelector('.app-navigation-favorites a[href="/extensions/studio"]')?.textContent.includes('Studio refreshed')`);
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(await evaluate(`!!document.querySelector('.app-navigation-favorites a[href="/extensions/studio"]')`), true);
@@ -222,21 +235,21 @@ try {
   await evaluate("sessionStorage.setItem('xangi-extension-favorites-v1', '{broken')");
   await evaluate("document.body.dataset.beforeReload = 'true'");
   await send('Page.reload');
-  await wait("document.body.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
+  await wait("document.body?.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
   await wait(`document.querySelector('.app-navigation-favorites a[href="/extensions/studio"]')`);
   const script = await send('Page.addScriptToEvaluateOnNewDocument', {source: "Object.defineProperty(window, 'sessionStorage', {value: {getItem() {throw Error('disabled');}, setItem() {throw Error('disabled');}}});"});
   await evaluate("document.body.dataset.beforeReload = 'true'");
   await send('Page.reload');
-  await wait("document.body.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
+  await wait("document.body?.dataset.beforeReload !== 'true' && document.querySelector('.app-topbar')");
   await wait(`document.querySelector('.app-navigation-favorites a[href="/extensions/studio"]')`);
   await send('Page.removeScriptToEvaluateOnNewDocument', {identifier: script.identifier});
   await send('Page.navigate', {url: origin + '/extensions/feed'});
   await wait(`document.querySelector('iframe')?.contentWindow.location.pathname === '/api/extensions/feed/service/' && document.querySelector('iframe')?.contentDocument?.body?.textContent.includes('Extension opened: feed')`);
-  await wait(`document.querySelector('iframe').contentDocument.querySelectorAll('a').length === 0`);
+  await wait(`document.querySelector('iframe').contentDocument.querySelector('#home')`);
   await send('Page.navigate', {url: origin + '/api/extensions/feed/service/'});
   await wait(`document.querySelector('a[aria-label="xangiホーム"]')`);
   assert.equal(exceptions.length, 0, JSON.stringify(exceptions));
-  console.log(JSON.stringify({cacheVisibleMs, delayedApiMs: 2500, passed: ['desktop/mobile/short viewport', 'persistent rail', 'switch extension', 'iframe interaction', 'reload direct route', 'keyboard scroll', 'no horizontal overflow', 'monitor label', 'cached favorites before delayed response', 'background refresh', 'cache survives network error', 'damaged/disabled storage fallback', 'embedded home hidden', 'no exceptions'], output}, null, 2));
+  console.log(JSON.stringify({cacheVisibleMs, delayedApiMs: 2500, passed: ['desktop/mobile/short viewport', 'sidebar label and icon sizing', 'persistent rail', 'switch extension', 'iframe interaction', 'reload direct route', 'keyboard scroll', 'no horizontal overflow', 'monitor label', 'cached favorites before delayed response', 'background refresh', 'cache survives network error', 'damaged/disabled storage fallback', 'embedded home preserved', 'no exceptions'], output}, null, 2));
 } finally {
   ws?.close();
   browser.kill();

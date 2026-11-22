@@ -148,6 +148,8 @@ async function* responseLines(response: Response): AsyncGenerator<string> {
       buffer = lines.pop() ?? '';
       yield* lines;
     }
+    buffer += decoder.decode();
+    if (buffer) yield buffer;
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -584,18 +586,31 @@ export class LLMClient {
 
     const { body, headers } = this.openAIRequest(messages, options, true);
 
-    const response = await this.fetchChatResponse(
-      '/v1/chat/completions',
-      body,
-      headers,
-      'OpenAI-compatible stream',
-      options?.signal,
-      true
-    );
+    const request = () =>
+      this.fetchChatResponse(
+        '/v1/chat/completions',
+        body,
+        headers,
+        'OpenAI-compatible stream',
+        options?.signal,
+        true
+      );
+    body.stream_options = { include_usage: true };
+    let response = await request();
+    if (response.status === 400 || response.status === 422) {
+      const detail = await response.text();
+      if (!/stream_options|include_usage/i.test(detail)) {
+        throw new Error(`LLM API error ${response.status}: ${detail}`);
+      }
+      // Older compatible servers may reject the optional usage request.
+      delete body.stream_options;
+      response = await request();
+    }
     if (!response.ok) {
       throw new Error(`LLM API error ${response.status}: ${await response.text()}`);
     }
 
+    let usage: OpenAIChatResponse['usage'];
     let hasContent = false;
     for await (const line of responseLines(response)) {
       const trimmed = line.trim();
@@ -604,6 +619,7 @@ export class LLMClient {
         let chunk: {
           model?: string;
           error?: { code?: number; message?: string };
+          usage?: OpenAIChatResponse['usage'] | null;
           choices?: Array<{ delta: { content?: string; reasoning?: string } }>;
         };
         try {
@@ -617,6 +633,7 @@ export class LLMClient {
           );
         }
         if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
+        usage = chunk.usage ?? usage;
         const delta = chunk.choices?.[0]?.delta;
         if (delta?.content) {
           hasContent = true;
@@ -625,9 +642,20 @@ export class LLMClient {
       }
     }
 
+    options?.onUsage?.(
+      usage
+        ? {
+            inputTokens: usage.prompt_tokens,
+            cachedInputTokens: usage.prompt_tokens_details?.cached_tokens,
+            outputTokens: usage.completion_tokens,
+          }
+        : undefined
+    );
+
     // Thinking model でcontentが空だった場合、non-streamingにフォールバック
     if (!hasContent) {
       const result = await this.chat(messages, options);
+      options?.onUsage?.(result.usage);
       if (result.content) yield result.content;
     }
   }
@@ -658,6 +686,7 @@ export class LLMClient {
       throw new Error(`Ollama API error ${response.status}: ${await response.text()}`);
     }
 
+    let usage: LLMChatResponse['usage'];
     for await (const line of responseLines(response)) {
       if (!line.trim()) continue;
       try {
@@ -665,8 +694,13 @@ export class LLMClient {
           model?: string;
           message?: { content?: string };
           done?: boolean;
+          prompt_eval_count?: number;
+          eval_count?: number;
         };
         if (typeof chunk.model === 'string') options?.onModel?.(chunk.model);
+        if (chunk.done) {
+          usage = { inputTokens: chunk.prompt_eval_count, outputTokens: chunk.eval_count };
+        }
         if (chunk.message?.content) {
           yield chunk.message.content;
         }
@@ -674,5 +708,6 @@ export class LLMClient {
         // skip malformed chunks
       }
     }
+    options?.onUsage?.(usage);
   }
 }

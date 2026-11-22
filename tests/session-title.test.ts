@@ -14,23 +14,21 @@ import {
 
 describe('stripPromptMetadata', () => {
   it('hides injected Team instructions and subsequent platform metadata', () => {
-    expect(
-      stripPromptMetadata(`<system-context>internal context</system-context>
+    expect(stripPromptMetadata(`<system-context>internal context</system-context>
 [runtime] cwd=/tmp repo=test
 <agent-instructions>Team to use: test. Run the configured leader.</agent-instructions>
 [プラットフォーム: Discord]
 [チャンネル: #team (ID: 123)]
 [発言者: Web (ID: web)]
 [現在時刻: 2026/10/23 2:19:03(金)]
-もんじゅテスト`)
-    ).toBe('もんじゅテスト');
+日本語のテスト`)).toBe('日本語のテスト');
     const literal = 'Explain this example:\n<agent-instructions>example</agent-instructions>';
     expect(stripPromptMetadata(literal)).toBe(literal);
   });
   it('Discord 形式のメタデータ4行をすべて剥がす', () => {
     const input =
       '[プラットフォーム: Discord]\n' +
-      '[チャンネル: #dev_xangi (ID: 1469726038291386523)]\n' +
+      '[チャンネル: #example-channel (ID: 234567890123456789)]\n' +
       '[発言者: テストユーザー (ID: 123456789012345678)]\n' +
       '[現在時刻: 2026/4/26 15:06:50(日)]\n' +
       'こんにちは、テストです';

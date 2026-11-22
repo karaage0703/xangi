@@ -1,3 +1,4 @@
+import { channelAgent, resolveAgentBackend } from './agent-selection.js';
 import { formatSettings, loadSettings } from './settings.js';
 import type { ChannelOverride } from './backend-resolver.js';
 import {
@@ -47,7 +48,11 @@ export async function executeChatSettings(
     )
       throw new Error('この設定は管理者により無効化されています');
     if (!context.channelId) throw new Error('会話を開いてから実行してください');
-    const resolved = dependencies.resolver.resolve(context.channelId, context.backendDefault);
+    const agent =
+      context.platform === 'web' ? undefined : channelAgent(context.platform, context.channelId);
+    const resolved = agent
+      ? resolveAgentBackend(dependencies.resolver, agent)
+      : dependencies.resolver.resolve(context.channelId, context.backendDefault);
     if (action === 'status')
       return `対象: ${context.channelId}\n推論強度: ${resolved.localLlmReasoningEffort || 'default'}`;
     return executeRuntimeSettingsCommand(

@@ -43,6 +43,9 @@ import { AppTopbar } from './AppTopbar';
 import { NavigationIcon } from './AppNavigation';
 import { SessionActions } from './SessionActions';
 import { SidebarProjects } from './SidebarProjects';
+import { AgentAvatar } from './AgentAvatar';
+import { SidebarAgents } from './SidebarAgents';
+import { agentSettingsPath, ConversationPet } from './AgentPet';
 import { useSidebarResize } from './useSidebarResize';
 import {
   extensionConversationPrompt,
@@ -165,6 +168,8 @@ type WorkChannel = NonNullable<PaneDescriptor['linkedDraft']>['channel'];
 const defaultWorkAgentId = 'xangi:default';
 
 interface Project {
+  avatarUrl?: string;
+  petPortraitUrl?: string;
   defaultAgentId?: string;
   workChannel?: WorkChannel | null;
   role?: string;
@@ -203,6 +208,7 @@ interface Message {
 }
 
 export interface SessionDetail {
+  petAgentId?: string;
   linkedChannel?: boolean;
   modelExecution?: ModelExecution;
   modelHistory?: ModelExecution[];
@@ -954,6 +960,7 @@ function ChatPane({
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scrollToBottom);
     const observeChildren = () => {
       resizeObserver?.disconnect();
+      resizeObserver?.observe(viewport);
       Array.from(viewport.children).forEach((child) => resizeObserver?.observe(child));
       scrollToBottom();
     };
@@ -1685,6 +1692,9 @@ function ChatPane({
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
   const processing = isPaneProcessing(busy || Boolean(streamRecovery), summary?.isActive);
+  const petAgentId =
+    linkedDraft?.agentId || (detail?.id === sessionId ? detail?.petAgentId : undefined);
+  const petPose = liveTurn.text ? 'talking' : processing || liveTurn.visible ? 'thinking' : 'idle';
   const sessionQueue = queuedMessages.filter((item) => item.sessionId === sessionId);
   useEffect(() => {
     if (summary?.lifecycle === 'closed' || detail?.lifecycle === 'closed') setQueuePaused(true);
@@ -1755,68 +1765,80 @@ function ChatPane({
         <header
           className={`pane-header ${isSecretConversationId(sessionId) ? 'secret-pane-header' : ''}`}
         >
-          <button
-            type="button"
-            className={sessionId ? 'pane-title' : 'pane-title empty'}
-            onClick={openRenameDialog}
-            disabled={!sessionId}
-          >
-            {resolveDisplayedSessionTitle(summary?.title, detail?.title) ||
-              linkedDraft?.name ||
-              '(empty)'}
-          </button>
-          {isSecretConversationId(sessionId) && (
-            <span className="secret-mode-label">シークレット · Webのみ</span>
-          )}
-          {summary && (
-            <span
-              className={`pane-backend-badge source-${summary.backend?.source ?? 'session'}`}
-              title={modelExecutionLabel(summary.modelExecution, summary.backend)}
+          <div className="pane-header-main">
+            <button
+              type="button"
+              className={sessionId ? 'pane-title' : 'pane-title empty'}
+              onClick={openRenameDialog}
+              disabled={!sessionId}
             >
-              {modelExecutionLabel(summary.modelExecution, summary.backend)}
-            </span>
-          )}
-          {externalChatLink && (
-            <a
-              className="pane-external-chat"
-              href={externalChatLink.url}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={`元の${platformLabel(externalChatLink.platform)}を開く`}
-            >
-              {platformLabel(externalChatLink.platform)} ↗
-            </a>
-          )}
-          {(summary || detail) &&
-            (summary?.lifecycle ?? detail?.lifecycle) !== 'closed' &&
-            sessionId && (
-              <button
-                type="button"
-                className="pane-complete"
-                disabled={lifecyclePending}
-                onClick={() =>
-                  onComplete(
-                    {
-                      id: sessionId,
-                      title: summary?.title || detail?.title,
-                      canReopen: detail?.canReopen ?? summary?.canReopen,
-                      isActive: busy || Boolean(summary?.isActive ?? detail?.isActive),
-                    },
-                    pane.key
-                  )
-                }
-              >
-                {isSecretConversationId(sessionId) ? '終了して破棄' : '完了して閉じる'}
-              </button>
+              {resolveDisplayedSessionTitle(summary?.title, detail?.title) ||
+                linkedDraft?.name ||
+                '(empty)'}
+            </button>
+            {isSecretConversationId(sessionId) && (
+              <span className="secret-mode-label">シークレット · Webのみ</span>
             )}
-          <button
-            type="button"
-            className="pane-close"
-            aria-label="ペインを閉じる"
-            onClick={onClose}
-          >
-            ×
-          </button>
+            {summary && (
+              <span
+                className={`pane-backend-badge source-${summary.backend?.source ?? 'session'}`}
+                title={modelExecutionLabel(summary.modelExecution, summary.backend)}
+              >
+                {modelExecutionLabel(summary.modelExecution, summary.backend)}
+              </span>
+            )}
+          </div>
+          {petAgentId && (
+            <ConversationPet
+              key={JSON.stringify([sessionId, petAgentId])}
+              agentId={petAgentId}
+              pose={petPose}
+              revision={detail?.messages.at(-1)?.id}
+            />
+          )}
+          <div className="pane-header-actions">
+            {externalChatLink && (
+              <a
+                className="pane-external-chat"
+                href={externalChatLink.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`元の${platformLabel(externalChatLink.platform)}を開く`}
+              >
+                {platformLabel(externalChatLink.platform)} ↗
+              </a>
+            )}
+            {(summary || detail) &&
+              (summary?.lifecycle ?? detail?.lifecycle) !== 'closed' &&
+              sessionId && (
+                <button
+                  type="button"
+                  className="pane-complete"
+                  disabled={lifecyclePending}
+                  onClick={() =>
+                    onComplete(
+                      {
+                        id: sessionId,
+                        title: summary?.title || detail?.title,
+                        canReopen: detail?.canReopen ?? summary?.canReopen,
+                        isActive: busy || Boolean(summary?.isActive ?? detail?.isActive),
+                      },
+                      pane.key
+                    )
+                  }
+                >
+                  {isSecretConversationId(sessionId) ? '終了して破棄' : '完了して閉じる'}
+                </button>
+              )}
+            <button
+              type="button"
+              className="pane-close"
+              aria-label="ペインを閉じる"
+              onClick={onClose}
+            >
+              ×
+            </button>
+          </div>
         </header>
         <div className="pane-model-info">
           {sessionId && <ModelHistory history={detail?.modelHistory} />}
@@ -2843,6 +2865,15 @@ export function Chat() {
     return () => window.removeEventListener('popstate', restore);
   });
 
+  function selectAgent(id: string) {
+    setSelectedAgentId(id);
+    setActiveAgentId(id);
+    setActiveProjectId('');
+    setAgentViewOpen(false);
+    setProjectViewOpen(false);
+    setProjectFormOpen(false);
+  }
+
   async function createSession(secret = false, paneKey = activeKey) {
     if (!targetsLoaded) return;
     setAgentViewOpen(false);
@@ -3265,10 +3296,24 @@ export function Chat() {
           <SidebarProjects
             projects={projects}
             activeId={activeProjectId}
+            agentActive={Boolean(activeAgentId)}
+            agents={
+              <SidebarAgents
+                agents={agents}
+                activeId={activeAgentId}
+                onSelect={selectAgent}
+                onBrowse={() => {
+                  setCatalogQuery('');
+                  setAgentViewOpen(true);
+                  if (compactSidebar) setSidebarOpen(false);
+                }}
+              />
+            }
             lifecycleFilter={lifecycleFilter}
             onLifecycleFilterChange={setLifecycleFilter}
             onSelect={(id) => {
               setActiveAgentId('');
+              if (!id && activeAgentId) setSelectedAgentId('');
               setActiveProjectId(id);
               setAgentViewOpen(false);
               setProjectViewOpen(false);
@@ -3290,7 +3335,11 @@ export function Chat() {
             }}
           />
           <div className="sidebar-conversation-heading">
-            <h2>{activeProject?.name || '会話'}</h2>
+            <h2>
+              {activeProject?.name ||
+                agents.find((agent) => agent.id === activeAgentId)?.name ||
+                '会話'}
+            </h2>
             <details
               className="session-source-settings"
               onKeyDown={(event) => {
@@ -3483,7 +3532,7 @@ export function Chat() {
                 >
                   ← 会話
                 </button>
-                <h1>Agents</h1>
+                <h1>エージェント</h1>
               </div>
               <a className="project-view-new" href="/settings#agents">
                 エージェント設定
@@ -3516,36 +3565,42 @@ export function Chat() {
                 <span aria-hidden="true">›</span>
               </button>
               {agents.filter(catalogVisible).map((agent) => (
-                <button
-                  type="button"
+                <div
+                  className={
+                    activeAgentId === agent.id
+                      ? 'project-view-row agent-view-row selected'
+                      : 'project-view-row agent-view-row'
+                  }
                   key={agent.id}
-                  className={activeAgentId === agent.id ? 'selected' : ''}
-                  onClick={() => {
-                    setSelectedAgentId(agent.id);
-                    setActiveAgentId(agent.id);
-                    setActiveProjectId('');
-                    setAgentViewOpen(false);
-                    setSidebarOpen(true);
-                  }}
                 >
-                  <span className="project-view-icon" aria-hidden="true">
-                    ◎
-                  </span>
-                  <span className="project-view-copy">
-                    <strong>{agent.name}</strong>
-                    <small>
-                      {[
-                        agent.role,
-                        agent.backend || '全体既定',
-                        agent.model,
-                        agent.workspaceId || 'default',
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </small>
-                  </span>
-                  <span aria-hidden="true">›</span>
-                </button>
+                  <button
+                    type="button"
+                    className="project-view-main"
+                    onClick={() => {
+                      selectAgent(agent.id);
+                      setSidebarOpen(true);
+                    }}
+                  >
+                    <AgentAvatar
+                      name={agent.name}
+                      url={agent.avatarUrl}
+                      petPortraitUrl={agent.petPortraitUrl}
+                    />
+                    <span className="project-view-copy">
+                      <strong>{agent.name}</strong>
+                      <small>
+                        {[agent.backend || '全体既定', agent.model].filter(Boolean).join(' · ')}
+                      </small>
+                    </span>
+                  </button>
+                  <a
+                    className="project-view-edit"
+                    href={agentSettingsPath(agent.id)}
+                    aria-label={`${agent.name}の設定`}
+                  >
+                    設定
+                  </a>
+                </div>
               ))}
               {agents.length === 0 && (
                 <p className="project-empty">

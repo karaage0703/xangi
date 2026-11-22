@@ -69,6 +69,10 @@ In Web settings, edit a saved Agent and select **Discord・Slackの専用Bot →
 
 Additions, edits, disabling and deletion apply after restarting the main xangi process. Each Bot is pinned to its registered Agent; channel Agent switching cannot change it. Instructions, AI settings and workspaces are copied at startup. Existing conversations retain their snapshots, so start a new conversation after restarting to pick up Agent changes.
 
+In the assigned work channel and its threads, use the dedicated Discord Bot’s `/backend set` to update the Agent’s backend, model, and effort. Use `/backend reset` to restore inheritance from the instance defaults. The main instance saves both changes, and they take effect from the next normal turn. Use `/backend status` to check which settings the next turn will use.
+
+`/workspace use|set|reset` and changes to Local LLM mode and reasoning effort through `/settings item:llmmode|llmeffort` are also saved by the main instance and take effect from the Agent’s next normal turn. The defaults addressed by `/backend scope:global` and the `/settings item:respondtobots` preference are saved per dedicated Bot.
+
 Each connection runs an isolated child runtime with separate history, schedules and tool credentials. State is retained under `DATA_DIR/agent-connections/<connection-ID>/`; session activity is shared with the main Monitor and pets. Open history from the shared Web UI conversation list and send through the dedicated Bot that owns the conversation. Deleting a connection does not erase history. Reload settings to refresh connection status. Credentials are stored in `DATA_DIR/agent-connections.json` with mode 600 and never returned by the API. Keep the data directory out of Git.
 
 

@@ -82,10 +82,7 @@ describe('tool-trajectory sanitize', () => {
 
   it('sanitizeArgs masks $HOME in string values', () => {
     const args = { path: '/home/example-user/example-workspace/notes/foo.md' };
-    const out = sanitizeArgs(args, { salt: 's', home: '/home/example-user' }) as Record<
-      string,
-      unknown
-    >;
+    const out = sanitizeArgs(args, { salt: 's', home: '/home/example-user' }) as Record<string, unknown>;
     expect(out.path).toBe('$HOME/example-workspace/notes/foo.md');
   });
 

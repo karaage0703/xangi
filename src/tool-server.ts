@@ -130,6 +130,7 @@ async function executeCommand(
           backend: flags.backend,
           model: flags.use,
           effort: flags.effort,
+          platform: context?.platform,
           channelId:
             flags.channel ??
             (context?.channelId

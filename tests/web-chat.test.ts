@@ -39,6 +39,7 @@ import {
   writeFileSync,
   utimesSync,
   realpathSync,
+  symlinkSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
@@ -417,6 +418,7 @@ describe('web-chat HTTP API', () => {
       const session = {id:'child-session',title:'Dedicated running turn',platform:'discord',
         contextKey:'same-channel',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
         messageCount:1,isActive:true,isCurrent:true,lifecycle:'open',executionOrigin:'manual',
+        origin:{channelId:'test-channel',channelName:'worker-channel'},
         activity:{state:'thinking',active:true,startedAt:Date.now(),updatedAt:Date.now()}};
       process.send({type:'agent-connection-ready'});
       process.send({type:'agent-connection-monitor',sessions:[session]});
@@ -454,6 +456,7 @@ describe('web-chat HTTP API', () => {
                 selectedAgentId: agent.id,
                 isActive: true,
                 connectionId: connection.id,
+                origin: { channelId: 'test-channel', channelName: 'worker-channel' },
               }),
             ])
           );
@@ -466,6 +469,10 @@ describe('web-chat HTTP API', () => {
       expect(ordinary.sessions).toEqual(
         expect.arrayContaining([expect.objectContaining({ connectionId: connection.id })])
       );
+      const parentOnly = await fetch(
+        `${baseUrl}/api/sessions?includeConnections=false&agentId=${agent.id}`
+      ).then((r) => r.json());
+      expect(parentOnly.sessions).toEqual([]);
       const response = await fetch(
         `${baseUrl}/api/sessions/stream?mode=changes&agentId=${agent.id}`,
         { signal: abort.signal }
@@ -942,7 +949,7 @@ describe('web-chat HTTP API', () => {
     });
   });
 
-  it('shows an assigned agent workspace and rejects individual workspace mutations', async () => {
+  it('reads and updates an assigned Agent workspace through channel settings', async () => {
     const post = (path: string, body: unknown) =>
       fetch(`${baseUrl}${path}`, {
         method: 'POST',
@@ -970,17 +977,20 @@ describe('web-chat HTTP API', () => {
         `${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=workspace-agent`
       )
     ).json();
-    expect(snapshot.workspace).toMatchObject({ value: 'inherit', effective: { id: workspace.id } });
+    expect(snapshot.workspace).toMatchObject({ value: workspace.id, effective: { id: workspace.id } });
     for (const action of ['set', 'reset']) {
       const response = await post('/api/runtime-settings', {
         ...binding,
         name: 'workspace',
         action,
-        value: 'default',
+        value: action === 'set' ? 'default' : undefined,
       });
-      expect(response.status).toBe(400);
-      expect((await response.json()).error).toContain('担当を解除');
+      expect(response.status).toBe(200);
     }
+    const { agents } = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(agents.find((candidate: { id: string }) => candidate.id === agent.id)).toMatchObject({
+      workspaceId: 'default',
+    });
   });
 
   it('serves the configured-channel overview separately from initial settings', async () => {
@@ -2996,6 +3006,154 @@ describe('web-chat HTTP API', () => {
     expect(response.meta.hasMore).toBe(false);
   });
 
+  it('stores and removes a distinct avatar for each agent without changing pet settings', async () => {
+    const defaultId = 'xangi:default';
+    const { agent: other } = await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Avatar test agent' }),
+    }).then((response) => response.json());
+    const avatar = (id: string) => `${baseUrl}/api/agents/${encodeURIComponent(id)}/avatar`;
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAA+UlEQVR4nO3RQQ0AIAzAwClCEbrQi4w9ekkFNLk592mxWT+IBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtAABoBwBAOwAA2gEA0A4AgHYAALQDAKAdAADtPuTEBDlEdGaHAAAAAElFTkSuQmCC';
+    const save = (id: string, image: string, origin = baseUrl) =>
+      fetch(avatar(id), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify({ png: image }),
+      });
+    const list = async () => (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
+    const pet = async () => await (await fetch(`${baseUrl}/api/agents/xangi%3Adefault/pet`)).json();
+    expect((await fetch(avatar(defaultId))).status).toBe(404);
+    expect((await save(defaultId, png, 'http://different.example')).status).toBe(403);
+    expect((await save(defaultId, Buffer.from('invalid').toString('base64'))).status).toBe(400);
+    expect((await save('missing', png)).status).toBe(404);
+
+    const saved = await save(defaultId, png);
+    expect(saved.status).toBe(200);
+    const { avatarUrl } = await saved.json();
+    expect(await list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: defaultId,
+          avatarUrl,
+        }),
+      ])
+    );
+    expect((await fetch(avatar(other.id))).status).toBe(404);
+    const image = await fetch(baseUrl + avatarUrl);
+    expect(image.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await image.arrayBuffer()).toString('base64')).toBe(png);
+    expect(await pet()).toMatchObject({ enabled: true });
+    expect((await fetch(avatar(defaultId), { method: 'DELETE' })).status).toBe(200);
+    expect((await fetch(avatar(defaultId))).status).toBe(404);
+    expect((await list())[0]).not.toHaveProperty('avatarUrl');
+  });
+
+  it('serves an agent pet for existing conversations and persists the display setting', async () => {
+    const base = '/api/agents/xangi%3Adefault/pet';
+    const assetDir = join(testDir, 'assets', 'xangi-pets');
+    const sprite = Buffer.from('RIFF0000WEBP');
+    const get = (path: string) => fetch(baseUrl + path);
+    const defaultAgent = async () => (await (await get('/api/agents')).json()).agents[0];
+    const toggle = (enabled: unknown) =>
+      fetch(baseUrl + base, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+    const legacySession = createSession('pet-slack', { platform: 'slack' });
+    expect(await (await get(`/api/sessions/${legacySession}`)).json()).toMatchObject({
+      petAgentId: 'xangi:default',
+    });
+    const defaults = await (await get('/api/sessions?agentId=xangi%3Adefault')).json();
+    expect(defaults.sessions.map((session: { id: string }) => session.id)).toContain(legacySession);
+    expect(await (await get(base)).json()).toEqual({ enabled: true, status: 'missing' });
+    expect((await toggle('off')).status).toBe(400);
+    expect(await defaultAgent()).not.toHaveProperty('petPortraitUrl');
+
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(
+      join(assetDir, 'pet.json'),
+      JSON.stringify({ displayName: 'Desk Pet', spritesheetPath: 'spritesheet.webp' })
+    );
+    writeFileSync(join(assetDir, 'spritesheet.webp'), sprite);
+    const ready = await (await get(base)).json();
+    expect(ready).toMatchObject({ enabled: true, status: 'ready', name: 'Desk Pet' });
+    const image = await get(ready.imageUrl);
+    expect(image.headers.get('content-type')).toBe('image/webp');
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(sprite);
+
+    const personal = join(assetDir, 'xangi%3Adefault');
+    mkdirSync(personal);
+    writeFileSync(
+      join(personal, 'pet.json'),
+      JSON.stringify({ displayName: 'Personal Pet', spritesheetPath: 'personal.webp' })
+    );
+    symlinkSync(join(assetDir, 'spritesheet.webp'), join(personal, 'personal.webp'));
+    expect(await (await get(base)).json()).toEqual({ enabled: true, status: 'invalid' });
+    rmSync(join(personal, 'personal.webp'));
+    writeFileSync(join(personal, 'personal.webp'), sprite);
+    expect(await (await get(base)).json()).toMatchObject({ name: 'Personal Pet' });
+
+    expect((await toggle(false)).status).toBe(200);
+    expect(new ProjectCatalog(process.env.DATA_DIR!).defaultAgent().petEnabled).toBe(false);
+    expect(await (await get(base)).json()).toEqual({ enabled: false, status: 'hidden' });
+    expect((await get(ready.imageUrl)).status).toBe(409);
+    const { petPortraitUrl } = await defaultAgent();
+    expect(petPortraitUrl).toMatch(/\/pet\/portrait\?v=/);
+    const portrait = await get(petPortraitUrl);
+    expect(portrait.headers.get('content-type')).toBe('image/webp');
+    expect(Buffer.from(await portrait.arrayBuffer())).toEqual(sprite);
+    expect((await toggle(true)).status).toBe(200);
+    expect(await (await get(base)).json()).toMatchObject({ status: 'ready' });
+  });
+
+  it('requests pet creation from the selected agent and reuses the running receipt', async () => {
+    const workspacePath = join(testDir, 'pet-workspace');
+    mkdirSync(workspacePath);
+    const post = (path: string, body: object = {}, origin = baseUrl) =>
+      fetch(baseUrl + path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify(body),
+      });
+    const { workspace } = await (
+      await post('/api/workspaces', { name: 'Pets', path: workspacePath })
+    ).json();
+    const { agent } = await (
+      await post('/api/agents', { name: 'Pet maker', workspaceId: workspace.id })
+    ).json();
+    const route = `/api/agents/${agent.id}/pet`;
+    expect((await post(`${route}/create`, {}, 'http://different.example')).status).toBe(403);
+    const requests = await Promise.all([post(`${route}/create`), post(`${route}/create`)]);
+    expect(requests.map((response) => response.status)).toEqual([202, 202]);
+    const [receipt, duplicate] = await Promise.all(requests.map((response) => response.json()));
+    expect(duplicate).toEqual(receipt);
+    const entry = getSessionEntry(receipt.sessionId)!;
+    expect(entry).toMatchObject({ platform: 'web', selectedAgentId: agent.id });
+    try {
+      await vi.waitFor(() => expect(runner.pending.has(entry.contextKey)).toBe(true));
+      expect(runner.options.at(-1)?.workdir).toBe(realpathSync(workspacePath));
+      expect(runner.prompts.at(-1)).toContain(`assets/xangi-pets/${agent.id}/pet.json`);
+      const discordSession = createSession('pet-discord', {
+        platform: 'discord',
+        selectedAgentId: agent.id,
+      });
+      expect(await (await fetch(`${baseUrl}/api/sessions/${discordSession}`)).json()).toMatchObject(
+        { petAgentId: agent.id }
+      );
+    } finally {
+      runner.release(entry.contextKey);
+    }
+    await vi.waitFor(async () => {
+      const response = await fetch(
+        `${baseUrl}/api/sessions/${receipt.sessionId}/turn-requests/${receipt.requestId}`
+      );
+      expect((await response.json()).turn.state).toBe('completed');
+    });
+  });
+
   it('allows deleting a closed standalone agent but protects open conversations', async () => {
     const request = (path: string, body: unknown = {}, method = 'POST') =>
       fetch(`${baseUrl}${path}`, {
@@ -4215,6 +4373,24 @@ describe('web-chat HTTP API', () => {
           actionsAvailable: true,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-feed',
         }),
+        expect.objectContaining({
+          id: 'xangi-report',
+          displayName: 'xangi-report',
+          capabilities: ['xangi-report.manage'],
+          installed: false,
+          uiAvailable: true,
+          actionsAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-report',
+        }),
+        expect.objectContaining({
+          id: 'xangi-location',
+          displayName: 'Location',
+          capabilities: ['location.read'],
+          installed: false,
+          uiAvailable: false,
+          actionsAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-location',
+        }),
       ],
       issues: [],
     });
@@ -4269,6 +4445,8 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-remote-desktop' }),
         expect.objectContaining({ id: 'xangi-studio' }),
         expect.objectContaining({ id: 'xangi-feed' }),
+        expect.objectContaining({ id: 'xangi-report' }),
+        expect.objectContaining({ id: 'xangi-location' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });
@@ -6708,29 +6886,42 @@ process.stdin.on('end', () => process.exit(0));
     expect(second.messages.map((message) => message.id)).toEqual(['stable-m2', 'stable-m3']);
   });
 
-  it('streams complete monitor membership then changed rows and removals', async () => {
+  it('streams complete monitor membership then shares changed rows and removals across clients', async () => {
     const ids = Array.from({ length: 105 }, (_, i) =>
       createSession('web-chat:delta-' + i, { platform: 'web', title: 'row-' + i })
     );
-    const response = await fetch(`${baseUrl}/api/sessions/stream?mode=changes`);
-    const reader = response.body!.getReader();
-    const decode = async () => new TextDecoder().decode((await reader.read()).value);
+    const abort = new AbortController();
     try {
-      const first = await decode();
-      expect(first).toContain('event: sessions');
-      const snapshot = JSON.parse(first.split('data: ')[1].split('\n')[0]);
-      expect(snapshot.sessions).toHaveLength(105);
+      const readers = await Promise.all(
+        [1, 2].map(async () => {
+          const response = await fetch(`${baseUrl}/api/sessions/stream?mode=changes`, {
+            signal: abort.signal,
+          });
+          return response.body!.getReader();
+        })
+      );
+      const readEvent = (name: string) =>
+        Promise.all(
+          readers.map(async (reader) => {
+            const frame = await readStreamUntil(reader, (text) => text.includes('\n\n'));
+            expect(frame).toContain(`event: ${name}`);
+            return JSON.parse(frame.split('data: ')[1].split('\n')[0]);
+          })
+        );
+      for (const snapshot of await readEvent('sessions')) {
+        expect(snapshot.sessions).toHaveLength(105);
+      }
       updateSessionTitle(ids[0], 'changed only');
-      const delta = await decode();
-      expect(delta).toContain('event: session_changes');
-      const changes = JSON.parse(delta.split('data: ')[1].split('\n')[0]);
-      expect(changes.upsert).toHaveLength(1);
-      expect(changes.upsert[0].id).toBe(ids[0]);
+      for (const changes of await readEvent('session_changes')) {
+        expect(changes.upsert).toHaveLength(1);
+        expect(changes.upsert[0]).toMatchObject({ id: ids[0], title: 'changed only' });
+      }
       removeSession(ids[0]);
-      const removed = await decode();
-      expect(JSON.parse(removed.split('data: ')[1].split('\n')[0]).removed).toContain(ids[0]);
+      for (const changes of await readEvent('session_changes')) {
+        expect(changes.removed).toEqual([ids[0]]);
+      }
     } finally {
-      await reader.cancel();
+      abort.abort();
     }
   });
 

@@ -11,6 +11,9 @@ import { initSessions, createSession, createSchedulerSession, clearSessions, get
 import { ensureSessionWithWorkspace } from '../src/session-workspace.js';
 import { registerAgentSelection, beginAgentChannelTurn, channelAgentSnapshot, changeChannelAgent, channelAgent, sessionAgent, removeRegisteredAgent } from '../src/agent-selection.js';
 import { executeRuntimeSettingsCommand } from '../src/runtime-settings-command.js';
+import { initSettings } from '../src/settings.js';
+import { updateWebRuntimeSetting, webChannelRuntimeSettingsSnapshot } from '../src/web-runtime-settings.js';
+import { selectModelForNextTurn } from '../src/models-command.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
 
 let root: string;
@@ -20,6 +23,7 @@ beforeEach(() => {
   vi.stubEnv('XANGI_ENV_PATH', join(root, '.env'));
   writeFileSync(join(root, '.env'), '');
   initSessions(root);
+  initSettings(root);
 });
 afterEach(() => { clearSessions(); vi.unstubAllEnvs(); rmSync(root, {recursive: true, force: true}); });
 async function setup() {
@@ -248,4 +252,85 @@ it.each(['discord', 'slack'])('dedicated %s Bot pins its Agent and workspace acr
   expect(await channelAgentSnapshot(platform,'schedule-channel')).toMatchObject({selectedAgentId:f.agent.id,workspacePath:f.workspace.path});
   await expect(changeChannelAgent(platform,'same-channel')).rejects.toThrow('専用Bot');
   expect(f.resolver.resolve('thread-one').backend).toBe('claude-code');
+});
+
+it.each(['discord', 'slack'] as const)(
+  'saves channel runtime edits to the assigned Agent on %s and refreshes the next turn',
+  async (platform) => {
+    const f = await setup();
+    const deps = { ...f, agentRunner: f.runner, workspaceRegistry: f.registry };
+    const channelId = 'channel';
+    f.resolver.setChannelOverride(channelId, { backend: 'codex', model: 'channel-model' });
+    await f.registry.bind(platform, channelId, f.workspace.id);
+    await changeChannelAgent(platform, channelId, f.agent.id);
+    const opts = { platform, contextKey: 'channel:thread', bindingKey: channelId };
+    const before = await ensureSessionWithWorkspace(opts);
+    f.busy.mockReturnValue(true);
+
+    const request = { platform, channelId };
+    await executeRuntimeSettingsCommand(
+      { ...request, name: 'backend', action: 'set', backend: 'codex', model: 'agent-model' },
+      deps
+    );
+    await updateWebRuntimeSetting(
+      { ...request, name: 'workspace', action: 'set', value: 'default' },
+      deps
+    );
+    expect(getActiveSessionId(opts.contextKey)).toBe(before.appSessionId);
+    expect(sessionAgent(before.appSessionId)?.backend).toBe('claude-code');
+    expect(f.runner.destroy).not.toHaveBeenCalled();
+    expect(new ProjectCatalog(root).agent(f.agent.id)).toMatchObject({
+      backend: 'codex', model: 'agent-model', workspaceId: 'default',
+    });
+    expect(webChannelRuntimeSettingsSnapshot(platform, channelId,
+      { ...f.config, discord: {}, slack: {} } as Config, f.resolver, f.registry)).toMatchObject({
+      backend: { value: 'codex', model: 'agent-model' }, workspace: { value: 'default' },
+    });
+
+    f.busy.mockReturnValue(false);
+    const after = await ensureSessionWithWorkspace(opts);
+    expect(after.appSessionId).not.toBe(before.appSessionId);
+    expect(after.workspace?.path).toBe(root);
+    expect(sessionAgent(after.appSessionId)).toMatchObject({
+      backend: 'codex', model: 'agent-model', prompt: f.agent.prompt,
+    });
+    expect(getSessionEntry(before.appSessionId)?.lifecycle).toBe('closed');
+    expect(f.registry.getBinding(platform, channelId)).toBe(f.workspace.id);
+    expect(f.resolver.getChannelOverride(channelId)?.model).toBe('channel-model');
+
+    await selectModelForNextTurn(
+      { ...request, backend: 'codex', model: 'tool-model', effort: 'high' },
+      f.resolver,
+      async (backend) => ({
+        backend, source: 'fixture', status: 'available',
+        models: [{ id: 'tool-model', supportedEfforts: ['high'] }],
+      })
+    );
+    expect(f.catalog.agent(f.agent.id)).toMatchObject({ model: 'tool-model', effort: 'high' });
+    await executeRuntimeSettingsCommand({ ...request, name: 'backend', action: 'reset' }, deps);
+    expect(f.catalog.agent(f.agent.id)?.backend).toBeUndefined();
+    expect(f.resolver.getChannelOverride(channelId)?.model).toBe('channel-model');
+  }
+);
+
+it('updates the bound default Agent workspace without saving separate AI defaults', async () => {
+  const f = await setup();
+  const deps = { ...f, agentRunner: f.runner, workspaceRegistry: f.registry };
+  const request = { platform: 'discord', channelId: 'default-channel' };
+  await changeChannelAgent('discord', request.channelId, 'xangi:default');
+  const opts = { platform: 'discord', contextKey: 'default-thread', bindingKey: request.channelId };
+  const before = await ensureSessionWithWorkspace(opts);
+
+  await updateWebRuntimeSetting(
+    { ...request, name: 'workspace', action: 'set', value: f.workspace.id },
+    deps
+  );
+  const next = await ensureSessionWithWorkspace(opts);
+  expect(next.appSessionId).not.toBe(before.appSessionId);
+  expect(next.workspace?.id).toBe(f.workspace.id);
+  await expect(executeRuntimeSettingsCommand(
+    { ...request, name: 'backend', action: 'set', backend: 'claude-code' },
+    deps
+  )).rejects.toThrow('全体設定');
+  expect(f.resolver.getDefault().backend).toBe('codex');
 });

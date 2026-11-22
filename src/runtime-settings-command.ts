@@ -1,6 +1,7 @@
-import { channelIndividualAgent } from './agent-selection.js';
 import {
   changeChannelAgent,
+  channelAgent,
+  saveChannelAgentSettings,
   resolveAgentBackend,
   listSelectableAgents,
 } from './agent-selection.js';
@@ -8,7 +9,7 @@ import { getActiveSessionId, getSessionEntry } from './sessions.js';
 import { formatModelExecution, latestModelExecution } from './model-execution-display.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { AgentBackend, Config, DiscordCompletionNotifyMode, EffortLevel } from './config.js';
-import type { BackendResolver, LocalLlmMode } from './backend-resolver.js';
+import type { BackendResolver, ChannelOverride, LocalLlmMode } from './backend-resolver.js';
 import {
   getChannelAutoReplyWithParent,
   getChannelCompletionNotifyMode,
@@ -34,6 +35,7 @@ import {
   type LocalLlmReasoningEffort,
 } from './local-llm/reasoning-effort.js';
 import { discoverBackendModels } from './backend-models.js';
+import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 
 export type RuntimeSettingName =
   | 'team'
@@ -216,8 +218,12 @@ async function executeBackend(
       '- 実行中のturn: 変更なし',
     ].join('\n');
   }
+  const platform = request.platform;
+  const boundAgent = () =>
+    platform === 'discord' || platform === 'slack' ? channelAgent(platform, channelId!) : undefined;
+  const agent = boundAgent();
   if (action === 'status') {
-    const resolved = resolver.resolve(channelId!);
+    const resolved = agent ? resolveAgentBackend(resolver, agent) : resolver.resolve(channelId!);
     const sessionId =
       request.appSessionId ??
       (request.contextKey ? getActiveSessionId(request.contextKey) : undefined);
@@ -229,10 +235,22 @@ async function executeBackend(
       `- model (設定): ${resolved.model ?? 'default（バックエンドに委任）'}`,
       `- effort (設定): ${resolved.effort ?? 'default（バックエンドに委任）'}`,
       `- 直近の実行: ${formatModelExecution(execution, entry?.agent)}`,
-      `- source: ${resolver.getChannelOverride(channelId!) ? 'channel override' : 'default'}`,
+      `- source: ${agent?.name ?? (resolver.getChannelOverride(channelId!) ? 'channel override' : 'default')}`,
     ].join('\n');
   }
+  if (agent?.id === DEFAULT_TEAM_AGENT_ID)
+    throw new ValidationError('デフォルト担当のAI設定は全体設定から変更してください');
   if (action === 'reset') {
+    if (agent) {
+      saveChannelAgentSettings(platform!, channelId!, agent.id, {
+        backend: undefined,
+        model: undefined,
+        effort: undefined,
+        localLlmMode: undefined,
+        localLlmReasoningEffort: undefined,
+      });
+      return `${agent.name} のAI設定を全体設定の継承に戻しました。次のターンから適用されます。`;
+    }
     resolver.deleteChannelOverride(channelId!);
     return `バックエンド設定をデフォルト (${resolver.getDefault().backend}) に戻しました。次のturnから適用されます。`;
   }
@@ -307,8 +325,13 @@ async function executeBackend(
       'モデルの推論強度を確認できないか非対応の値です。モデルを再取得するか既定設定を選んでください'
     );
   }
-  const previous = localBackend ? resolver.getChannelOverride(channelId!) : undefined;
-  resolver.setChannelOverride(channelId!, {
+  const currentAgent = boundAgent();
+  if (currentAgent?.id !== agent?.id)
+    throw new ValidationError('担当が変更されました。現在の担当を確認してから保存してください');
+  const previous = localBackend
+    ? (currentAgent ?? resolver.getChannelOverride(channelId!))
+    : undefined;
+  const settings: ChannelOverride = {
     backend,
     model: request.model || undefined,
     effort,
@@ -324,9 +347,13 @@ async function executeBackend(
         ? previous?.localLlmReasoningEffort
         : (reasoning as LocalLlmReasoningEffort | undefined)
       : undefined,
-  });
+  };
+  if (agent) saveChannelAgentSettings(platform!, channelId!, agent.id, settings);
+  else resolver.setChannelOverride(channelId!, settings);
   return [
-    'バックエンド設定を保存しました。新しいセッションを開始します。次のturnから適用されます。',
+    agent
+      ? `${agent.name} のバックエンド設定を保存しました。次のターンから適用されます。`
+      : 'バックエンド設定を保存しました。新しいセッションを開始します。次のturnから適用されます。',
     `- backend: ${getBackendDisplayName(backend)}`,
     `- model: ${request.model ?? '(default)'}`,
     ...(effort ? [`- effort: ${effort}`] : []),
@@ -337,9 +364,28 @@ async function executeBackend(
 function executeLlmMode(request: RuntimeSettingsRequest, resolver: BackendResolver): string {
   const channelId = requireChannel(request);
   const action = requireAction(request, ['status', 'set', 'reset']);
+  const platform = request.platform;
+  const agent =
+    platform === 'discord' || platform === 'slack' ? channelAgent(platform, channelId) : undefined;
+  const resolved = agent ? resolveAgentBackend(resolver, agent) : resolver.resolve(channelId);
   if (action === 'status') {
-    const resolved = resolver.resolve(channelId);
-    return `Local LLM mode: ${resolved.localLlmMode ?? process.env.LOCAL_LLM_MODE ?? 'agent'} (channel: ${channelId})`;
+    const fallback =
+      resolved.backend === 'openrouter' ? process.env.OPENROUTER_MODE : process.env.LOCAL_LLM_MODE;
+    return `Local LLM mode: ${resolved.localLlmMode ?? fallback ?? 'agent'} (channel: ${channelId})`;
+  }
+  if (agent) {
+    if (agent.id === DEFAULT_TEAM_AGENT_ID)
+      throw new ValidationError('デフォルト担当のAI設定は全体設定から変更してください');
+    const mode =
+      action === 'reset' ? undefined : (requireValue(request, ['agent', 'chat']) as LocalLlmMode);
+    if (mode && resolved.backend !== 'local-llm' && resolved.backend !== 'openrouter')
+      throw new ValidationError('動作モードはLocal LLMまたはOpenRouterで指定してください');
+    if (mode && !agent.backend)
+      throw new ValidationError(
+        '担当Agentのバックエンドを指定してから動作モードを設定してください'
+      );
+    saveChannelAgentSettings(platform!, channelId, agent.id, { localLlmMode: mode });
+    return `${agent.name} の動作モードを ${mode ?? '既定'} に設定しました。次のターンから適用されます。`;
   }
   if (action === 'reset') {
     resolver.setChannelLocalLlmMode(channelId, null);
@@ -527,7 +573,7 @@ export async function executeRuntimeSettingsCommand(
         channel,
         action === 'set' ? request.value!.trim() : undefined
       );
-    const agent = channelIndividualAgent(platform, channel);
+    const agent = channelAgent(platform, channel);
     return agent
       ? `担当: ${agent.name}\n使用AI: ${JSON.stringify(resolveAgentBackend(dependencies.resolver, agent))}\n作業場所: ${agent.workspaceId || 'default'}`
       : '担当なし。チャンネルの個別設定を使用します。';
