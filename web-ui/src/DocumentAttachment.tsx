@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { fetchAttachmentInfo } from './attachment-preview';
 import './document-attachment.css';
+
+const AttachmentMarkdown = lazy(() =>
+  import('./MarkdownBody').then(({ AttachmentMarkdown }) => ({ default: AttachmentMarkdown }))
+);
 
 type Info = { kind: string; text?: string; truncated?: boolean; pages?: number };
 export function DocumentAttachment({
@@ -104,13 +106,9 @@ export function DocumentAttachment({
             <p role="status">先頭2MBを表示しています。全文は原本をダウンロードしてください。</p>
           )}
           {info.kind === 'markdown' ? (
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              skipHtml
-              components={{ img: ({ alt }) => <span>{alt || '画像'}</span> }}
-            >
-              {info.text || ''}
-            </Markdown>
+            <Suspense fallback={<pre>{info.text}</pre>}>
+              <AttachmentMarkdown content={info.text || ''} />
+            </Suspense>
           ) : (
             <pre>{info.text}</pre>
           )}

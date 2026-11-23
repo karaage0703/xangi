@@ -202,6 +202,7 @@ export function Settings() {
     []
   );
   const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspacesStatus, setWorkspacesStatus] = useState('');
   const [workspaceFormOpen, setWorkspaceFormOpen] = useState(false);
   const [editingWorkspace, setEditingWorkspace] = useState<RegisteredWorkspace>();
@@ -232,16 +233,20 @@ export function Settings() {
 
   useEffect(() => {
     const focusSection = () => {
+      if (loading || workspacesLoading) return;
       const id = window.location.hash.slice(1);
-      if (id !== 'display' && id !== 'agents' && id !== 'teams' && id !== 'workspaces') return;
       const section = document.getElementById(id);
-      section?.scrollIntoView({ block: 'start' });
-      section?.focus({ preventScroll: true });
+      if (!section?.matches('.settings-content :is(.settings-card, .settings-startup-section)'))
+        return;
+      section.scrollIntoView({ block: 'start' });
+      const target =
+        section instanceof HTMLDetailsElement ? section.querySelector('summary') : section;
+      target?.focus({ preventScroll: true });
     };
-    if (!loading) focusSection();
+    focusSection();
     window.addEventListener('hashchange', focusSection);
     return () => window.removeEventListener('hashchange', focusSection);
-  }, [loading]);
+  }, [loading, workspacesLoading]);
 
   useEffect(() => {
     void Promise.all([
@@ -272,12 +277,17 @@ export function Settings() {
 
   const loadWorkspaces = () => {
     setWorkspacesStatus('');
-    void getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces')
+    void getJsonWithTimeout<{ workspaces: RegisteredWorkspace[] }>(
+      '/api/workspaces',
+      15_000,
+      'ワークスペース一覧の読み込みがタイムアウトしました。'
+    )
       .then((result) => setWorkspaces(result.workspaces))
       .catch((cause) => {
         setWorkspaces([]);
         setWorkspacesStatus(cause instanceof Error ? cause.message : String(cause));
-      });
+      })
+      .finally(() => setWorkspacesLoading(false));
   };
 
   useEffect(loadWorkspaces, []);
@@ -517,14 +527,18 @@ export function Settings() {
       <AppTopbar current="settings" />
       <main className="settings-content">
         <header className="settings-header">
-          <p className="settings-kicker">Runtime configuration</p>
           <h1>設定</h1>
-          <p>ランタイム設定と起動設定をまとめ、反映されるタイミングを明記します。</p>
           <nav className="settings-section-links" aria-label="設定項目">
             <a href="#display">表示</a>
-            <a href="#workspaces">ワークスペース</a>
-            <a href="#agents">エージェント</a>
-            <a href="#teams">チーム</a>
+            {settings && (
+              <>
+                <a href="#workspaces">ワークスペース</a>
+                <a href="#agents">エージェント</a>
+                <a href="#teams">チーム</a>
+                <a href="#connections">接続とAPIキー</a>
+                {startupGroups.length > 0 && <a href="#startup">起動設定</a>}
+              </>
+            )}
           </nav>
         </header>
 
@@ -555,10 +569,7 @@ export function Settings() {
               tabIndex={-1}
             >
               <div className="settings-card-heading">
-                <div>
-                  <h2 id="settings-workspace-title">ワークスペース</h2>
-                  <p>Projectや会話で使う作業ディレクトリを追加・管理します。</p>
-                </div>
+                <h2 id="settings-workspace-title">ワークスペース</h2>
                 {!workspaceFormOpen && (
                   <CatalogCreateButton
                     label="ワークスペース"
@@ -677,6 +688,7 @@ export function Settings() {
 
             <AgentSettings
               workspaces={workspaces}
+              workspacesLoading={workspacesLoading}
               defaultAI={settings?.backend}
               onDefaultAISaved={() =>
                 getJson<RuntimeSettingsSnapshot>('/api/runtime-settings')
@@ -686,12 +698,14 @@ export function Settings() {
             />
             <TeamSettings />
 
-            <section className="settings-card" aria-labelledby="settings-channel-title">
+            <section
+              id="channels"
+              className="settings-card"
+              aria-labelledby="settings-channel-title"
+              tabIndex={-1}
+            >
               <div className="settings-card-heading">
-                <div>
-                  <h2 id="settings-channel-title">チャンネル固有設定</h2>
-                  <p>DiscordまたはSlackのチャンネル名を選んで上書きします。</p>
-                </div>
+                <h2 id="settings-channel-title">チャンネル固有設定</h2>
                 <ApplyBadge mode="immediate" />
               </div>
               <div className="settings-target-row">
@@ -820,12 +834,14 @@ export function Settings() {
               </div>
             </section>
 
-            <section className="settings-card" aria-labelledby="settings-response-title">
+            <section
+              id="response"
+              className="settings-card"
+              aria-labelledby="settings-response-title"
+              tabIndex={-1}
+            >
               <div className="settings-card-heading">
-                <div>
-                  <h2 id="settings-response-title">応答</h2>
-                  <p>変更後の新しい応答から使われます。</p>
-                </div>
+                <h2 id="settings-response-title">応答</h2>
                 <ApplyBadge mode="immediate" />
               </div>
               <div className="settings-row">
@@ -881,14 +897,13 @@ export function Settings() {
             </section>
 
             <section
+              id="connections"
               className="settings-card settings-startup"
               aria-labelledby="settings-connection-title"
+              tabIndex={-1}
             >
               <div className="settings-card-heading">
-                <div>
-                  <h2 id="settings-connection-title">接続とAPIキー</h2>
-                  <p>新しい値を安全な秘密情報ストアへ保存します。保存済みの値は表示しません。</p>
-                </div>
+                <h2 id="settings-connection-title">接続とAPIキー</h2>
                 <ApplyBadge mode="restart" />
               </div>
               {connectionsLoading ? (
@@ -997,27 +1012,38 @@ export function Settings() {
               </p>
             </section>
 
-            {startupGroups.map((group) => (
-              <details className="settings-card settings-startup" key={group.id}>
-                <summary className="settings-card-heading">
-                  <div>
-                    <h2>{group.label}の起動設定</h2>
-                    <p>{group.settings.length}項目。保存後、xangiの再起動で反映します。</p>
-                  </div>
-                  <ApplyBadge mode="restart" />
-                </summary>
-                <div className="settings-startup-fields">
-                  {group.settings.map((setting) => (
-                    <StartupField
-                      key={setting.key}
-                      setting={setting}
-                      saving={saving === setting.key}
-                      onSave={(value) => void updateStartup(setting.key, value)}
-                    />
-                  ))}
-                </div>
-              </details>
-            ))}
+            {startupGroups.length > 0 && (
+              <section
+                id="startup"
+                className="settings-startup-section"
+                aria-labelledby="settings-startup-title"
+                tabIndex={-1}
+              >
+                <h2 id="settings-startup-title">起動設定</h2>
+                {startupGroups.map((group) => (
+                  <details
+                    id={`startup-${group.id}`}
+                    className="settings-card settings-startup"
+                    key={group.id}
+                  >
+                    <summary className="settings-card-heading">
+                      <h3>{group.label}の起動設定</h3>
+                      <ApplyBadge mode="restart" />
+                    </summary>
+                    <div className="settings-startup-fields">
+                      {group.settings.map((setting) => (
+                        <StartupField
+                          key={setting.key}
+                          setting={setting}
+                          saving={saving === setting.key}
+                          onSave={(value) => void updateStartup(setting.key, value)}
+                        />
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </section>
+            )}
           </div>
         ) : null}
       </main>

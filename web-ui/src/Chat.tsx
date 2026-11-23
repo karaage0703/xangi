@@ -89,7 +89,7 @@ import {
   type PublishedLiveEvent,
   type StreamRecovery,
 } from './liveTurn';
-import { MessageContent, copyText } from './MessageContent';
+import { MessageContent, copyText, preloadMessageMarkdown } from './MessageContent';
 import {
   sessionListStatus,
   sessionListStatusLabel,
@@ -165,7 +165,6 @@ interface Session {
 }
 
 type WorkChannel = NonNullable<PaneDescriptor['linkedDraft']>['channel'];
-const defaultWorkAgentId = 'xangi:default';
 
 interface Project {
   avatarUrl?: string;
@@ -828,6 +827,7 @@ function ChatPane({
     followBottomRef.current = !linkedMessageId;
     linkedMessageScrolledRef.current = undefined;
     setTimeoutState({});
+    if (sessionId) preloadMessageMarkdown();
     void loadDetail();
     void loadTurnHistory();
   }, [sessionId]);
@@ -970,7 +970,9 @@ function ChatPane({
         : new MutationObserver(() => observeChildren());
 
     observeChildren();
-    mutationObserver?.observe(viewport, { childList: true, subtree: true });
+    // ResizeObserver already catches height changes within existing message rows.
+    // Re-register targets only when top-level rows are added or removed.
+    mutationObserver?.observe(viewport, { childList: true, subtree: !resizeObserver });
 
     return () => {
       window.cancelAnimationFrame(frame);
@@ -1105,6 +1107,7 @@ function ChatPane({
       if (!submission.accepted) {
         setDraft((current) => (current ? `${current}\n${submission.message}` : submission.message));
         setPendingFiles((current) => [...current, ...submission.files]);
+        if (submission.skill) setPaletteOpen(true);
       }
       setRemoteEcho(null);
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1324,6 +1327,11 @@ function ChatPane({
   }
 
   async function executeCommand(input: string) {
+    if (discordRemoteMode) {
+      setPaletteOpen(false);
+      await submitMessage(input);
+      return;
+    }
     const result = await requestJson<{
       kind: 'message' | 'skills' | 'chat' | 'action' | 'session';
       sessionId?: string;
@@ -1360,7 +1368,11 @@ function ChatPane({
       setDraft('/skill ');
       setPaletteOpen(true);
     } else if (result.kind === 'chat') {
-      await send(result.message || '', result.displayMessage, result.skipPermissions);
+      await send({
+        rawMessage: result.message || '',
+        displayMessage: result.displayMessage,
+        skipPermissions: result.skipPermissions,
+      });
     } else if (result.action === 'new') {
       setDraft('');
       setPaletteOpen(false);
@@ -1372,12 +1384,19 @@ function ChatPane({
     }
   }
 
-  async function send(
-    rawMessage?: string,
-    displayMessage?: string,
+  async function send({
+    rawMessage,
+    displayMessage,
     skipPermissions = false,
-    queued?: ConversationSubmission
-  ) {
+    queued,
+    skill = queued?.skill,
+  }: {
+    rawMessage?: string;
+    displayMessage?: string;
+    skipPermissions?: boolean;
+    queued?: ConversationSubmission;
+    skill?: true;
+  } = {}) {
     const files = queued?.files ?? pendingFiles;
     const cleanMessage = (queued?.message ?? rawMessage ?? draft).trim();
     if (
@@ -1398,6 +1417,7 @@ function ChatPane({
       requestId: queued?.requestId ?? newRequestId(),
       message: cleanMessage,
       files: [...files],
+      skill,
     });
     if (linkedDraft?.channel) {
       setRemoteEcho({
@@ -1423,6 +1443,7 @@ function ChatPane({
             expectedChannel: linkedDraft.channel,
             message: cleanMessage || files[0]?.name,
             requestId: creationRequest,
+            skill,
           })
         );
         setRemoteEcho((current) => (current ? { ...current, sessionId: result.sessionId } : null));
@@ -1435,6 +1456,7 @@ function ChatPane({
       } catch (cause) {
         setRemoteEcho(null);
         setDraft(cleanMessage);
+        if (skill) setPaletteOpen(true);
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
         if (!sharedAbortRef.current || sharedAbortRef.current.signal.aborted) setProcessing(false);
@@ -1628,22 +1650,31 @@ function ChatPane({
 
   function submitComposer() {
     if (composerActive || uploading || !editable) return;
-    if ((!draft.trim() && !pendingFiles.length) || !sessionId) {
-      if (!sessionId) void send();
+    if (discordRemoteMode && paletteOpen && draft.startsWith('/')) {
+      if (draft.trim().length > 1) void executeCommand(draft.trim());
       return;
     }
+    void submitMessage();
+  }
+
+  async function submitMessage(skillInput?: string) {
+    const message = (skillInput ?? draft).trim();
+    if (composerActive || uploading || !editable || (!message && !pendingFiles.length)) return;
+    const skill = skillInput ? true : undefined;
     if (
-      processing ||
-      queueDispatchRef.current ||
-      queuedMessages.some((item) => item.sessionId === sessionId)
+      sessionId &&
+      (processing ||
+        queueDispatchRef.current ||
+        queuedMessages.some((item) => item.sessionId === sessionId))
     ) {
       setQueuedMessages((current) => [
         ...current,
         {
           sessionId,
           requestId: newRequestId(),
-          message: draft.trim(),
+          message,
           files: [...pendingFiles],
+          skill,
         },
       ]);
       setDraft('');
@@ -1651,7 +1682,7 @@ function ChatPane({
       setPaletteOpen(false);
       return;
     }
-    void send();
+    await send({ rawMessage: skillInput, skill });
   }
 
   useEffect(() => {
@@ -1662,7 +1693,7 @@ function ChatPane({
     if (!setup) return;
     setupStartedSessionRef.current = sessionId;
     window.sessionStorage.removeItem(key);
-    void send(setup.prompt, setup.displayMessage);
+    void send({ rawMessage: setup.prompt, displayMessage: setup.displayMessage });
   }, [busy, detail, editable, sessionId]);
 
   const elapsed = thinkingStartedAt
@@ -1717,7 +1748,7 @@ function ChatPane({
       return;
     queueDispatchRef.current = true;
     setQueuedMessages((current) => current.filter((item) => item.requestId !== next.requestId));
-    void send(undefined, undefined, false, next).finally(() => {
+    void send({ queued: next }).finally(() => {
       queueDispatchRef.current = false;
     });
   }, [
@@ -1745,7 +1776,7 @@ function ChatPane({
   }, [loadDetail]);
   const selectSuggestion = useCallback((suggestion: string) => {
     setDraft(suggestion);
-    requestAnimationFrame(() => void sendRef.current(suggestion));
+    requestAnimationFrame(() => void sendRef.current({ rawMessage: suggestion }));
   }, []);
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
@@ -2122,7 +2153,7 @@ function ChatPane({
             <button
               type="button"
               className="pane-command-btn"
-              disabled={!editable || processing || discordRemoteMode}
+              disabled={!editable || processing || uploading}
               aria-label="コマンドとスキルを選択"
               aria-expanded={paletteOpen}
               onClick={() => {
@@ -2210,8 +2241,11 @@ function ChatPane({
               }}
               onChange={(event) => {
                 composerRef.current?.cancel();
-                setDraft(event.target.value);
-                setPaletteOpen(event.target.value.startsWith('/'));
+                const value = event.target.value;
+                setDraft(value);
+                setPaletteOpen(
+                  (current) => (!discordRemoteMode || current) && value.startsWith('/')
+                );
               }}
               onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
                 if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -2240,8 +2274,11 @@ function ChatPane({
           </div>
           <CommandPalette
             sessionId={sessionId}
-            value={draft}
-            open={paletteOpen && active && !discordRemoteMode}
+            skillsOnly={discordRemoteMode}
+            agentId={linkedDraft?.agentId}
+            projectId={linkedDraft?.projectId}
+            value={draft.startsWith('/') ? draft : '/'}
+            open={paletteOpen && active && editable && !processing && !uploading}
             onChange={(value) => {
               composerRef.current?.cancel();
               setDraft(value);
@@ -2612,13 +2649,12 @@ export function Chat() {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const sessionsRef = useRef<Session[]>([]);
   const queryRef = useRef('');
-  const searchTimerRef = useRef<number | undefined>(undefined);
-  const skipInitialSearchRef = useRef(true);
+  const cancelInitialListFallback = useRef<(() => void) | undefined>(undefined);
   const loadRequestRef = useRef(0);
   const paneAbortersRef = useRef<Record<string, () => void>>({});
 
   const loadSessions = useCallback(
-    async (offset = 0, q = query, append = false) => {
+    async (offset = 0, q = query, append = false, signal?: AbortSignal) => {
       const requestId = ++loadRequestRef.current;
       const params = new URLSearchParams({ limit: '100', offset: String(offset) });
       if (q.trim()) params.set('q', q.trim());
@@ -2627,8 +2663,8 @@ export function Chat() {
       if (activeAgentId) params.set('agentId', activeAgentId);
       setSearching(true);
       try {
-        const data = await requestJson<SessionsResponse>(`/api/sessions?${params}`);
-        if (requestId !== loadRequestRef.current) return;
+        const data = await requestJson<SessionsResponse>(`/api/sessions?${params}`, { signal });
+        if (signal?.aborted || requestId !== loadRequestRef.current) return;
         setSessions((current) => {
           const next = append
             ? [
@@ -2642,7 +2678,7 @@ export function Chat() {
         setNextOffset(data.meta?.hasMore ? data.meta.nextOffset : undefined);
         setNotice('');
       } catch (cause) {
-        if (requestId !== loadRequestRef.current) return;
+        if (signal?.aborted || requestId !== loadRequestRef.current) return;
         setNotice(cause instanceof Error ? cause.message : String(cause));
       } finally {
         if (requestId === loadRequestRef.current) setSearching(false);
@@ -2651,9 +2687,10 @@ export function Chat() {
     [activeProjectId, activeAgentId, lifecycleFilter, query]
   );
 
+  const initialListLoader = useRef(loadSessions);
+
   useEffect(() => {
     void Promise.all([
-      loadSessions(0, '', false),
       requestJson<Config>('/api/config').then(setConfig),
       requestJson<{ teams: { id: string; name: string }[] }>('/api/teams').then((r) =>
         setTeams(r.teams)
@@ -2724,6 +2761,7 @@ export function Chat() {
         return;
       }
       if (queryRef.current.trim()) return;
+      cancelInitialListFallback.current?.();
       const hadAdditionalPages = sessionsRef.current.length > data.sessions.length;
       setSessions((current) => {
         const incoming = new Map(data.sessions.map((session) => [session.id, session]));
@@ -2747,21 +2785,24 @@ export function Chat() {
       const platform = data.threadId.slice(0, separator);
       const contextKey = data.threadId.slice(separator + 1);
       setSessions((current) => {
-        const next = current
-          .map((session) => {
-            const matched =
-              session.platform === platform &&
-              (platform === 'web' ? session.id === contextKey : session.contextKey === contextKey);
-            return matched
-              ? {
-                  ...session,
-                  isActive: data.activity.active,
-                  updatedAt: new Date(data.activity.updatedAt || Date.now()).toISOString(),
-                  activity: data.activity,
-                }
-              : session;
-          })
-          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const matches = (session: Session) =>
+          session.platform === platform &&
+          (platform === 'web' ? session.id === contextKey : session.contextKey === contextKey);
+        const firstMatch = current.findIndex(matches);
+        if (firstMatch === -1) return current;
+        const updatedAt = new Date(data.activity.updatedAt || Date.now()).toISOString();
+        const next = current.slice();
+        for (let index = firstMatch; index < next.length; index++) {
+          if (matches(next[index])) {
+            next[index] = {
+              ...next[index],
+              isActive: data.activity.active,
+              updatedAt,
+              activity: data.activity,
+            };
+          }
+        }
+        next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         sessionsRef.current = next;
         return next;
       });
@@ -2778,14 +2819,22 @@ export function Chat() {
   }, [activeProjectId, activeAgentId, lifecycleFilter]);
 
   useEffect(() => {
-    if (skipInitialSearchRef.current) {
-      skipInitialSearchRef.current = false;
-      return;
-    }
-    window.clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = window.setTimeout(() => void loadSessions(0, query, false), 180);
-    return () => window.clearTimeout(searchTimerRef.current);
-  }, [activeProjectId, activeAgentId, lifecycleFilter, query]);
+    const controller = new AbortController();
+    const initial = loadSessions === initialListLoader.current;
+    // The stream carries the first page. Fall back to the list API if it is delayed
+    // or blocked by a proxy. Search and filter changes still use the list API.
+    const timer = window.setTimeout(
+      () => void loadSessions(0, query, false, controller.signal),
+      initial ? 150 : 180
+    );
+    const cancel = () => {
+      window.clearTimeout(timer);
+      controller.abort();
+      if (initial) cancelInitialListFallback.current = undefined;
+    };
+    if (initial) cancelInitialListFallback.current = cancel;
+    return cancel;
+  }, [loadSessions, query]);
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
@@ -2892,7 +2941,7 @@ export function Chat() {
       }
       targetKey = newPane.key;
     }
-    if (!secret && linkedWorkChannel) {
+    if (!secret && linkedAgentId && linkedWorkChannel) {
       const linkedDraft = {
         projectId: activeProject?.id,
         agentId: linkedAgentId,
@@ -3165,12 +3214,9 @@ export function Chat() {
     return result;
   }, [sessions, visibleSources, lifecycleFilter]);
   const activeProject = projects.find((project) => project.id === activeProjectId);
-  const linkedAgentId =
-    (activeProject ? activeProject.defaultAgentId : selectedAgentId) || defaultWorkAgentId;
+  const linkedAgentId = activeProject ? activeProject.defaultAgentId : selectedAgentId;
   const linkedWorkChannel = agents.find((agent) => agent.id === linkedAgentId)?.workChannel;
-  const editedWorkChannel = agents.find(
-    (agent) => agent.id === (projectAgentId || defaultWorkAgentId)
-  )?.workChannel;
+  const editedWorkChannel = agents.find((agent) => agent.id === projectAgentId)?.workChannel;
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects]
@@ -3269,7 +3315,7 @@ export function Chat() {
                       if (activeAgentId) setActiveAgentId(e.target.value);
                     }}
                   >
-                    <option value="">xangiの既定設定</option>
+                    <option value="">担当指定なし</option>
                     {agents.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.name}
@@ -3678,7 +3724,7 @@ export function Chat() {
                     value={projectAgentId}
                     onChange={(e) => setProjectAgentId(e.target.value)}
                   >
-                    <option value="">既定の担当</option>
+                    <option value="">担当指定なし</option>
                     <optgroup label="Agents">
                       {agents.map((a) => (
                         <option key={a.id} value={a.id}>

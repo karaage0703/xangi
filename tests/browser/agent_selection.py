@@ -14,11 +14,14 @@ with sync_playwright() as pw:
     try:
         for width in [1280, 768, 414, 375, 320]:
             context = browser.new_context(viewport={'width': width, 'height': 1000})
-            agents = [{'id': 'a1', 'name': 'レビュー担当', 'role': 'コードレビュー', 'backend': 'codex', 'model': 'test-model', 'workspaceId': 'review'}]
+            agents = [
+                {'id': 'xangi:default', 'name': '既定エージェント', 'workChannel': {'platform': 'discord', 'channelId': 'fixture-work-channel'}},
+                {'id': 'a1', 'name': 'レビュー担当', 'role': 'コードレビュー', 'backend': 'codex', 'model': 'test-model', 'workspaceId': 'review'},
+            ]
             sessions, calls, errors = [], [], []
             selected = ['']; busy = [False]
             def snapshot():
-                return {'agent': {'id': 'a1', 'name': 'レビュー担当', 'workspaceId': 'review'} if selected[0] else None,
+                return {'agent': {'id': 'a1', 'name': 'レビュー担当', 'workspaceId': 'review', 'backendEditable': False} if selected[0] else None,
                         'backend': {'value': 'inherit', 'effective': {'backend': 'codex'}}, 'llmMode': {'value': 'inherit', 'effective': 'agent'}, 'autoReply': {'value': 'inherit', 'effective': 'off'}}
             runtime = {'backend': {'enabled': True, 'value': {'backend': 'codex'}, 'options': ['codex'], 'applyMode': 'next-turn'}, 'replySuggestions': {'enabled': True, 'value': 'inherit', 'effective': {'web': True, 'discord': True, 'slack': True}}, 'respondToBots': {'enabled': True, 'value': False}}
             def route(r):
@@ -33,7 +36,8 @@ with sync_playwright() as pw:
                 elif path == '/api/teams': data={'teams':[]}
                 elif path == '/api/sessions' and method == 'POST':
                     body=r.request.post_data_json; calls.append(body)
-                    session={'id':'new-session','title':'担当との新しい会話','selectedAgentId':body.get('agentId'),'platform':'web','contextKey':'web-chat:new-session','updatedAt':'2026-01-01T00:00:00Z','isActive':True,'lifecycle':'open'}
+                    session_id = 'new-session' if body.get('agentId') else 'unassigned-session'
+                    session={'id':session_id,'title':'新しい会話','selectedAgentId':body.get('agentId'),'platform':'web','contextKey':f'web-chat:{session_id}','updatedAt':'2026-01-01T00:00:00Z','isActive':True,'lifecycle':'open'}
                     sessions.append(session); data={'sessionId':session['id']}
                 elif path == '/api/sessions':
                     agent_id=parse_qs(u.query).get('agentId',[None])[0]
@@ -87,6 +91,19 @@ with sync_playwright() as pw:
             opener.click()
             page.wait_for_timeout(250)
             expect(close).to_be_visible()
+
+            create.click()
+            expect(page).to_have_url('http://agent-test.test/chat/unassigned-session')
+            assert 'agentId' not in calls[-1] and 'mode' not in calls[-1]
+            expect(page.get_by_role('status').filter(has_text='投稿先')).to_have_count(0)
+            if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
+
+            page.get_by_label('新しい会話の種類と担当').click()
+            page.get_by_label('新規会話の担当').select_option('xangi:default')
+            create.click()
+            expect(page.get_by_role('status').filter(has_text='投稿先')).to_contain_text('Discord')
+            assert len(calls) == 1
+            if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
 
             page.get_by_label('新しい会話の種類と担当').click()
             page.get_by_label('新規会話の担当').select_option('a1')

@@ -50,6 +50,20 @@ export async function ensureSessionWithWorkspace(
     release();
   }
 }
+export function newSessionWorkspaceId(
+  platform: string,
+  bindingKey: string,
+  agent: ReturnType<typeof channelAgent> | ReturnType<typeof projectSessionAgent>,
+  registry?: WorkspaceRegistry
+): string {
+  if (
+    agent &&
+    (!agent.team || (agent.team.leadership === 'caller' && !agent.id.startsWith('team:')))
+  )
+    return agent.workspaceId || 'default';
+  return registry?.getBinding(platform, bindingKey) || defaultAgentWorkspaceId();
+}
+
 async function resolveSessionWithWorkspace(
   options: WorkspaceOptions
 ): Promise<ResolvedSessionWorkspace> {
@@ -108,12 +122,9 @@ async function resolveSessionWithWorkspace(
     return { appSessionId: activeId, workspace };
   }
 
-  const workspace =
-    agent && (!agent.team || (agent.team.leadership === 'caller' && !agent.id.startsWith('team:')))
-      ? await registry.resolveById(agent.workspaceId || 'default')
-      : await registry.resolveById(
-          registry.getBinding(platform, bindingKey) || defaultAgentWorkspaceId()
-        );
+  const workspace = await registry.resolveById(
+    newSessionWorkspaceId(platform, bindingKey, agent, registry)
+  );
   if (!project && bindingChanged()) return resolveSessionWithWorkspace(options);
   const appSessionId = ensureSession(contextKey, {
     platform,
