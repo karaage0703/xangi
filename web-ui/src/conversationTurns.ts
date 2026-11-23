@@ -10,6 +10,7 @@ export interface ConversationSubmission {
   requestId: string;
   message: string;
   files: SubmittedFile[];
+  skill?: true;
   accepted?: boolean;
 }
 export interface AcceptedConversationTurn {
@@ -94,6 +95,7 @@ export async function followConversationTurn(
               ...jsonInit('POST', {
                 requestId: submission.requestId,
                 message: submission.message,
+                skill: submission.skill,
                 attachments: submission.files.map((f) => f.path),
               }),
             },

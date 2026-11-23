@@ -21,6 +21,7 @@ interface CommandDefinition {
   name: string;
   description: string;
   usage: string;
+  category?: string;
   options?: CommandOption[];
 }
 
@@ -128,6 +129,7 @@ function useCommandPalette(
         return {
           title: option.description,
           options: [],
+          done: !option.choices && options.every((candidate) => !candidate.required),
           emptyText: option.required
             ? `${option.description}を入力してください`
             : `必要なら${option.description}を入力。省略して送信できます`,
@@ -141,6 +143,9 @@ function useCommandPalette(
 
 export function CommandPalette({
   sessionId,
+  skillsOnly,
+  agentId,
+  projectId,
   value,
   open,
   onChange,
@@ -148,6 +153,9 @@ export function CommandPalette({
   onExecute,
 }: {
   sessionId: string | null;
+  skillsOnly?: boolean;
+  agentId?: string;
+  projectId?: string;
   value: string;
   open: boolean;
   onChange: (value: string) => void;
@@ -158,7 +166,11 @@ export function CommandPalette({
   const [active, setActive] = useState(0);
   const [error, setError] = useState('');
   const [running, setRunning] = useState(false);
-  const state = useCommandPalette(value, commands);
+  const visibleCommands = useMemo(
+    () => (skillsOnly ? commands.filter((command) => command.category === 'skills') : commands),
+    [commands, skillsOnly]
+  );
+  const state = useCommandPalette(value, visibleCommands);
   const selectedBackend = value.match(/^\/backend\s+set\s+([^\s]+)/i)?.[1] || '';
   const selectedModel = value.match(/(?:^|\s)--model=([^\s]+)/i)?.[1] || '';
 
@@ -177,19 +189,37 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!open) return;
+    const controller = new AbortController();
+    setCommands([]);
+    setError('');
     const params = new URLSearchParams();
     if (sessionId) params.set('appSessionId', sessionId);
-    if (selectedBackend) params.set('backend', selectedBackend);
-    if (selectedModel) params.set('model', selectedModel);
-    requestJson<{ commands: CommandDefinition[] }>(`/api/web-commands?${params}`)
-      .then((data) => setCommands(data.commands))
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [open, selectedBackend, selectedModel, sessionId]);
+    if (skillsOnly) {
+      params.set('skillsOnly', 'true');
+      if (agentId) params.set('agentId', agentId);
+      if (projectId) params.set('projectId', projectId);
+    } else {
+      if (selectedBackend) params.set('backend', selectedBackend);
+      if (selectedModel) params.set('model', selectedModel);
+    }
+    requestJson<{ commands: CommandDefinition[] }>(`/api/web-commands?${params}`, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (!controller.signal.aborted) setCommands(data.commands);
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted)
+          setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => controller.abort();
+  }, [agentId, open, projectId, selectedBackend, selectedModel, sessionId, skillsOnly]);
 
   useEffect(() => setActive(0), [state.title, value]);
   useEffect(() => {
     if (!open) return;
     const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();
@@ -244,7 +274,7 @@ export function CommandPalette({
             <code>{option.hint}</code>
           </button>
         ))}
-        {state.options.length === 0 && !state.done && (
+        {state.options.length === 0 && (!state.done || state.emptyText) && (
           <div className="command-empty">{state.emptyText || '一致する候補がありません'}</div>
         )}
         {state.done && value.trim().length > 1 && (

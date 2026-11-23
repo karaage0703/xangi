@@ -3,7 +3,6 @@ import { discoverBackendModels } from './backend-models.js';
 import { installAgentConnectionScheduleWorker } from './agent-connection-schedules.js';
 import {
   acceptsWorkChannelMessage,
-  projectWorkAgentId,
   readWorkChannelAgent,
   workChannelConnection,
   type ConnectionRoute,
@@ -229,7 +228,7 @@ async function main() {
             const project = ProjectCatalog.readProjects(routeDataDir).find(
               (item) => item.id === projectId
             );
-            if (!project || projectWorkAgentId(project) !== dedicatedAgentId)
+            if (!project || project.defaultAgentId !== dedicatedAgentId)
               throw new WebProjectError('Projectの担当または作業チャンネルが変更されました', 409);
             return project;
           }

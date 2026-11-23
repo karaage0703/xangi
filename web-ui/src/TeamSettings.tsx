@@ -120,7 +120,12 @@ export function TeamSettings() {
     }
   }
   return (
-    <section className="settings-card" id="teams" aria-labelledby="settings-teams-title">
+    <section
+      className="settings-card"
+      id="teams"
+      aria-labelledby="settings-teams-title"
+      tabIndex={-1}
+    >
       <div className="settings-card-heading">
         <div>
           <h2 id="settings-teams-title">チーム</h2>

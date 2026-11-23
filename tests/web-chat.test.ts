@@ -3062,12 +3062,19 @@ describe('web-chat HTTP API', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled }),
       });
-    const legacySession = createSession('pet-slack', { platform: 'slack' });
-    expect(await (await get(`/api/sessions/${legacySession}`)).json()).toMatchObject({
+    const unassignedSlack = createSession('pet-slack', { platform: 'slack' });
+    const unassignedWeb = createWebSession();
+    const assigned = createWebSession({ selectedAgentId: 'xangi:default' });
+    for (const id of [unassignedSlack, unassignedWeb])
+      expect(await (await get(`/api/sessions/${id}`)).json()).not.toHaveProperty('petAgentId');
+    expect(await (await get(`/api/sessions/${assigned}`)).json()).toMatchObject({
       petAgentId: 'xangi:default',
     });
     const defaults = await (await get('/api/sessions?agentId=xangi%3Adefault')).json();
-    expect(defaults.sessions.map((session: { id: string }) => session.id)).toContain(legacySession);
+    const defaultIds = defaults.sessions.map((session: { id: string }) => session.id);
+    expect(defaultIds).toContain(assigned);
+    expect(defaultIds).not.toContain(unassignedSlack);
+    expect(defaultIds).not.toContain(unassignedWeb);
     expect(await (await get(base)).json()).toEqual({ enabled: true, status: 'missing' });
     expect((await toggle('off')).status).toBe(400);
     expect(await defaultAgent()).not.toHaveProperty('petPortraitUrl');
@@ -3346,7 +3353,7 @@ describe('web-chat HTTP API', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(await response.text()).toContain('<div id="root"></div>');
+    expect(await response.text()).toContain('<div id="root">');
   });
 
   it('adds a triggered turn to the same Web session', async () => {
@@ -3925,7 +3932,7 @@ describe('web-chat HTTP API', () => {
 
     const page = await fetch(`${baseUrl}/workspace`);
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('<div id="root"></div>');
+    expect(await page.text()).toContain('<div id="root">');
 
     const root = (await (await fetch(`${baseUrl}/api/workspace/entries?path=`)).json()) as {
       entries: Array<{ name: string; type: string }>;
@@ -4279,7 +4286,7 @@ describe('web-chat HTTP API', () => {
   it('serves the Extensions app route with the official catalog in fresh state', async () => {
     const page = await fetch(`${baseUrl}/extensions`);
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('<div id="root"></div>');
+    expect(await page.text()).toContain('<div id="root">');
 
     const response = await fetch(`${baseUrl}/api/extensions`);
     expect(response.status).toBe(200);
@@ -4892,9 +4899,20 @@ process.stdin.on('end', () => process.exit(0));
     const { project } = await (
       await post('/api/projects', {
         name: 'Linked',
+        defaultAgentId: 'xangi:default',
       })
     ).json();
     await changeChannelAgent('slack', 'C123', 'xangi:default');
+    const unassigned = await (await post('/api/projects', { name: 'Unassigned' })).json();
+    for (const projectId of [undefined, unassigned.project.id]) {
+      const input = { projectId, message: 'Start' };
+      expect((await post('/api/sessions', { ...input, mode: 'linked' })).status).toBe(409);
+      const web = await post('/api/sessions', input);
+      expect(web.status).toBe(200);
+      const session = getSessionEntry((await web.json()).sessionId);
+      expect(session).toMatchObject({ platform: 'web' });
+      expect(session?.selectedAgentId).toBeUndefined();
+    }
     expect((await post('/api/sessions', { mode: 'linked', projectId: project.id })).status).toBe(
       400
     );
@@ -4952,8 +4970,22 @@ process.stdin.on('end', () => process.exit(0));
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
         });
+      const agentPath = join(testDir, 'dedicated-workspace');
+      const skillDir = join(agentPath, 'skills', 'dedicated-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        '---\nname: dedicated-skill\ndescription: Skill in the dedicated Workspace\n---\n'
+      );
+      const { workspace } = await (
+        await post('/api/workspaces', { name: 'Dedicated workspace', path: agentPath })
+      ).json();
       const { agent } = await (
-        await post('/api/agents', { name: 'Dedicated Agent', prompt: 'Agent instructions' })
+        await post('/api/agents', {
+          name: 'Dedicated Agent',
+          prompt: 'Agent instructions',
+          workspaceId: workspace.id,
+        })
       ).json();
       const channel = {
         platform,
@@ -4980,7 +5012,8 @@ process.stdin.on('end', () => process.exit(0));
         projectId: project.id,
         mode: 'linked',
         expectedChannel: channel,
-        message: 'Start here',
+        message: platform === 'slack' ? '/dedicated-skill' : 'Start here',
+        skill: platform === 'slack' ? true : undefined,
         requestId: 'project-dedicated-request',
       };
       const commonCreate = vi.fn();
@@ -5058,6 +5091,20 @@ process.stdin.on('end', () => process.exit(0));
         expect(await candidates.json()).toMatchObject({
           channels: [{ id: channel.channelId, name: '#dedicated' }],
         });
+        const skillNames = async (params: Record<string, string>) => {
+          const query = new URLSearchParams({ ...params, skillsOnly: 'true' });
+          const response = await fetch(`${baseUrl}/api/web-commands?${query}`);
+          expect(response.status).toBe(200);
+          const { commands } = await response.json();
+          return commands.map((command: { name: string }) => command.name);
+        };
+        expect(await skillNames({ agentId: agent.id, projectId: project.id })).toEqual([
+          'skill',
+          'dedicated-skill',
+        ]);
+        expect(
+          (await post('/api/sessions', { ...input, skill: true, message: '/new' })).status
+        ).toBe(400);
         expect(
           (
             await post('/api/sessions', {
@@ -5082,7 +5129,7 @@ process.stdin.on('end', () => process.exit(0));
         expect(await (await post('/api/sessions', input)).json()).toMatchObject({ sessionId });
         expect(workerCreate).toHaveBeenCalledExactlyOnceWith(
           channel.channelId,
-          'Start here',
+          input.message,
           expect.objectContaining({ id: project.id })
         );
         expect(commonCreate).not.toHaveBeenCalled();
@@ -5098,16 +5145,19 @@ process.stdin.on('end', () => process.exit(0));
         expect(await fetch(baseUrl + path).then((r) => r.json())).toMatchObject({
           linkedChannel: true,
         });
+        expect(await skillNames({ appSessionId: sessionId })).toEqual(['skill', 'dedicated-skill']);
         expect(
           (
             await post(path + '/turns', {
               requestId: 'dedicated-first-turn',
               message: input.message,
+              skill: input.skill,
               attachments: [],
             })
           ).status
         ).toBe(202);
         await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+        if (input.skill) expect(runner.prompts.at(-1)).toContain('Run the skill "dedicated-skill"');
         runner.release(contextKey);
         await vi.waitFor(() =>
           expect(deliverResult).toHaveBeenCalledExactlyOnceWith(
@@ -5116,6 +5166,37 @@ process.stdin.on('end', () => process.exit(0));
               webInput: { message: input.message, attachments: [] },
             })
           )
+        );
+        const command = '/skill dedicated-skill "two words"';
+        const turn = {
+          requestId: 'dedicated-skill-turn',
+          message: command,
+          skill: true,
+          attachments: [],
+        };
+        expect((await post(path + '/turns', { ...turn, message: '/missing-skill' })).status).toBe(
+          400
+        );
+        expect((await post(path + '/turns', turn)).status).toBe(202);
+        await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+        expect(runner.prompts.at(-1)).toContain(
+          'Run the skill "dedicated-skill". Arguments: two words'
+        );
+        expect(runner.options.at(-1)).toMatchObject({
+          appSessionId: rawId,
+          sessionId: `provider-${contextKey}`,
+          workdir: agentPath,
+          userText: command,
+        });
+        expect((await post(path + '/turns', turn)).status).toBe(202);
+        expect((await post(path + '/turns', { ...turn, skill: undefined })).status).toBe(409);
+        runner.release(contextKey);
+        await vi.waitFor(() => expect(deliverResult).toHaveBeenCalledTimes(2));
+        expect(deliverResult).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            appSessionId: rawId,
+            webInput: { message: command, attachments: [] },
+          })
         );
       } finally {
         runner.release(contextKey);
@@ -5147,7 +5228,9 @@ process.stdin.on('end', () => process.exit(0));
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
         });
-      const { project } = await (await post('/api/projects', { name: 'task' })).json();
+      const { project } = await (
+        await post('/api/projects', { name: 'task', defaultAgentId: 'xangi:default' })
+      ).json();
       for (const [message, title] of [
         [' タスクのテスト\n詳細 ', 'タスクのテスト 詳細'],
         ['別の相談', '別の相談'],
@@ -6429,7 +6512,7 @@ process.stdin.on('end', () => process.exit(0));
     expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
     expect(config.instanceCliCommand).toMatch(/^'.*\/bin\/xangi'$/);
     expect(config.completionShowElapsed).toBe(true);
-    expect(html).toContain('<div id="root"></div>');
+    expect(html).toContain('<div id="root"><div role="status">読み込み中…</div></div>');
     expect(html).toContain('/app/assets/');
     expect(html).toContain('viewport-fit=cover');
     expect(stylesheetPath).toBeTruthy();
@@ -6558,7 +6641,7 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toContain('SIDEBAR_COLLAPSED_KEY');
     expect(chatSource).toContain('new ResizeObserver(scrollToBottom)');
     expect(chatSource).toContain(
-      'mutationObserver?.observe(viewport, { childList: true, subtree: true })'
+      'mutationObserver?.observe(viewport, { childList: true, subtree: !resizeObserver })'
     );
     expect(sourceStylesheet).toMatch(
       /@media \(max-width: 768px\)[\s\S]*\.workspace-markdown-preview\s*\{[^}]*font-size:\s*var\(--xangi-font-reading\)/s

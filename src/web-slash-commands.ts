@@ -70,7 +70,9 @@ export function getWebCommandDefinitions(ctx: WebCommandContext): WebCommandDefi
         }))
       : [];
 
-  const visibleCommands = getChatCommands('web', ctx.config);
+  const visibleCommands = getChatCommands('web', ctx.config).filter(
+    (command) => !ctx.skillsOnly || command.name === 'skill'
+  );
 
   const definitions = visibleCommands.map((command) => {
     const copy = structuredClone(command);
@@ -175,6 +177,7 @@ export type WebCommandResult =
 export interface WebCommandContext {
   appSessionId?: string;
   workdir: string;
+  skillsOnly?: boolean;
   config?: Config;
   resolver?: BackendResolver;
   agentRunner?: AgentRunner;
@@ -419,6 +422,8 @@ export async function executeWebCommand(
   const commandName = (tokens.shift() || '').replace(/^\//, '').toLowerCase();
 
   const definitions = getChatCommands('web', ctx.config);
+  if (ctx.skillsOnly && commandName !== 'skill' && definitions.some((c) => c.name === commandName))
+    throw new Error('連携会話ではスキルを選択してください');
   if (!definitions.some((command) => command.name === commandName)) {
     if (WEB_COMMANDS.some((command) => command.name === commandName))
       throw new Error('この機能は管理者により無効化されています');

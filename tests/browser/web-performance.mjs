@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 const production = process.env.XANGI_PERF_PRODUCTION === '1';
 const repo = process.cwd();
+const webBuild = resolve(process.env.XANGI_PERF_WEB_BUILD || repo + '/web/app');
 const dir = resolve(process.argv[2]) + '/';
 fs.mkdirSync(dir, { recursive: true });
 const require = createRequire(repo + '/package.json');
@@ -13,23 +14,39 @@ const { createServer } = await import(pathToFileURL(require.resolve('vite')));
 const react = (await import(pathToFileURL(require.resolve('@vitejs/plugin-react')))).default;
 const mock = String.raw`
 window.__requests=[];
+const scenario=new URLSearchParams(location.search).get('startup');
+const startupDelay=60;
+const waitForStartupAPI=()=>new Promise(resolve=>setTimeout(resolve,startupDelay));
+const startupTimings={};
+if(scenario){
+ const observer=new MutationObserver(()=>{
+  if(startupTimings.paneMs===undefined && document.querySelector('.pane-input'))startupTimings.paneMs=performance.now();
+  if(startupTimings.listMs===undefined && document.querySelector('.session-main'))startupTimings.listMs=performance.now();
+ });
+ observer.observe(document,{childList:true,subtree:true});
+}
+window.__startupTimings=startupTimings;
 window.__rows=Array.from({length:400},(_,i)=>({id:'fixture-'+i,title:'Fixture '+i,platform:'web',contextKey:'web-chat:fixture-'+i,createdAt:'2026-11-08T00:00:00Z',updatedAt:'2026-11-08T00:00:00Z',messageCount:50,isActive:false,lifecycle:'open',transcriptRevision:'r1'}));
-localStorage.setItem('xangi_pane_state_v1',JSON.stringify({sessions:window.__rows.slice(0,4).map(s=>s.id),activeIndex:0}));
+if(scenario) localStorage.removeItem('xangi_pane_state_v1');
+else localStorage.setItem('xangi_pane_state_v1',JSON.stringify({sessions:window.__rows.slice(0,4).map(s=>s.id),activeIndex:0}));
 const json=value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
 const nativeFetch=window.fetch;
 window.fetch=async(url,init={})=>{
  if(!String(url).startsWith('/api/'))return nativeFetch(url,init);
  window.__requests.push({url:String(url),method:init.method||'GET'});
+ if(String(url).startsWith('/api/session-attachment?'))return json({kind:'markdown',text:'**Attachment preview**\n\n![Mock image](/unused.png)\n\n<div>Hidden HTML</div>'});
  if(String(url).includes('turn-history'))return json({history:[]});
  if(String(url).includes('external-chat-link'))return new Response('{}',{status:404});
  if(String(url).startsWith('/api/sessions/')) {
   const id=String(url).split('/')[3].split('?')[0];
   await new Promise(r=>setTimeout(r,15));
-  return json({id,title:id,platform:'web',lifecycle:'open',hasMore:false,messages:Array.from({length:50},(_,i)=>({id:id+'-m'+i,role:i%2?'assistant':'user',content:'Synthetic message '+i,createdAt:'2026-11-08T00:00:00Z'}))});
+  return json({id,title:id,platform:'web',lifecycle:'open',hasMore:false,messages:Array.from({length:50},(_,i)=>({id:id+'-m'+i,role:i%2?'assistant':'user',content:scenario==='stream' && i===49?'Synthetic message '+i+'\n\nMEDIA:docs/example.md':'Synthetic message '+i,createdAt:'2026-11-08T00:00:00Z'}))});
  }
  if(String(url).startsWith('/api/sessions?')){
   const p=new URL(url,'http://localhost').searchParams;
-  const rows=p.get('lifecycle')==='closed'?[]:window.__rows;
+  if(scenario) await waitForStartupAPI();
+  const query=p.get('q');
+  const rows=p.get('lifecycle')==='closed'?[]:window.__rows.filter(row=>!query || row.title.includes(query));
   const offset=Number(p.get('offset')||0),limit=Number(p.get('limit')||100);
   return json({sessions:rows.slice(offset,offset+limit),meta:{total:rows.length,hasMore:offset+limit<rows.length,nextOffset:offset+limit}});
  }
@@ -38,7 +55,7 @@ window.fetch=async(url,init={})=>{
 };
 window.__sources=[];
 window.EventSource=class {
- constructor(url){this.url=url;this.listeners={};window.__sources.push(this);setTimeout(()=>{this.onopen?.();if(String(url).includes('/sessions/stream'))this.emit('sessions',{sessions:String(url).includes('mode=changes')?window.__rows:window.__rows.slice(0,100),meta:{hasMore:true,nextOffset:100}});},100);}
+ constructor(url){this.url=url;this.listeners={};window.__sources.push(this);setTimeout(()=>{if(!window.__sources.includes(this))return;this.onopen?.();if(scenario!=='fallback' && String(url).includes('/sessions/stream'))this.emit('sessions',{sessions:String(url).includes('mode=changes')?window.__rows:window.__rows.slice(0,100),meta:{hasMore:true,nextOffset:100}});},scenario ? startupDelay : 100);}
  addEventListener(type,callback){(this.listeners[type]??=[]).push(callback);}
  emit(type,data){for(const cb of this.listeners[type]||[])cb({data:JSON.stringify(data)});}
  close(){window.__sources=window.__sources.filter(s=>s!==this);}
@@ -52,8 +69,8 @@ const plugin = {
   configureServer(server) {
     server.middlewares.use(async (req, res, next) => {
       if (production && req.url?.startsWith('/app/assets/')) {
-        const path = resolve(repo + '/web' + req.url.split('?')[0]);
-        if (!path.startsWith(repo + '/web/app/assets/')) {
+        const path = resolve(webBuild, req.url.split('?')[0].slice('/app/'.length));
+        if (!path.startsWith(webBuild + '/assets/')) {
           res.writeHead(404);
           res.end();
           return;
@@ -62,13 +79,13 @@ const plugin = {
         res.end(fs.readFileSync(path));
         return;
       }
-      if (!req.url?.startsWith('/__perf')) {
+      if (!req.url?.startsWith('/__perf') && !(production && req.url === '/monitor')) {
         next();
         return;
       }
       if (production) {
         const html = fs
-          .readFileSync(repo + '/web/app/index.html', 'utf8')
+          .readFileSync(webBuild + '/index.html', 'utf8')
           .replace('<head>', '<head><script>' + mock + '</script>');
         res.setHeader('content-type', 'text/html');
         res.end(html);
@@ -167,8 +184,71 @@ try {
   await send('Page.enable');
   await send('Runtime.enable');
   const results = [];
-  for (const mode of production ? ['chat'] : ['chat', 'monitor']) {
-    await send('Page.navigate', { url: base + '/__perf?mode=' + mode });
+  if (production) {
+    await send('Network.enable');
+    await send('Network.setCacheDisabled', { cacheDisabled: true });
+    const samples = Number(process.env.XANGI_PERF_STARTUP_SAMPLES || 1);
+    const startup = [];
+    for (const scenario of ['stream', 'fallback']) {
+      const runs = [];
+      for (let sample = 0; sample < (scenario === 'stream' ? samples : 1); sample++) {
+        await send('Page.navigate', {
+          url: base + '/__perf?startup=' + scenario + '&sample=' + sample,
+        });
+        await wait(
+          "location.search === '?startup=" +
+            scenario +
+            '&sample=' +
+            sample +
+            "' && window.__startupTimings?.listMs !== undefined"
+        );
+        await new Promise((r) => setTimeout(r, 540));
+        const sampleResult = await evaluate(`({
+          ...window.__startupTimings,
+          loadedJSBytes:performance.getEntriesByType('resource')
+            .filter(e=>e.name.includes('/app/assets/') && e.name.endsWith('.js'))
+            .reduce((bytes,e)=>bytes+e.decodedBodySize,0),
+          listRequests:window.__requests.filter(r=>r.url.startsWith('/api/sessions?')).length,
+        })`);
+        runs.push(sampleResult);
+        if (process.env.XANGI_ASSERT_PERF === '1') {
+          assert.equal(sampleResult.listRequests, scenario === 'stream' ? 0 : 1);
+          assert.equal(
+            await evaluate(
+              "performance.getEntriesByType('resource').some(e=>e.name.includes('/MarkdownBody-'))"
+            ),
+            false
+          );
+        }
+      }
+      startup.push({ scenario, runs });
+      if (scenario === 'stream') {
+        await evaluate("document.querySelector('.session-main').click()");
+        await wait(
+          "document.querySelector('.document-text strong')?.textContent === 'Attachment preview'"
+        );
+        assert.equal(await evaluate("document.querySelector('.document-text img')"), null);
+        assert.equal(
+          await evaluate(
+            "document.querySelector('.document-text').textContent.includes('Hidden HTML')"
+          ),
+          false
+        );
+        await wait(
+          "(() => { const pane = document.querySelector('.pane-messages'); return pane.scrollHeight > pane.clientHeight && pane.scrollHeight - pane.scrollTop - pane.clientHeight < 2; })()"
+        );
+        await evaluate(`document.querySelector('input[placeholder="会話を検索"]').focus()`);
+        await send('Input.insertText', { text: 'Fixture 125' });
+        await wait("document.querySelector('.session-main strong')?.textContent === 'Fixture 125'");
+      }
+    }
+    fs.writeFileSync(dir + 'startup.json', JSON.stringify(startup, null, 2) + '\n');
+    console.log(JSON.stringify(startup));
+    await send('Network.setCacheDisabled', { cacheDisabled: false });
+  }
+  for (const mode of ['chat', 'monitor']) {
+    const path = production && mode === 'monitor' ? '/monitor' : '/__perf?mode=' + mode;
+    await send('Page.navigate', { url: base + path });
     await wait(
       mode === 'chat'
         ? 'document.querySelectorAll("article.message").length===200'

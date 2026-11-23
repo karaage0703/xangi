@@ -22,7 +22,13 @@ async function copyText(value: string): Promise<void> {
   textarea.remove();
 }
 
-const MarkdownBody = lazy(() => import('./MarkdownBody'));
+const loadMarkdownBody = () => import('./MarkdownBody');
+const MarkdownBody = lazy(loadMarkdownBody);
+
+export function preloadMessageMarkdown() {
+  // Start downloading while the transcript request is in flight.
+  void loadMarkdownBody().catch(() => {});
+}
 
 export function HtmlArtifact({ path, workspaceId }: { path: string; workspaceId?: string }) {
   const [fullscreen, setFullscreen] = useState(false);
@@ -186,6 +192,7 @@ function mediaMatches(content: string): MediaMatch[] {
 }
 
 export function splitMedia(content: string): Array<{ kind: 'text' | 'media'; value: string }> {
+  if (!content.includes('MEDIA:')) return [{ kind: 'text', value: content }];
   const parts: Array<{ kind: 'text' | 'media'; value: string }> = [];
   let index = 0;
   for (const match of mediaMatches(content)) {

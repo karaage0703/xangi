@@ -34,3 +34,13 @@ Team作成・3階層の報告先・編集/再読込・チャンネル割当/解�
 チャットの幅調整は `uv run --with playwright python tests/browser/chat-sidebar-resize.py` で検証します。build後、ドラッグ・再読込・矢印キー・上下限・キャンセル・標準幅への復帰・開閉・モバイル表示・保存値不正／保存不可を隔離APIで確認します。`BROWSER_TEST_OUTPUT` で画像の保存先を指定できます。
 
 専用Bot接続は `uv run --with playwright python tests/browser/agent_connections.py` で検証します。build後、1280/390/320pxでDiscord・Slack接続の追加、保存失敗後の再試行、再読み込み、トークンの非表示、編集・無効化・削除・キャンセルを模擬APIで確認します。`BROWSER_TEST_OUTPUT` で証拠保存先を指定できます。実Botへの接続は行いません。
+
+
+Chatの初回表示と更新通知、Monitorの差分通知は、ビルド後に隔離Chromiumと模擬APIで確認できます。初回はキャッシュを無効にして、入力欄・一覧の描画時刻、読み込んだJavaScriptのサイズと一覧GET回数を記録します。SSEの初回受信がない場合のREST取得、会話検索、Markdown添付の表示も確認します。
+
+```sh
+npm run build:web
+XANGI_PERF_PRODUCTION=1 XANGI_ASSERT_PERF=1 node tests/browser/web-performance.mjs /tmp/xangi-web-perf
+```
+
+`XANGI_PERF_STARTUP_SAMPLES` で初回表示の測定回数を指定できます。変更前の配布物で比較する際は `XANGI_PERF_WEB_BUILD` にその `web/app` を指定し、`XANGI_ASSERT_PERF` を外します。

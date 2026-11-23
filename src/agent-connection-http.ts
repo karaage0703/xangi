@@ -223,6 +223,8 @@ export async function proxyConnectionSession(
     return true;
   }
   if (match) url.pathname = url.pathname.replace(match[1], encodeURIComponent(ref.sessionId));
+  if (url.pathname === '/api/web-commands' && req.method === 'GET')
+    url.searchParams.set('appSessionId', ref.sessionId);
   let data: Buffer | undefined;
   try {
     if (!['GET', 'HEAD'].includes(req.method || ''))

@@ -90,4 +90,20 @@ const MarkdownBody = memo(function MarkdownBody({
   );
 });
 
+export const AttachmentMarkdown = memo(function AttachmentMarkdown({
+  content,
+}: {
+  content: string;
+}) {
+  return (
+    <Markdown
+      remarkPlugins={REMARK_PLUGINS}
+      skipHtml
+      components={{ img: ({ alt }) => <span>{alt || '画像'}</span> }}
+    >
+      {content}
+    </Markdown>
+  );
+});
+
 export default MarkdownBody;

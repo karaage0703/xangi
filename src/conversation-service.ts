@@ -10,6 +10,7 @@ export interface ConversationInput {
   appSessionId: string;
   contextKey: string;
   message: string;
+  skillPrompt?: string;
   attachments: string[];
 }
 
@@ -140,6 +141,7 @@ export class ConversationService {
       if (
         previous.source !== input.source ||
         previous.message !== input.message ||
+        previous.skillPrompt !== input.skillPrompt ||
         JSON.stringify(previous.attachments) !== JSON.stringify(input.attachments)
       )
         throw new ConversationError('同じrequestIdに異なる入力は送信できません', 409);

@@ -141,11 +141,7 @@ export function Extensions() {
       <AppTopbar current="extensions" />
       <main className="extensions-content">
         <header className="extensions-header">
-          <div>
-            <p className="extensions-kicker">Official extension catalog</p>
-            <h1>Extensions</h1>
-            <p>xangiへ機能を追加します。カタログまたは公開GitHubリポジトリから選べます。</p>
-          </div>
+          <h1>拡張</h1>
           <button
             className="extensions-refresh"
             type="button"
@@ -161,9 +157,6 @@ export function Extensions() {
 
         <section className="extension-favorites" aria-labelledby="extension-favorites-title">
           <h2 id="extension-favorites-title">お気に入り</h2>
-          <p>
-            お気に入りの名前から拡張を開けます。「サイドバー表示」をONにすると左メニュー（スマホでは「その他」）にも表示します。設定は端末間で共通です。
-          </p>
           {favorites.error ? <p role="alert">{favorites.error}</p> : null}
           {favorites.loading ? (
             <p>読み込み中…</p>
@@ -282,14 +275,14 @@ export function Extensions() {
           )}
         </section>
 
-        <section className="extension-repository" aria-labelledby="extension-repository-title">
-          <div>
-            <h2 id="extension-repository-title">GitHubリポジトリから追加</h2>
-            <p>
-              公開リポジトリのrootにある <code>xangi-extension.json</code>{' '}
-              を検証し、専用のセットアップ会話を開きます。
-            </p>
-          </div>
+        <details className="extension-repository">
+          <summary>
+            <h2>GitHubリポジトリから追加</h2>
+          </summary>
+          <p>
+            公開リポジトリの <code>xangi-extension.json</code>{' '}
+            を検証し、セットアップ会話を開きます。
+          </p>
           <form onSubmit={(event) => void addRepository(event)}>
             <label htmlFor="extension-repository-url">リポジトリURL</label>
             <div className="extension-repository-controls">
@@ -308,7 +301,7 @@ export function Extensions() {
               </button>
             </div>
           </form>
-        </section>
+        </details>
 
         {error ? (
           <div className="extensions-notice error" role="alert">
@@ -327,9 +320,7 @@ export function Extensions() {
         ) : extensions.length === 0 ? (
           <div className="extensions-empty">
             <h2>利用できるextensionはありません</h2>
-            <p>
-              上の入力欄へ公開GitHubリポジトリURLを入力するか、開発用manifestを設定してください。
-            </p>
+            <p>「GitHubリポジトリから追加」を開くか、開発用manifestを設定してください。</p>
           </div>
         ) : (
           <section className="extension-list" aria-label="利用可能なextension">

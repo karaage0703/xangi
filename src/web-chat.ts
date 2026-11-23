@@ -10,7 +10,6 @@ import { connectionSessionId, connectionSessionRef } from './connection-session-
 import { AgentConnectionStore } from './agent-connections.js';
 import {
   workChannelConnection,
-  projectWorkAgentId,
   sameWorkChannel,
   type ConnectionRoute,
   type WorkChannel,
@@ -46,6 +45,8 @@ import { validateTeamAssignments } from './teams.js';
 import { registerTeamRunner } from './team-runner.js';
 import {
   agentWorkChannel,
+  channelAgent,
+  projectSessionAgent,
   registerAgentSelection,
   removeRegisteredTeam,
   removeRegisteredAgent,
@@ -77,6 +78,7 @@ import {
 import { conversationBusy } from './conversation-locks.js';
 import { resolveRunningSession } from './running-session-context.js';
 import { createLinkedConversation, forgetLinkedConversation } from './conversation-creation.js';
+import { newSessionWorkspaceId } from './session-workspace.js';
 import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { createServer } from 'http';
 import { createHash, randomBytes } from 'crypto';
@@ -950,6 +952,32 @@ ${delegatedTeam.prompt}`
     return workspaceRegistry.resolveSnapshot(entry.workspaceId, entry.workspacePath);
   };
 
+  const resolveLinkedDraftWorkspace = (agentId: string, projectId?: string) => {
+    const channel = agentWorkChannel(agentId);
+    if (!channel)
+      throw new WebProjectError('担当エージェントの作業チャンネルが見つかりません', 409);
+    const project = resolveProject(projectId);
+    if (project && project.defaultAgentId !== agentId)
+      throw new WebProjectError('Projectの担当が変更されました。会話を開き直してください', 409);
+    const agent = project
+      ? projectSessionAgent(project)
+      : channelAgent(channel.platform, channel.channelId);
+    return resolveWorkspace(
+      newSessionWorkspaceId(channel.platform, channel.channelId, agent, workspaceRegistry)
+    );
+  };
+
+  const resolveLinkedSkillPrompt = async (input: string, workdir: string) => {
+    try {
+      if (!input.startsWith('/')) throw new Error('スキルコマンドを指定してください');
+      const result = await executeWebCommand(input, { workdir, skillsOnly: true });
+      if (result.kind !== 'chat') throw new Error('実行するスキルを選択してください');
+      return result.message;
+    } catch (error) {
+      throw new ConversationError(error instanceof Error ? error.message : String(error), 400);
+    }
+  };
+
   const projectBackendDefault = (
     project: ReturnType<typeof resolveProject>
   ): ChannelOverride | undefined => {
@@ -1444,8 +1472,7 @@ ${delegatedTeam.prompt}`
         const updatedAt = Date.parse(candidate.updatedAt);
         if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
       }
-      if (query.agentId && (candidate.selectedAgentId || DEFAULT_TEAM_AGENT_ID) !== query.agentId)
-        return false;
+      if (query.agentId && candidate.selectedAgentId !== query.agentId) return false;
       if (query.projectId === '__none__' && candidate.projectId) return false;
       if (
         query.projectId &&
@@ -1598,7 +1625,10 @@ ${delegatedTeam.prompt}`
             const backendChanged =
               platform === 'web' &&
               Boolean(previousSession && backend && entry.agent?.backend !== backend.backend);
-            let message = buildPromptWithAttachments(turn.message, turn.attachments);
+            let message = buildPromptWithAttachments(
+              turn.skillPrompt ?? turn.message,
+              turn.attachments
+            );
             let history = '';
             if (
               entry.resumedFromSessionId ||
@@ -2858,9 +2888,22 @@ ${delegatedTeam.prompt}`
       try {
         const commandUrl = new URL(rawUrl, 'http://localhost');
         const appSessionId = commandUrl.searchParams.get('appSessionId');
+        if (
+          !connectionApi &&
+          appSessionId &&
+          (await proxyConnectionSession(req, res, appSessionId))
+        )
+          return;
+        const skillsOnly = commandUrl.searchParams.get('skillsOnly') === 'true';
+        const agentId = skillsOnly ? commandUrl.searchParams.get('agentId') : null;
         const commandWorkspace = appSessionId
           ? await resolveSessionWorkspace(appSessionId)
-          : await resolveWorkspace();
+          : agentId
+            ? await resolveLinkedDraftWorkspace(
+                agentId,
+                commandUrl.searchParams.get('projectId') || undefined
+              )
+            : await resolveWorkspace();
         const selectedBackend = commandUrl.searchParams.get('backend') as AgentBackend | null;
         const selectedModel = commandUrl.searchParams.get('model') || undefined;
         const modelDiscovery =
@@ -2873,6 +2916,7 @@ ${delegatedTeam.prompt}`
             commands: getWebCommandDefinitions({
               appSessionId: appSessionId || undefined,
               workdir: commandWorkspace.path,
+              skillsOnly,
               agents: webProjects.teamAgents(),
               workspaces: workspaceRegistry?.list(),
               config: options.config,
@@ -3862,8 +3906,7 @@ ${delegatedTeam.prompt}`
           platform: entry?.platform,
           petAgentId:
             entry?.selectedAgentConfig?.team?.leaderAgentId ||
-            (entry?.selectedAgentId?.startsWith('team:') ? undefined : entry?.selectedAgentId) ||
-            DEFAULT_TEAM_AGENT_ID,
+            (entry?.selectedAgentId?.startsWith('team:') ? undefined : entry?.selectedAgentId),
           linkedChannel: Boolean(
             (entry?.projectId || entry?.webLinked) &&
             (entry.platform === 'discord' || entry.platform === 'slack')
@@ -4018,11 +4061,24 @@ ${delegatedTeam.prompt}`
             throw new ConversationError('メッセージまたはファイルを指定してください', 400);
           if (!previous && entry.platform === 'web' && getSessionLifecycle(id) === 'closed')
             throw new ConversationError('Session is closed', 409);
+          if (body.skill !== undefined && (body.skill !== true || entry.platform === 'web'))
+            throw new ConversationError('連携会話のスキル指定が不正です', 400);
+          if (previous && Boolean(previous.skillPrompt) !== (body.skill === true))
+            throw new ConversationError('同じrequestIdに異なる入力は送信できません', 409);
+          const skillPrompt =
+            body.skill === true
+              ? (previous?.skillPrompt ??
+                (await resolveLinkedSkillPrompt(
+                  body.message.trim(),
+                  (await resolveSessionWorkspace(id)).path
+                )))
+              : undefined;
           const turn = conversationService.submit({
             appSessionId: id,
             requestId: body.requestId,
             contextKey: entry.contextKey,
             message: body.message.trim(),
+            ...(skillPrompt === undefined ? {} : { skillPrompt }),
             attachments,
           });
           sendJson(res, 202, { turn });
@@ -4107,8 +4163,12 @@ ${delegatedTeam.prompt}`
           if (typeof body.message !== 'string' || !body.message.trim())
             throw new WebProjectError('最初のメッセージを入力してください', 400);
           const agentId = project
-            ? projectWorkAgentId(project)
-            : (typeof body.agentId === 'string' && body.agentId) || DEFAULT_TEAM_AGENT_ID;
+            ? project.defaultAgentId
+            : typeof body.agentId === 'string'
+              ? body.agentId.trim()
+              : undefined;
+          if (!agentId)
+            throw new WebProjectError('連携会話を始めるには担当を選択してください', 409);
           const workChannel = agentWorkChannel(agentId);
           if (!workChannel)
             throw new WebProjectError('担当エージェントの作業チャンネルを設定してください', 409);
@@ -4122,6 +4182,12 @@ ${delegatedTeam.prompt}`
               '担当または作業チャンネルが変更されました。会話を開き直してください',
               409
             );
+          if (body.skill !== undefined) {
+            if (body.skill !== true)
+              throw new WebProjectError('連携会話のスキル指定が不正です', 400);
+            const workspace = await resolveLinkedDraftWorkspace(agentId, project?.id);
+            await resolveLinkedSkillPrompt(body.message.trim(), workspace.path);
+          }
           const title = truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '));
           const connection = await dedicatedForAgent(platform, agentId);
           let create: () => Promise<{ sessionId: string }>;
@@ -4153,7 +4219,7 @@ ${delegatedTeam.prompt}`
             if (
               (await dedicatedForAgent(platform, agentId)) ||
               !sameWorkChannel(workChannel, agentWorkChannel(agentId)) ||
-              (project && projectWorkAgentId(resolveProject(project.id)!) !== agentId)
+              (project && resolveProject(project.id)?.defaultAgentId !== agentId)
             )
               throw new WebProjectError(
                 '担当または作業チャンネルが変更されました。会話を開き直してください',

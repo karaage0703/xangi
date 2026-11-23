@@ -762,6 +762,8 @@ Webの担当・Workspace切替は既存会話を保持して新しい会話を�
 
 スキル一覧と実行は現在の会話のWorkspaceを使います。直接呼び出し名は小文字英数字・ハイフンへ変換し、予約語や変換後に重複する名前は`/skill`から実行します。Discordは起動時に登録済みWorkspaceのスキルを集め、登録上限まで直接コマンドを追加します。起動後に追加したスキルや上限で省略されたスキルも`/skill`から選べます。
 
+Web UIでは入力欄の `/` ボタンから候補を開き、スキルを選びます。引数を省略する場合も「実行」ボタンを押せます。Discord／Slack連携会話では、その会話のWorkspaceのスキルが候補に出ます。スキルを実行すると同じ会話で処理し、入力と結果を元のチャットへ届けます。
+
 SlackもDiscordと同じ定義から12種類を受付します。例外は独立したスレッド名を持たないSlackの`/retitle`です。`autoreply`・`threadmode`はSlackでも設定でき、Slackの返信経路へ即時適用します。ネイティブ操作にはSlack App側の登録が必要です。旧`/models`・`/restart`・`/delete`を削除し、[Slackセットアップ](slack-setup.md)の一覧へ揃えてください。登録なしの利用は通常のメンション・自然文依頼を使います。Telegram・LINEの既存コマンドは変更しません。
 
 ### バックエンド動的切り替え
@@ -1133,7 +1135,7 @@ XANGI_WORKSPACE=/home/user/my-workspace
 本体はブラウザのOriginを確認してから拡張専用Bearerで転送します。本体のCookieやAuthorization、転送元認証ヘッダーを拡張へ渡しません。拡張のCookieは拡張別の名前とパスへ変換し、同じ拡張だけに戻します。上流の同一originへのリダイレクトも本体配下へ変換し、別originへのリダイレクトは拒否します。WebSocketには同じホストのOriginが必要です。拡張画面を操作できる利用者はその機能も使えるため、本体のアクセス範囲を適切に制限してください。音声・画面共有などのブラウザ機能には、本体側のHTTPSまたはlocalhostが必要です。
 
 
-外部extensionはWeb UIの「拡張」から追加・管理します。個別extensionの導入方法、設定、保存データ、UI、更新手順はxangi側へ複製せず、各repositoryの文書を正本とします。
+外部extensionはWeb UIの「拡張」から追加・管理します。公開リポジトリのURLを入力するには「GitHubリポジトリから追加」を開きます。個別extensionの導入方法、設定、保存データ、UI、更新手順はxangi側へ複製せず、各repositoryの文書を正本とします。
 
 CLIの`xangi extension restart --help`（または`-h`）は操作せずヘルプを表示します。`start`、`stop`、`restart`は対象IDが必須です。全拡張を対象にする場合だけ`--all`を明示します（例: `xangi extension restart xangi-search`、`xangi extension restart --all`）。`xangi tool extension_runtime`からの操作にも同じ制限を適用します。
 
@@ -1742,6 +1744,8 @@ Webから送信した通常会話・Discord/Slack連携会話も、同じ初回A
 
 `/settings`では、共通`runtime_settings`が扱う7項目（backend、llmmode、autoreply、notify、threadmode、replysuggestions、respondtobots）と、日常運用で使う非秘密の起動設定を変更できる。チャンネル固有設定はプラットフォームを選び、接続先から取得したチャンネル名で対象を選択する。保存値には対応するチャンネルIDを使い、選択したチャンネルの保存済み設定と現在の実効値を各項目に表示する。各項目には「即時反映」「次のturnから」「再起動後」を表示する。
 
+ページ上部の目次から、表示、ワークスペース、エージェント、チーム、接続とAPIキー、起動設定に移動できます。起動設定の各グループは、見出しを選ぶと開きます。
+
 「個別設定のあるチャンネルを見る」を押すと、選択中のDiscord／Slackでバックエンド・モデル・推論強度・動作モードを個別指定したチャンネルだけを一覧表示します。一覧用の取得はボタン操作時だけ実行し、設定画面の初期表示には追加しません。閉じて再び開くと取得済み一覧を使い、「設定一覧を更新」で再取得できます。チャンネル名を取得できなくても保存済み設定をIDで表示し、行のボタンから編集対象に選択できます。エージェント・チーム指定による実効設定とは区別した、保存済みのバックエンド設定一覧です。
 
 チャンネルのバックエンド・モデル・Effort・動作モードはまとめて選択し、「チャンネルのモデル設定を保存」で次のturnから適用する。OpenRouterのEffortはモデル対応値だけを候補とし、未確認・非対応値は保存を拒否する。モデル変更時はEffortを既定へ戻す。「全体設定を継承」を保存するとチャンネルのモデル設定を解除する。
@@ -1796,7 +1800,7 @@ Workspace API:
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/monitor` はセッションの監視・状態切替ページ。Sessionを「作業中」「完了」の2列に自動分類し、All / Chat / Webで絞り込める。エラーと中断は作業中カードの状態ラベルと色付きドットで区別する。Sessionに進捗カードがあれば、一覧カードへ現在工程と完了工程数、詳細へ未着手・現在・完了の全工程と補足を文字ラベル付きで表示する。正式な構造化取得口から利用枠を取得できたproviderを、現在のSession有無にかかわらず「AI利用量」に表示し、Codexは共通枠だけを表示する。対象はCodex、GitHub Copilot、Antigravity、Claude Codeで、取得できない値は推定しない。アカウント枠は60秒ごと、Sessionのcontext使用量はturn完了時に更新する。providerカードは折り畳め、不要なproviderは非表示にしてブラウザへ保存できる。カードを選ぶとまず詳細を表示し、バックエンド・モデル・effortと最後に確定したcontext使用量を確認できる。状態、Discord / Slackの会話先、完了ターン数、更新時刻、イベント履歴は常時表示し、チャンネル・スレッド・セッション等の内部IDは折りたたみに格納する。詳細の「会話を開く」から`/chat/<appSessionId>`へ移動する。完了Sessionは直近24時間を表示し、履歴から再開または分岐できる。初回取得後は`GET /api/sessions/stream`のSSEでturn開始・進捗カード・完了・context更新を受け取るため、セッション一覧を定期ポーリングしない。Codexはapp-server、GitHub Copilotは公式SDK、Antigravityは公式statusline JSONを使用する。Claude CodeのcontextはCLIのresult event、アカウント枠はCLI標準のstream-json制御要求（`get_usage`）を使用する。TUI解析・statusline設定は不要で、モデル呼び出し（枠の消費）も発生しない。この応答形式はCLI側でExperimental扱いのため、形式変更時はClaude Code枠が表示されなくなることがある。APIキー・Bedrock・Vertex経由ではアカウント枠が存在しないため表示されない。
 
-同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
+同じサーバの `http://localhost:<WEB_CHAT_PORT>/schedules` は予定管理ページ。「予定を追加」または一覧の「編集」でフォームを開く。`GET /api/schedules`で全プラットフォームの予定とスケジューラ状態を取得し、`POST /api/schedules`でWeb / Discord / Slack / Telegram予定を作成する。Web予定は`projectId`を任意指定でき、実行時に新しいWeb会話を作る。`PATCH /api/schedules/:id`は予定内容または有効状態を変更し、`DELETE /api/schedules/:id`は予定を削除する。
 
 補足: 「AI利用量」の各アカウント枠は、バーの塗りで実使用率を示す。Codexのように期間長を公式データから取得できる枠と、Claude Codeのように枠の定義から期間長が確定する枠では、破線マーカーと数値で期間内の経過時間から求めた「目安」も示す。Claude Codeで表示する対象は5時間枠・週次枠・モデル別週次枠のみで、追加クレジット等の金額情報は表示しない。AntigravityはGeminiモデルとサードパーティモデルごとに5時間枠・週次枠をまとめて表示する。公式statuslineが期間長を返さず、未使用枠のリセット時刻が動くことがあるため、目安は推定表示しない。Agyがセッションの推定`cost`を返す場合だけSession詳細に推定利用料を表示し、xangi側では金額や通貨を推定しない。
 
@@ -2202,7 +2206,7 @@ PCではサイドバー右端をドラッグすると幅を変更でき、同じ
 
 ### チャンネルの担当と設定の優先順位
 
-全体設定の「エージェント」で、担当ごとにDiscordまたはSlackの作業チャンネルを1つ設定できます。「＋ 新しい会話」を選ぶと、作業チャンネルがある場合は入力欄に投稿先が表示され、最初の送信でスレッドが作られます。作業チャンネルがない場合はWeb内で会話を始めます。Projectで担当が未指定の場合は既定のエージェントを使います。
+全体設定の「エージェント」で、担当ごとにDiscordまたはSlackの作業チャンネルを1つ設定できます。「＋ 新しい会話」を選ぶと、指定した担当に作業チャンネルがある場合は入力欄に投稿先が表示され、最初の送信でスレッドが作られます。「担当指定なし」の場合は、Project内でも担当を付けずWeb内で会話を始めます。担当に作業チャンネルがない場合も、会話はWeb内で始まります。
 
 WebとDiscord／Slackで同じ会話を続けられ、Webからの入力も作業チャンネルに表示されます。通常のメンション・自動応答設定が適用されます。Webから本文や添付を送れます（1回10件まで）。受付前の明確な入力エラーでは添付を保持し、受付後の通信切断では同じ受付IDを確認します。編集・削除の双方向同期には対応していません。
 

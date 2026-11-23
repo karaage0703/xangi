@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDateTime, getJson, platformLabel, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -194,6 +194,7 @@ export function Schedules() {
   const [deletingSchedule, setDeletingSchedule] = useState(false);
   const [scheduleToRun, setScheduleToRun] = useState<Schedule | null>(null);
   const [startingSchedule, setStartingSchedule] = useState(false);
+  const editorRef = useRef<HTMLDetailsElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -300,7 +301,11 @@ export function Schedules() {
     setExpression(timing.expression);
     setMessage('');
     requestAnimationFrame(() => {
-      document.querySelector('.schedule-create')?.scrollIntoView({ behavior: 'smooth' });
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.open = true;
+      editor.querySelector('summary')?.focus({ preventScroll: true });
+      editor.scrollIntoView({ block: 'start' });
     });
   };
 
@@ -361,11 +366,7 @@ export function Schedules() {
       <AppTopbar current="schedules" />
       <div className="schedules-content">
         <header className="schedules-header">
-          <div>
-            <p className="schedules-eyebrow">AUTOMATION</p>
-            <h1>予定</h1>
-            <p>決まった時刻に、Web・Discord・Slack・Telegramへ仕事を依頼します。</p>
-          </div>
+          <h1>予定</h1>
           <dl className="schedules-summary" aria-label="スケジュール集計">
             <div>
               <dt>有効</dt>
@@ -399,13 +400,10 @@ export function Schedules() {
         )}
 
         <div className="schedules-layout">
-          <section className="schedule-create" aria-labelledby="schedule-create-title">
-            <div className="schedule-section-heading">
-              <div>
-                <p>NEW SCHEDULE</p>
-                <h2 id="schedule-create-title">{editingId ? '予定を編集' : '予定を追加'}</h2>
-              </div>
-            </div>
+          <details className="schedule-create" ref={editorRef}>
+            <summary>
+              <h2>{editingId ? '予定を編集' : '予定を追加'}</h2>
+            </summary>
             <form onSubmit={(event) => void submitSchedule(event)}>
               <label>
                 <span>プラットフォーム</span>
@@ -553,14 +551,11 @@ export function Schedules() {
                 )}
               </div>
             </form>
-          </section>
+          </details>
 
           <section className="schedule-list-section" aria-labelledby="schedule-list-title">
             <div className="schedule-section-heading schedule-list-heading">
-              <div>
-                <p>ALL SCHEDULES</p>
-                <h2 id="schedule-list-title">設定済み</h2>
-              </div>
+              <h2 id="schedule-list-title">設定済み</h2>
               <div className="schedule-filters" aria-label="予定の絞り込み">
                 {(
                   [

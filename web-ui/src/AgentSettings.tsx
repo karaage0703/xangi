@@ -7,7 +7,7 @@ import {
   CatalogFormActions,
   useCatalogFormFocus,
 } from './CatalogControls';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { requestJson } from './api';
 import { jsonInit } from './chatPresentation';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -53,10 +53,12 @@ interface ModelDiscoveryResponse {
 
 export function AgentSettings({
   workspaces,
+  workspacesLoading,
   defaultAI,
   onDefaultAISaved,
 }: {
   workspaces: RegisteredWorkspace[];
+  workspacesLoading: boolean;
   defaultAI?: {
     enabled: boolean;
     value: { backend: string; model?: string; effort?: string };
@@ -65,6 +67,7 @@ export function AgentSettings({
   onDefaultAISaved?: () => Promise<void>;
 }) {
   const formRef = useCatalogFormFocus();
+  const requestedAgentId = useRef(new URLSearchParams(window.location.search).get('agent'));
   const [channels, setChannels] = useState<
     Array<{ platform: string; id: string; name: string; group?: string }>
   >([]);
@@ -138,12 +141,7 @@ export function AgentSettings({
 
   useEffect(() => {
     void Promise.all([
-      requestJson<{ agents: Agent[] }>('/api/agents').then((result) => {
-        setAgents(result.agents);
-        const targetId = new URLSearchParams(window.location.search).get('agent');
-        const target = result.agents.find((agent) => agent.id === targetId);
-        if (target) openAgentEditor(target);
-      }),
+      requestJson<{ agents: Agent[] }>('/api/agents').then((result) => setAgents(result.agents)),
       requestJson<{ allowedBackends: string[] }>('/api/config').then(setConfig),
     ])
       .catch((cause) => setNotice(cause instanceof Error ? cause.message : String(cause)))
@@ -186,6 +184,7 @@ export function AgentSettings({
     };
   }, [agentBackend, agentFormOpen]);
   function openNewAgentForm() {
+    requestedAgentId.current = null;
     setNotice('');
     setEditingAgentId(undefined);
     setAgentName('');
@@ -199,22 +198,32 @@ export function AgentSettings({
     setAgentFormOpen(true);
   }
 
-  function openAgentEditor(agent: Agent) {
-    if (!agent) return;
-    setNotice('');
-    setEditingAgentId(agent.id);
-    setChannelTarget('');
-    setAgentName(agent.name);
-    setAgentPrompt(agent.prompt);
-    const ai = agent.id === 'xangi:default' ? defaultAI?.value : agent;
-    setAgentBackend(ai?.backend || '');
-    setAgentModel(ai?.model || '');
-    setAgentEffort(ai?.effort || '');
-    setAgentWorkspaceId(agent.workspaceId || 'default');
-    setAgentLlmMode(agent.localLlmMode || '');
-    setAgentReasoning(agent.localLlmReasoningEffort || '');
-    setAgentFormOpen(true);
-  }
+  const openAgentEditor = useCallback(
+    (agent: Agent) => {
+      if (!agent) return;
+      requestedAgentId.current = null;
+      setNotice('');
+      setEditingAgentId(agent.id);
+      setChannelTarget('');
+      setAgentName(agent.name);
+      setAgentPrompt(agent.prompt);
+      const ai = agent.id === 'xangi:default' ? defaultAI?.value : agent;
+      setAgentBackend(ai?.backend || '');
+      setAgentModel(ai?.model || '');
+      setAgentEffort(ai?.effort || '');
+      setAgentWorkspaceId(agent.workspaceId || 'default');
+      setAgentLlmMode(agent.localLlmMode || '');
+      setAgentReasoning(agent.localLlmReasoningEffort || '');
+      setAgentFormOpen(true);
+    },
+    [defaultAI?.value]
+  );
+
+  useEffect(() => {
+    if (workspacesLoading || !requestedAgentId.current) return;
+    const target = agents.find((agent) => agent.id === requestedAgentId.current);
+    if (target) openAgentEditor(target);
+  }, [agents, openAgentEditor, workspacesLoading]);
 
   async function changeWorkChannel(action: 'set' | 'reset') {
     if (!editingAgentId || savingChannel) return;

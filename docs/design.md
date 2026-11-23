@@ -22,7 +22,7 @@ xangiのアーキテクチャと設計思想について説明します。
 - 記事・メール・Markdown・会話など読む本文: 16px、行高1.6〜1.75（`--xangi-font-reading`）。長文の見出しは24/18/16pxを目安にします。
 - コード・ファイル編集: 13px、等幅（`--xangi-font-code`）。グラフ等の主要数値は24px（`--xangi-font-metric`）。
 
-UIの書体はInter、system sans-serif、Noto Sans JP等の日本語fallbackを同じ順で使います。ブラウザの文字拡大を妨げず、親iframeから全子要素へフォントを強制注入しません。各拡張が同名のCSS変数を持ち、単体でも同じ基準を使います。取り込んだレポートHTMLや外部プレビューの本文は書き換えません。
+本体の操作画面は端末のシステム書体を優先します。会話本文と長文入力欄はInter、system sans-serif、日本語の代替書体を使います。ブラウザの文字拡大を妨げず、親iframeから全子要素へフォントを強制注入しません。各拡張が同名のCSS変数を持ち、単体でも同じ基準を使います。取り込んだレポートHTMLや外部プレビューの本文は書き換えません。
 
 余白は4px単位、薄い境界・中立色と青の操作色、角丸6〜8pxを既存画面に合わせて使います。情報の配置・機能・読み順は維持します。スマホでは入力欄16px、操作領域44px程度を確保し、文字だけでタップ領域を決めません。画面名はPC/スマホとも18pxを基本にし、長文本文を画面幅だけで縮小しません。
 
@@ -149,8 +149,9 @@ flowchart LR
 `WEB_CHAT_ENABLED=true`ではWeb UIとAPIを配信する。eventsまたはHTTP版inter-instance chatだけを指定したheadless構成でも同じサーバーを起動するが、必要な専用endpoint以外のWeb UI assetとWeb APIは404にする。
 
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
-- 各画面はlazy importで分割する。build assetは非同期読込・有界cache・gzip・表現別ETagで配信し、会話本文や添付にasset cacheを適用しない。
+- 各画面はlazy importで分割する。最初の画面のコードが揃うまではHTMLの読み込み表示を使い、準備ができ次第Reactで描画する。build assetは非同期読込・有界cache・gzip・表現別ETagで配信し、会話本文や添付にasset cacheを適用しない。
 - 一覧の候補索引はsession/activity変更・transcript directory監視で失効する。取り逃がした外部変更は最大1秒のcache期限後の次回読込で再走査する。JSONLのtitleとMonitor用originはファイルrevision単位でcacheする。索引再構築時の全走査は残る。REST一覧には`Server-Timing: sessions`を付ける。
+- Chatの初回一覧は更新ストリームの最初のスナップショットで表示し、150ms以内に届かない場合は一覧APIへ切り替える。検索と絞り込みは引き続き一覧APIを使う。Markdownのレンダラーは会話を開くときに本文取得と並行で読み込む。Markdown添付のプレビューも同じレンダラーを使う。
 - Chatは`transcriptRevision`・messageCount・active状態の変更で対象会話だけ本文を取り直す。同じURLの同時詳細GETは共有するが、結果は各ペインへcloneし、完了後はcacheしない。ストリーム表示は50ms単位（backgroundは250ms）で最新状態へまとめ、終端は即flushする。確定メッセージ行はmemoし、scroll observerをdeltaごとに再作成しない。
 - Monitorは`/api/sessions/stream?mode=changes&updatedSince=<ISO>`を使う。初回・再接続は対象期間のclosedと全openを含む完全な`sessions` snapshot、以後は`session_changes`の`upsert`/`removed`を反映し、通知ごとの全ページ再取得を行わない。従来のページ一覧/SSEも維持する。
 - 受付GETの`after`は直前の`JSON.stringify([state, delivery, updatedAt])`。状態が同じなら最大8秒待ち、永続化後の変更通知で即応答する。HTTP切断は待機だけを解除し、実行は取り消さない。通常送信はこれを使い、通信失敗時だけ1秒待ってreceiptを再確認する。受付の同期flushとrequestIdの冪等性は維持する。ブラウザPerformanceには`xangi.detail-read`・`xangi.send-to-accepted`・`xangi.send-to-settled`を記録する。

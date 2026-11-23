@@ -168,7 +168,9 @@ try {
       mobile: false,
     });
     await send('Page.navigate', { url: base + '/__qcd_ui' });
-    await wait('document.querySelector("form")');
+    await wait('document.querySelector(".schedule-create > summary")');
+    assert.equal(await evaluate('document.querySelector(".schedule-create").open'), false);
+    await evaluate('document.querySelector(".schedule-create > summary").click()');
     await change(platform, 'discord');
     await wait('document.querySelectorAll("form label:nth-child(2) option").length===4');
     assert.match(
@@ -178,8 +180,11 @@ try {
     await change(channel, '111');
     await save();
     assert.equal((await payload()).channelId, '111');
+    await evaluate('document.querySelector(".schedule-create > summary").click()');
     await click('編集');
-    await wait('document.querySelector("form label:nth-child(2) select")?.value==="111"');
+    await wait(
+      'document.querySelector(".schedule-create").open && document.querySelector("form label:nth-child(2) select")?.value==="111"'
+    );
     await change(channel, '__manual__');
     await change('input[placeholder="チャンネルまたはスレッドID"]', '999');
     await click('変更を保存');
