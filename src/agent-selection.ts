@@ -286,9 +286,9 @@ export function assertIndividualAgentSettings(contextKey: string): void {
 }
 export function resolveAgentBackend(
   resolver: BackendResolver,
-  agent: NonNullable<ReturnType<typeof sessionAgent>>
+  agent: NonNullable<ReturnType<typeof sessionAgent>>,
+  global = resolver.resolve()
 ) {
-  const global = resolver.resolve();
   const backend = agent.backend || global.backend;
   if (!resolver.isBackendSelectable(backend))
     throw new Error('担当のバックエンドは現在利用できません');

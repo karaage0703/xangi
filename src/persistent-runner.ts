@@ -510,7 +510,12 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
     // トランスクリプトログ: 送信プロンプトを記録
     if (reqAppSessionId && this.workdir) {
-      logPrompt(this.workdir, reqAppSessionId, this.currentItem.prompt);
+      logPrompt(
+        this.workdir,
+        reqAppSessionId,
+        this.currentItem.prompt,
+        this.currentItem.options?.promptSource
+      );
     }
 
     try {

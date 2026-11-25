@@ -8,10 +8,14 @@ import {
   getDiscordTimeoutInfoFor,
   discordProcessingMessages,
 } from './ui.js';
-import type { Client, Message } from 'discord.js';
-import { registerWorkTransport, type WorkThread } from '../agent-work.js';
+import { PermissionFlagsBits, type Client, type Message } from 'discord.js';
+import { registerWorkTransport, type WorkHistory, type WorkThread } from '../agent-work.js';
 import { splitDiscordMessage } from '../message-split.js';
 import { DISCORD_SAFE_LENGTH } from '../constants.js';
+import {
+  WORK_REQUEST_THREAD_DETAILS,
+  WORK_REQUEST_CONTINUATION,
+} from '../agent-work-presentation.js';
 
 export function registerDiscordAgentWork(
   client: Client,
@@ -27,13 +31,25 @@ export function registerDiscordAgentWork(
       throw new Error('作業チャンネルに送信できません');
     return channel;
   };
-  const send = async (thread: WorkThread, text: string) => {
+  const send = async (
+    thread: WorkThread,
+    text: string,
+    history?: WorkHistory,
+    assignment = false
+  ) => {
     const channel = await channelFor(thread.threadId);
     const chunks = splitDiscordMessage(text, DISCORD_SAFE_LENGTH);
+    const messages =
+      assignment && chunks.length > 1
+        ? splitDiscordMessage(text, DISCORD_SAFE_LENGTH - WORK_REQUEST_CONTINUATION.length).map(
+            (part) => WORK_REQUEST_CONTINUATION + part
+          )
+        : chunks;
     const completed = text.startsWith('応答完了') || text.startsWith('作業に失敗しました');
     const completion = completed
       ? prepareDiscordCompletion({
-          historyContext: histories.get(thread.threadId),
+          historyContext: history?.context ?? histories.get(thread.threadId),
+          history: history?.entries,
           finalResponse: text.replace(/^(?:応答完了|作業に失敗しました)\n\n/, ''),
           historyEnabled:
             (config.toolHistoryMode ?? ((config.showToolUse ?? true) ? 'inline' : 'off')) ===
@@ -42,29 +58,40 @@ export function registerDiscordAgentWork(
           showLeave: true,
         })
       : undefined;
-    for (const [index, content] of chunks.entries()) {
+    for (const [index, content] of messages.entries()) {
       const message = await channel.send({
         content,
         allowedMentions: { parse: [] },
-        ...(completion && (config.showButtons ?? true) && index === chunks.length - 1
+        ...(completion && (config.showButtons ?? true) && index === messages.length - 1
           ? { components: [completion.buttons] }
           : {}),
       });
-      if (completion && (config.showButtons ?? true) && index === chunks.length - 1)
+      if (completion && (config.showButtons ?? true) && index === messages.length - 1)
         completion.bind(message.id);
     }
-    if (completed) histories.delete(thread.threadId);
+    if (completed) {
+      histories.delete(thread.threadId);
+      progressMessages.delete(thread.threadId);
+    }
   };
   registerWorkTransport('discord', {
     async create(channelId, title, text) {
       const channel = await channelFor(channelId);
       if (channel.isThread() || channel.isDMBased())
         throw new Error('Agentの作業先には通常のサーバーチャンネルを指定してください');
+      const needsThreadBody = text.length > DISCORD_SAFE_LENGTH;
+      if (client.user && 'permissionsFor' in channel) {
+        const required = [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.CreatePublicThreads,
+          ...(needsThreadBody ? [PermissionFlagsBits.SendMessagesInThreads] : []),
+        ];
+        if (!channel.permissionsFor(client.user)?.has(required))
+          throw new Error('依頼元Botに依頼先チャンネルでの投稿・公開スレッド作成権限がありません');
+      }
       const starter = await channel.send({
-        content:
-          text.length <= DISCORD_SAFE_LENGTH
-            ? text
-            : `${title}\n依頼全文と進捗は作業スレッド内に表示します。`,
+        content: needsThreadBody ? `${title}\n${WORK_REQUEST_THREAD_DETAILS}` : text,
         allowedMentions: { parse: [] },
       });
       const thread = await starter.startThread({
@@ -72,7 +99,7 @@ export function registerDiscordAgentWork(
         autoArchiveDuration: 1440,
       });
       const target = { platform: 'discord', channelId, threadId: thread.id, url: thread.url };
-      await send(target, text);
+      if (needsThreadBody) await send(target, text, undefined, true);
       return target;
     },
     send,
@@ -107,6 +134,10 @@ export function registerDiscordAgentWork(
       discordProcessingMessages.delete(contextKey);
       const message = progressMessages.get(thread.threadId);
       if (message) await message.edit({ components: [] });
+    },
+    async updateTimeout(thread, timeout) {
+      const message = progressMessages.get(thread.threadId);
+      if (message) await message.edit({ components: [createProcessingButtons(timeout)] });
     },
     async progress(thread, text) {
       const content = text.slice(-1800);

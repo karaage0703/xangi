@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -65,24 +65,35 @@ describe('document attachments', () => {
     });
   });
   it('allows only declared files under configured shared upload roots', async () => {
-    // Keep this fixture outside os.tmpdir(), which is already an allowed root.
-    const shared = mkdtempSync(join(process.cwd(), '.attachment-test-'));
+    const workspace = join(root, 'workspace');
+    const temporary = join(root, 'tmp');
+    const uploads = join(root, 'web-uploads');
+    mkdirSync(workspace);
+    mkdirSync(temporary);
+    mkdirSync(uploads);
+    // Scope the allowed temporary root to a sibling of the upload fixtures.
+    vi.stubEnv('TMPDIR', temporary);
+    vi.stubEnv('TEMP', temporary);
     try {
-      const uploads = join(shared, 'web-uploads');
-      mkdirSync(uploads);
       const file = join(uploads, 'photo.png');
       writeFileSync(file, 'image');
       const service = new DocumentAttachments(join(root, 'cache'), [uploads]);
-      expect((await service.source('session', file, [file], root)).size).toBe(5);
-      await expect(service.source('other', file, [], root)).rejects.toMatchObject({ status: 403 });
-      const outside = join(shared, 'outside.png');
+      expect((await service.source('session', file, [file], workspace)).size).toBe(5);
+      await expect(service.source('other', file, [], workspace)).rejects.toMatchObject({
+        status: 403,
+      });
+      const outside = join(root, 'outside.png');
       writeFileSync(outside, 'private');
-      await expect(service.source('session', outside, [outside], root)).rejects.toMatchObject({ status: 404 });
+      await expect(service.source('session', outside, [outside], workspace)).rejects.toMatchObject({
+        status: 404,
+      });
       const link = join(uploads, 'escape.png');
       symlinkSync(outside, link);
-      await expect(service.source('session', link, [link], root)).rejects.toMatchObject({ status: 404 });
+      await expect(service.source('session', link, [link], workspace)).rejects.toMatchObject({
+        status: 404,
+      });
     } finally {
-      rmSync(shared, { recursive: true, force: true });
+      vi.unstubAllEnvs();
     }
   });
 

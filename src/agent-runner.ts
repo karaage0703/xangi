@@ -3,6 +3,7 @@ import type { BackendFileChange } from './file-changes.js';
 import type { AgentBackend, AgentConfig, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import type { LocalLlmMode } from './backend-resolver.js';
 import type { ChatPlatform } from './prompts/index.js';
+import type { PromptSource } from './transcript-logger.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { CodexRunner } from './codex-cli.js';
 import { OpenCodeRunner } from './opencode-cli.js';
@@ -45,6 +46,8 @@ export interface RunOptions {
   localLlmReasoningEffort?: LocalLlmReasoningEffort;
   /** Platform adapter's unexpanded user text, used by deterministic backends. */
   userText?: string;
+  /** Origin of the prompt shown in the conversation transcript. */
+  promptSource?: PromptSource;
   /** UI向け短文生成など、通常の会話履歴・UserPromptSubmit hookから隔離する内部タスク。 */
   internalTask?: boolean;
 }

@@ -1255,7 +1255,10 @@ describe('AntigravityRunner', () => {
     const { logPrompt, logResponse } = await import('../src/transcript-logger.js');
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const runner = new AntigravityRunner({ workdir: '/tmp/project' });
-    const promise = runner.run('write the daily memory', { appSessionId: 'app-session' });
+    const promise = runner.run('write the daily memory', {
+      appSessionId: 'app-session',
+      promptSource: 'schedule',
+    });
     let mockProcess = await waitForProcess();
     const artifactError =
       'declaring permissions: cortex tool write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /home/user/.gemini/antigravity-cli/brain/conv-write/';
@@ -1288,7 +1291,8 @@ describe('AntigravityRunner', () => {
     expect(logPrompt).toHaveBeenCalledWith(
       '/tmp/project',
       'app-session',
-      expect.stringContaining('write the daily memory')
+      expect.stringContaining('write the daily memory'),
+      'schedule'
     );
     expect(logResponse).toHaveBeenCalledOnce();
   });
@@ -2520,7 +2524,7 @@ describe('AntigravityRunner', () => {
         onComplete,
         onError,
       },
-      { appSessionId: 'app-session' }
+      { appSessionId: 'app-session', promptSource: 'web-user' }
     );
     const artifactError =
       'declaring permissions: cortex tool write_to_file: /workspace/memory.md is not a valid artifact path; artifacts must be in /brain/conv-stream-write/';
@@ -2581,7 +2585,8 @@ describe('AntigravityRunner', () => {
     expect(logPrompt).toHaveBeenCalledWith(
       '/tmp/project',
       'app-session',
-      expect.stringContaining('write the daily memory')
+      expect.stringContaining('write the daily memory'),
+      'web-user'
     );
     expect(logResponse).toHaveBeenCalledOnce();
   });

@@ -44,7 +44,7 @@ window.fetch=async(url,init={})=>{
   if(String(url).startsWith('/api/sessions/fixture?')){
     const previous=new URL(url,'http://localhost').searchParams.get('cursor')==='50';
     const linked=new URLSearchParams(location.search).get('linked');
-    return json({id:'fixture',title:'Synthetic regression',platform:linked||'web',linkedChannel:Boolean(linked),lifecycle:'open',hasMore:!previous,nextCursor:previous?null:50,messages:Array.from({length:50},(_,i)=>({id:'m'+(i+(previous?0:50)),role:'user',content:'message '+(i+(previous?0:50)),createdAt:'2026-10-30T00:00:00Z'}))});
+    return json({id:'fixture',title:'Synthetic regression',platform:linked||'web',linkedChannel:Boolean(linked),lifecycle:'open',hasMore:!previous,nextCursor:previous?null:50,messages:Array.from({length:50},(_,i)=>({id:'m'+(i+(previous?0:50)),role:'user',content:'message '+(i+(previous?0:50)),promptSource:previous||linked?undefined:['schedule','web-user'][i-47],createdAt:'2026-10-30T00:00:00Z'}))});
   }
   return json({});
 };
@@ -99,8 +99,12 @@ try{
    await evaluate('document.querySelector("button.load-older").click()');await wait('document.querySelectorAll("article.message").length===100');
    await new Promise(r=>setTimeout(r,300));assert.equal(await evaluate('document.querySelectorAll("article.message").length'),100);
    assert.equal(await evaluate('window.__requests.filter(r=>r.url.startsWith("/api/sessions/fixture?")).length'),before+1);
+   assert.deepEqual(await evaluate("['m97','m98','m99'].map(id=>document.querySelector('#message-'+id+' header span').textContent)"),['予約実行','あなた','入力（送信元不明）']);
+   console.log('PASS Web Chat input labels in Chromium, width',width);
    const chatShot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(dir+'chat-'+width+'.png',Buffer.from(chatShot.data,'base64'));
    console.log('PASS R02 in real Chromium, width',width,'100 messages retained; one older-page request; no extra tail request');
+   await evaluate("document.querySelector('#message-m99').scrollIntoView({block:'end'})");
+   const labelsShot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(dir+'chat-input-labels-'+width+'.png',Buffer.from(labelsShot.data,'base64'));
    const typeCommand=async value=>evaluate(`(()=>{const input=document.querySelector('textarea.pane-input');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
    const click = async selector => {
      const {x,y} = await evaluate(`(() => {

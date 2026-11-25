@@ -204,6 +204,7 @@ interface Message {
   replySuggestions?: string[];
   attachments?: string[];
   platformMessageId?: string;
+  promptSource?: 'web-user' | 'schedule';
 }
 
 export interface SessionDetail {
@@ -289,6 +290,7 @@ const MessageView = memo(function MessageView({
   sessionId,
   mutable,
   linked,
+  webConversation,
   suggestionsEnabled,
   onReload,
   onSuggestion,
@@ -300,6 +302,7 @@ const MessageView = memo(function MessageView({
   sessionId: string;
   mutable: boolean;
   linked: boolean;
+  webConversation: boolean;
   suggestionsEnabled: boolean;
   onReload: () => Promise<void>;
   onSuggestion: (suggestion: string) => void;
@@ -314,6 +317,14 @@ const MessageView = memo(function MessageView({
   const [suggestionsUsed, setSuggestionsUsed] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const authorLabel =
+    message.role !== 'user'
+      ? 'xangi'
+      : message.promptSource === 'schedule'
+        ? '予約実行'
+        : webConversation && message.promptSource !== 'web-user'
+          ? '入力（送信元不明）'
+          : 'あなた';
   const usage = message.usage;
   const promptDisplay =
     message.role === 'user'
@@ -376,7 +387,7 @@ const MessageView = memo(function MessageView({
       id={message.id ? messageElementId(message.id) : undefined}
     >
       <header>
-        <span>{message.role === 'user' ? 'あなた' : 'xangi'}</span>
+        <span>{authorLabel}</span>
         <time>{displayTime(message.createdAt)}</time>
         {message.edited && <em>編集済み</em>}
         {usageText && <small>{usageText}</small>}
@@ -1549,6 +1560,7 @@ function ChatPane({
     const optimistic: Message = {
       role: 'user',
       pending: true,
+      promptSource: 'web-user',
       content: shownMessage,
       createdAt: new Date().toISOString(),
       attachments: shownFiles.map((file) => file.path),
@@ -1937,6 +1949,7 @@ function ChatPane({
             sessionId={sessionId || ''}
             mutable={Boolean(detail)}
             linked={message.id === linkedMessageId}
+            webConversation={detail.platform === 'web'}
             suggestionsEnabled={editable}
             completionShowElapsed={config.completionShowElapsed}
             onReload={reloadMessages}

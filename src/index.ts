@@ -1,5 +1,6 @@
 import { installDedicatedAgentSettingsReceiver } from './agent-connection-settings.js';
 import { discoverBackendModels } from './backend-models.js';
+import { installDedicatedDiscordWorkWorker } from './agent-connection-work.js';
 import { installAgentConnectionScheduleWorker } from './agent-connection-schedules.js';
 import {
   acceptsWorkChannelMessage,
@@ -74,6 +75,7 @@ if (connectionWorker) {
 
 async function main() {
   const config = loadConfig();
+  if (connectionWorker) installDedicatedDiscordWorkWorker();
   const workdir = realpathSync(resolve(config.agent.config.workdir || process.cwd()));
   config.agent.config.workdir = workdir;
   const slackRemoteInputRef: { current?: SlackRemoteInputBridge } = {};
@@ -251,6 +253,12 @@ async function main() {
       uiEnabled: webChatEnabled,
     });
   }
+
+  const connectionRuntimes = new AgentConnectionRuntimes(dataDir, workdir, workspaceRegistry, {
+    runtimeSettings: { config, resolver, modelDiscovery: discoverBackendModels, agentRunner },
+  });
+  const connectionStartup = connectionWorker ? undefined : connectionRuntimes.start(connections);
+  if (connectionStartup) platformStartupTasks.push(connectionStartup);
 
   if (connectionWorker && config.discord.enabled) installDedicatedAgentSettingsReceiver();
 
@@ -475,11 +483,6 @@ async function main() {
     );
     process.exit(1);
   }
-
-  const connectionRuntimes = new AgentConnectionRuntimes(dataDir, workdir, workspaceRegistry, {
-    runtimeSettings: { config, resolver, modelDiscovery: discoverBackendModels, agentRunner },
-  });
-  if (!connectionWorker) await connectionRuntimes.start(connections);
 
   // Discord/Slackは同時に接続する。一方が再試行中でも他方とWebは利用できる。
   // スケジューラのstartup taskは全ての有効platformのready後に開始する。

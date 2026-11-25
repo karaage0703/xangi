@@ -1,4 +1,4 @@
-import type { Client, Message } from 'discord.js';
+import { MessageType, type Attachment, type Client, type Message } from 'discord.js';
 import { buildPrefetchedHistoryBlock } from '../prefetched-history.js';
 
 /** 初回 provider セッション用に、現在の発言より前の直近履歴を先読みする。 */
@@ -69,24 +69,39 @@ export async function fetchDiscordLinkContent(client: Client, text: string): Pro
   return result;
 }
 
-/** 返信元メッセージを取得してプロンプト用の引用ブロックを返す */
-export async function fetchReplyContent(message: Message): Promise<string | null> {
-  if (!message.reference?.messageId) return null;
+/** 直接返信の元メッセージを取得し、引用と画像を返す。 */
+export async function fetchReplyContent(
+  message: Message
+): Promise<{ prompt: string; text: string; images: Attachment[] } | null> {
+  if (message.type !== MessageType.Reply || !message.reference?.messageId) return null;
 
   try {
     const channel = message.channel;
-    if (!('messages' in channel)) return null;
+    if (message.reference.channelId !== channel.id || !('messages' in channel)) return null;
 
-    const repliedMessage = await channel.messages.fetch(message.reference.messageId);
+    // Refresh signed attachment URLs for replies to older messages.
+    const repliedMessage = await channel.messages.fetch({
+      message: message.reference.messageId,
+      force: true,
+    });
     const author = repliedMessage.author.tag;
     const content = repliedMessage.content || '(添付ファイルのみ)';
     const attachmentInfo =
       repliedMessage.attachments.size > 0
         ? `\n[添付: ${repliedMessage.attachments.map((a) => a.name).join(', ')}]`
         : '';
+    const images = repliedMessage.attachments.filter(
+      (attachment) =>
+        attachment.contentType?.startsWith('image/') ??
+        /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(attachment.name ?? '')
+    );
 
     console.log(`[xangi] Fetched reply-to message from ${author}`);
-    return `\n---\n💬 返信元 (${author}):\n${content}${attachmentInfo}\n---\n`;
+    return {
+      prompt: `\n---\n💬 返信元 (${author}):\n${content}${attachmentInfo}\n[元メッセージ: ${repliedMessage.url}]\n---\n`,
+      text: repliedMessage.content.trim(),
+      images: [...images.values()],
+    };
   } catch (err) {
     console.error(`[xangi] Failed to fetch reply-to message:`, err);
     return null;

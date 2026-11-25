@@ -22,7 +22,22 @@ import { acquireDataDirLock } from './data-dir-lock.js';
 import { ProjectCatalog } from './project-catalog.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
-import type { ConnectionRoute } from './agent-work-channel-routing.js';
+import { workChannelConnection, type ConnectionRoute } from './agent-work-channel-routing.js';
+import {
+  connectDedicatedDiscordWork,
+  deliverWorkPost,
+  registerSharedWorkInput,
+  type InputRequest,
+  type WorkerWorkRequest,
+} from './agent-connection-work.js';
+import {
+  createAgentWorkThread,
+  registerDiscordWorkRoute,
+  workThreadTransport,
+  type WorkThread,
+  type WorkTransport,
+} from './agent-work.js';
+import { AgentRunStore } from './agent-runs.js';
 import { agentConnectionMonitor } from './agent-connection-monitor.js';
 import { readEnvFile } from './env-file.js';
 
@@ -98,11 +113,17 @@ export class AgentConnectionRuntimes {
   private stopping = false;
   private connections: AgentConnection[] = [];
   private connectionRoutes: ConnectionRoute[] = [];
-  private scheduleClients = new Map<
+  private relayedThreads = new Map<string, { owner: string; runId: string; thread: WorkThread }>();
+  private clients = new Map<
     string,
-    { child: ChildProcess; client: AgentConnectionScheduleClient }
+    {
+      child: ChildProcess;
+      client: AgentConnectionScheduleClient;
+      work: ReturnType<typeof connectDedicatedDiscordWork>;
+    }
   >();
   private unregisterScheduleRelay?: () => void;
+  private unregisterWorkRoute?: () => void;
   constructor(
     private dataDir: string,
     private workdir: string,
@@ -137,6 +158,52 @@ export class AgentConnectionRuntimes {
         return this.runSchedule(enabled[0], prompt, destination, schedule, context);
       }
     );
+    this.unregisterWorkRoute = registerDiscordWorkRoute((target) => {
+      const connection =
+        'agentId' in target
+          ? workChannelConnection(connections, 'discord', target.agentId)
+          : connections.find(
+              (candidate) =>
+                candidate.id === target.connectionId &&
+                candidate.platform === 'discord' &&
+                candidate.enabled
+            );
+      if (!connection) return undefined;
+      const work = async () => {
+        const active = await this.readyConnection(connection.id);
+        return active.work.transport;
+      };
+      const transport: WorkTransport = {
+        create: async (...args) => (await work()).create(...args),
+        send: async (...args) => (await work()).send(...args),
+        progress: async (...args) => (await work()).progress(...args),
+        begin: async (...args) => (await work()).begin?.(...args),
+        end: async (...args) => (await work()).end?.(...args),
+        updateTimeout: async (...args) => (await work()).updateTimeout?.(...args),
+      };
+      return {
+        connectionId: connection.id,
+        transport,
+        ready: async () => {
+          await this.readyConnection(connection.id);
+        },
+      };
+    });
+    registerSharedWorkInput((request) => this.relayWorkInput(request));
+    for (const connection of connections) {
+      try {
+        for (const { id, workThread } of this.storedWorkRoutes(connection.id)) {
+          if (workThread?.relayed)
+            this.relayedThreads.set(workThread.threadId, {
+              owner: connection.id,
+              runId: id,
+              thread: workThread,
+            });
+        }
+      } catch {
+        console.warn(`[agent-connections] ${connection.id}: could not restore work thread routes`);
+      }
+    }
     const tokens = new Set<string>();
     for (const c of connections.filter((c) => c.enabled)) {
       // Never connect a token twice, even if the state file was edited manually.
@@ -228,7 +295,10 @@ export class AgentConnectionRuntimes {
           () => this.stopping
         );
       const scheduleClient = new AgentConnectionScheduleClient(child, connection.platform);
-      this.scheduleClients.set(connection.id, { child, client: scheduleClient });
+      const work = connectDedicatedDiscordWork(child, connection, (request) =>
+        this.routeWorkerWork(connection, request)
+      );
+      this.clients.set(connection.id, { child, client: scheduleClient, work });
       child.on('message', (message) => {
         agentConnectionMonitor.receive(connection.id, connection.agentId, message);
         receiveConnectionApi(connection.id, message);
@@ -245,8 +315,7 @@ export class AgentConnectionRuntimes {
         agentConnectionMonitor.remove(connection.id);
         removeConnectionApi(connection.id);
         this.children.delete(child);
-        if (this.scheduleClients.get(connection.id)?.child === child)
-          this.scheduleClients.delete(connection.id);
+        if (this.clients.get(connection.id)?.child === child) this.clients.delete(connection.id);
         agentConnectionStatus.set(connection.id, this.stopping ? 'stopped' : 'failed');
         this.retry(connection, attempt);
       });
@@ -266,10 +335,72 @@ export class AgentConnectionRuntimes {
     schedule?: Schedule,
     context?: AgentRunContext
   ): Promise<string> {
-    const active = this.scheduleClients.get(connection.id);
+    const active = await this.readyConnection(connection.id);
+    return active.client.run(prompt, destination, schedule, context);
+  }
+
+  private relayWorkInput(request: InputRequest, poster?: string): Promise<unknown> | undefined {
+    const route = this.relayedThreads.get(request.threadId);
+    if (!route) return undefined;
+    if (request.action === 'lookup')
+      return Promise.resolve(route.thread.connectionId === poster ? 'accept' : 'ignore');
+    if (route.thread.connectionId !== poster)
+      return request.action === 'input' ? Promise.resolve(null) : undefined;
+    return this.readyConnection(route.owner).then(({ work }) => work.input(request));
+  }
+
+  private async routeWorkerWork(
+    connection: AgentConnection,
+    request: InputRequest | WorkerWorkRequest
+  ) {
+    if ('threadId' in request) {
+      if (connection.platform !== 'discord') return undefined;
+      return this.relayWorkInput(request, connection.id);
+    }
+    if (request.action === 'defaults') return this.options.runtimeSettings?.resolver.resolve();
+    if (request.action === 'publish') {
+      const run = this.storedWorkRoutes(connection.id).find(({ id }) => id === request.runId);
+      if (!run?.agentId) throw new Error('作業が見つかりません');
+      const existing = [...this.relayedThreads.values()].find(
+        (route) => route.owner === connection.id && route.runId === run.id
+      );
+      if (existing) return existing.thread;
+      // The IPC connection identifies the requester independently of the run's assignee.
+      const requester =
+        connection.platform === 'discord'
+          ? (await this.readyConnection(connection.id)).work.transport
+          : undefined;
+      const created = await createAgentWorkThread(run.agentId, request.title, request.text, {
+        platform: 'discord',
+        requester,
+        requesterAgentId:
+          connection.platform === 'discord' && connection.agentId === request.requesterAgentId
+            ? undefined
+            : request.requesterAgentId,
+      });
+      if (!created) return undefined;
+      const thread: WorkThread = { ...created, relayed: true };
+      this.relayedThreads.set(thread.threadId, { owner: connection.id, runId: run.id, thread });
+      return thread;
+    }
+
+    const route = this.relayedThreads.get(request.post.thread.threadId);
+    if (!route || route.owner !== connection.id)
+      throw new Error('作業スレッドの実行元が一致しません');
+    const transport = workThreadTransport(route.thread);
+    if (!transport) throw new Error('Discordの作業スレッドに接続できません');
+    return deliverWorkPost(transport, { ...request.post, thread: route.thread });
+  }
+
+  private storedWorkRoutes(connectionId: string) {
+    return AgentRunStore.storedWorkRoutes(join(this.dataDir, 'agent-connections', connectionId));
+  }
+
+  private async readyConnection(connectionId: string) {
+    const active = this.clients.get(connectionId);
     if (!active || this.stopping)
       throw new Error('担当の専用Botは起動していません。再起動後の接続状態を確認してください');
-    if (agentConnectionStatus.get(connection.id) !== 'ready') {
+    if (agentConnectionStatus.get(connectionId) !== 'ready') {
       await new Promise<void>((resolve, reject) => {
         const finish = (error?: Error) => {
           clearTimeout(timer);
@@ -297,7 +428,7 @@ export class AgentConnectionRuntimes {
         active.child.once('close', closed);
       });
     }
-    return active.client.run(prompt, destination, schedule, context);
+    return active;
   }
 
   private retry(connection: AgentConnection, attempt: number) {
@@ -318,6 +449,8 @@ export class AgentConnectionRuntimes {
   async stop(): Promise<void> {
     this.stopping = true;
     this.unregisterScheduleRelay?.();
+    this.unregisterWorkRoute?.();
+    registerSharedWorkInput(undefined);
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
     await Promise.all(

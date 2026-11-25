@@ -16,6 +16,8 @@ import {
 import { join } from 'path';
 import type { ModelExecution } from './model-execution.js';
 
+export type PromptSource = 'web-user' | 'schedule';
+
 /**
  * セッション単位のトランスクリプト（会話ログ）をJSONLファイルに保存する
  *
@@ -40,6 +42,7 @@ export interface TranscriptEntry {
    * エントリを逆引きできる。
    */
   platformMessageId?: string;
+  promptSource?: PromptSource;
 }
 
 /**
@@ -215,10 +218,16 @@ function writeEntry(workdir: string, appSessionId: string, entry: TranscriptEntr
 /**
  * ユーザーのプロンプトを記録
  */
-export function logPrompt(workdir: string, appSessionId: string, prompt: string): TranscriptEntry {
+export function logPrompt(
+  workdir: string,
+  appSessionId: string,
+  prompt: string,
+  promptSource?: PromptSource
+): TranscriptEntry {
   const entry: TranscriptEntry = {
     id: generateMessageId(),
     role: 'user',
+    ...(promptSource && { promptSource }),
     content: isSecretSession(appSessionId) ? (secretInputs.get(appSessionId) ?? prompt) : prompt,
     createdAt: new Date().toISOString(),
   };

@@ -128,6 +128,17 @@ export class AgentRunStore {
     return new AgentRunStore(join(dataDir, FILE_NAME));
   }
 
+  /** Read connection routing metadata without starting recovery in another runtime's store. */
+  static storedWorkRoutes(dataDir: string) {
+    try {
+      const state = JSON.parse(readFileSync(join(dataDir, FILE_NAME), 'utf8')) as State;
+      return state.runs.map(({ id, agentId, workThread }) => ({ id, agentId, workThread }));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
   list(): AgentRun[] {
     return [...this.state.runs]
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))

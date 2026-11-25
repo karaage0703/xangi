@@ -1,6 +1,8 @@
+import { isWorkRequestPost } from '../agent-work-presentation.js';
 import { discordUserInput } from './user-input.js';
 import { isSecretSession, parseSecretCommand } from '../secret.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
+import { relayDedicatedWorkInput } from '../agent-connection-work.js';
 import { findAgentWork, submitAgentWork } from '../agent-work.js';
 import { registerDiscordAgentWork } from './agent-work.js';
 import {
@@ -316,7 +318,8 @@ export async function processPrompt(
     userText?: string;
     completionUserId?: string | null;
   },
-  workspaceRegistry?: WorkspaceRegistry
+  workspaceRegistry?: WorkspaceRegistry,
+  newThreadTitleSource?: { request: string; reply?: string }
 ): Promise<string | null> {
   const startedAt = Date.now();
   let reactionDone: Promise<unknown> = Promise.resolve();
@@ -559,7 +562,13 @@ export async function processPrompt(
     let structuredAttachments: string[] | undefined;
 
     let aiTitleStarted = false;
-    const prefixTitle = truncateSessionTitle(stripPromptMetadata(prompt));
+    const prefixTitle = truncateSessionTitle(
+      stripPromptMetadata(
+        newThreadTitleSource
+          ? newThreadTitleSource.request || target.createdThreadName || ''
+          : prompt
+      )
+    );
     const startTitleIfNeeded = () => {
       if (
         aiTitleStarted ||
@@ -575,7 +584,15 @@ export async function processPrompt(
       aiTitleStarted = startAiSessionTitle({
         runner: agentRunner,
         appSessionId,
-        userText: prompt,
+        userText: newThreadTitleSource
+          ? [
+              newThreadTitleSource.request,
+              newThreadTitleSource.reply &&
+                `[Direct reply context, use only if relevant]\n${newThreadTitleSource.reply}`,
+            ]
+              .filter(Boolean)
+              .join('\n\n')
+          : prompt,
         runOptions: {
           settingsChannelId: target.settingsChannelId,
           platform: 'discord',
@@ -749,9 +766,8 @@ export async function processPrompt(
     // 最初のメッセージでタイトル自動設定（既にタイトル付き or 抽出できなければ何もしない）
     const existingEntry = getSessionEntry(appSessionId);
     if (existingEntry && !existingEntry.title) {
-      const titleCandidate = truncateSessionTitle(stripPromptMetadata(prompt));
-      if (titleCandidate) {
-        updateSessionTitle(appSessionId, titleCandidate);
+      if (prefixTitle) {
+        updateSessionTitle(appSessionId, prefixTitle);
       }
     }
     console.log(
@@ -1121,7 +1137,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       const allowedBots = config.discord.respondToBots ?? [];
       const allowAll = allowedBots.includes('*');
       const isAllowed = allowAll || allowedBots.includes(message.author.id);
-      if (!isAllowed) return;
+      if (!isAllowed || isWorkRequestPost(message.content)) return;
       // 連続返信制限チェック (default 3 回、0 以下は無制限)
       const maxConsec = config.discord.respondToBotsMaxConsecutive ?? 3;
       if (maxConsec > 0) {
@@ -1169,13 +1185,42 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       parentChannelId !== null && !!getActiveSessionId(message.channel.id);
 
     const workRun = findAgentWork('discord', message.channel.id);
+    if (workRun?.workThread?.connectionId && !workRun.workThread.relayed) return;
+    const allowedUser =
+      config.discord.allowedUsers?.includes('*') ||
+      config.discord.allowedUsers?.includes(message.author.id);
+    if (parentChannelId && !message.author.bot && allowedUser) {
+      try {
+        const route = await relayDedicatedWorkInput({
+          action: 'lookup',
+          threadId: message.channel.id,
+          userId: message.author.id,
+        });
+        if (route === 'ignore') return;
+        if (route === 'accept') {
+          const response = await relayDedicatedWorkInput({
+            action: 'input',
+            threadId: message.channel.id,
+            userId: message.author.id,
+            messageId: message.id,
+            text: message.content,
+            hasAttachments: message.attachments.size > 0,
+          });
+          if (response) await message.reply({ content: response, allowedMentions: { parse: [] } });
+          return;
+        }
+      } catch (error) {
+        await message.reply({
+          content: formatAgentErrorForUser(error),
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+    }
+    if (workRun?.workThread?.relayed) return;
     if (!isMentioned && !isDM && !isAutoReplyChannel && !hasActiveThreadSession && !workRun) return;
 
-    if (
-      !isFromAllowedBot &&
-      !config.discord.allowedUsers?.includes('*') &&
-      !config.discord.allowedUsers?.includes(message.author.id)
-    ) {
+    if (!isFromAllowedBot && !allowedUser) {
       console.log(`[xangi] Unauthorized user: ${message.author.id} (${message.author.tag})`);
       return;
     }
@@ -1210,7 +1255,7 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       return;
     }
 
-    let prompt = message.content
+    const requestText = message.content
       .replace(/<@[!&]?\d+>/g, '') // ユーザーメンションのみ削除（チャンネルメンションは残す）
       .replace(/\s+/g, ' ')
       .trim();
@@ -1219,12 +1264,12 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
 
     // These lookups use only the original message and can run independently.
     // Compose in the original order after all results arrive.
-    const [linkedPrompt, threadStarterContent, replyContent] = await Promise.all([
-      fetchDiscordLinkContent(client, prompt),
+    const [linkedPrompt, threadStarterContent, reply] = await Promise.all([
+      fetchDiscordLinkContent(client, requestText),
       fetchThreadStarterContent(message),
       fetchReplyContent(message),
     ]);
-    prompt = (replyContent || '') + (threadStarterContent || '') + linkedPrompt;
+    let prompt = (reply?.prompt || '') + (threadStarterContent || '') + linkedPrompt;
 
     // チャンネルメンションにID注釈を追加（展開前に実行）
     prompt = annotateChannelMentions(prompt);
@@ -1232,17 +1277,25 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
     // チャンネルメンションから最新メッセージを取得
     prompt = await fetchChannelMessages(client, prompt);
 
-    // 添付ファイルをダウンロード
+    // 今回の添付と、直接返信元の画像を同じ入力経路へ載せる。
     const attachmentPaths: string[] = [];
-    if (message.attachments.size > 0) {
-      for (const [, attachment] of message.attachments) {
-        try {
-          const filePath = await downloadFile(attachment.url, attachment.name || 'file');
-          attachmentPaths.push(filePath);
-        } catch (err) {
-          console.error(`[xangi] Failed to download attachment: ${attachment.name}`, err);
-        }
+    const failedReplyImages: string[] = [];
+    const attachments = [
+      ...Array.from(message.attachments.values(), (attachment) => ({ attachment, isReply: false })),
+      ...(reply?.images ?? []).map((attachment) => ({ attachment, isReply: true })),
+    ];
+    for (const { attachment, isReply } of attachments) {
+      const name = attachment.name || 'file';
+      try {
+        const filename = isReply ? `reply-${attachment.id}-${name}` : name;
+        attachmentPaths.push(await downloadFile(attachment.url, filename));
+      } catch (err) {
+        if (isReply) failedReplyImages.push(name);
+        console.error(`[xangi] Failed to download attachment: ${name}`, err);
       }
+    }
+    if (failedReplyImages.length) {
+      prompt += `\n[取得できなかった返信元画像: ${failedReplyImages.join(', ')}]`;
     }
 
     // テキストも添付もない場合はスキップ
@@ -1266,6 +1319,17 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
 
     const target = await resolveDiscordMessageTarget(message, channelId, config, settings);
     const runKey = target.conversationChannelId;
+    // 命名には展開前の依頼本文と、取得できた直接返信元の本文だけを使う。
+    const newThreadTitleSource =
+      target.createdThreadName !== null
+        ? {
+            request: requestText.replace(/<#(\d+)>/g, (mention, id: string) => {
+              const channel = message.mentions.channels.get(id);
+              return channel && 'name' in channel && channel.name ? `#${channel.name}` : mention;
+            }),
+            reply: reply?.text,
+          }
+        : undefined;
 
     // ここへ到達するのは、メンション / DM / autoreply のいずれかで bot 宛てと
     // 判定済みのメッセージだけ。同じ実行キーが処理中またはqueue待ちなら起動しない。
@@ -1279,7 +1343,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         config,
         target,
         undefined,
-        workspaceRegistry
+        workspaceRegistry,
+        newThreadTitleSource
       );
     const run = await turnCoordinator.tryRun(runKey, processMessage);
     if (!run.accepted) {

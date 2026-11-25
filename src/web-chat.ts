@@ -1,3 +1,4 @@
+import { sharedDelegationDefaults } from './agent-connection-work.js';
 import {
   proxyConnectionSession,
   connectionApiHeader,
@@ -742,16 +743,18 @@ You are the designated leader of Team ${delegatedTeam.name} (ID: ${delegatedTeam
 Shared instructions:
 ${delegatedTeam.prompt}`
         : '');
+    const defaults =
+      !inheritParent && (teamLeaderId || agentId) === DEFAULT_TEAM_AGENT_ID
+        ? ((await sharedDelegationDefaults()) ?? options.resolver.resolve())
+        : undefined;
     const backend = String(
-      (agentId ? execution?.backend || options.resolver.resolve().backend : body.backend) ||
+      (agentId
+        ? defaults?.backend || execution?.backend || options.resolver.resolve().backend
+        : body.backend) ||
         (body.parentContextKey
           ? options.resolver.resolve(String(body.parentContextKey)).backend
           : '')
     ).trim() as AgentBackend;
-    const defaults =
-      !inheritParent && (teamLeaderId || agentId) === DEFAULT_TEAM_AGENT_ID
-        ? options.resolver.resolve()
-        : undefined;
     const modelValue = defaults ? defaults.model : agentId ? execution?.model : body.model;
     const effortValue = defaults ? defaults.effort : agentId ? execution?.effort : body.effort;
     const model = modelValue ? String(modelValue).trim() : undefined;
@@ -1136,6 +1139,7 @@ ${delegatedTeam.prompt}`
           settingsChannelId: contextKey,
           appSessionId,
           platform: 'web',
+          promptSource: job ? 'schedule' : undefined,
           defaultBackend: backendDefault?.backend,
           defaultModel: backendDefault?.model,
           defaultEffort: backendDefault?.effort,
@@ -1778,6 +1782,7 @@ ${delegatedTeam.prompt}`
                   sessionId: backendChanged ? undefined : previousSession,
                   workdir: workspace.path,
                   platform,
+                  promptSource: platform === 'web' && !completion ? 'web-user' : undefined,
                   defaultBackend: defaults?.backend,
                   defaultModel: defaults?.model,
                   defaultEffort: defaults?.effort,
@@ -3863,6 +3868,7 @@ ${delegatedTeam.prompt}`
           edited: m.edited,
           editedAt: m.editedAt,
           platformMessageId: m.platformMessageId,
+          promptSource: m.promptSource,
           usage:
             isObj || m.usage
               ? {
@@ -5332,6 +5338,7 @@ ${delegatedTeam.prompt}`
                 channelId: ctxKey,
                 appSessionId,
                 platform: 'web',
+                promptSource: 'web-user',
                 defaultBackend: backendDefault?.backend,
                 defaultModel: backendDefault?.model,
                 defaultEffort: backendDefault?.effort,
