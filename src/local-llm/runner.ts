@@ -1301,7 +1301,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const llmTools = callFlags.tools ? toLLMTools(getAllTools()) : [];
     const prompt = prependRuntimeContext(rawPrompt, this.workdir);
     const userMsg = this.buildUserMessage(prompt);
-    const promptEntry = logPrompt(this.workdir, appSid, prompt);
+    const promptEntry = logPrompt(this.workdir, appSid, prompt, options?.promptSource);
     userMsg.transcriptEntryId = promptEntry.id;
     session.messages.push(userMsg);
 

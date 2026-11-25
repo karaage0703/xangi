@@ -202,12 +202,14 @@ export function registerDiscordTimeoutUi(agentRunner: AgentRunner): void {
 /** Shared completion policy and per-message history binding for every Discord response. */
 export function prepareDiscordCompletion(options: {
   historyContext?: DiscordHistoryContext;
+  history?: TurnHistoryEntry[];
   finalResponse: string;
   historyEnabled: boolean;
   showLeave: boolean;
   showReplySuggestions?: boolean;
 }) {
-  const history = completionHistory(options.historyContext, options.finalResponse);
+  const history =
+    options.history ?? completionHistory(options.historyContext, options.finalResponse);
   const showHistory = options.historyEnabled && history.length > 0;
   return {
     buttons: createCompletedButtons({ ...options, showTools: showHistory }),

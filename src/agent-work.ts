@@ -1,10 +1,13 @@
 import { runDelegatingLeader } from './team-delegation.js';
 import { randomUUID } from 'node:crypto';
+import type { DiscordHistoryContext, getDiscordTimeoutInfoFor } from './discord/ui.js';
+import type { TurnHistoryEntry } from './activity-store.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
 import { formatAgentWork } from './agent-work-presentation.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
 import { agentWorkChannel } from './agent-selection.js';
+import { isSecretSession } from './secret.js';
 import {
   activateSession,
   closeSession,
@@ -19,15 +22,57 @@ export interface WorkThread {
   channelId: string;
   threadId: string;
   url: string;
+  connectionId?: string;
+  relayed?: true;
 }
+export interface WorkHistory {
+  context: DiscordHistoryContext;
+  entries: TurnHistoryEntry[];
+}
+export type WorkTimeout = NonNullable<ReturnType<typeof getDiscordTimeoutInfoFor>>;
 export interface WorkTransport {
   create(channelId: string, title: string, text: string): Promise<WorkThread>;
   progress(thread: WorkThread, text: string): Promise<void>;
-  send(thread: WorkThread, text: string): Promise<void>;
+  send(thread: WorkThread, text: string, history?: WorkHistory): Promise<void>;
   begin?(thread: WorkThread, contextKey: string): Promise<void>;
   end?(thread: WorkThread, contextKey: string): Promise<void>;
+  updateTimeout?(thread: WorkThread, timeout: WorkTimeout): Promise<void>;
 }
 const transports = new Map<string, WorkTransport>();
+type DiscordWorkRoute = (
+  target: { agentId: string } | { connectionId: string }
+) => { connectionId: string; transport: WorkTransport; ready(): Promise<void> } | undefined;
+let discordWorkRoute: DiscordWorkRoute | undefined;
+let workerWorkRoute:
+  | {
+      create(
+        runId: string,
+        title: string,
+        text: string,
+        requesterAgentId?: string
+      ): Promise<WorkThread | undefined>;
+      transport: WorkTransport;
+    }
+  | undefined;
+export function registerWorkerWorkRoute(route: typeof workerWorkRoute): void {
+  workerWorkRoute = route;
+}
+export function registerDiscordWorkRoute(route: DiscordWorkRoute): () => void {
+  discordWorkRoute = route;
+  return () => {
+    if (discordWorkRoute === route) discordWorkRoute = undefined;
+  };
+}
+export function workThreadTransport(thread: WorkThread): WorkTransport | undefined {
+  if (thread.relayed && workerWorkRoute) return workerWorkRoute.transport;
+  return thread.connectionId
+    ? discordWorkRoute?.({ connectionId: thread.connectionId })?.transport
+    : transports.get(thread.platform);
+}
+export function localDiscordWorkTransport(): WorkTransport | undefined {
+  return transports.get('discord');
+}
+
 export function registerWorkTransport(platform: string, transport: WorkTransport) {
   transports.set(platform, transport);
 }
@@ -63,6 +108,10 @@ export function agentWorkBusy(agentId: string) {
 /** Close only idle work; queued follow-ups and final delivery still own the session. */
 export function closeAgentWork(platform: string, threadId: string): 'closed' | 'busy' | 'missing' {
   return closeAgentRun(findAgentWork(platform, threadId));
+}
+
+export function agentWorkRunner(): AgentRunner | undefined {
+  return dependencies?.runner;
 }
 
 /** Shared idle guard for parent acknowledgement and work-thread close. */
@@ -145,10 +194,14 @@ export function submitAgentWork(
       } catch (error) {
         const failed = deps.store.markFailed(run.id, error);
         deps.notify(failed);
-        const transport = transports.get(run.workThread!.platform);
-        await transport
-          ?.send(run.workThread!, `追加指示の実行に失敗しました: ${String(error)}`)
-          .catch(() => undefined);
+        try {
+          await workThreadTransport(run.workThread!)?.send(
+            run.workThread!,
+            `追加指示の実行に失敗しました: ${String(error)}`
+          );
+        } catch (deliveryError) {
+          deps.store.setWorkDeliveryError(run.id, String(deliveryError));
+        }
       } finally {
         release?.();
         resuming.delete(run.id);
@@ -169,16 +222,39 @@ export async function prepareAgentWork(
   store: AgentRunStore
 ): Promise<WorkThread | undefined> {
   if (run.workThread) return run.workThread;
-  const target = run.agentId ? agentWorkChannel(run.agentId) : undefined;
-  if (!target) return undefined;
-  const transport = transports.get(target.platform);
-  if (!transport) throw new Error(`${target.platform}の作業チャンネルに接続できません`);
-  const name =
-    getSessionEntry(run.appSessionId)?.selectedAgentConfig?.name || run.agentId || 'Agent';
+  if (!run.agentId || isSecretSession(run.appSessionId) || isSecretSession(run.parentAppSessionId))
+    return undefined;
+  const name = getSessionEntry(run.appSessionId)?.selectedAgentConfig?.name || run.agentId;
   const { title, text } = formatAgentWork(run.task, name, run.workPresentation);
-  const thread = await transport.create(target.channelId, title, text);
-  store.setWorkThread(run.id, thread);
+  const requesterAgentId = run.parentAppSessionId
+    ? getSessionEntry(run.parentAppSessionId)?.selectedAgentId
+    : undefined;
+  const relayed = await workerWorkRoute?.create(run.id, title, text, requesterAgentId);
+  const thread =
+    relayed ?? (await createAgentWorkThread(run.agentId, title, text, { requesterAgentId }));
+  if (thread) store.setWorkThread(run.id, thread);
   return thread;
+}
+
+export async function createAgentWorkThread(
+  agentId: string,
+  title: string,
+  text: string,
+  origin?: { platform?: 'discord'; requester?: WorkTransport; requesterAgentId?: string }
+): Promise<WorkThread | undefined> {
+  const target = agentWorkChannel(agentId);
+  if (!target || (origin?.platform && target.platform !== origin.platform)) return undefined;
+  const dedicated = target.platform === 'discord' ? discordWorkRoute?.({ agentId }) : undefined;
+  const shared = transports.get(target.platform);
+  const responder = dedicated?.transport ?? shared;
+  if (!responder) throw new Error(`${target.platform}の作業チャンネルに接続できません`);
+  await dedicated?.ready();
+  const requesterAgentId = target.platform === 'discord' ? origin?.requesterAgentId : undefined;
+  const requester = requesterAgentId
+    ? discordWorkRoute?.({ agentId: requesterAgentId })?.transport
+    : origin?.requester;
+  const thread = await (requester ?? shared ?? responder).create(target.channelId, title, text);
+  return dedicated ? { ...thread, connectionId: dedicated.connectionId } : thread;
 }
 
 type Execute = (
@@ -214,11 +290,12 @@ async function executeWork(
   activateSession(`web-chat:${run.appSessionId}`, run.appSessionId);
   store.markRunning(run.id);
   let thread = run.workThread;
-  let transport = thread ? transports.get(thread.platform) : undefined;
+  let transport: WorkTransport | undefined;
   try {
+    if (thread) transport = workThreadTransport(thread);
     if (!thread) {
       thread = await prepareAgentWork(run, store);
-      transport = thread ? transports.get(thread.platform) : undefined;
+      transport = thread ? workThreadTransport(thread) : undefined;
     }
     if (thread && !transport) throw new Error(`${thread.platform}の作業チャンネルに接続できません`);
     const reportFailure = (error: unknown) => {

@@ -1,6 +1,7 @@
 import { delegationScopeCount, unfinished } from './team-delegation.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { executeAgentWork, prepareAgentWork } from './agent-work.js';
+import { sharedDelegationDefaults } from './agent-connection-work.js';
 import { relative, isAbsolute, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -14,6 +15,7 @@ import type {
 import {
   validateTeamAssignments,
   teamMemberId,
+  DEFAULT_TEAM_AGENT_ID,
   DEFAULT_TEAM_CONCURRENCY,
   type TeamMember,
   type TeamSnapshot,
@@ -186,11 +188,18 @@ export async function runTeamTurn(
   try {
     if (preparePrompt) prompt = await preparePrompt();
     // Validate every workspace/backend before starting any member or side effect.
+    const defaults = team.agents.some((agent) => agent.id === DEFAULT_TEAM_AGENT_ID)
+      ? await sharedDelegationDefaults()
+      : undefined;
     const members = await Promise.all(
       team.agents.map(async (agent) => ({
         agent,
         workspace: await deps.registry!.resolveById(agent.workspaceId || 'default'),
-        backend: resolveAgentBackend(deps.resolver!, agent),
+        backend: resolveAgentBackend(
+          deps.resolver!,
+          agent,
+          agent.id === DEFAULT_TEAM_AGENT_ID ? defaults : undefined
+        ),
       }))
     );
     // The caller supplies the required context in --task. Copying its transcript

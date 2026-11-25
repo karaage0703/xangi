@@ -9,6 +9,7 @@ import {
   sendDiscordCompletedResult,
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
+import { formatAgentWork, WORK_REQUEST_THREAD_DETAILS, WORK_REQUEST_CONTINUATION } from '../src/agent-work-presentation.js';
 import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 import { AntigravityTimeoutError, AntigravityTurnError } from '../src/errors.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
@@ -37,6 +38,32 @@ describe('shouldProcessDiscordMessage', () => {
   it('does not process Discord system messages', () => {
     expect(shouldProcessDiscordMessage({ system: true })).toBe(false);
   });
+});
+
+it.each([
+  formatAgentWork('作業をお願いします', '担当').text,
+  `作業をお願いします\n${WORK_REQUEST_THREAD_DETAILS}`,
+  `${WORK_REQUEST_CONTINUATION}分割された依頼文`,
+])('does not auto-reply to an assignment posted by another Bot', async (content) => {
+  const on = vi.fn();
+  const checkMention = vi.fn(() => true);
+  registerDiscordMessageHandlers({
+    client: { on, user: { id: 'responder' } } as unknown as Client,
+    config: {
+      discord: { respondToBotsEnabled: true, respondToBots: ['requester'] },
+      agent: { config: {} },
+    },
+    agentRunner: {},
+    workdir: tmpdir(),
+    workspaceRegistry: {},
+  } as unknown as Parameters<typeof registerDiscordMessageHandlers>[0]);
+  await on.mock.calls.find(([event]) => event === Events.MessageCreate)![1]({
+    author: { id: 'requester', bot: true },
+    channel: { id: 'work-thread' },
+    mentions: { has: checkMention },
+    content,
+  });
+  expect(checkMention).not.toHaveBeenCalled();
 });
 
 it('lets only the assigned Discord Bot process an autoreply in a linked Project thread', async () => {

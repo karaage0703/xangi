@@ -160,6 +160,7 @@ flowchart LR
 - 指名問い合わせは既定でBearer認証付きHTTPを使い、`INTER_INSTANCE_CHAT_PEERS`から宛先を解決する。受信側は送信元ごとの通常Web sessionを再利用し、transcriptとprovider文脈を永続化する。別instanceの内容はユーザー承認として扱わない
 - 指名問い合わせの受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`で制限できる。未設定または`*`は正しい共有tokenを持つ全instanceを許可する
 - Discordセッションは、履歴を引き継ぐWeb分岐と、共通受付から同じDiscord `contextKey` / appSessionIdを継続する入力の2経路を持つ。共通受付ではAI処理完了後、Webからのユーザー本文・添付を元スレッドへ送り、その後でAI回答・添付を送る。本文先頭の `👤 ユーザー（Web）` と `🤖 AI：エージェント名` で発言者を区別する。エージェント未選択時は作業ディレクトリ名を表示する。Discordの投稿アカウントは接続済みBotのままであり、Webの共有認証から個人名を推測しない。回答者名は実行開始時に確定して受付記録へ保存し、配送の再試行でも保持する。配送失敗が投稿前に確定した場合だけ再試行でき、部分配送・応答消失など結果不明の投稿は重複を避けて自動再送しない。AI処理失敗・中断時にはこの完了時配送を行わない。Slackの共通受付は従来どおり結果だけを配送する。共通受付はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
+- Web会話の入力は保存した送信元に応じて「あなた」または「予約実行」と表示する。送信元を記録していない入力は「入力（送信元不明）」と表示する
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
@@ -1387,6 +1388,8 @@ DocumentAttachmentsが検証済みファイルのコピー、形式判定、Libr
 ### Team（メンバーの編成）
 
 詳しくは[Team（メンバーの編成）](usage.md#teamメンバーの編成)を参照してください。
+
+通常のAgent依頼とTeamメンバー依頼では、本体が依頼先Agentの作業チャンネルとDiscord Botを解決します。専用Botから依頼する場合も、IPCで本体に同じ解決を依頼します。依頼元セッションの担当Agentに専用Discord Botがあれば、依頼文とスレッドをそのBotで作成します。現在のDiscord接続がそのAgentを担当する場合は、その接続を使います。依頼元専用のDiscord接続がなければ共通Botを使い、共通Botもなければ担当Botを使います。実行セッションと結果通知は依頼を受け付けたランタイムが維持し、返答するBotの接続IDとスレッドIDをAgent Runに保存します。本体は再起動時に保存済みの経路を復元し、投稿担当のBotと許可ユーザーを照合してから追加指示と操作を元の実行に中継します。既定Agentを指名した実行は本体のAI既定値を使います。シークレット会話の依頼は作業チャンネルに投稿しません。依頼文の投稿はBot間の自動応答の対象から外します。
 
 編成は `project-catalog.json`、チャンネルのAgentは `channel-agents.json` に保存します。`GET/POST /api/teams`、`PATCH/DELETE /api/teams/:id` に対応します。旧編成は呼び出し元方式へ移行し、報告先だけを外して登録Agentと担当文を保持します。冗長なデフォルト担当の頂点は削除します。旧会話スナップショットも再開時に変換します。旧partyコマンド・API別名はありません。 起動時に旧Team割当と重複Agent割当を `channel-assignments-before-single-agent.json` へ退避し解除します。重複のないAgent割当と登録Teamは保持します。
 

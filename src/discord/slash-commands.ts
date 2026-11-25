@@ -10,6 +10,7 @@ import {
 import type { ChatCommandOption } from '../chat-commands.js';
 import { PENDING_MESSAGE_PREFIX } from './pending-messages.js';
 import { handleQuestionInteraction } from './user-input.js';
+import { relayDedicatedWorkInput } from '../agent-connection-work.js';
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
 import {
   channelAgent,
@@ -99,15 +100,19 @@ type DiscordHistoryInteraction = Pick<ButtonInteraction, 'deferReply' | 'editRep
 
 export async function respondWithDiscordTurnHistory(
   interaction: DiscordHistoryInteraction,
-  loadHistory: () => TurnHistoryEntry[]
+  loadHistory: () => TurnHistoryEntry[] | Promise<TurnHistoryEntry[]>
 ): Promise<void> {
   // Discord requires an initial interaction acknowledgement within about 3 seconds.
   // Acknowledge before formatting or reading persisted history.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const chunks = splitDiscordMessage(
-    formatTurnHistoryDisclosure(loadHistory()),
-    DISCORD_SAFE_LENGTH
-  );
+  let history: TurnHistoryEntry[];
+  try {
+    history = await loadHistory();
+  } catch (error) {
+    await interaction.editReply({ content: formatAgentErrorForUser(error) });
+    return;
+  }
+  const chunks = splitDiscordMessage(formatTurnHistoryDisclosure(history), DISCORD_SAFE_LENGTH);
   await interaction.editReply({ content: chunks[0] || '履歴はありません' });
   for (let i = 1; i < chunks.length; i++) {
     await interaction.followUp({ content: chunks[i], flags: MessageFlags.Ephemeral });
@@ -811,9 +816,22 @@ export function createInteractionHandler(
       const workRun = findAgentWork('discord', channelId);
       const executionKey = workRun ? `web-chat:${workRun.appSessionId}` : channelId;
       if (interaction.customId === 'xangi_stop') {
-        const managedProcessStopped = await processManager.stopAndWait(executionKey);
-        const stopped = managedProcessStopped || agentRunner.cancel?.(executionKey) || false;
         await interaction.deferUpdate().catch(() => {});
+        let stopped: boolean;
+        try {
+          stopped =
+            (await relayDedicatedWorkInput({
+              action: 'stop',
+              threadId: channelId,
+              userId: interaction.user.id,
+            })) ??
+            ((await processManager.stopAndWait(executionKey)) ||
+              agentRunner.cancel?.(executionKey) ||
+              false);
+        } catch (error) {
+          await interaction.followUp({ content: formatAgentErrorForUser(error), ephemeral: true });
+          return;
+        }
         if (!stopped) {
           await interaction.followUp({
             content: '実行中のタスクがありません',
@@ -825,21 +843,35 @@ export function createInteractionHandler(
 
       if (interaction.customId === 'xangi_extend') {
         // additionalMs を省略して runner 側の「残り時間 2 倍」デフォルト挙動を使う
-        const result = agentRunner.extendTimeout?.(executionKey) ?? {
-          ok: false,
-          reason: 'unsupported' as const,
-        };
-        if (result.ok) {
-          await interaction.deferUpdate().catch(() => {});
-          // メッセージ自体は timeout-extended イベントで refresh される
-        } else {
-          const text =
-            result.reason === 'max_timeout_exceeded'
-              ? '⏱ 上限に達したため延長できません'
-              : result.reason === 'no_active_request'
-                ? '⏱ 処理中のリクエストがありません'
-                : '⏱ このバックエンドでは延長できません';
-          await interaction.reply({ content: text, ephemeral: true }).catch(() => {});
+        const remote = relayDedicatedWorkInput({
+          action: 'extend',
+          threadId: channelId,
+          userId: interaction.user.id,
+        });
+        if (remote) await interaction.deferUpdate().catch(() => {});
+        try {
+          const result = (await remote) ??
+            agentRunner.extendTimeout?.(executionKey) ?? {
+              ok: false,
+              reason: 'unsupported' as const,
+            };
+          if (result.ok) {
+            if (!remote) await interaction.deferUpdate().catch(() => {});
+          } else {
+            const text =
+              result.reason === 'max_timeout_exceeded'
+                ? '⏱ 上限に達したため延長できません'
+                : result.reason === 'no_active_request'
+                  ? '⏱ 処理中のリクエストがありません'
+                  : '⏱ このバックエンドでは延長できません';
+            const response = { content: text, ephemeral: true };
+            if (remote) await interaction.followUp(response).catch(() => {});
+            else await interaction.reply(response).catch(() => {});
+          }
+        } catch (error) {
+          await interaction
+            .followUp({ content: formatAgentErrorForUser(error), ephemeral: true })
+            .catch(() => {});
         }
         return;
       }
@@ -872,12 +904,21 @@ export function createInteractionHandler(
         interaction.customId.startsWith('xangi_tools|')
       ) {
         const historyContext = parseDiscordHistoryCustomId(interaction.customId);
-        await respondWithDiscordTurnHistory(interaction, () => {
+        await respondWithDiscordTurnHistory(interaction, async () => {
           const cached = discordToolHistoryByMessageId.get(interaction.message.id);
           if (cached?.length) return cached;
           if (!historyContext) return [];
-          return readTurnHistory(historyContext.threadId, 200).filter(
-            (entry) => entry.turnId === historyContext.turnId
+          const remote = await relayDedicatedWorkInput({
+            action: 'history',
+            threadId: interaction.channelId,
+            userId: interaction.user.id,
+            turnId: historyContext.turnId,
+          });
+          return (
+            remote ??
+            readTurnHistory(historyContext.threadId, 200).filter(
+              (entry) => entry.turnId === historyContext.turnId
+            )
           );
         });
         return;
@@ -934,8 +975,14 @@ export function createInteractionHandler(
         }
         try {
           await removeUserFromDiscordThread(interaction.channel, interaction.user.id);
-          const workClose = workRun ? closeAgentWork('discord', channelId) : undefined;
-          if (!workRun) {
+          const workClose = workRun
+            ? closeAgentWork('discord', channelId)
+            : await relayDedicatedWorkInput({
+                action: 'close',
+                threadId: channelId,
+                userId: interaction.user.id,
+              });
+          if (!workRun && workClose === undefined) {
             closeActiveSession(channelId, 'leave');
             agentRunner.destroy?.(channelId);
           }
@@ -1218,6 +1265,29 @@ export function createInteractionHandler(
     if (interaction.commandName === 'stop') {
       const workRun = findAgentWork('discord', channelId);
       const executionKey = workRun ? `web-chat:${workRun.appSessionId}` : channelId;
+      const remote = interaction.channel?.isThread()
+        ? relayDedicatedWorkInput({
+            action: 'stop',
+            threadId: channelId,
+            userId: interaction.user.id,
+          })
+        : undefined;
+      if (remote) {
+        await interaction.deferReply({ ephemeral: true });
+        try {
+          const stopped =
+            (await remote) ??
+            ((await processManager.stopAndWait(executionKey)) ||
+              agentRunner.cancel?.(executionKey) ||
+              false);
+          await interaction.editReply(
+            stopped ? '🛑 タスクを停止しました' : '実行中のタスクはありません'
+          );
+        } catch (error) {
+          await interaction.editReply(formatAgentErrorForUser(error));
+        }
+        return;
+      }
       const managedProcessStopped = await processManager.stopAndWait(executionKey);
       const stopped = managedProcessStopped || agentRunner.cancel?.(executionKey) || false;
       if (stopped) {

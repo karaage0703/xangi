@@ -73,6 +73,8 @@ In the assigned work channel and its threads, use the dedicated Discord Bot’s 
 
 `/workspace use|set|reset` and changes to Local LLM mode and reasoning effort through `/settings item:llmmode|llmeffort` are also saved by the main instance and take effect from the Agent’s next normal turn. The defaults addressed by `/backend scope:global` and the `/settings item:respondtobots` preference are saved per dedicated Bot.
 
+For Agent and Team member requests, the requesting Discord Bot posts the assignment and creates a public thread in the recipient’s work channel. The recipient’s dedicated Bot posts progress and results, or the shared Bot does so when there is no dedicated configuration. The responding Bot checks its allowed users before forwarding follow-ups to the original work session. Assignments that fit in one Discord message appear in the thread’s starter message. Longer assignments use a short starter and put the full text in the thread. The requesting Bot needs permission to view the recipient’s channel, send messages there, and create public threads. Longer assignments also require permission to send messages in threads. If posting fails, the caller receives an error. Existing threads keep their saved responding Bot.
+
 Each connection runs an isolated child runtime with separate history, schedules and tool credentials. State is retained under `DATA_DIR/agent-connections/<connection-ID>/`; session activity is shared with the main Monitor and pets. Open history from the shared Web UI conversation list and send through the dedicated Bot that owns the conversation. Deleting a connection does not erase history. Reload settings to refresh connection status. Credentials are stored in `DATA_DIR/agent-connections.json` with mode 600 and never returned by the API. Keep the data directory out of Git.
 
 
@@ -107,6 +109,10 @@ Try `/new` or `/skill` in your Discord server, or mention the bot:
 ```
 @xangi Hello!
 ```
+
+When you reply to a Discord message with images, the AI receives those images alongside any files you attach to your reply. If an image cannot be downloaded, the original message link and filename remain available as context for the answer.
+
+Automatic AI naming for a new thread uses the current request and the text of the message it directly replies to. The AI can still use history from mentioned channels when answering. Use `/retitle` to regenerate an existing thread title.
 
 ## How to Find IDs
 

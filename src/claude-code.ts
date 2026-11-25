@@ -158,7 +158,7 @@ export class ClaudeCodeRunner extends CliRunnerBase {
 
     // トランスクリプトログ: 送信プロンプトを記録
     if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, prompt);
+      logPrompt(this.workdir, options.appSessionId, prompt, options.promptSource);
     }
 
     let stdout: string;

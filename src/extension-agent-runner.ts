@@ -75,7 +75,7 @@ export class ExtensionAgentRunner implements AgentRunner {
 
   private async execute(prompt: string, options?: RunOptions): Promise<RunResult> {
     if (options?.appSessionId && this.workdir) {
-      logPrompt(this.workdir, options.appSessionId, prompt);
+      logPrompt(this.workdir, options.appSessionId, prompt, options.promptSource);
     }
     const key = options?.channelId ?? 'default';
     const controller = new AbortController();

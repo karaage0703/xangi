@@ -182,7 +182,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
   protected logPromptTranscript(prompt: string, options?: RunOptions): void {
     if (options?.appSessionId && this.workdir)
-      logPrompt(this.workdir, options.appSessionId, prompt);
+      logPrompt(this.workdir, options.appSessionId, prompt, options.promptSource);
   }
 
   protected logResponseTranscript(result: RunResult, options?: RunOptions): void {

@@ -103,10 +103,16 @@ describe('collectDoctorChecks', () => {
     await mkdir(workspacePath);
     const binPath = join(homeDir, 'bin');
     await mkdir(binPath);
-    await writeFile(join(binPath, 'codex'), 'do-not-print', { mode: 0o700 });
+    const executable = join(binPath, 'codex');
+    await writeFile(executable, '#!/bin/sh\nprintf "do-not-print\\n"\n', { mode: 0o700 });
     await writeFile(
       configPath,
-      JSON.stringify({ backend: 'codex', workspacePath, webChatEnabled: true })
+      JSON.stringify({
+        backend: 'codex',
+        backendExecutable: executable,
+        workspacePath,
+        webChatEnabled: true,
+      })
     );
     await chmod(configPath, 0o600);
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) => {
@@ -118,7 +124,7 @@ describe('collectDoctorChecks', () => {
     const checks = await collectDoctorChecks({
       homeDir,
       configPath,
-      pathEnv: binPath,
+      checkoutDir: false,
       serviceCheck: async () => ({ name: 'service', level: 'ok', detail: 'running' }),
       fetchImpl,
     });

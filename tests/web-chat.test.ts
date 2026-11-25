@@ -2439,6 +2439,80 @@ describe('web-chat HTTP API', () => {
     }
   );
 
+  it('attributes scheduled and direct inputs separately in an existing Web conversation', async () => {
+    const id = createWebSession();
+    const key = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
+    logPrompt(testDir, id, 'Legacy input');
+
+    const run = runner.run.bind(runner);
+    const runStream = runner.runStream.bind(runner);
+    vi.spyOn(runner, 'run').mockImplementation((prompt, options) => {
+      logPrompt(testDir, id, prompt, options?.promptSource);
+      return run(prompt, options);
+    });
+    vi.spyOn(runner, 'runStream').mockImplementation((prompt, callbacks, options) => {
+      logPrompt(testDir, id, prompt, options?.promptSource);
+      return runStream(prompt, callbacks, options);
+    });
+
+    const schedule = scheduler.add({
+      type: 'once',
+      runAt: new Date(Date.now() + 60_000).toISOString(),
+      message: 'Scheduled input',
+      channelId: id,
+      platform: 'web',
+    });
+    await scheduler.runNow(schedule.id);
+    await scheduler.getAgentRunner('web')!('Event input', id);
+    const request = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'Direct input', promptSource: 'schedule' }),
+    });
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+    runner.release(key);
+    await readSSEUntilDone((await request).body);
+
+    const shared = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'direct-web-input',
+        message: 'Shared direct input',
+        attachments: [],
+        promptSource: 'schedule',
+      }),
+    });
+    expect(shared.status).toBe(202);
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+    runner.release(key);
+    await vi.waitFor(async () => {
+      const receipt = await (
+        await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/direct-web-input`)
+      ).json();
+      expect(receipt.turn.state).toBe('completed');
+    });
+
+    const detail = await (
+      await fetch(`${baseUrl}/api/sessions/${id}?limit=50&cursor=tail`)
+    ).json();
+    const inputs = detail.messages.filter((message: { role: string }) => message.role === 'user');
+    expect(inputs).toHaveLength(5);
+    expect(inputs[0]).toMatchObject({ content: 'Legacy input' });
+    expect(inputs[0]).not.toHaveProperty('promptSource');
+    expect(inputs[1]).toMatchObject({ content: 'Scheduled input', promptSource: 'schedule' });
+    expect(inputs[2]).toMatchObject({ content: 'Event input' });
+    expect(inputs[2]).not.toHaveProperty('promptSource');
+    expect(inputs[3]).toMatchObject({
+      content: expect.stringContaining('Direct input'),
+      promptSource: 'web-user',
+    });
+    expect(inputs[4]).toMatchObject({
+      content: expect.stringContaining('Shared direct input'),
+      promptSource: 'web-user',
+    });
+  });
+
   it('returns a scheduled Web child to its new parent session without changing an existing Web conversation', async () => {
     const existing = createWebSession();
     const snapshot = structuredClone(getSessionEntry(existing));
